@@ -6,13 +6,17 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 
 ## Shape (Jody, 2026-10-26)
 
-- **`looper-dispatch`** runs on the build host (this Mac today, a small VM or container later) and does
-  no work itself. Every few minutes it finds repositories with a ready issue and starts that
-  repository's looper container, unless one is already running. Nightly it starts each repository's
-  scan. Nothing runs when there is no ready issue.
-- **`repo-looper`** is the one looper of one repository, in one container (`looper-<repo>`). It keeps a
-  single checkout of the repository, drains the ready issues oldest first, checks for new ones after
-  each, and exits when none is left. Claude may run sub-agents in that checkout; only the top-level run
+- **Nothing is cloned or built on the Mac.** All looper work runs in this image as jobs of the GitLab
+  pipeline `seabeam/tools/looper`, on the autoscaled GCE runner (workers exist only while there is
+  work; see `sonar/backend/ops/ci-runners.md`).
+- **`looper-dispatch`** is the only part on the Mac. It does no work itself: every 3 minutes, when a
+  repository has a ready issue and no looper job of its own queued or running, it starts that
+  pipeline. Nothing runs when there is no ready issue.
+- **The pipeline** plans one job per repository with a ready issue (`looper-<repo>-<issue>`), each
+  working that repository's oldest ready issue; jobs of one repository never overlap (`resource_group`).
+  Its schedule runs the nightly scan of every repository.
+- **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
+  the repository at origin/main, and does nothing if the issue is no longer ready. Claude may run sub-agents in that checkout; only the top-level run
   commits and pushes, always to main (pre-production; a protected release line with review comes
   later). Bug fixes on repositories with release branches are also offered as backport pull requests.
 - **The nightly scan** changes no code: it files an issue per finding (dependency vulnerabilities,
@@ -22,8 +26,8 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   these scripts. It has **no tacplus binary**: `tacplus` is a wrapper that runs
   `ghcr.io/tacplus-dev/tacplus/tacplus:<MAJOR.MINOR>`, the compiler image for the repository's floor
   (`tacplus:` in tacplus.yaml or fleet.yaml), always that line's latest patch, as a sibling container on
-  the host's docker socket. The work directory is mounted at the same path on the host and in every
-  container so sibling containers see the same files.
+  the worker's docker socket. The work directory is under the runner's `/builds` bind mount, the same
+  path on the worker and in every container, so sibling containers see the same files.
 
 ## Issues
 
@@ -40,20 +44,18 @@ opened it and whatever its text says.
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository) in an issue's body holds it until that issue is closed.
 
-## Running it on this Mac
+## Running it
 
 ```sh
-colima start                                   # the docker runtime
-security add-generic-password -a "$USER" -s tacplus-looper-claude -w '<token from: claude setup-token>'
-./looper-dispatch install                      # every 3 minutes, and the nightly scan at 02:30
-./looper-dispatch status
+./looper-dispatch install    # launchd: start the pipeline every 3 minutes when a repository needs it
+./looper-dispatch status     # the looper jobs in GitLab, and what is ready
 ```
 
-Credentials are never baked into the image: the dispatcher passes `GH_TOKEN` (from `gh auth token`)
-and `CLAUDE_CODE_OAUTH_TOKEN` (from the keychain) to each container. The model is
-`LOOPER_MODEL` (default `claude-opus-5-5`).
+The Mac needs `gh` and `glab` logged in. The jobs' credentials are seabeam group CI variables
+(`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`), never baked into the image. The model is `LOOPER_MODEL`
+(default `claude-opus-5-5`).
 
 ## Later
 
 Doppelganger decides resource requests (more loopers, new repositories) instead of the fixed rules
-here; the dispatcher moves to a small cloud VM or container.
+here.
