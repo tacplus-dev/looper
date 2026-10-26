@@ -33,24 +33,31 @@ approved_issues() { # repo
 
 # The issues an issue waits on: lines `Blocked-by: #N` (same repository) or
 # `Blocked-by: tacplus-dev/<repo>#N` in its body, printed as "<repo> <N>".
+# Fails (non-zero) when the body cannot be read: an unreadable issue is never
+# taken for an unblocked one.
 blockers() { # repo issue
-  gh issue view "$2" --repo "$LOOPER_ORG/$1" --json body --jq .body \
+  local body
+  body="$(gh issue view "$2" --repo "$LOOPER_ORG/$1" --json body --jq .body)" || return 1
+  printf '%s\n' "$body" \
     | grep -oiE '^[[:space:]]*blocked-by:[[:space:]]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' \
     | sed -E 's/^[[:space:]]*[Bb][Ll][Oo][Cc][Kk][Ee][Dd]-[Bb][Yy]:[[:space:]]*//' \
     | while IFS= read -r ref; do
-        num="${ref##*#}"; path="${ref%#*}"
-        if [[ -z "$path" ]]; then echo "$1 $num"; else echo "${path##*/} $num"; fi
+        num="${ref##*#}"; slug="${ref%#*}"
+        if [[ -z "$slug" ]]; then echo "$1 $num"; else echo "${slug##*/} $num"; fi
       done
+  return 0
 }
 
-# Ready: approved, not held, and every issue it is blocked by is closed.
+# Ready: approved, not held, and every issue it is blocked by is closed. Any
+# forge error along the way means not ready.
 ready() { # repo issue
-  local r n state
+  local list r n state
+  list="$(blockers "$1" "$2")" || return 1
   while read -r r n; do
     [[ -z "$r" ]] && continue
-    state="$(gh issue view "$n" --repo "$LOOPER_ORG/$r" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+    state="$(gh issue view "$n" --repo "$LOOPER_ORG/$r" --json state --jq .state 2>/dev/null)" || return 1
     [[ "$state" == CLOSED ]] || return 1
-  done < <(blockers "$1" "$2")
+  done <<<"$list"
   return 0
 }
 
