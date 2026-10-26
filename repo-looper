@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$REPO" ]] || die "no repository: --repo NAME (a $LOOPER_ORG repository)"
 need gh; need git; need jq
-[[ "$MODE" == list ]] && { approved_issues "$REPO" | while read -r n; do ready "$REPO" "$n" && echo "$n"; done; exit 0; }
+[[ "$MODE" == list ]] && { approved_issues "$REPO" | while read -r n; do if ready "$REPO" "$n"; then echo "$n"; fi; done; exit 0; }
 need claude
 
 WORK="${LOOPER_WORK:-/work}/$REPO"
