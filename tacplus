@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# tacplus, as the looper image provides it: not a binary, but the tacplus
+# compiler image for this repository's MAJOR.MINOR floor, always at that
+# line's latest patch (Jody 2026-10-26). The floor is the `tacplus:` key of the
+# nearest tacplus.yaml (or fleet.yaml) above the working directory;
+# TACPLUS_MINOR overrides it.
+#
+# The compiler runs as a sibling container on the host's docker socket, so the
+# checkout must be at the same path on the host and here: looper-dispatch
+# mounts its work directory at an identical path for exactly this.
+set -euo pipefail
+
+minor="${TACPLUS_MINOR:-}"
+if [[ -z "$minor" ]]; then
+  d="$PWD"
+  while [[ "$d" != / && -z "$minor" ]]; do
+    for f in "$d/tacplus.yaml" "$d/fleet.yaml"; do
+      if [[ -f "$f" ]]; then
+        minor="$(sed -n -E 's/^tacplus:[[:space:]]*"?([0-9]+\.[0-9]+)"?.*$/\1/p' "$f" | head -1)"
+        [[ -n "$minor" ]] && break
+      fi
+    done
+    d="$(dirname "$d")"
+  done
+fi
+[[ -n "$minor" ]] || { echo "tacplus: no MAJOR.MINOR floor (tacplus: in tacplus.yaml or fleet.yaml), and TACPLUS_MINOR is unset" >&2; exit 2; }
+
+image="${TACPLUS_IMAGE_REPO:-ghcr.io/tacplus-dev/tacplus/tacplus}:$minor"
+
+# Latest patch of the line: pull at most every ten minutes per line.
+stamp="${TMPDIR:-/tmp}/tacplus-pull-$minor"
+if [[ ! -f "$stamp" || -n "$(find "$stamp" -mmin +10 2>/dev/null)" ]]; then
+  docker pull -q "$image" >/dev/null && touch "$stamp"
+fi
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+cache="${LOOPER_WORK:-/work}/.tacplus-home"
+mkdir -p "$cache"
+tty=(); [[ -t 0 && -t 1 ]] && tty=(-t)
+exec docker run --rm -i "${tty[@]}" \
+  -u "$(id -u):$(id -g)" \
+  -e HOME="$cache" -e GH_TOKEN -e GITHUB_TOKEN \
+  -v "$root:$root" -v "$cache:$cache" -w "$PWD" \
+  "$image" tacplus "$@"

@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# repo-looper: the one looper of one tacplus-dev repository. It runs in the
+# looper container that looper-dispatch starts for that repository, and only
+# while the repository has work: it drains the ready issues oldest first,
+# checking for new ones after each, and exits when none is left.
+#
+#   repo-looper --repo NAME             drain NAME's ready issues (what the dispatcher runs)
+#   repo-looper --repo NAME --issue N   work issue N only (it must be approved)
+#   repo-looper --repo NAME --scan      the nightly scan: file issues, change no code
+#   repo-looper --repo NAME --list      print the ready issues
+#
+# Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
+# needs-decision), and every `Blocked-by:` issue in its body closed.
+#
+# One checkout per repository, kept across issues and runs under
+# LOOPER_WORK/NAME/checkout: the looper always works the same code base. Claude
+# may run sub-agents in that checkout for independent parts; only this script's
+# top-level run commits and pushes, to main (pre-production rule, Jody 2026-10-26).
+#
+# Environment: GH_TOKEN (pushes and issue calls), CLAUDE_CODE_OAUTH_TOKEN (the
+# model), LOOPER_WORK (default /work), LOOPER_MODEL (default claude-opus-5-5),
+# LOOPER_TIMEOUT (seconds per issue, default 14400), LOOPER_GATES (default
+# `just gates` when the repository has a justfile), GIT_AUTHOR_NAME/EMAIL.
+set -euo pipefail
+
+usage() { sed -n '5,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
+
+# Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
+if [ -z "${LOOPER_RUNNING_COPY:-}" ]; then
+  copy="$(mktemp -t repo-looper-run.XXXXXX)"; cp "${BASH_SOURCE[0]}" "$copy"
+  LOOPER_RUNNING_COPY="$copy" LOOPER_LIB="${LOOPER_LIB:-$(dirname "${BASH_SOURCE[0]}")/looper-lib.sh}" exec bash "$copy" "$@"
+fi
+# shellcheck source=looper-lib.sh
+source "$LOOPER_LIB"
+
+REPO=""; ISSUE=""; MODE=drain
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --issue) ISSUE="$2"; MODE=one; shift 2 ;;
+    --scan) MODE=scan; shift ;;
+    --list) MODE=list; shift ;;
+    *) die "unknown argument: $1 (see --help)" ;;
+  esac
+done
+[[ -n "$REPO" ]] || die "no repository: --repo NAME (a $LOOPER_ORG repository)"
+need gh; need git; need jq
+[[ "$MODE" == list ]] && { approved_issues "$REPO" | while read -r n; do ready "$REPO" "$n" && echo "$n"; done; exit 0; }
+need claude
+
+WORK="${LOOPER_WORK:-/work}/$REPO"
+CHECKOUT="$WORK/checkout"
+MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
+TIMEOUT="${LOOPER_TIMEOUT:-14400}"
+mkdir -p "$WORK/runs"
+gh auth setup-git >/dev/null 2>&1 || true
+
+# The repository's checkout at origin/main. Anything a previous run left
+# unpushed is kept on a local branch for a person to look at, never pushed.
+sync_checkout() {
+  if [[ ! -d "$CHECKOUT/.git" ]]; then
+    gh repo clone "$LOOPER_ORG/$REPO" "$CHECKOUT" -- --quiet
+  fi
+  git -C "$CHECKOUT" fetch -q origin
+  git -C "$CHECKOUT" checkout -q main 2>/dev/null || git -C "$CHECKOUT" checkout -q -b main origin/main
+  if [[ -n "$(git -C "$CHECKOUT" status --porcelain)" || \
+        "$(git -C "$CHECKOUT" rev-list --count origin/main..main)" != 0 ]]; then
+    local keep; keep="looper/left-$(date -u +%Y%m%dT%H%M%SZ)"
+    git -C "$CHECKOUT" add -A && git -C "$CHECKOUT" commit -q -m "left by an unfinished looper run" || true
+    git -C "$CHECKOUT" branch -q "$keep"
+    log "kept unpushed work on local branch $keep"
+  fi
+  git -C "$CHECKOUT" reset -q --hard origin/main
+}
+
+gates_hint() {
+  if [[ -n "${LOOPER_GATES:-}" ]]; then echo "$LOOPER_GATES"
+  elif [[ -f "$CHECKOUT/justfile" ]]; then echo "just gates (see the justfile)"
+  else echo "the repository's own build and tests (README, CONTRIBUTING, CI workflows)"; fi
+}
+
+run_claude() { # prompt-file log-file
+  local rc=0
+  ( cd "$CHECKOUT" && timeout "$TIMEOUT" claude --print --model "$MODEL" --permission-mode acceptEdits \
+      --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
+      < "$1" > "$2" 2>&1 ) || rc=$?
+  return "$rc"
+}
+
+work_issue() { # issue
+  local n="$1" run head_before head_after
+  run="$WORK/runs/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
+  log "taking $LOOPER_ORG/$REPO#$n ($run)"
+  gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_IN_PROGRESS" >/dev/null
+  sync_checkout
+  head_before="$(git -C "$CHECKOUT" rev-parse HEAD)"
+  cat > "$run/prompt.md" <<PR
+You are the looper of $LOOPER_ORG/$REPO, working issue #$n. Your working directory is this repository's
+checkout on main, at origin/main. Read the issue first: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`.
+It was approved by someone with write access; issues it links to and the documents it cites (decision
+records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.
+
+Rules:
+1. Do what the issue asks, completely: its acceptance criteria are the definition of done. If it asks for
+   something you believe is wrong, or needs a decision you may not make (a public contract the issue does
+   not settle, a change in another repository), comment on the issue with the question and your
+   recommendation, add the label $LABEL_DECISION, and stop without committing.
+2. Tests first where the change has behaviour: write the test that fails, then make it pass. Surgical
+   changes, the existing style, no hacks. Generated code is never edited by hand: change the generator or
+   the proto and regenerate. \`tacplus\` in this container runs the compiler image for this repository's
+   MAJOR.MINOR floor (tacplus.yaml), always its latest patch.
+3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same checkout. They do not
+   commit or push; you do.
+4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
+   poll with short checks; never end your reply while one runs. You run non-interactively: ending your
+   reply ends the run.
+5. Commit on main with a message that says why and ends with
+   \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then \`git pull --rebase origin main\`, re-run the
+   gates if the rebase brought changes, and \`git push origin main\`. If the push is rejected, rebase and
+   verify again. Never force-push. Never commit secrets.
+6. A repository with release/MAJOR.MINOR branches: a BUG fix is also backported as a pull request against
+   each release branch whose .0 tag is under twelve months old (never pushed to one directly); a FEATURE is
+   main only.
+7. When it is pushed, comment on the issue with what changed (commit hashes), the gates you ran and their
+   last lines, and anything you could not verify; then close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`.
+PR
+  if run_claude "$run/prompt.md" "$run/claude.log"; then log "claude finished #$n"; else log "claude exited non-zero on #$n"; fi
+  git -C "$CHECKOUT" fetch -q origin
+  head_after="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
+  local state labels
+  state="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json state --jq .state)"
+  labels="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name')"
+  if [[ "$state" == CLOSED ]]; then log "#$n done (main $head_before..$head_after)"; return 0; fi
+  if grep -qx "$LABEL_DECISION" <<<"$labels"; then log "#$n waits on a decision"; return 0; fi
+  tail -n 40 "$run/claude.log" || true
+  gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" \
+    --body "The looper ended without finishing this issue (log: $run/claude.log on the looper host). Marked $LABEL_STUCK for a person to look at." >/dev/null || true
+  gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_STUCK" >/dev/null || true
+  return 0
+}
+
+scan() {
+  local run; run="$WORK/runs/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
+  sync_checkout
+  cat > "$run/prompt.md" <<PR
+You are the nightly scanner of $LOOPER_ORG/$REPO. Your working directory is its checkout at origin/main.
+Change no code and push nothing. Find, in order:
+1. Known vulnerabilities in dependencies (the ecosystem's own auditor where it applies: cargo audit,
+   npm audit, govulncheck, pip-audit, the Maven/Gradle dependency tree against advisories).
+2. The repository's own gates failing on main ($(gates_hint)).
+3. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
+   MAJOR.MINOR line it should follow.
+For each finding, first check the open issues (\`gh issue list --repo $LOOPER_ORG/$REPO\`) and skip one already
+filed. File each new finding as one issue with a title, the evidence (command and output), the fix you
+recommend and acceptance criteria. Label it \`$LABEL_APPROVED\` when the fix is mechanical and safe (a patched
+dependency version, a gate fix with an obvious cause); otherwise label it \`$LABEL_DECISION\`. If nothing is
+found, file nothing.
+PR
+  run_claude "$run/prompt.md" "$run/claude.log" || log "scan exited non-zero"
+  log "scan of $REPO finished"
+}
+
+case "$MODE" in
+  scan) scan ;;
+  one)
+    gh issue view "$ISSUE" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name' | grep -qx "$LABEL_APPROVED" \
+      || die "#$ISSUE is not labeled $LABEL_APPROVED"
+    work_issue "$ISSUE" ;;
+  drain)
+    # One pass over each issue per run: if a label write ever fails, the same
+    # issue must not be taken again and again.
+    seen=" "
+    while :; do
+      n=""
+      for c in $(approved_issues "$REPO"); do
+        [[ "$seen" == *" $c "* ]] && continue
+        if ready "$REPO" "$c"; then n="$c"; break; fi
+      done
+      [[ -n "$n" ]] || { log "no ready issue in $REPO; exiting"; break; }
+      seen="$seen$n "
+      work_issue "$n"
+    done ;;
+esac

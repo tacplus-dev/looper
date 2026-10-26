@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-smoke: the image has what a looper needs, and no tacplus binary of its own.
+set -euo pipefail
+for t in claude gh git jq just docker repo-looper tacplus; do
+  command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
+done
+head -c 2 "$(command -v tacplus)" | grep -q '#!' || { echo "tacplus must be the wrapper script, not a binary" >&2; exit 1; }
+[[ -f "$LOOPER_LIB" ]] || { echo "missing: $LOOPER_LIB" >&2; exit 1; }
+claude --version
+gh --version | head -1
+repo-looper --help >/dev/null
+echo "looper-smoke: ok"

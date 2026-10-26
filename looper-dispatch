@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-dispatch: the top-level loop. It does no work itself. Every few
+# minutes it looks for tacplus-dev repositories with a ready issue and starts
+# that repository's looper container, unless one is already running; nightly
+# it starts each repository's scan. Runs on the build host (this Mac today, a
+# small VM later) with the host's docker and gh.
+#
+#   looper-dispatch run        one pass: start the containers that are needed
+#   looper-dispatch nightly    start every repository's nightly scan
+#   looper-dispatch status     what is running, and what is ready
+#   looper-dispatch install    launchd: `run` every LOOPER_INTERVAL seconds (default 180), `nightly` at 02:30
+#   looper-dispatch uninstall
+#
+# One container per repository, named looper-<repo>; while it runs, nothing
+# else is started for that repository (it checks for new issues itself).
+#
+# Environment: LOOPER_IMAGE (default ghcr.io/tacplus-dev/looper:main),
+# LOOPER_WORK (default ~/.looper/work, mounted at the same path in every
+# container so sibling containers resolve it), LOOPER_MODEL (default
+# claude-opus-5-5). The model credential is read from the login keychain item
+# `tacplus-looper-claude` (store it with:
+#   security add-generic-password -a "$USER" -s tacplus-looper-claude -w "$(claude setup-token ...)" ),
+# the forge credential from `gh auth token`.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=looper-lib.sh
+source "$HERE/looper-lib.sh"
+
+IMAGE="${LOOPER_IMAGE:-ghcr.io/tacplus-dev/looper:main}"
+WORK="${LOOPER_WORK:-$HOME/.looper/work}"
+MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
+INTERVAL="${LOOPER_INTERVAL:-180}"
+STATE="$HOME/.looper"
+mkdir -p "$WORK" "$STATE"
+
+running() { [[ -n "$(docker ps -q --filter "name=^looper-$1\$")" ]]; }
+
+credentials() {
+  GH_TOKEN="$(gh auth token 2>/dev/null)" || die "gh is not logged in"
+  CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -a "$USER" -s tacplus-looper-claude -w 2>/dev/null)" \
+    || die "no model credential: keychain item tacplus-looper-claude is missing (see --help)"
+  export GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+}
+
+pull_image() {
+  local stamp="$STATE/image-pulled"
+  if [[ ! -f "$stamp" || -n "$(find "$stamp" -mmin +10 2>/dev/null)" ]]; then
+    docker pull -q "$IMAGE" >/dev/null && touch "$stamp"
+  fi
+}
+
+start() { # repo name-suffix repo-looper-args...
+  local repo="$1" suffix="$2"; shift 2
+  local name="looper-$repo$suffix"
+  docker run -d --rm --name "$name" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$WORK:$WORK" -e LOOPER_WORK="$WORK" \
+    -e GH_TOKEN -e CLAUDE_CODE_OAUTH_TOKEN -e LOOPER_MODEL="$MODEL" \
+    -e GIT_AUTHOR_NAME="$(git config --global user.name)" -e GIT_AUTHOR_EMAIL="$(git config --global user.email)" \
+    -e GIT_COMMITTER_NAME="$(git config --global user.name)" -e GIT_COMMITTER_EMAIL="$(git config --global user.email)" \
+    "$IMAGE" repo-looper --repo "$repo" "$@" >/dev/null
+  log "started $name"
+}
+
+# Repositories with at least one open approved issue: one search for the whole org.
+repos_with_approved() {
+  gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_APPROVED" --limit 200 \
+    --json repository --jq '.[].repository.name' | sort -u
+}
+
+case "${1:-}" in
+  run)
+    need gh; need docker; need jq
+    for repo in $(repos_with_approved); do
+      running "$repo" && continue
+      [[ -n "$(next_ready "$repo")" ]] || continue
+      [[ -n "${GH_TOKEN:-}" && -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] || credentials
+      pull_image
+      start "$repo" ""
+    done ;;
+  nightly)
+    need gh; need docker; credentials; pull_image
+    for repo in $(gh repo list "$LOOPER_ORG" --no-archived --limit 200 --json name --jq '.[].name'); do
+      [[ -n "$(docker ps -q --filter "name=^looper-$repo-scan\$")" ]] && continue
+      start "$repo" "-scan" --scan
+    done ;;
+  status)
+    docker ps --filter "name=^looper-" --format '{{.Names}}\t{{.Status}}'
+    for repo in $(repos_with_approved); do
+      echo "$repo: ready $(next_ready "$repo" | tr '\n' ' ')$(running "$repo" && echo '(running)')"
+    done ;;
+  install)
+    PATHS="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    for job in run nightly; do
+      label="dev.tacplus.looper.$job"; plist="$HOME/Library/LaunchAgents/$label.plist"
+      if [[ "$job" == run ]]; then when="<key>StartInterval</key><integer>$INTERVAL</integer>"
+      else when="<key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>"; fi
+      cat > "$plist" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$HERE/looper-dispatch</string><string>$job</string></array>
+  $when
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$PATHS</string><key>HOME</key><string>$HOME</string>
+  </dict>
+  <key>StandardOutPath</key><string>$STATE/$job.log</string>
+  <key>StandardErrorPath</key><string>$STATE/$job.log</string>
+</dict></plist>
+PL
+      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$plist"
+      log "installed $label"
+    done ;;
+  uninstall)
+    for job in run nightly; do
+      plist="$HOME/Library/LaunchAgents/dev.tacplus.looper.$job.plist"
+      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true; rm -f "$plist"
+    done; log "uninstalled" ;;
+  -h|--help|help|"") sed -n '5,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (see --help)" ;;
+esac
