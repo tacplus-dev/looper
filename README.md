@@ -114,7 +114,52 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done (stub gh and claude, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files (stub gh and claude, a local origin)
+```
+
+## Planning files
+
+Every tacplus-dev repository carries `ROADMAP.md`, `PROPOSALS.md`, `STATE.md` and `HISTORY.md`
+(tacplus-dev/roadmap `decisions/repo-roadmap-files-2026-10-27.md`, templates in its `templates/repo/`;
+looper#13). The loopers keep them:
+
+- **repo-looper, mechanically:** before the model runs, a missing `STATE.md`, `PROPOSALS.md` or
+  `HISTORY.md` is created on main from its template (`<repo>` filled in), never `ROADMAP.md`. After the
+  run, a closed issue gets one line at the end of `HISTORY.md`,
+  `- <YYYY-MM-DD> looper issue <title> (#N, <commit>)` (the run's last commit on main, if it pushed), and
+  each release it made (a new `vX.Y.Z` tag) one more, `- <YYYY-MM-DD> looper release <vX.Y.Z> (<release link>)`.
+  These are the looper's own commits on main, made in a scratch worktree and made again if the push is
+  rejected.
+- **The model** (the prompt's rule 6): updates `STATE.md` when its change changes what it states, puts
+  follow-ups, debt and ideas in `PROPOSALS.md`, and never edits `ROADMAP.md` (Jody's, changed only by an
+  agent at his request) nor `HISTORY.md`.
+- **ROADMAP.md is refused:** the checkout's pre-push hook refuses any push of a commit that touches it,
+  to main or any other branch, except the issue's own `looper/<repo>-<issue>` branch, so a checkpoint
+  still keeps all the work. Commits already on origin (an agent's, at Jody's request) are not the push's.
+- Hub and agent deploys and agent decisions are appended to `HISTORY.md` by the agent, not the looper.
+
+**The CI check** is the reusable workflow `.github/workflows/planning-files.yml`
+(`planning-files-check`): it fails if `STATE.md`, `PROPOSALS.md` or `HISTORY.md` is missing, or if
+`HISTORY.md` changed since the push's or pull request's base other than by lines added at its end; a
+repository with no `ROADMAP.md` yet passes with a warning until an agent adds it. It runs on this
+repository, and every tacplus-dev repository calls it from its own `.github/workflows/planning-files.yml`:
+
+```yaml
+name: planning-files
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+permissions:
+  contents: read
+jobs:
+  planning-files:
+    uses: tacplus-dev/looper/.github/workflows/planning-files.yml@main
+```
+
+```sh
+./planning-files-check [BASE]              # at a repository's root: the four files, HISTORY.md append-only since BASE
+tests/planning-files.test.sh               # the check against a scratch repository
 ```
 
 ## Port scan

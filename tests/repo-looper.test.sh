@@ -12,8 +12,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
-# Issues: $FIX/issues/<repo>-<n>.json ({number,state,labels:[{name}],body,createdAt}).
+# Issues: $FIX/issues/<repo>-<n>.json ({number,title,state,labels:[{name}],body,createdAt}).
 # Comments are appended to the issue's `comments` and to $FIX/comments as "<repo>#<n> <body>".
+# `gh api .../templates/repo/<file>` answers from $FIX/templates/<file>, else 404.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -22,6 +23,7 @@ cmd="$1 $2"; shift 2
 case "$cmd" in
   "auth setup-git") exit 0 ;;
   "repo clone") git clone -q "$FIX/origin.git" "$2"; exit 0 ;;
+  api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
 esac
 n=""; repo=""; q="."; add=(); rm=(); body=""; has_body=""; label=""
 while [[ $# -gt 0 ]]; do
@@ -64,7 +66,7 @@ chmod +x "$TMP/bin/gh" "$TMP/bin/claude"
 
 issue() { # repo n state labels(csv) body
   jq -n --argjson n "$2" --arg s "$3" --arg l "$4" --arg b "$5" \
-    '{number: $n, state: $s, labels: ($l | split(",") | map(select(. != "")) | map({name: .})), body: $b, comments: [], createdAt: "2026-10-27T00:00:00Z"}' \
+    '{number: $n, title: "Issue \($n)", state: $s, labels: ($l | split(",") | map(select(. != "")) | map({name: .})), body: $b, comments: [], createdAt: "2026-10-27T00:00:00Z"}' \
     > "$FIX/issues/$1-$2.json"
 }
 scenario() { # name: a fresh origin with one commit and an approved issue alpha#4
@@ -377,6 +379,95 @@ run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 20 )) || fail "the finished run was not ended"
 [[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: #3"
+pass
+
+# The planning files (tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md, looper#13).
+templates() { # the four templates, as tacplus-dev/roadmap templates/repo/ has them
+  mkdir -p "$FIX/templates"
+  local f; for f in ROADMAP STATE PROPOSALS HISTORY; do printf '# %s: <repo>\n\nTemplate text.\n' "$f" > "$FIX/templates/$f.md"; done
+}
+close_it() { echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"; }
+history() { origin show main:HISTORY.md; }
+today="$(date -u +%F)"
+
+# A missing planning file is created from the template on main before the model
+# runs, never ROADMAP.md; a closed issue appends exactly one well-formed line.
+scenario history-closed
+templates
+echo '{ ls; cat STATE.md; } > "$FIX/checkout"' >> "$FIX/claude.sh"
+echo 'git commit -q --allow-empty -m fix && git push -q origin main && git rev-parse --short HEAD > "$FIX/fix"' >> "$FIX/claude.sh"
+close_it
+run
+c="$(cat "$FIX/checkout")"
+has "$c" "HISTORY.md"; has "$c" "PROPOSALS.md"; has "$c" "STATE.md"; lacks "$c" "ROADMAP.md"
+has "$c" "# STATE: alpha"
+! origin cat-file -e main:ROADMAP.md 2>/dev/null || fail "ROADMAP.md created"
+[[ "$(origin show main:PROPOSALS.md)" == "$(sed 's/<repo>/alpha/' "$FIX/templates/PROPOSALS.md")" ]] || fail "PROPOSALS.md: $(origin show main:PROPOSALS.md)"
+h="$(history)"
+[[ "$h" == "$(sed 's/<repo>/alpha/' "$FIX/templates/HISTORY.md")"$'\n'"- $today looper issue Issue 4 (#4, $(cat "$FIX/fix"))" ]] || fail "HISTORY.md: $h"
+[[ "$(grep -c '^- ' <<<"$h")" == 1 ]] || fail "HISTORY.md: $h"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "Never edit ROADMAP.md"; has "$p" "STATE.md"; has "$p" "PROPOSALS.md"
+[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+pass
+
+# Files already there are left alone, and the line goes at the end; a run that
+# does not close its issue adds none.
+scenario history-existing
+templates
+printf '# History: alpha\n\n- 2026-10-01 agent decision first (x)\n' > "$FIX/seed/HISTORY.md"
+echo 'my state' > "$FIX/seed/STATE.md"; echo 'my proposals' > "$FIX/seed/PROPOSALS.md"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -q -m files && git -C "$FIX/seed" push -q origin main
+seeded="$(origin rev-parse main)"
+push_fix
+run
+[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(origin rev-parse main~1)" == "$seeded" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)' ]] || fail "HISTORY.md: $(history)"
+push_fix; close_it; issue alpha 4 OPEN approved "Fix it."
+run
+[[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)\n'"- $today looper issue Issue 4 (#4, $(origin rev-parse --short main~1))" ]] \
+  || fail "HISTORY.md: $(history)"
+[[ "$(origin show main:STATE.md)" == "my state" ]] || fail "STATE.md overwritten"
+pass
+
+# A release made by the run (a new vX.Y.Z tag) gets its line too.
+scenario history-release
+templates
+push_fix; echo 'git tag v1.2.3 && git push -q origin v1.2.3' >> "$FIX/claude.sh"; close_it
+run
+h="$(history)"
+has "$h" "- $today looper issue Issue 4 (#4, "
+[[ "$(tail -n 1 <<<"$h")" == "- $today looper release v1.2.3 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.3)" ]] || fail "HISTORY.md: $h"
+pass
+
+# ROADMAP.md is Jody's: a push of a commit that touches it is refused, whichever
+# way it is pushed; the work is still kept on the issue's branch.
+scenario roadmap-refused
+templates
+echo 'Jody wrote this.' > "$FIX/seed/ROADMAP.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -q -m roadmap; git -C "$FIX/seed" push -q origin main
+echo 'echo "looper wrote this" >> ROADMAP.md && git commit -qam "roadmap edit"' >> "$FIX/claude.sh"
+echo 'git push -q origin main 2> "$FIX/refused" && echo pushed >> "$FIX/refused"' >> "$FIX/claude.sh"
+echo 'git push -q origin HEAD:refs/heads/other 2>> "$FIX/refused" && echo pushed >> "$FIX/refused"' >> "$FIX/claude.sh"
+run
+r="$(cat "$FIX/refused")"
+lacks "$r" "pushed"
+has "$r" "ROADMAP.md"
+[[ "$(origin show main:ROADMAP.md)" == "Jody wrote this." ]] || fail "ROADMAP.md changed on main"
+! origin rev-parse -q --verify refs/heads/other >/dev/null || fail "pushed to other"
+has "$(origin show looper/alpha-4:ROADMAP.md)" "looper wrote this"
+pass
+
+# A commit on main that touches ROADMAP.md (an agent's, at Jody's request) does
+# not stop the looper pushing its own work on top of it.
+scenario roadmap-others
+templates
+echo 'git commit -q --allow-empty -m fix' >> "$FIX/claude.sh"
+echo 'git -C "$FIX/seed" pull -q origin main && echo "agent" > "$FIX/seed/ROADMAP.md" && git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -q -m roadmap && git -C "$FIX/seed" push -q origin main' >> "$FIX/claude.sh"
+echo 'git pull -q --rebase origin main && git push -q origin main' >> "$FIX/claude.sh"
+close_it
+run
+[[ "$(origin log -1 --skip 1 --format=%s main)" == fix ]] || fail "main: $(origin log --oneline main)"
 pass
 
 echo "repo-looper: all scenarios pass"

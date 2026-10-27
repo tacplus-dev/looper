@@ -53,6 +53,13 @@
 # stays approved: the next run resumes from its branch. Anything else is
 # looper:stuck, for a person.
 #
+# The planning files (looper#13): before the model runs, a missing STATE.md,
+# PROPOSALS.md or HISTORY.md is created on main from its template in
+# tacplus-dev/roadmap (ROADMAP.md never); after it, a closed issue and each
+# release (a new vX.Y.Z tag) get their line at the end of HISTORY.md. A push of
+# a commit that touches ROADMAP.md, Jody's, is refused (a pre-push hook in the
+# checkout); the issue's own branch is exempt.
+#
 # Environment: GH_TOKEN (pushes and issue calls), CLAUDE_CODE_OAUTH_TOKEN (the
 # model), LOOPER_WORK (default /work), LOOPER_RUNS (default LOOPER_WORK/NAME/runs),
 # LOOPER_MODEL (default claude-opus-5-5), LOOPER_TIMEOUT (seconds per issue,
@@ -64,7 +71,7 @@
 # CI_PROJECT_DIR name the job and its artifacts in issue comments.
 set -euo pipefail
 
-usage() { sed -n '5,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,71p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -150,6 +157,88 @@ sync_checkout() {
   fi
   git -C "$CHECKOUT" checkout -q -f -B main origin/main
   git -C "$CHECKOUT" reset -q --hard origin/main
+  guard_roadmap
+}
+
+# The planning files every repository carries (tacplus-dev/roadmap
+# decisions/repo-roadmap-files-2026-10-27.md, looper#13). ROADMAP.md is Jody's:
+# an agent changes it at his request, a looper never does. The model keeps
+# STATE.md and PROPOSALS.md. HISTORY.md is append-only, and this script appends
+# its line for each closed issue and each release. A missing one is created
+# from its template in tacplus-dev/roadmap, ROADMAP.md never.
+PLANNING_FILES=(STATE.md PROPOSALS.md HISTORY.md)
+TEMPLATES="roadmap/contents/templates/repo"   # a repository of LOOPER_ORG and its path
+
+# A planning file's template, with the repository's name filled in.
+template() { # file
+  local t; t="$(mktemp)"
+  gh api "repos/$LOOPER_ORG/$TEMPLATES/$1" -H "Accept: application/vnd.github.raw" > "$t" || { rm -f "$t"; return 1; }
+  sed "s/<repo>/$REPO/g" "$t"; rm -f "$t"
+}
+
+# Refuses, in the checkout's pre-push hook, any push of a commit that touches
+# ROADMAP.md: the model's pushes and this script's alike. The issue's own
+# branch (looper/*) is exempt, so a checkpoint still keeps all the work.
+# Commits already on origin (an agent's, at Jody's request) are not this push's.
+guard_roadmap() {
+  local hook; hook="$(git -C "$CHECKOUT" rev-parse --absolute-git-dir)/hooks/pre-push"
+  mkdir -p "$(dirname "$hook")"
+  cat > "$hook" <<'HOOK'
+#!/usr/bin/env bash
+# Installed by repo-looper (looper#13): a looper never pushes a commit that touches ROADMAP.md.
+z=0000000000000000000000000000000000000000
+while read -r _ lsha rref rsha; do
+  [[ "$lsha" == "$z" || "$rref" == refs/heads/looper/* ]] && continue
+  not=(--remotes="$1"); [[ "$rsha" != "$z" ]] && git cat-file -e "$rsha" 2>/dev/null && not+=("$rsha")
+  c="$(git rev-list -n 1 "$lsha" --not "${not[@]}" -- ROADMAP.md)"
+  if [[ -n "$c" ]]; then
+    echo "repo-looper: refused to push $rref: commit $(git rev-parse --short "$c") touches ROADMAP.md, which only Jody changes (through an agent). Propose it in PROPOSALS.md instead." >&2
+    exit 1
+  fi
+done
+exit 0
+HOOK
+  chmod +x "$hook"
+}
+
+# Commits a change to main and pushes it, from a scratch worktree at
+# origin/main: the checkout is untouched. The change is a command run in that
+# worktree; when the push is rejected it is made again on the new origin/main.
+# Never fatal.
+land() { # message command [args...]
+  local msg="$1" wt i; shift
+  wt="$(mktemp -d)"
+  for i in 1 2 3; do
+    git -C "$CHECKOUT" fetch -q origin main || break
+    if (( i == 1 )); then git -C "$CHECKOUT" worktree add -q -f --detach "$wt" origin/main || break
+    else git -C "$wt" checkout -q -f --detach origin/main && git -C "$wt" clean -fdq; fi
+    ( cd "$wt" && "$@" ) || break
+    [[ -n "$(git -C "$wt" status --porcelain)" ]] || break
+    git -C "$wt" add -A && git -C "$wt" commit -q -m "$msg" || break
+    if git -C "$wt" push -q origin HEAD:refs/heads/main; then log "pushed to main: $msg"; break; fi
+    (( i < 3 )) || log "could not push to main: $msg"
+  done
+  git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"
+  git -C "$CHECKOUT" worktree prune
+}
+
+add_planning_files() {
+  local f
+  for f in "${PLANNING_FILES[@]}"; do
+    [[ -e "$f" ]] || template "$f" > "$f" || { rm -f "$f"; log "no template for $f"; }
+  done
+}
+
+append_history() { # line...
+  [[ -e HISTORY.md ]] || template HISTORY.md > HISTORY.md || : > HISTORY.md
+  [[ -z "$(tail -c 1 HISTORY.md)" ]] || echo >> HISTORY.md
+  printf '%s\n' "$@" >> HISTORY.md
+}
+
+# The release tags (vX.Y.Z) on origin.
+release_tags() {
+  git -C "$CHECKOUT" ls-remote --tags --refs origin 'refs/tags/v*' | sed 's#.*refs/tags/##' \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V || true
 }
 
 gates_hint() {
@@ -396,6 +485,9 @@ work_issue() { # issue
   log "taking $LOOPER_ORG/$REPO#$n ($run)"
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_IN_PROGRESS" >/dev/null
   sync_checkout
+  land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
+  sync_checkout
+  local tags_before; tags_before="$(release_tags)"
   head_before="$(git -C "$CHECKOUT" rev-parse origin/main)"
   limit="$(run_limit "$n")"
   resumed="$(resume "$n")"
@@ -434,18 +526,23 @@ Rules:
    \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then \`git pull --rebase origin main\`, re-run the
    gates if the rebase brought changes, and \`git push origin main\`. If the push is rejected, rebase and
    verify again. Never force-push. Never commit secrets.
-6. A repository with release/MAJOR.MINOR branches: a BUG fix is also backported as a pull request against
+6. The planning files: update STATE.md when your change changes what it states (version, what works,
+   gaps, blockers). Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
+   only in comments. Never edit ROADMAP.md: it is Jody's, changed only by an agent at his request, and a
+   push of a commit that touches it is refused. HISTORY.md is append-only and not yours: the looper adds
+   the line for this issue and for any release.
+7. A repository with release/MAJOR.MINOR branches: a BUG fix is also backported as a pull request against
    each release branch whose .0 tag is under twelve months old (never pushed to one directly); a FEATURE is
    main only.
-7. When it is pushed, comment on the issue with what changed (commit hashes), the gates you ran and their
+8. When it is pushed, comment on the issue with what changed (commit hashes), the gates you ran and their
    last lines, and anything you could not verify; then, as your last step (any backport pull requests open by
    then), close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`. Closing it ends your run.
-8. If the fix is pushed but the gates cannot run until another open issue is done (a compiler floor that
+9. If the fix is pushed but the gates cannot run until another open issue is done (a compiler floor that
    does not exist yet, say), do not close this issue: comment what you pushed and why the gates wait, and
    write the one line \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\` to
    $run/outcome as your last step: with the fix pushed, that ends your run. The looper adds it to the issue,
    which is worked again for the gates once #N is closed.
-9. Your time limit is $(hours "$limit"); you are stopped $(( STOP_EARLY / 60 )) minutes before it. Whenever you finish a step,
+10. Your time limit is $(hours "$limit"); you are stopped $(( STOP_EARLY / 60 )) minutes before it. Whenever you finish a step,
    checkpoint it: \`$LOOPER_SELF --repo $REPO --issue $n --checkpoint "<what is done; what is left>"\`.
    It pushes everything in the checkout, committed or not, to the branch $(wip_branch "$n") (never main) and
    changes nothing in the checkout; the looper also checkpoints hourly and when you stop. If the time runs
@@ -470,6 +567,18 @@ PR
   local state labels
   state="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json state --jq .state)"
   labels="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name')"
+  # HISTORY.md: a line for the closed issue (with the run's last commit on
+  # main, if it pushed) and one for each release the run made.
+  local lines=() title t
+  if [[ "$state" == CLOSED ]]; then
+    title="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json title --jq .title)" || title=""
+    t=""; [[ "$head_after" != "$head_before" ]] && t=", $(git -C "$CHECKOUT" rev-parse --short "$head_after")"
+    lines+=("- $(date -u +%F) looper issue $title (#$n$t)")
+  fi
+  for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_before") || true); do
+    lines+=("- $(date -u +%F) looper release $t (https://github.com/$LOOPER_ORG/$REPO/releases/tag/$t)")
+  done
+  if (( ${#lines[@]} )); then land "HISTORY.md: #$n (looper)" append_history "${lines[@]}"; fi
   if [[ "$state" == CLOSED ]]; then drop_wip "$n"; log "#$n done (main $head_before..$head_after)"; return 0; fi
   local blocked
   if blocked="$(gates_blocked "$n" "$run" "$head_before" "$head_after")"; then

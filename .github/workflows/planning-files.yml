@@ -1,0 +1,45 @@
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# The planning files check (tacplus-dev/roadmap
+# decisions/repo-roadmap-files-2026-10-27.md, looper#13): fails if STATE.md,
+# PROPOSALS.md or HISTORY.md is missing, or if HISTORY.md changed other than by
+# lines added at its end; a missing ROADMAP.md only warns until an agent adds
+# it. Runs on this repository, and every tacplus-dev repository calls it:
+#
+#   name: planning-files
+#   on:
+#     push:
+#       branches: [main]
+#     pull_request: {}
+#   permissions:
+#     contents: read
+#   jobs:
+#     planning-files:
+#       uses: tacplus-dev/looper/.github/workflows/planning-files.yml@main
+name: planning-files
+on:
+  workflow_call: {}
+  push:
+    branches: [main]
+  pull_request: {}
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The check itself, from this repository: the caller's commit when this is
+      # tacplus-dev/looper, else main.
+      - uses: actions/checkout@v4
+        with:
+          repository: tacplus-dev/looper
+          ref: ${{ github.repository == 'tacplus-dev/looper' && github.sha || 'main' }}
+          path: .planning-files-check
+      - name: Check
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: .planning-files-check/planning-files-check "$BASE"

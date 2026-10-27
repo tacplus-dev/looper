@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# planning-files-check: the CI check of a tacplus-dev repository's planning
+# files (tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md,
+# looper#13), run at the root of its checkout by the reusable workflow
+# .github/workflows/planning-files.yml.
+#
+#   planning-files-check [BASE]
+#
+# Fails if STATE.md, PROPOSALS.md or HISTORY.md is missing, or if HISTORY.md
+# changed since commit BASE other than by lines added at its end (an edited,
+# removed or reordered line, or the file removed). Without BASE (a new branch,
+# a manual run) only their presence is checked. A repository with no
+# ROADMAP.md yet passes with a warning until an agent adds it (bootstrap).
+# Headings and shape are not checked until the template settles.
+set -euo pipefail
+case "${1:-}" in -h|--help) sed -n '5,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+BASE="${1:-}"
+[[ "$BASE" =~ ^0+$ ]] && BASE=""   # a push that created the branch
+
+rc=0
+error() { echo "::error file=$1::$2"; rc=1; }
+warning() { echo "::warning file=$1::$2"; }
+
+for f in STATE.md PROPOSALS.md HISTORY.md; do
+  [[ -f "$f" ]] || error "$f" "$f is missing: every tacplus-dev repository carries it (start from tacplus-dev/roadmap templates/repo/$f)"
+done
+[[ -f ROADMAP.md ]] || warning ROADMAP.md "ROADMAP.md is missing: it passes until an agent adds it at Jody's request"
+
+if [[ -n "$BASE" ]]; then
+  if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+    warning HISTORY.md "base $BASE is not in this checkout: HISTORY.md's changes were not checked"
+  elif git cat-file -e "$BASE:HISTORY.md" 2>/dev/null; then
+    # Append-only: the file at BASE is, byte for byte, the start of the file now.
+    before="$(mktemp)"; trap 'rm -f "$before"' EXIT
+    git show "$BASE:HISTORY.md" > "$before"
+    if [[ ! -f HISTORY.md ]]; then
+      error HISTORY.md "HISTORY.md was removed: it is append-only"
+    elif ! head -c "$(stat -c %s "$before")" HISTORY.md | cmp -s - "$before"; then
+      line="$(cmp "$before" HISTORY.md 2>/dev/null | sed -nE 's/.* line ([0-9]+)$/\1/p')" || true
+      error "HISTORY.md${line:+,line=$line}" "HISTORY.md changed other than by lines added at its end${line:+ (line $line)}: it is append-only, so add a new entry instead of editing or removing one"
+    fi
+  fi
+fi
+(( rc == 0 )) && echo "planning-files-check: ok"
+exit "$rc"
