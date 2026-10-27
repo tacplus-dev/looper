@@ -73,3 +73,20 @@ next_ready() { # repo
   done
   return 0
 }
+
+# GitHub credentials for a container that clones from GitHub (the tacplus
+# compiler resolving `depends` through the private tacplus-dev/registry,
+# looper#11): `docker run "${DOCKER_GITHUB_CREDS[@]}" ...`. Git in the
+# container gets, from its environment alone, a credential helper for
+# https://github.com and no other host, which answers from $GH_TOKEN (else
+# $GITHUB_TOKEN) when git asks; the empty value first drops every other helper
+# for github.com, so none stores the token. The token itself is only inherited
+# (`-e GH_TOKEN`): it is on no command line, in no file and in no image.
+# shellcheck disable=SC2016  # expanded by git's shell in the container, not here
+DOCKER_GITHUB_CREDS=(
+  -e GH_TOKEN -e GITHUB_TOKEN
+  -e GIT_CONFIG_COUNT=2
+  -e GIT_CONFIG_KEY_0=credential.https://github.com.helper -e GIT_CONFIG_VALUE_0=
+  -e GIT_CONFIG_KEY_1=credential.https://github.com.helper
+  -e 'GIT_CONFIG_VALUE_1=!f() { test "$1" = get || exit 0; t="${GH_TOKEN:-$GITHUB_TOKEN}"; test -n "$t" || exit 0; echo username=x-access-token; echo "password=$t"; }; f'
+)

@@ -35,6 +35,17 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   (`tacplus:` in tacplus.yaml or fleet.yaml), always that line's latest patch, as a sibling container on
   the worker's docker socket. The work directory is under the runner's `/builds` bind mount, the same
   path on the worker and in every container, so sibling containers see the same files.
+- **GitHub credentials in containers** (looper#11): since tacplus 2.4 a repository's `depends` resolve
+  through the private `tacplus-dev/registry`, so the compiler container clones from GitHub. The wrapper
+  gives it, through its environment alone (`DOCKER_GITHUB_CREDS` in `looper-lib.sh`), a git credential
+  helper for `https://github.com` and no other host, which answers from `$GH_TOKEN` (else
+  `$GITHUB_TOKEN`) when git asks, and drops any other helper for github.com so none stores it. The token
+  is only inherited by the container: it is on no command line, in no file and in no image. Any other
+  `docker run` of something that clones from GitHub passes the same `"${DOCKER_GITHUB_CREDS[@]}"`.
+
+```sh
+tests/tacplus.test.sh                      # the wrapper's credentials against a stub git server: github.com gets the token, any other host none, nothing on disk holds it
+```
 
 ## Issues
 

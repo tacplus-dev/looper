@@ -11,7 +11,13 @@
 # The compiler runs as a sibling container on the host's docker socket, so the
 # checkout must be at the same path on the host and here: looper-dispatch
 # mounts its work directory at an identical path for exactly this.
+#
+# Git in the compiler container authenticates to https://github.com, and only
+# there, with $GH_TOKEN (the private tacplus-dev/registry that `depends`
+# resolve through since 2.4): DOCKER_GITHUB_CREDS in looper-lib.sh.
 set -euo pipefail
+# shellcheck source=looper-lib.sh
+source "${LOOPER_LIB:-$(dirname "${BASH_SOURCE[0]}")/looper-lib.sh}"
 
 minor="${TACPLUS_MINOR:-}"
 if [[ -z "$minor" ]]; then
@@ -42,6 +48,6 @@ mkdir -p "$cache"
 tty=(); [[ -t 0 && -t 1 ]] && tty=(-t)
 exec docker run --rm -i "${tty[@]}" \
   -u "$(id -u):$(id -g)" \
-  -e HOME="$cache" -e GH_TOKEN -e GITHUB_TOKEN \
+  -e HOME="$cache" "${DOCKER_GITHUB_CREDS[@]}" \
   -v "$root:$root" -v "$cache:$cache" -w "$PWD" \
   "$image" tacplus "$@"
