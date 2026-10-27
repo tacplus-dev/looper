@@ -14,10 +14,17 @@
 # Per mapped source (ports.yaml `ports:`): read the mark in the target's
 # PROVENANCE.md ("Ported through `<sha>`", else the migration commit it names),
 # list the source's commits after it on its default branch, and file
-# `Port SeaBeam <svc> <from>..<to>` (approved) unless none, or an open port
-# issue already covers them. Commits after an open port issue's <to> get the
-# next issue, Blocked-by the open one. No usable mark: one needs-decision
-# issue on the target, never a guessed baseline.
+# `Port SeaBeam <svc> <from>..<to>` (feature, approved) unless none, or an open
+# port issue already covers them. Commits after an open port issue's <to> get
+# the next issue, Blocked-by the open one. No usable mark: one needs-decision
+# bug on the target, never a guessed baseline.
+#
+# The roadmaps first (tacplus-dev/roadmap decisions/issue-flow-2026-10-27.md,
+# looper#14): before filing a port issue, the scan reads the target's
+# ROADMAP.md and the platform's (tacplus-dev/roadmap ROADMAP.md and items/).
+# When one has an entry for the port that is not done (a line naming `Port
+# SeaBeam <svc>` whose first linked issue is open, or that links none), it files
+# no port issue but one, once, asking for that entry to be prioritized.
 #
 # Unmapped sources (ports.yaml `unmapped:`, and any project under `source` in
 # no list): each change is reported once on the looper's tracking issue
@@ -29,7 +36,7 @@
 # lib dir), GITLAB_API (default CI_API_V4_URL or https://gitlab.com/api/v4).
 set -euo pipefail
 
-usage() { sed -n '5,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
@@ -77,10 +84,10 @@ enc() { local s="${1//\//%2F}"; printf '%s' "$s"; }
 project() { enc "$SOURCE/$1"; }
 
 # Issues: filed with labels, or printed under --dry-run.
-file_issue() { # repo title label body
+file_issue() { # repo title labels(csv) body
   if [[ -n "$DRY" ]]; then printf '\n=== would file on %s/%s [%s]: %s\n%s\n' "$ORG" "$1" "$3" "$2" "$4"; return 0; fi
   local n
-  n="$(jq -n --arg t "$2" --arg b "$4" --arg l "$3" '{title: $t, body: $b, labels: [$l]}' \
+  n="$(jq -n --arg t "$2" --arg b "$4" --arg l "$3" '{title: $t, body: $b, labels: ($l | split(","))}' \
         | gh api "repos/$ORG/$1/issues" --input - --jq .number)" || { log "ERROR could not file on $ORG/$1: $2"; return 1; }
   log "filed $ORG/$1#$n: $2"
 }
@@ -93,6 +100,65 @@ comment() { # repo issue body
 open_issues() { # repo: "number<TAB>title" of its open issues (not pull requests)
   gh api "repos/$ORG/$1/issues?state=open&per_page=100" --paginate \
     | jq -r '.[] | select(.pull_request | not) | "\(.number)\t\(.title)"'
+}
+
+# A file of a tacplus-dev repository, raw, on stdout: 0; 1 when there is no
+# such file; 2 on any other answer (an error, never taken for absence).
+gh_file() { # repo path
+  local err rc=0 text
+  err="$(mktemp)"
+  text="$(gh api "repos/$ORG/$1/contents/$2" -H 'Accept: application/vnd.github.raw' 2>"$err")" || rc=$?
+  if [[ $rc == 0 ]]; then rm -f "$err"; printf '%s\n' "$text"; return 0; fi
+  if grep -q 'HTTP 404' "$err"; then rm -f "$err"; return 1; fi
+  cat "$err" >&2; rm -f "$err"; return 2
+}
+
+# The platform's roadmap files (ROADMAP.md and items/*.md of tacplus-dev/roadmap),
+# read once per scan into PLATFORM_DIR. Fails when one cannot be read.
+PLATFORM_DIR=""
+platform_roadmaps() {
+  [[ -n "$PLATFORM_DIR" ]] && return 0
+  local dir p rc; dir="$(mktemp -d)"; mkdir -p "$dir/items"
+  rc=0; gh_file roadmap ROADMAP.md > "$dir/ROADMAP.md" || rc=$?
+  (( rc != 2 )) || { rm -rf "$dir"; return 1; }
+  rc=0; p="$(gh api "repos/$ORG/roadmap/contents/items" --jq '.[] | select(.type == "file" and (.name | endswith(".md"))) | .path' 2>&1)" || rc=$?
+  if (( rc != 0 )); then grep -q 'HTTP 404' <<<"$p" || { echo "$p" >&2; rm -rf "$dir"; return 1; }; p=""; fi
+  for f in $p; do
+    rc=0; gh_file roadmap "$f" > "$dir/$f" || rc=$?
+    (( rc != 2 )) || { rm -rf "$dir"; return 1; }
+  done
+  PLATFORM_DIR="$dir"
+}
+trap '[[ -z "$PLATFORM_DIR" ]] || rm -rf "$PLATFORM_DIR"' EXIT
+
+# The roadmap entry for porting svc into target that is not done, as
+# "<url><TAB><line>": a line naming `Port SeaBeam <svc>` in the target's
+# ROADMAP.md (a bare #N is the target's issue) or the platform's files, whose
+# first linked issue of the target is open, or that links none. Nothing when
+# there is none; fails when a roadmap cannot be read.
+port_entry() { # svc target
+  local svc="$1" t="$2" own rc=0 f line ref state
+  own="$(gh_file "$t" ROADMAP.md)" || rc=$?
+  (( rc != 2 )) || return 1
+  platform_roadmaps || return 1
+  while IFS=$'\t' read -r f line; do
+    [[ -n "$line" ]] || continue
+    if [[ "$f" == "$t:ROADMAP.md" ]]; then
+      ref="$(grep -oE "(^|[^A-Za-z0-9_./-])#[0-9]+|(^|[^A-Za-z0-9_.-])($ORG/)?$t#[0-9]+" <<<"$line" | head -n 1 | grep -oE '[0-9]+$' || true)"
+      f="https://github.com/$ORG/$t/blob/main/ROADMAP.md"
+    else
+      ref="$(grep -oE "(^|[^A-Za-z0-9_.-])($ORG/)?$t#[0-9]+" <<<"$line" | head -n 1 | grep -oE '[0-9]+$' || true)"
+      f="https://github.com/$ORG/roadmap/blob/main/$f"
+    fi
+    if [[ -n "$ref" ]]; then
+      state="$(gh api "repos/$ORG/$t/issues/$ref" --jq .state)" || return 1
+      [[ "$state" == open ]] || continue
+    fi
+    printf '%s\t%s\n' "$f" "$line"; return 0
+  done < <(
+    { printf '%s\n' "$own" | sed "s#^#$t:ROADMAP.md\t#"
+      (cd "$PLATFORM_DIR" && grep -r . --include='*.md' | sed 's#:#\t#') ; } \
+      | grep -iE $'\t'".*port seabeam $svc([^A-Za-z0-9_.-]|\$)" || true)
 }
 
 # The commits after a ref on the source's branch, oldest first, as JSON lines.
@@ -159,7 +225,7 @@ scan_mapped() { # svc target branch
   if [[ -z "$from" ]]; then
     local title="Port SeaBeam $svc: no usable mark"
     if cut -f2 <<<"$issues" | grep -qxF "$title"; then log "$svc: no usable mark; already asked"; return 0; fi
-    file_issue "$t" "$title" "$LABEL_DECISION" "The port scan (tacplus-dev/looper#2) cannot carry SeaBeam \`$SOURCE/$svc\` changes into this
+    file_issue "$t" "$title" "$LABEL_BUG,$LABEL_DECISION" "The port scan (tacplus-dev/looper#2) cannot carry SeaBeam \`$SOURCE/$svc\` changes into this
 repository: $MARK_WHY. It never guesses a baseline.
 
 Decide which SeaBeam commit this repository was last brought up to (from history or content), and record it in
@@ -179,6 +245,25 @@ $(gl "projects/$(project "$svc")/repository/commits/$branch" | jq -r '"[`\(.shor
   local after="the mark in \`PROVENANCE.md\`, \`$from\`"
   [[ -n "$open_n" ]] && after="\`$open_to\`, where the open port issue #$open_n ends"
   from="${open_to:-$from}"
+  local entry
+  entry="$(port_entry "$svc" "$t")" || { log "ERROR $svc: cannot read the roadmaps"; return 1; }
+  if [[ -n "$entry" ]]; then
+    local ptitle="Prioritize the roadmap entry: Port SeaBeam $svc"
+    if cut -f2 <<<"$issues" | grep -qxF "$ptitle"; then log "$svc: on a roadmap; prioritizing already asked"; return 0; fi
+    file_issue "$t" "$ptitle" "$LABEL_FEATURE" "SeaBeam still commits to \`$SOURCE/$svc\`: these commits on its \`$branch\` came after $after.
+Porting them is already on a roadmap, so the port scan (tacplus-dev/looper#2) files no new port issue
+($ISSUE_FLOW). It asks for that entry to be prioritized instead:
+
+> ${entry#*	}
+
+([the entry](${entry%%	*}))
+
+Why now: SeaBeam keeps committing, so every day the entry waits there is more to port; the newest of these commits
+is from $(tail -1 <<<"$commits" | jq -r '.authored_date[0:10]').
+
+$(commit_list <<<"$commits")"
+    return
+  fi
   body="SeaBeam still commits to \`$SOURCE/$svc\`. These commits on its \`$branch\` came after $after.
 Filed by the port scan (tacplus-dev/looper#2).
 
@@ -188,7 +273,7 @@ $(instructions "$to")"
   [[ -n "$open_n" ]] && body="$body
 
 Blocked-by: #$open_n"
-  file_issue "$t" "Port SeaBeam $svc ${from:0:8}..${to:0:8}" "$LABEL_APPROVED" "$body"
+  file_issue "$t" "Port SeaBeam $svc ${from:0:8}..${to:0:8}" "$LABEL_FEATURE,$LABEL_APPROVED" "$body"
 }
 
 # Unmapped sources: the tracking issue records, per source, the last commit
@@ -223,7 +308,7 @@ $(if [[ -n "$commits" ]]; then commit_list <<<"$commits" | sed 's/^/  /'; else e
   done <<<"$list"
   if [[ -z "$n" ]]; then
     [[ -n "$first" ]] || return 0
-    file_issue "$TRACKING_REPO" "$TRACKING_TITLE" "$LABEL_DECISION" "SeaBeam sources under \`$SOURCE\` with no tacplus-dev target (\`ports.yaml\`, \`unmapped\`). The port
+    file_issue "$TRACKING_REPO" "$TRACKING_TITLE" "$LABEL_FEATURE,$LABEL_DECISION" "SeaBeam sources under \`$SOURCE\` with no tacplus-dev target (\`ports.yaml\`, \`unmapped\`). The port
 scan (#2) reports each change to them here, once: decide whether a change matters (map the source to a target in
 \`ports.yaml\`, or carry the change by hand), or leave it. Each line records the last commit reported.
 

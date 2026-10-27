@@ -14,7 +14,9 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 
 # Issues: $FIX/issues/<repo>-<n>.json ({number,title,state,labels:[{name}],body,createdAt}).
 # Comments are appended to the issue's `comments` and to $FIX/comments as "<repo>#<n> <body>".
-# `gh api .../templates/repo/<file>` answers from $FIX/templates/<file>, else 404.
+# `gh api .../templates/repo/<file>` answers from $FIX/templates/<file>, and
+# `gh api .../roadmap/contents/ROADMAP.md` from $FIX/platform/ROADMAP.md, else 404.
+# `gh label create` is recorded in $FIX/labels-created as "<repo> <label>".
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -24,8 +26,9 @@ case "$cmd" in
   "auth setup-git") exit 0 ;;
   "repo clone") git clone -q "$FIX/origin.git" "$2"; exit 0 ;;
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
+  "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
 esac
-n=""; repo=""; q="."; add=(); rm=(); body=""; has_body=""; label=""
+n=""; repo=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; title=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2##*/}"; shift 2 ;;
@@ -33,16 +36,25 @@ while [[ $# -gt 0 ]]; do
     --add-label) add+=("$2"); shift 2 ;;
     --remove-label) rm+=("$2"); shift 2 ;;
     --body) body="$2"; has_body=1; shift 2 ;;
-    --label) label="$2"; shift 2 ;;
-    --json|--state|--limit) shift 2 ;;
+    --label) IFS=, read -ra l <<<"$2"; labels+=("${l[@]}"); shift 2 ;;
+    --state) state="$2"; shift 2 ;;
+    --title) title="$2"; shift 2 ;;
+    --json|--limit|--color|--description) shift 2 ;;
     *) n="$1"; shift ;;
   esac
 done
 f="$FIX/issues/$repo-$n.json"
 case "$cmd" in
+  "label create") echo "$repo $n" >> "$FIX/labels-created" ;;
   "issue list")
-    jq -s --arg l "$label" '[.[] | select(.state == "OPEN" and any(.labels[].name; . == $l))]' \
-      "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
+    jq -s --arg s "$state" '[.[] | select(($s == "all" or .state == ($s | ascii_upcase)) and ([.labels[].name] | contains($ARGS.positional)))] | sort_by(-.number)' \
+      "$FIX/issues/$repo"-*.json --args "${labels[@]+"${labels[@]}"}" | jq -r "$q" ;;
+  "issue create")
+    n="$(( $(jq -s 'map(.number) | max // 0' "$FIX/issues/$repo"-*.json) + 1 ))"
+    jq -n --argjson n "$n" --arg t "$title" --arg b "$body" \
+      '{number: $n, title: $t, state: "OPEN", labels: ($ARGS.positional | map({name: .})), body: $b, comments: [], createdAt: "2026-10-28T00:00:00Z"}' \
+      --args "${labels[@]+"${labels[@]}"}" > "$FIX/issues/$repo-$n.json"
+    echo "https://github.com/tacplus-dev/$repo/issues/$n" ;;
   "issue view") [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; jq -r "$q" "$f" ;;
   "issue edit")
     t="$(cat "$f")"
@@ -56,11 +68,20 @@ case "$cmd" in
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
 esac
 EOF
-# The prompt names the run's outcome file; the scenario's script gets it as $OUTCOME.
+# The scenario's script for the prompt's role: $FIX/claude.sh works the issue,
+# classify.sh classifies it, propose.sh proposes a design, scan.sh is the
+# nightly scan (none: the model does nothing). Each prompt's first line is
+# appended to $FIX/prompts. The prompt names the run's outcome file; the
+# script gets it as $OUTCOME.
 cat > "$TMP/bin/claude" <<'EOF'
 #!/usr/bin/env bash
-prompt="$(cat)"
-OUTCOME="$(grep -oE '/[^ `]*/outcome' <<<"$prompt" | head -1)" bash "$FIX/claude.sh"
+prompt="$(cat)"; first="$(head -n 1 <<<"$prompt")"
+printf '%s\n' "$first" >> "$FIX/prompts"
+case "$first" in
+  *classifying*) s=classify.sh ;; *"proposing a design"*) s=propose.sh ;; *scanner*) s=scan.sh ;; *) s=claude.sh ;;
+esac
+[[ -f "$FIX/$s" ]] || exit 0
+OUTCOME="$(grep -oE '/[^ `]*/outcome' <<<"$prompt" | head -1)" bash "$FIX/$s"
 EOF
 chmod +x "$TMP/bin/gh" "$TMP/bin/claude"
 
@@ -70,11 +91,11 @@ issue() { # repo n state labels(csv) body
     > "$FIX/issues/$1-$2.json"
 }
 scenario() { # name: a fresh origin with one commit and an approved issue alpha#4
-  NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues"; : > "$FIX/comments"; : > "$FIX/claude.sh"
+  NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues"; : > "$FIX/comments"; : > "$FIX/claude.sh"; : > "$FIX/prompts"
   git init -q --bare -b main "$FIX/origin.git"
   git clone -q "$FIX/origin.git" "$FIX/seed" 2>/dev/null
   git -C "$FIX/seed" commit -q --allow-empty -m init && git -C "$FIX/seed" push -q origin main
-  issue alpha 4 OPEN approved "Fix it."
+  issue alpha 4 OPEN approved,bug "Fix it."
 }
 push_fix() { # a claude.sh line: commit and push a fix
   echo 'git commit -q --allow-empty -m fix && git push -q origin main' >> "$FIX/claude.sh"
@@ -106,7 +127,7 @@ scenario pushed-gates-blocked
 push_fix; echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue tacplus 9 OPEN "" "A compiler floor."
 run
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: tacplus-dev/tacplus#9"
 has "$(body alpha 4)" "Fix it."
 has "$(cat "$FIX/comments")" "https://gl.test/jobs/77"
@@ -117,18 +138,18 @@ scenario pushed-gates-blocked-same-repo
 push_fix; echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue alpha 3 OPEN "" "First."
 run
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: #3"
 pass
 
 scenario keeps-other-blockers
 push_fix; echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue alpha 3 OPEN "" "First."
-issue alpha 4 OPEN approved "Fix it.
+issue alpha 4 OPEN approved,bug "Fix it.
 Blocked-by: tacplus-dev/beta#1"
 issue beta 1 CLOSED "" "Done."
 run
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#1"
 [[ "$(grep -c 'Blocked-by: #3' <<<"$(body alpha 4)")" == 1 ]] || fail "body $(body alpha 4)"
 pass
@@ -137,7 +158,7 @@ scenario blocked-but-nothing-pushed
 echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue tacplus 9 OPEN "" "A compiler floor."
 run
-[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 lacks "$(body alpha 4)" "Blocked-by"
 pass
 
@@ -145,14 +166,14 @@ scenario blocked-by-closed-issue
 push_fix; echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue tacplus 9 CLOSED "" "A compiler floor."
 run
-[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 lacks "$(body alpha 4)" "Blocked-by"
 pass
 
 scenario ended-unknown
 push_fix
 run
-[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 c="$(cat "$FIX/comments")"
 has "$c" "https://gl.test/jobs/77"
 has "$c" "looper-runs/"
@@ -165,7 +186,7 @@ scenario closed
 push_fix; echo 'gh issue edit 4 --repo tacplus-dev/alpha --add-label closed-by-test' >> "$FIX/claude.sh"
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 run
-[[ "$(labels alpha 4)" == "approved,closed-by-test" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,closed-by-test" ]] || fail "labels $(labels alpha 4)"
 [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
 pass
 
@@ -210,7 +231,7 @@ echo 'echo z > d.txt; sleep 30' >> "$FIX/claude.sh"
 start=$SECONDS
 run LOOPER_TIMEOUT=6 LOOPER_STOP_EARLY=3
 (( SECONDS - start < 20 )) || fail "the model was not stopped"
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 c="$(cat "$FIX/comments")"
 has "$c" "time limit"
 has "$c" "c.txt written; left: the tests"
@@ -224,15 +245,15 @@ pass
 # Timeout: <hours>h in the body sets the run's limit (at most 10h); the job's is an hour more.
 scenario timeout-per-issue
 [[ "$(looper -- --repo alpha --job-timeout 4)" == 5h ]] || fail "default job timeout"
-issue alpha 4 OPEN approved "Fix it.
+issue alpha 4 OPEN approved,bug "Fix it.
 Timeout: 6h"
 [[ "$(looper -- --repo alpha --job-timeout 4)" == 7h ]] || fail "job timeout for 6h"
 push_fix
 run
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 6h"
-issue alpha 4 OPEN approved "Timeout: 12h"
+issue alpha 4 OPEN approved,bug "Timeout: 12h"
 [[ "$(looper -- --repo alpha --job-timeout 4)" == 11h ]] || fail "job timeout for 12h"
-issue alpha 4 OPEN approved "Timeout: 2h"
+issue alpha 4 OPEN approved,bug "Timeout: 2h"
 [[ "$(looper -- --repo alpha --job-timeout 4)" == 3h ]] || fail "job timeout for 2h"
 pass
 
@@ -310,7 +331,7 @@ has "$r" "token [redacted] and [redacted]"
 lacks "$r" "s3cr3t-value-for-test"
 has "$(origin show looper/alpha-4:.looper/prompt.md)" "working issue #4"
 : > "$FIX/claude.sh"; echo 'ls -A > "$FIX/checkout"' >> "$FIX/claude.sh"
-issue alpha 4 OPEN approved "Fix it."
+issue alpha 4 OPEN approved,bug "Fix it."
 run
 [[ "$(tr '\n' ' ' < "$FIX/checkout")" == ".git a.txt " ]] || fail "checkout: $(cat "$FIX/checkout")"
 pass
@@ -336,7 +357,7 @@ echo 'echo "last words"; echo x > e.txt; sleep 60' >> "$FIX/claude.sh"
 start=$SECONDS
 run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 20 )) || fail "the idle model was not stopped"
-[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 c="$(cat "$FIX/comments")"
 has "$c" "went idle"
 has "$c" "last words"
@@ -351,7 +372,7 @@ push_fix
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
 [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
 # Done means done: once the run closed its issue, the model gets
@@ -364,7 +385,7 @@ start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 20 )) || fail "the finished run was not ended"
 [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$OUT" "done"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "ends your run"
 pass
@@ -377,7 +398,7 @@ echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 20 )) || fail "the finished run was not ended"
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: #3"
 pass
 
@@ -408,7 +429,7 @@ h="$(history)"
 [[ "$(grep -c '^- ' <<<"$h")" == 1 ]] || fail "HISTORY.md: $h"
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$p" "Never edit ROADMAP.md"; has "$p" "STATE.md"; has "$p" "PROPOSALS.md"
-[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
 # Files already there are left alone, and the line goes at the end; a run that
@@ -421,10 +442,10 @@ git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -q -m files && git -C "$F
 seeded="$(origin rev-parse main)"
 push_fix
 run
-[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 [[ "$(origin rev-parse main~1)" == "$seeded" ]] || fail "main: $(origin log --oneline main)"
 [[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)' ]] || fail "HISTORY.md: $(history)"
-push_fix; close_it; issue alpha 4 OPEN approved "Fix it."
+push_fix; close_it; issue alpha 4 OPEN approved,bug "Fix it."
 run
 [[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)\n'"- $today looper issue Issue 4 (#4, $(origin rev-parse --short main~1))" ]] \
   || fail "HISTORY.md: $(history)"
@@ -468,6 +489,164 @@ echo 'git pull -q --rebase origin main && git push -q origin main' >> "$FIX/clau
 close_it
 run
 [[ "$(origin log -1 --skip 1 --format=%s main)" == fix ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# The issue flow (tacplus-dev/roadmap decisions/issue-flow-2026-10-27.md,
+# looper#14): every issue is a bug or a feature.
+platform() { mkdir -p "$FIX/platform"; printf '# Roadmap: tacplus-dev (platform)\n\n%s\n' "$1" > "$FIX/platform/ROADMAP.md"; }
+roadmap() { printf '# Roadmap: alpha\n\n%s\n' "$1" > "$FIX/seed/ROADMAP.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -q -m roadmap; git -C "$FIX/seed" push -q origin main; }
+prompts() { tr '\n' '|' < "$FIX/prompts"; }
+
+# A feature that no ROADMAP.md links is not built: the model only proposes a
+# design (on the issue and in PROPOSALS.md), and the issue waits on a decision.
+# Another repository's #4 is not this one's.
+scenario feature-not-on-roadmap
+templates
+issue alpha 4 OPEN approved,feature "Add a thing."
+roadmap "- Other (tacplus-dev/beta#4)"
+platform "- Elsewhere (tacplus-dev/beta#4, alpha#40)"
+push_fix; close_it
+cat > "$FIX/propose.sh" <<'EOS'
+gh issue comment 4 --repo tacplus-dev/alpha --body "Design: do it this way."
+echo "- **A thing** (#4)" >> PROPOSALS.md && git commit -qam "PROPOSALS.md: #4" && git push -q origin main
+EOS
+run
+p="$(prompts)"; has "$p" "proposing a design for issue #4"; lacks "$p" "working issue"
+[[ "$(labels alpha 4)" == "approved,feature,needs-decision" ]] || fail "labels $(labels alpha 4)"
+[[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == OPEN ]] || fail "closed"
+c="$(cat "$FIX/comments")"; has "$c" "Design: do it this way."; has "$c" "is not built"; has "$c" "ROADMAP.md"
+[[ "$(origin log -1 --format=%s main)" == "PROPOSALS.md: #4" ]] || fail "main: $(origin log --oneline main)"
+has "$(origin show main:PROPOSALS.md)" "A thing"
+lacks "$(origin show main:HISTORY.md)" "looper issue"
+pp="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pp" "Do not build it"; has "$pp" "PROPOSALS.md"
+pass
+
+# A feature linked from the repository's ROADMAP.md, or from the platform's, is built, on main only.
+scenario feature-on-roadmap
+templates
+issue alpha 4 OPEN approved,feature "Add a thing."
+roadmap "- A thing (#4)"
+platform "- Nothing here"
+push_fix; close_it
+run
+p="$(prompts)"; has "$p" "working issue #4"; lacks "$p" "proposing"
+[[ "$(labels alpha 4)" == "approved,feature" ]] || fail "labels $(labels alpha 4)"
+pp="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pp" "is a feature"; has "$pp" "no patch release"; lacks "$pp" "backported"
+pass
+
+scenario feature-on-platform-roadmap
+templates
+issue alpha 4 OPEN approved,feature "Add a thing."
+platform "- A thing across repositories (tacplus-dev/alpha#4)"
+push_fix; close_it
+run
+has "$(prompts)" "working issue #4"
+pass
+
+# The platform's roadmap cannot be read: the feature is neither built nor proposed.
+scenario feature-roadmap-unreadable
+issue alpha 4 OPEN approved,feature "Add a thing."
+push_fix
+run
+[[ ! -s "$FIX/prompts" ]] || fail "the model ran: $(prompts)"
+[[ "$(labels alpha 4)" == "approved,feature,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "could not read"
+main_unchanged
+pass
+
+# An unlabelled issue is classified first (a comment and the label), then
+# worked by the rule for its kind.
+scenario classify-bug
+templates
+issue alpha 4 OPEN approved "Fix it."
+cat > "$FIX/classify.sh" <<'EOS'
+gh issue comment 4 --repo tacplus-dev/alpha --body "Classified as bug: it is broken."
+gh issue edit 4 --repo tacplus-dev/alpha --add-label bug
+EOS
+push_fix; close_it
+run
+[[ "$(prompts)" == "You are the looper of tacplus-dev/alpha, classifying issue #4 before it is worked.|You are the looper of tacplus-dev/alpha, working issue #4. Your working directory is this repository's|" ]] || fail "prompts: $(prompts)"
+[[ "$(labels alpha 4)" == "approved,bug" ]] || fail "labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "Classified as bug"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/classify/prompt.md)" "decisions/issue-flow-2026-10-27.md"
+pass
+
+scenario classify-feature
+issue alpha 4 OPEN approved "Add a thing."
+platform "- Nothing here"
+echo 'gh issue edit 4 --repo tacplus-dev/alpha --add-label feature' > "$FIX/classify.sh"
+push_fix
+run
+p="$(prompts)"; has "$p" "classifying issue #4"; has "$p" "proposing a design for issue #4"; lacks "$p" "working issue"
+[[ "$(labels alpha 4)" == "approved,feature,needs-decision" ]] || fail "labels $(labels alpha 4)"
+main_unchanged
+pass
+
+# Left unclassified: a person decides.
+scenario classify-none
+issue alpha 4 OPEN approved "Something."
+push_fix
+run
+[[ "$(prompts)" == *classifying* && "$(prompts)" != *working* ]] || fail "prompts: $(prompts)"
+[[ "$(labels alpha 4)" == "approved,needs-decision" ]] || fail "labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "\`bug\` or \`feature\`"
+main_unchanged
+pass
+
+# A bug is fixed and its patch released: the prompt names the next patch of
+# main's newest release, and the release gets its HISTORY.md line. The labels
+# exist in the repository.
+scenario bug-patch-release
+templates
+git -C "$FIX/seed" tag v1.2.3 && git -C "$FIX/seed" push -q origin v1.2.3
+git -C "$FIX/seed" commit -q --allow-empty -m later && git -C "$FIX/seed" push -q origin main
+push_fix; echo 'git tag v1.2.4 && git push -q origin v1.2.4' >> "$FIX/claude.sh"; close_it
+run
+pp="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pp" "is a bug"; has "$pp" "tag \`v1.2.4\`"; has "$pp" "newest release on main is \`v1.2.3\`"; has "$pp" "backported"
+has "$(history)" "looper release v1.2.4 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.4)"
+has "$(history)" "looper issue Issue 4 (#4, "
+lc="$(cat "$FIX/labels-created")"; has "$lc" "alpha bug"; has "$lc" "alpha feature"
+pass
+
+scenario bug-no-release
+templates
+push_fix; close_it
+run
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "no release on main yet"
+pass
+
+# The nightly scan files its findings as bugs and never approves a feature
+# (only issues it filed: an older approved feature is left alone). Its prompt
+# consults the roadmaps before filing, and sends ideas to PROPOSALS.md.
+scenario scan
+templates
+issue alpha 4 OPEN approved,feature "Jody's."
+cat > "$FIX/scan.sh" <<'EOS'
+gh issue create --repo tacplus-dev/alpha --title "Bump x" --body "x 1.2 has CVE-1" --label approved
+gh issue create --repo tacplus-dev/alpha --title "Gate fails" --body "y" --label bug --label approved
+gh issue create --repo tacplus-dev/alpha --title "Pin is stale" --body "z" --label bug,needs-decision
+gh issue create --repo tacplus-dev/alpha --title "New idea" --body "w" --label feature,approved
+EOS
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(labels alpha 5)" == "approved,bug" ]] || fail "#5 labels $(labels alpha 5)"
+[[ "$(labels alpha 6)" == "bug,approved" ]] || fail "#6 labels $(labels alpha 6)"
+[[ "$(labels alpha 7)" == "bug,needs-decision" ]] || fail "#7 labels $(labels alpha 7)"
+[[ "$(labels alpha 8)" == "feature" ]] || fail "#8 labels $(labels alpha 8)"
+[[ "$(labels alpha 4)" == "approved,feature" ]] || fail "#4 labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "alpha#8 "
+lacks "$(cat "$FIX/comments")" "alpha#4 "
+pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
+has "$pp" "labelled \`bug\`"; has "$pp" "prioritized"; has "$pp" "PROPOSALS.md"; has "$pp" "never \`approved\`"
+pass
+
+# Every prompt that may open an issue consults the roadmaps first.
+scenario prompt-roadmap-first
+push_fix
+run
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "prioritized"
 pass
 
 echo "repo-looper: all scenarios pass"

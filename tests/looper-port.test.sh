@@ -11,7 +11,9 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 API=https://gl.test/api/v4
 
 # Stubs. GitLab: $FIX/gl/<path with every other character as _>. GitHub:
-# $FIX/gh/<repo>/{PROVENANCE.md,issues.json,issue-N.json,comments-N.json};
+# $FIX/gh/<repo>/{PROVENANCE.md,ROADMAP.md,issues.json,issue-N.json,comments-N.json},
+# and tacplus-dev/roadmap's items/ from $FIX/gh/roadmap/items/ (a file
+# <name>.fail answers HTTP 502);
 # writes are appended to $FIX/filed as "<repo> <json>".
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'EOF'
@@ -33,7 +35,10 @@ repo="$(cut -d/ -f3 <<<"$path")"; rest="$(cut -d/ -f4- <<<"$path")"; d="$FIX/gh/
 if [[ -n "$input" && -e "$FIX/writes-fail" ]]; then cat >/dev/null; echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi
 if [[ -n "$input" ]]; then echo "$repo $(jq -c --arg p "$rest" '. + {path: $p}')" >> "$FIX/filed"; [[ -n "$q" ]] && echo 100; exit 0; fi
 case "$rest" in
-  contents/PROVENANCE.md) [[ -f "$d/PROVENANCE.md" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$d/PROVENANCE.md" ;;
+  contents/items) [[ -d "$d/items" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    for f in "$d"/items/*.md; do jq -n --arg n "${f##*/}" '{name: $n, path: "items/\($n)", type: "file"}'; done | jq -s . | jq -r "${q:-.}" ;;
+  contents/*) f="$d/${rest#contents/}"; [[ -f "$f.fail" ]] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
+    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$f" ;;
   issues\?*) cat "$d/issues.json" 2>/dev/null || echo '[]' ;;
   issues/*/comments) cat "$d/comments-$(cut -d/ -f2 <<<"$rest").json" 2>/dev/null || echo '[]' ;;
   issues/*) jq -r "$q" "$d/issue-${rest#issues/}.json" ;;
@@ -88,7 +93,7 @@ compare alpha aaaaaaa "$(commit "$B" "first change"),$(commit "$C" "second chang
 run
 [[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
 [[ "$(field 1 .title)" == "Port SeaBeam alpha aaaaaaa..cccccccc" ]] || fail "title $(field 1 .title)"
-[[ "$(field 1 '.labels|join(",")')" == approved ]] || fail "labels $(field 1 .labels)"
+[[ "$(field 1 '.labels|join(",")')" == feature,approved ]] || fail "labels $(field 1 .labels)"
 body="$(field 1 .body)"
 has "$body" '[`bbbbbbbb`](https://gl.test/c/'"$B"') 2026-10-26 first change'
 has "$body" '[`cccccccc`](https://gl.test/c/'"$C"') 2026-10-26 second change'
@@ -134,7 +139,7 @@ rm "$FIX/gh/alpha/PROVENANCE.md"
 run
 [[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
 [[ "$(field 1 .title)" == "Port SeaBeam alpha: no usable mark" ]] || fail "title $(field 1 .title)"
-[[ "$(field 1 '.labels|join(",")')" == needs-decision ]] || fail "labels $(field 1 .labels)"
+[[ "$(field 1 '.labels|join(",")')" == bug,needs-decision ]] || fail "labels $(field 1 .labels)"
 has "$(field 1 .body)" "has no PROVENANCE.md"
 lacks "$(cat "$FIX/requests")" compare
 pass
@@ -160,7 +165,7 @@ gl "projects/seabeam%2Fsrc%2Fzeta/repository/commits/main" "$(commit "$Z" "zeta 
 run
 [[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
 [[ "$(sed -n 1p "$FIX/filed" | cut -d' ' -f1)" == looper ]] || fail "not on looper"
-[[ "$(field 1 '.labels|join(",")')" == needs-decision ]] || fail "labels"
+[[ "$(field 1 '.labels|join(",")')" == feature,needs-decision ]] || fail "labels"
 body="$(field 1 .body)"; has "$body" "**zeta**: through \`$Z\`"; has "$body" "**omega**: through \`$Y\` (not in ports.yaml)"
 pass
 
@@ -214,6 +219,67 @@ touch "$FIX/writes-fail"
 if OUT="$(PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOPER_PORTS="$TMP/ports.yaml" \
           LOOPER_LIB="$ROOT/looper-lib.sh" "$ROOT/looper-port" 2>&1)"; then fail "exited 0 when filing failed"; fi
 has "$OUT" "ERROR could not file"
+pass
+
+# The roadmaps first (looper#14): porting a source whose port is already an
+# entry on a roadmap (the target's ROADMAP.md, the platform's, or its items/)
+# that is not done gets no new port issue, but one asking for that entry to be
+# prioritized, once.
+scenario roadmap-entry
+ghf alpha issues.json '[{"number":5,"title":"Port SeaBeam alpha aaaaaaa..cccccccc"}]'
+ghf alpha issue-5.json '{"state":"open"}'; ghf alpha issue-3.json '{"state":"closed"}'
+ghf alpha ROADMAP.md '# Roadmap: alpha
+
+## Later
+- Port SeaBeam alpha aaaaaaa..cccccccc (#5), after #3'
+compare alpha cccccccc "$(commit "$D" "third change")"
+run
+[[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
+[[ "$(field 1 .title)" == "Prioritize the roadmap entry: Port SeaBeam alpha" ]] || fail "title $(field 1 .title)"
+[[ "$(field 1 '.labels|join(",")')" == feature ]] || fail "labels $(field 1 .labels)"
+body="$(field 1 .body)"
+has "$body" "- Port SeaBeam alpha aaaaaaa..cccccccc (#5), after #3"
+has "$body" "https://github.com/tacplus-dev/alpha/blob/main/ROADMAP.md"
+has "$body" "Why now"; has "$body" "third change"
+lacks "$body" "Blocked-by"
+pass
+
+scenario roadmap-entry-asked
+ghf alpha issues.json '[{"number":6,"title":"Prioritize the roadmap entry: Port SeaBeam alpha"}]'
+ghf alpha ROADMAP.md '- Port SeaBeam alpha (no issue yet)'
+compare alpha aaaaaaa "$(commit "$B" "first change")"
+run
+[[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
+pass
+
+scenario roadmap-entry-platform-item
+mkdir -p "$FIX/gh/roadmap/items"
+printf '# Ports\n\n- **Port SeaBeam alpha** when it settles.\n' > "$FIX/gh/roadmap/items/ports.md"
+ghf roadmap ROADMAP.md '- Port SeaBeam alphabet (tacplus-dev/other#1)'
+compare alpha aaaaaaa "$(commit "$B" "first change")"
+run
+[[ "$(field 1 .title)" == "Prioritize the roadmap entry: Port SeaBeam alpha" ]] || fail "title $(field 1 .title)"
+body="$(field 1 .body)"
+has "$body" "https://github.com/tacplus-dev/roadmap/blob/main/items/ports.md"; lacks "$body" alphabet
+pass
+
+# An entry whose issue is closed is done: the next range is a port issue, as without one.
+scenario roadmap-entry-done
+ghf alpha issue-5.json '{"state":"closed"}'
+ghf alpha ROADMAP.md '- Port SeaBeam alpha 11111111..aaaaaaaa (#5)'
+compare alpha aaaaaaa "$(commit "$B" "first change")"
+run
+[[ "$(field 1 .title)" == "Port SeaBeam alpha aaaaaaa..bbbbbbbb" ]] || fail "title $(field 1 .title)"
+pass
+
+# A roadmap that cannot be read: nothing is filed, and the scan fails.
+scenario roadmap-unreadable
+ghf alpha ROADMAP.md.fail ''
+compare alpha aaaaaaa "$(commit "$B" "first change")"
+if OUT="$(PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOPER_PORTS="$TMP/ports.yaml" \
+          LOOPER_LIB="$ROOT/looper-lib.sh" "$ROOT/looper-port" 2>&1)"; then fail "exited 0"; fi
+[[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
+has "$OUT" "cannot read the roadmaps"
 pass
 
 echo "looper-port: all scenarios pass"

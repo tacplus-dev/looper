@@ -23,9 +23,9 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   Each run's record (`prompt.md`, `claude.log`) is uploaded as the job's artifacts (`looper-runs/`,
   kept 30 days, also when the job fails): the runner VM is gone after the job, so the issue comments
   link the job, not a path on it. See [After a run](#after-a-run).
-- **The nightly scan** changes no code: it files an issue per finding (dependency vulnerabilities,
+- **The nightly scan** changes no code: it files a `bug` per finding (dependency vulnerabilities,
   gates failing on main, pins off the latest MAJOR.MINOR line). Mechanical fixes are filed `approved`,
-  the rest `needs-decision`.
+  the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
 - **The port scan** (`looper-port`, hourly) changes no code either: while SeaBeam still commits to its
   pre-migration GitLab projects, it files an issue on the tacplus-dev repository each one moved to, and
   that repository's looper does the port. See [Port scan](#port-scan).
@@ -51,13 +51,38 @@ tests/tacplus.test.sh                      # the wrapper's credentials against a
 
 | Label | Meaning |
 | --- | --- |
-| `approved` | someone with write access approved it; the looper works it |
+| `approved` | someone with write access approved it; the looper works it (a feature: only once it is on a ROADMAP.md) |
+| `bug` | the code does not do what it already promises: fixed, and released as a patch |
+| `feature` | new behaviour: needs design, Jody's approval and a ROADMAP.md entry; ships in a minor |
 | `looper:in-progress` | a looper holds it |
 | `looper:stuck` | a run ended without finishing and without a known reason; a person looks |
 | `needs-decision` | the looper needs a decision it may not make |
 
 Only someone with write access can set a label, so an issue nobody approved is never worked, whoever
 opened it and whatever its text says.
+
+### Bug or feature
+
+Every issue is a bug or a feature (tacplus-dev/roadmap `decisions/issue-flow-2026-10-27.md`, looper#14); the
+looper creates both labels in a repository that lacks them.
+
+- **Unlabelled:** the model first classifies it, in a comment and the label (its record is the run's
+  `classify/`); one it leaves unclassified is `needs-decision`, for a person to label.
+- **Bug:** fixed on main and released as the next patch of main's newest release (the prompt names the tag,
+  `vX.Y.Z+1`; none when the repository has no release yet), and backported by pull request to each supported
+  `release/MAJOR.MINOR` (docs/VERSIONING.md in tacplus-dev/tacplus).
+- **Feature:** built only if it is `approved` **and** a ROADMAP.md links it: the repository's (`#N` will
+  do) or the platform's, tacplus-dev/roadmap `ROADMAP.md` (`tacplus-dev/<repo>#N`). Otherwise it is not
+  built: the model writes a design proposal as a comment and into PROPOSALS.md, and the issue is
+  `needs-decision`. It ships in a minor, from main only. When the platform's roadmap cannot be read, the
+  feature is neither built nor proposed (`looper:stuck`).
+- **Before opening any issue**, every looper prompt and the scans read the repository's ROADMAP.md and the
+  platform's (`ROADMAP.md` and `items/`): a feature already on a roadmap gets no new issue, but one
+  (`feature`) asking for that entry to be prioritized, linking it and saying why now.
+- **The nightly scan** files each finding (a vulnerability, a failing gate, a stale pin) as a `bug`,
+  `approved` when the fix is mechanical; an idea for new behaviour is a `feature`, never `approved`, and goes
+  to PROPOSALS.md. After the scan, an issue it filed with no kind gets `bug`, and a feature it filed loses
+  `approved`.
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository) in an issue's body holds it until that issue is closed.
@@ -114,7 +139,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files (stub gh and claude, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature and the scan's labels (stub gh and claude, a local origin)
 ```
 
 ## Planning files
@@ -176,16 +201,22 @@ runs `looper-port` (mechanical: GitLab API with the group `GITLAB_TOKEN`, issues
 - **Mark:** the target's `PROVENANCE.md` line ``Ported through `<sha>` ``; until the first port, the
   migration commit it names (`` `<source>/<svc>` at commit `<sha>` ``).
 - **Commits after the mark** on the source's default branch: none, or an open port issue already ends at
-  the head, files nothing. Otherwise one issue `Port SeaBeam <svc> <from>..<to>`, labelled `approved`,
+  the head, files nothing. Otherwise one issue `Port SeaBeam <svc> <from>..<to>`, labelled `feature` and
+  `approved` (so its looper builds it only once a ROADMAP.md links it),
   listing each commit (sha, link, date, subject) and the instructions: per commit, port it, or say it
   is already covered or not applicable and why; never copy generated code; then set the mark to `<to>`
   and release. Commits after an open port issue's `<to>` get the next issue, `Blocked-by:` that one.
+- **The roadmaps first** (looper#14): before filing a port issue, the scan reads the target's ROADMAP.md
+  and the platform's (`ROADMAP.md`, `items/`). When one has an entry for the port that is not done (a line
+  naming `Port SeaBeam <svc>` whose first linked issue is open, or that links none), it files no port
+  issue but, once, *Prioritize the roadmap entry: Port SeaBeam <svc>* (`feature`), quoting and linking the
+  entry, with the new commits as the why-now. A roadmap it cannot read files nothing.
 - **No usable mark** (no PROVENANCE.md, no mark in it, or a mark that is not a commit of the source):
-  one issue `Port SeaBeam <svc>: no usable mark`, labelled `needs-decision`. The scan never guesses a
+  one issue `Port SeaBeam <svc>: no usable mark`, labelled `bug` and `needs-decision`. The scan never guesses a
   baseline; a person records it and closes the issue.
 - **Unmapped sources** (and any project under the source group that `ports.yaml` does not list): each
-  change is reported once on this repository's issue *Port scan: changes in unmapped SeaBeam sources*,
-  which records the last commit reported per source.
+  change is reported once on this repository's issue *Port scan: changes in unmapped SeaBeam sources*
+  (`feature`, `needs-decision`), which records the last commit reported per source.
 - **Retired sources** are skipped entirely: never ported, never reported, not even read. Since
   2026-10-27 nothing comes over from SeaBeam that is not already in tacplus-dev, except stratum, so
   every source without a target is retired (looper#5); a new source shows up as unmapped until it is

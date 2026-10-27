@@ -18,6 +18,37 @@ LABEL_IN_PROGRESS="looper:in-progress"
 LABEL_STUCK="looper:stuck"           # a run ended without finishing, for no known reason; a person looks
 LABEL_DECISION="needs-decision"      # the looper needs a decision it may not make
 
+# Every issue is a bug or a feature (tacplus-dev/roadmap
+# decisions/issue-flow-2026-10-27.md, looper#14). A bug is fixed and ships as a
+# patch on every supported release line. A feature needs design, Jody's
+# approval and a ROADMAP.md entry before it is built, and ships in a minor.
+LABEL_BUG="bug"
+LABEL_FEATURE="feature"
+ISSUE_FLOW="tacplus-dev/roadmap decisions/issue-flow-2026-10-27.md"
+
+# The two labels, in a repository that lacks them. Never fatal.
+ensure_kind_labels() { # repo
+  gh label create "$LABEL_BUG" --repo "$LOOPER_ORG/$1" --color d73a4a \
+    --description "The code does not do what it already promises: fixed, and released as a patch" >/dev/null 2>&1 || true
+  gh label create "$LABEL_FEATURE" --repo "$LOOPER_ORG/$1" --color a2eeef \
+    --description "New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor" >/dev/null 2>&1 || true
+}
+
+# A file of the platform's roadmap repository (ROADMAP.md, items/...), raw.
+platform_file() { # path
+  gh api "repos/$LOOPER_ORG/roadmap/contents/$1" -H "Accept: application/vnd.github.raw"
+}
+
+# The text on stdin links issue <repo>#<n>: `tacplus-dev/<repo>#<n>`,
+# `<repo>#<n>` or its URL; with `own` (the repository's own ROADMAP.md), a
+# bare `#<n>` too.
+links_issue() { # repo n [own]
+  local r="${1//./\\.}" n="$2" re
+  re="(^|[^A-Za-z0-9_.-])($LOOPER_ORG/)?$r#$n([^0-9]|\$)|github\\.com/$LOOPER_ORG/$r/issues/$n([^0-9]|\$)"
+  [[ "${3:-}" == own ]] && re="$re|(^|[^A-Za-z0-9_./-])#$n([^0-9]|\$)"
+  grep -qE "$re"
+}
+
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "FATAL $*" >&2; exit 2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }

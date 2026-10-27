@@ -60,6 +60,15 @@
 # a commit that touches ROADMAP.md, Jody's, is refused (a pre-push hook in the
 # checkout); the issue's own branch is exempt.
 #
+# Bug or feature (tacplus-dev/roadmap decisions/issue-flow-2026-10-27.md,
+# looper#14): an issue labelled neither is classified by the model first (a
+# comment and the label). A bug is fixed and released as the next patch, and
+# backported. A feature is built only when a ROADMAP.md links it (the
+# repository's or tacplus-dev/roadmap's); otherwise the model proposes its
+# design (on the issue and in PROPOSALS.md) and the issue is needs-decision.
+# The nightly scan files its findings as bugs and never approves a feature;
+# every prompt reads the roadmaps before opening an issue.
+#
 # Environment: GH_TOKEN (pushes and issue calls), CLAUDE_CODE_OAUTH_TOKEN (the
 # model), LOOPER_WORK (default /work), LOOPER_RUNS (default LOOPER_WORK/NAME/runs),
 # LOOPER_MODEL (default claude-opus-5-5), LOOPER_TIMEOUT (seconds per issue,
@@ -71,7 +80,7 @@
 # CI_PROJECT_DIR name the job and its artifacts in issue comments.
 set -euo pipefail
 
-usage() { sed -n '5,71p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -479,6 +488,111 @@ $line" >/dev/null || return 1
   echo "$line"
 }
 
+# The issue flow (looper#14): the issue's kind from its labels, `feature` when
+# it has both; nothing when it has neither (or they cannot be read).
+issue_kind() { # issue
+  local l; l="$(gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name')" || return 0
+  if grep -qx "$LABEL_FEATURE" <<<"$l"; then echo "$LABEL_FEATURE"
+  elif grep -qx "$LABEL_BUG" <<<"$l"; then echo "$LABEL_BUG"; fi
+}
+
+# A feature is built only when a ROADMAP.md links it: this repository's (a
+# bare #N counts) or the platform's (tacplus-dev/roadmap). 0: linked; 1: not;
+# 2: the platform's cannot be read.
+on_roadmap() { # issue
+  if [[ -f "$CHECKOUT/ROADMAP.md" ]] && links_issue "$REPO" "$1" own < "$CHECKOUT/ROADMAP.md"; then return 0; fi
+  local p; p="$(platform_file ROADMAP.md)" || return 2
+  links_issue "$REPO" "$1" <<<"$p" || return 1
+}
+
+# Ends the issue's run without working it: the label, and a comment saying why.
+hold() { # issue label why
+  gh issue edit "$1" --repo "$LOOPER_ORG/$REPO" --remove-label "$LABEL_IN_PROGRESS" --add-label "$2" >/dev/null || true
+  gh issue comment "$1" --repo "$LOOPER_ORG/$REPO" --body "$3" >/dev/null || true
+  log "#$1 held ($2)"
+}
+
+# An unlabelled issue: the model classifies it, in a comment and a label, and
+# does nothing else. Its record is the run's classify/.
+classify() { # issue run-dir limit
+  local n="$1" dir="$2/classify"; mkdir -p "$dir"
+  cat > "$dir/prompt.md" <<PR
+You are the looper of $LOOPER_ORG/$REPO, classifying issue #$n before it is worked.
+Change no file and push nothing. Read it: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`. Every issue
+is a bug or a feature ($ISSUE_FLOW):
+- **bug:** the code does not do what it already promises: a defect, a vulnerability, a broken gate, a stale pin.
+- **feature:** new behaviour, new surface, a changed contract.
+Comment on the issue which it is and why, in a sentence or two (\`Classified as **bug**: ...\`), then label it:
+\`gh issue edit $n --repo $LOOPER_ORG/$REPO --add-label $LABEL_BUG\` (or \`$LABEL_FEATURE\`). Nothing else: the looper
+works it by that label.
+PR
+  run_claude "$dir/prompt.md" "$dir/claude.log" "$(( $3 < 1800 ? $3 : 1800 ))" "$dir" || log "classifying #$n exited non-zero"
+}
+
+# A feature that no ROADMAP.md links is not built: the model proposes its
+# design, on the issue and in PROPOSALS.md, and the issue waits on a decision.
+propose() { # issue run-dir limit
+  local n="$1" run="$2"
+  cat > "$run/prompt.md" <<PR
+You are the looper of $LOOPER_ORG/$REPO, proposing a design for issue #$n. Your working directory is this
+repository's checkout on main, at origin/main. Read the issue: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`,
+and the documents it cites.
+
+It is a feature, and no ROADMAP.md links it (neither this repository's nor tacplus-dev/roadmap's), so it is not
+built ($ISSUE_FLOW): a feature needs design, Jody's approval and a ROADMAP.md entry first. Do not build it.
+1. Comment on the issue with a design proposal: what and why, the approach and the alternatives, the surface or
+   contract it changes, the risks, its size, and the questions Jody must answer.
+2. Add it to PROPOSALS.md, in that file's format (what, why, links: this issue). Commit only PROPOSALS.md on
+   main, with a message ending with \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then
+   \`git pull --rebase origin main\` and \`git push origin main\`. Change no other file; never ROADMAP.md.
+The looper labels the issue $LABEL_DECISION when you are done.
+PR
+  run_claude "$run/prompt.md" "$run/claude.log" "$(( $3 < 3600 ? $3 : 3600 ))" "$run" || log "proposing #$n exited non-zero"
+  hold "$n" "$LABEL_DECISION" "This is a \`$LABEL_FEATURE\` that no ROADMAP.md links (\`$LOOPER_ORG/$REPO:ROADMAP.md\`, \`$LOOPER_ORG/roadmap:ROADMAP.md\`), so it is not built ($ISSUE_FLOW): its design proposal is on this issue and in PROPOSALS.md. Once Jody approves the design and an agent adds it to a ROADMAP.md, linking this issue, remove \`$LABEL_DECISION\` and the looper builds it. Run record: $(run_record "$run")."
+}
+
+# The newest release on main (a vX.Y.Z tag main contains), or nothing.
+main_release() {
+  git -C "$CHECKOUT" fetch -q --tags origin 2>/dev/null || true
+  git -C "$CHECKOUT" tag --merged origin/main -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true
+}
+
+# The prompt's rule 7, by the issue's kind.
+kind_rule() { # kind
+  if [[ "$1" == "$LABEL_FEATURE" ]]; then
+    printf '%s\n' "7. This issue is a feature on a ROADMAP.md ($ISSUE_FLOW): it ships in the next minor release," \
+      "   from main only: no backport, and no patch release."
+    return 0
+  fi
+  local v; v="$(main_release)"
+  printf '%s\n' "7. This issue is a bug ($ISSUE_FLOW; tacplus-dev/tacplus docs/VERSIONING.md): fix it, and ship the" \
+    "   fix as a patch release on every supported release line that has it."
+  if [[ -n "$v" ]]; then
+    local x="${v#v}"
+    printf '%s\n' "   Release the patch on main: once the fix is pushed and its gates pass, tag \`v${x%.*}.$(( ${x##*.} + 1 ))\` at it" \
+      "   (this repository's newest release on main is \`$v\`) and push the tag, the way the repository releases (its" \
+      "   release workflow, justfile or CONTRIBUTING). If main has taken features since \`$v\` (they belong to the next" \
+      "   minor), do not cut the patch from main: it goes to release/${x%.*} as a backport, below."
+  else
+    echo "   This repository has no release on main yet (no vX.Y.Z tag): there is no patch to release."
+  fi
+  printf '%s\n' "   A repository with release/MAJOR.MINOR branches: the fix is also backported as a pull request against each" \
+    "   release branch whose .0 tag is under twelve months old (never pushed to one directly), whose description" \
+    "   names the patch tag to cut on that branch once it merges."
+}
+
+# What every prompt that may open an issue says about opening one.
+opening_rule() { # [its number in the prompt]
+  cat <<EOF
+${1:+$1 }Before you open any issue (a follow-up, say), read this repository's ROADMAP.md and the platform's: tacplus-dev/roadmap's
+   ROADMAP.md and items/ (\`gh api repos/$LOOPER_ORG/roadmap/contents/ROADMAP.md -H 'Accept: application/vnd.github.raw'\`).
+   A feature already on a roadmap gets no new feature issue: open one, labelled \`$LABEL_FEATURE\`, asking for that
+   entry to be prioritized, linking it and saying why now. Any other issue is labelled \`$LABEL_BUG\` (the code does
+   not do what it already promises) or \`$LABEL_FEATURE\` (new behaviour), and a feature is never \`$LABEL_APPROVED\`: it
+   needs design, Jody's approval and a ROADMAP.md entry, and it goes into PROPOSALS.md ($ISSUE_FLOW).
+EOF
+}
+
 work_issue() { # issue
   local n="$1" run head_before head_after limit resumed last_comment
   run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
@@ -490,6 +604,24 @@ work_issue() { # issue
   local tags_before; tags_before="$(release_tags)"
   head_before="$(git -C "$CHECKOUT" rev-parse origin/main)"
   limit="$(run_limit "$n")"
+  # Bug or feature (looper#14): an unlabelled issue is classified first; a
+  # feature no ROADMAP.md links is proposed, never built.
+  ensure_kind_labels "$REPO"
+  local kind; kind="$(issue_kind "$n")"
+  if [[ -z "$kind" ]]; then classify "$n" "$run" "$limit"; kind="$(issue_kind "$n")"; fi
+  if [[ -z "$kind" ]]; then
+    hold "$n" "$LABEL_DECISION" "This issue is labelled neither \`$LABEL_BUG\` nor \`$LABEL_FEATURE\`, and the looper could not classify it ($ISSUE_FLOW). A person labels it \`$LABEL_BUG\` or \`$LABEL_FEATURE\` and removes \`$LABEL_DECISION\`. Run record: $(run_record "$run")."
+    return 0
+  fi
+  if [[ "$kind" == "$LABEL_FEATURE" ]]; then
+    local on=0; on_roadmap "$n" || on=$?
+    case "$on" in
+      0) ;;
+      1) propose "$n" "$run" "$limit"; return 0 ;;
+      *) hold "$n" "$LABEL_STUCK" "The looper could not read \`$LOOPER_ORG/roadmap:ROADMAP.md\`, so it cannot tell whether this feature is on a roadmap ($ISSUE_FLOW): it is neither built nor proposed. Marked $LABEL_STUCK for a person to look at."
+         return 0 ;;
+    esac
+  fi
   resumed="$(resume "$n")"
   if [[ -n "$resumed" ]]; then
     last_comment="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json comments --jq '.comments[-1].body // ""')" || true
@@ -531,12 +663,10 @@ Rules:
    only in comments. Never edit ROADMAP.md: it is Jody's, changed only by an agent at his request, and a
    push of a commit that touches it is refused. HISTORY.md is append-only and not yours: the looper adds
    the line for this issue and for any release.
-7. A repository with release/MAJOR.MINOR branches: a BUG fix is also backported as a pull request against
-   each release branch whose .0 tag is under twelve months old (never pushed to one directly); a FEATURE is
-   main only.
+$(kind_rule "$kind")
 8. When it is pushed, comment on the issue with what changed (commit hashes), the gates you ran and their
-   last lines, and anything you could not verify; then, as your last step (any backport pull requests open by
-   then), close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`. Closing it ends your run.
+   last lines, and anything you could not verify; then, as your last step (any patch tagged and any backport
+   pull requests open by then), close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`. Closing it ends your run.
 9. If the fix is pushed but the gates cannot run until another open issue is done (a compiler floor that
    does not exist yet, say), do not close this issue: comment what you pushed and why the gates wait, and
    write the one line \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\` to
@@ -548,6 +678,7 @@ Rules:
    changes nothing in the checkout; the looper also checkpoints hourly and when you stop. If the time runs
    out, the next run resumes from that branch with your last checkpoint's message, so make it say what is
    done and what is left. Do not push to that branch yourself: your work lands on main as rule 5 says.
+$(opening_rule 11.)
 PR
   local rc=0 ticker
   checkpoint_ticker "$n" "$run" & ticker=$!
@@ -622,24 +753,51 @@ $(log_tail "$run" 40)" >/dev/null || true
   return 0
 }
 
+# After the scan, the issues it filed (numbered after the newest before it):
+# a finding is a bug, so one with no kind gets `bug`; a feature is never
+# approved by a scan, so `approved` comes off one (looper#14).
+scan_labels() { # the newest issue number before the scan
+  local n l
+  gh issue list --repo "$LOOPER_ORG/$REPO" --state open --limit 100 --json number,labels \
+    --jq ".[] | select(.number > $1) | \"\\(.number) \\([.labels[].name] | join(\",\"))\"" \
+  | while read -r n l; do
+      l=",$l,"
+      if [[ "$l" == *",$LABEL_FEATURE,"* ]]; then
+        [[ "$l" == *",$LABEL_APPROVED,"* ]] || continue
+        gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --remove-label "$LABEL_APPROVED" >/dev/null || continue
+        gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "A scan never approves a \`$LABEL_FEATURE\` ($ISSUE_FLOW): it needs design, Jody's approval and a ROADMAP.md entry first, so \`$LABEL_APPROVED\` is removed." >/dev/null || true
+        log "scan: #$n is a feature; not approved"
+      elif [[ "$l" != *",$LABEL_BUG,"* ]]; then
+        gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_BUG" >/dev/null && log "scan: #$n labelled $LABEL_BUG"
+      fi
+    done
+}
+
 scan() {
-  local run; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
+  local run before; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
+  ensure_kind_labels "$REPO"
+  before="$(gh issue list --repo "$LOOPER_ORG/$REPO" --state all --limit 1 --json number --jq '.[0].number // 0')" || before=""
   cat > "$run/prompt.md" <<PR
 You are the nightly scanner of $LOOPER_ORG/$REPO. Your working directory is its checkout at origin/main.
-Change no code and push nothing. Find, in order:
+Change no code. Find, in order:
 1. Known vulnerabilities in dependencies (the ecosystem's own auditor where it applies: cargo audit,
    npm audit, govulncheck, pip-audit, the Maven/Gradle dependency tree against advisories).
 2. The repository's own gates failing on main ($(gates_hint)).
 3. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
    MAJOR.MINOR line it should follow.
 For each finding, first check the open issues (\`gh issue list --repo $LOOPER_ORG/$REPO\`) and skip one already
-filed. File each new finding as one issue with a title, the evidence (command and output), the fix you
-recommend and acceptance criteria. Label it \`$LABEL_APPROVED\` when the fix is mechanical and safe (a patched
-dependency version, a gate fix with an obvious cause); otherwise label it \`$LABEL_DECISION\`. If nothing is
-found, file nothing.
+filed. Each finding is a bug ($ISSUE_FLOW): file each new one as one issue labelled \`$LABEL_BUG\`, with a title, the
+evidence (command and output), the fix you recommend and acceptance criteria. Label it \`$LABEL_APPROVED\` too when the
+fix is mechanical and safe (a patched dependency version, a gate fix with an obvious cause); otherwise
+\`$LABEL_DECISION\`. If nothing is found, file nothing.
+An idea for new behaviour you come across is a feature, never \`$LABEL_APPROVED\`: add it to PROPOSALS.md (what, why,
+links), the one file you may change: commit only it on main, with a message ending with
+\`Co-Authored-By: Claude <noreply@anthropic.com>\`, then \`git pull --rebase origin main\` and \`git push origin main\`.
+$(opening_rule)
 PR
   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
+  [[ -n "$before" ]] && scan_labels "$before"
   log "scan of $REPO finished"
 }
 
