@@ -15,7 +15,7 @@ LOOPER_ORG="${LOOPER_ORG:-tacplus-dev}"
 # worked, whoever opened it and whatever its text says.
 LABEL_APPROVED="approved"
 LABEL_IN_PROGRESS="looper:in-progress"
-LABEL_STUCK="looper:stuck"           # a run ended without finishing; a person looks
+LABEL_STUCK="looper:stuck"           # a run ended without finishing, for no known reason; a person looks
 LABEL_DECISION="needs-decision"      # the looper needs a decision it may not make
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -38,8 +38,12 @@ approved_issues() { # repo
 blockers() { # repo issue
   local body
   body="$(gh issue view "$2" --repo "$LOOPER_ORG/$1" --json body --jq .body)" || return 1
-  printf '%s\n' "$body" \
-    | grep -oiE '^[[:space:]]*blocked-by:[[:space:]]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' \
+  printf '%s\n' "$body" | parse_blockers "$1"
+}
+
+# The `Blocked-by:` lines of the text on stdin, as "<repo> <N>"; `#N` is in repo.
+parse_blockers() { # repo
+  grep -oiE '^[[:space:]]*blocked-by:[[:space:]]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' \
     | sed -E 's/^[[:space:]]*[Bb][Ll][Oo][Cc][Kk][Ee][Dd]-[Bb][Yy]:[[:space:]]*//' \
     | while IFS= read -r ref; do
         num="${ref##*#}"; slug="${ref%#*}"

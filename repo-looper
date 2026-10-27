@@ -20,13 +20,25 @@
 # may run sub-agents in that checkout for independent parts; only this script's
 # top-level run commits and pushes, to main (pre-production rule, Jody 2026-10-26).
 #
+# Each run's record (prompt.md, claude.log, outcome) is a directory under
+# LOOPER_RUNS. The pipeline sets it inside the job's project directory and
+# uploads it as the job's artifacts: the runner VM does not outlive the job.
+#
+# After the run: closed or needs-decision is the run's own outcome. A fix that
+# is pushed while the gates wait on another open issue (the run writes
+# `Blocked-by: <issue>` to its outcome file) gets that line in the issue body
+# and stays approved, so it is worked again for the gates once that issue
+# closes. Anything else is looper:stuck, for a person.
+#
 # Environment: GH_TOKEN (pushes and issue calls), CLAUDE_CODE_OAUTH_TOKEN (the
-# model), LOOPER_WORK (default /work), LOOPER_MODEL (default claude-opus-5-5),
-# LOOPER_TIMEOUT (seconds per issue, default 14400), LOOPER_GATES (default
-# `just gates` when the repository has a justfile), GIT_AUTHOR_NAME/EMAIL.
+# model), LOOPER_WORK (default /work), LOOPER_RUNS (default LOOPER_WORK/NAME/runs),
+# LOOPER_MODEL (default claude-opus-5-5), LOOPER_TIMEOUT (seconds per issue,
+# default 14400), LOOPER_GATES (default `just gates` when the repository has a
+# justfile), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
+# CI_PROJECT_DIR name the job and its artifacts in issue comments.
 set -euo pipefail
 
-usage() { sed -n '5,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -56,7 +68,8 @@ WORK="${LOOPER_WORK:-/work}/$REPO"
 CHECKOUT="$WORK/checkout"
 MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
 TIMEOUT="${LOOPER_TIMEOUT:-14400}"
-mkdir -p "$WORK/runs"
+RUNS="${LOOPER_RUNS:-$WORK/runs}"
+mkdir -p "$RUNS"
 gh auth setup-git >/dev/null 2>&1 || true
 
 # The repository's checkout at origin/main. Anything a previous run left
@@ -91,9 +104,44 @@ run_claude() { # prompt-file log-file
   return "$rc"
 }
 
+# Where a person finds a run's record: the job and its artifact when this is a
+# GitLab job, the path on this host otherwise.
+run_record() { # run-dir
+  if [[ -n "${CI_JOB_URL:-}" ]]; then
+    local rel="${1#"${CI_PROJECT_DIR:-}"/}"
+    if [[ -n "${CI_PROJECT_DIR:-}" && "$rel" != "$1" ]]; then
+      echo "job $CI_JOB_URL, artifact \`$rel/claude.log\` ($CI_JOB_URL/artifacts/browse/$rel/)"
+    else
+      echo "job $CI_JOB_URL"
+    fi
+  else
+    echo "\`$1/claude.log\` on $(hostname)"
+  fi
+}
+
+# The fix is pushed and only the gates wait: the run's outcome file names one
+# open issue as `Blocked-by:`. Adds that line to the issue's body (once) and
+# prints it; fails when the outcome is anything else.
+gates_blocked() { # issue run-dir head-before head-after
+  local n="$1" ref r b state body line
+  [[ "$3" != "$4" && -f "$2/outcome" ]] || return 1
+  ref="$(parse_blockers "$REPO" < "$2/outcome" | head -n 1)" || return 1
+  read -r r b <<<"$ref"; [[ -n "${b:-}" ]] || return 1
+  state="$(gh issue view "$b" --repo "$LOOPER_ORG/$r" --json state --jq .state)" || return 1
+  [[ "$state" == OPEN ]] || return 1
+  if [[ "$r" == "$REPO" ]]; then line="Blocked-by: #$b"; else line="Blocked-by: $LOOPER_ORG/$r#$b"; fi
+  body="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json body --jq .body)" || return 1
+  if ! parse_blockers "$REPO" <<<"$body" | grep -qx "$r $b"; then
+    gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --body "$body
+
+$line" >/dev/null || return 1
+  fi
+  echo "$line"
+}
+
 work_issue() { # issue
   local n="$1" run head_before head_after
-  run="$WORK/runs/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
+  run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
   log "taking $LOOPER_ORG/$REPO#$n ($run)"
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_IN_PROGRESS" >/dev/null
   sync_checkout
@@ -127,6 +175,10 @@ Rules:
    main only.
 7. When it is pushed, comment on the issue with what changed (commit hashes), the gates you ran and their
    last lines, and anything you could not verify; then close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`.
+8. If the fix is pushed but the gates cannot run until another open issue is done (a compiler floor that
+   does not exist yet, say), do not close this issue: comment what you pushed and why the gates wait, and
+   write the one line \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\` to
+   $run/outcome . The looper adds it to the issue, which is worked again for the gates once #N is closed.
 PR
   if run_claude "$run/prompt.md" "$run/claude.log"; then log "claude finished #$n"; else log "claude exited non-zero on #$n"; fi
   git -C "$CHECKOUT" fetch -q origin
@@ -137,15 +189,21 @@ PR
   labels="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name')"
   if [[ "$state" == CLOSED ]]; then log "#$n done (main $head_before..$head_after)"; return 0; fi
   if grep -qx "$LABEL_DECISION" <<<"$labels"; then log "#$n waits on a decision"; return 0; fi
+  local blocked
+  if blocked="$(gates_blocked "$n" "$run" "$head_before" "$head_after")"; then
+    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" \
+      --body "The fix is pushed (main $head_before..$head_after); the gates wait, so this issue is now \`$blocked\` and stays $LABEL_APPROVED: it is worked again for the gates once that issue is closed. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n pushed, gates wait ($blocked)"; return 0
+  fi
   tail -n 40 "$run/claude.log" || true
   gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" \
-    --body "The looper ended without finishing this issue (log: $run/claude.log on the looper host). Marked $LABEL_STUCK for a person to look at." >/dev/null || true
+    --body "The looper ended without finishing this issue. Run record: $(run_record "$run"). Marked $LABEL_STUCK for a person to look at." >/dev/null || true
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_STUCK" >/dev/null || true
   return 0
 }
 
 scan() {
-  local run; run="$WORK/runs/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
+  local run; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
   cat > "$run/prompt.md" <<PR
 You are the nightly scanner of $LOOPER_ORG/$REPO. Your working directory is its checkout at origin/main.

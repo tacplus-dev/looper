@@ -20,6 +20,9 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   the repository at origin/main, and does nothing if the issue is no longer ready. Claude may run sub-agents in that checkout; only the top-level run
   commits and pushes, always to main (pre-production; a protected release line with review comes
   later). Bug fixes on repositories with release branches are also offered as backport pull requests.
+  Each run's record (`prompt.md`, `claude.log`) is uploaded as the job's artifacts (`looper-runs/`,
+  kept 30 days, also when the job fails): the runner VM is gone after the job, so the issue comments
+  link the job, not a path on it. See [After a run](#after-a-run).
 - **The nightly scan** changes no code: it files an issue per finding (dependency vulnerabilities,
   gates failing on main, pins off the latest MAJOR.MINOR line). Mechanical fixes are filed `approved`,
   the rest `needs-decision`.
@@ -39,7 +42,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 | --- | --- |
 | `approved` | someone with write access approved it; the looper works it |
 | `looper:in-progress` | a looper holds it |
-| `looper:stuck` | a run ended without finishing; a person looks |
+| `looper:stuck` | a run ended without finishing and without a known reason; a person looks |
 | `needs-decision` | the looper needs a decision it may not make |
 
 Only someone with write access can set a label, so an issue nobody approved is never worked, whoever
@@ -47,6 +50,19 @@ opened it and whatever its text says.
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository) in an issue's body holds it until that issue is closed.
+
+### After a run
+
+| The run | The issue |
+| --- | --- |
+| pushed and closed it | closed |
+| asked a question | `needs-decision` |
+| pushed the fix, but the gates wait on another open issue (it writes `Blocked-by: <issue>` to the run's `outcome` file) | that `Blocked-by:` line is added to its body and it stays `approved`: it is worked again, for the gates, once that issue is closed |
+| ended any other way | `looper:stuck`, with a comment linking the job and its `claude.log` artifact |
+
+```sh
+tests/repo-looper.test.sh                  # these outcomes (stub gh and claude, a local origin)
+```
 
 ## Port scan
 
