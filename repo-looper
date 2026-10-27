@@ -30,7 +30,8 @@
 # work in progress (commits, changes, new files) is checkpointed to the branch
 # looper/NAME-N on origin, never main: whenever the model finishes a step
 # (--checkpoint), every LOOPER_CHECKPOINT_INTERVAL, and when the model stops.
-# A run on an issue whose branch exists starts from it, rebased on main, as
+# A run on an issue whose branch exists starts from it, rebased on main (else
+# main merged into it, its conflicts if any marked and named in the prompt), as
 # uncommitted changes; the branch is deleted once the work lands on main.
 #
 # The run's limit is a line `Timeout: <hours>h` in the issue body (at most 10h),
@@ -319,28 +320,53 @@ drop_wip() { # issue
   git -C "$CHECKOUT" update-ref -d "refs/looper/$b" 2>/dev/null || true
 }
 
-# Starts the run from the issue's branch when it exists: rebased on main, its
-# work as uncommitted changes on main. Prints what the prompt says about it.
+# Starts the run from the issue's branch when it exists, its work as
+# uncommitted changes on main (tacplus-dev/looper#9): the branch rebased on
+# main; else, with no history rewritten, main merged into it; else that merge
+# with its conflicts marked in the files, whose paths the prompt names to
+# resolve first. Only when even the merge cannot be made does the run start
+# from bare main. Prints what the prompt says about it.
 resume() { # issue
-  local n="$1" b msg tip; b="$(wip_branch "$n")"
+  local n="$1" b msg how conflicts; b="$(wip_branch "$n")"
   wip_on_origin "$n" || return 0
   git -C "$CHECKOUT" fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b"
   msg="$(git -C "$CHECKOUT" log -1 --format=%B "origin/$b")"
   if git -C "$CHECKOUT" checkout -q --detach "origin/$b" && git -C "$CHECKOUT" rebase -q origin/main >/dev/null 2>&1; then
-    tip="$(git -C "$CHECKOUT" rev-parse HEAD)"
-    git -C "$CHECKOUT" checkout -q -B main "$tip"
-    git -C "$CHECKOUT" reset -q --mixed origin/main
-    # The run record is not work: it stays on the branch.
-    git -C "$CHECKOUT" clean -fdq -- .looper || true
-    git -C "$CHECKOUT" checkout -q -- .looper 2>/dev/null || true
-    log "resuming #$n from $b" >&2
-    printf 'A previous run left work in progress on the branch `%s`. It is in your checkout, rebased on main, as\nuncommitted changes: check it, finish the issue, and commit it on main as rule 5 says.' "$b"
+    how=rebased
   else
     git -C "$CHECKOUT" rebase --abort >/dev/null 2>&1 || true
-    git -C "$CHECKOUT" checkout -q -f main && git -C "$CHECKOUT" reset -q --hard origin/main
-    log "#$n: $b does not rebase on main; starting from main" >&2
-    printf 'A previous run left work in progress on the branch `%s`, but it does not rebase on main: your checkout\nis main. Bring that work over by hand (`git diff origin/main...origin/%s`) where it still applies.' "$b" "$b"
+    git -C "$CHECKOUT" checkout -q -f --detach "origin/$b" 2>/dev/null || true
+    if git -C "$CHECKOUT" merge -q --no-edit -m "looper: main merged into $b" origin/main >/dev/null 2>&1; then
+      how=merged
+    elif conflicts="$(git -C "$CHECKOUT" diff --name-only --diff-filter=U)" && [[ -n "$conflicts" ]] \
+        && git -C "$CHECKOUT" add -A && git -C "$CHECKOUT" commit -q --no-verify -m "looper: main merged into $b, with conflicts"; then
+      how=conflicted
+    else
+      git -C "$CHECKOUT" merge --abort >/dev/null 2>&1 || true
+      git -C "$CHECKOUT" checkout -q -f main && git -C "$CHECKOUT" reset -q --hard origin/main
+      log "#$n: $b neither rebases on nor merges with main; starting from main" >&2
+      printf 'A previous run left work in progress on the branch `%s`, but it neither rebases on nor merges with main:\nyour checkout is main. Bring that work over by hand (`git diff origin/main...origin/%s`) where it still applies.' "$b" "$b"
+      printf '\nIts last checkpoint:\n\n%s\n' "$msg"
+      return 0
+    fi
   fi
+  git -C "$CHECKOUT" checkout -q -B main "$(git -C "$CHECKOUT" rev-parse HEAD)"
+  git -C "$CHECKOUT" reset -q --mixed origin/main
+  # The run record is not work: it stays on the branch.
+  git -C "$CHECKOUT" clean -fdq -- .looper || true
+  git -C "$CHECKOUT" checkout -q -- .looper 2>/dev/null || true
+  case "$how" in
+    rebased)
+      log "resuming #$n from $b" >&2
+      printf 'A previous run left work in progress on the branch `%s`. It is in your checkout, rebased on main, as\nuncommitted changes: check it, finish the issue, and commit it on main as rule 5 says.' "$b" ;;
+    merged)
+      log "resuming #$n from $b (merged with main)" >&2
+      printf 'A previous run left work in progress on the branch `%s`. It does not rebase on main, so it is in your\ncheckout with main merged into it, as uncommitted changes: check it, finish the issue, and commit it on\nmain as rule 5 says.' "$b" ;;
+    conflicted)
+      log "resuming #$n from $b (merged with main, conflicts in: $(echo $conflicts))" >&2
+      printf 'A previous run left work in progress on the branch `%s`. Its merge with main conflicts with main, so it\nis in your checkout with main merged into it and the conflicts marked in the files (<<<<<<< the branch,\n>>>>>>> main), as uncommitted changes. Resolve these first, then finish the issue and commit it on main\nas rule 5 says:\n\n' "$b"
+      sed 's/.*/- `&`/' <<<"$conflicts" ;;
+  esac
   printf '\nIts last checkpoint:\n\n%s\n' "$msg"
 }
 

@@ -258,16 +258,42 @@ has "$p" "Ran out of time."
 [[ "$(origin show main:wip.txt)" == wip ]] || fail "work not on main"
 pass
 
-# A branch that does not rebase on main: the run starts from main and is told.
-scenario resume-conflict
+# A branch that does not rebase on main but merges cleanly (a change it makes
+# and undoes conflicts commit by commit, not in sum): main merged into it is the
+# run's uncommitted work on main, and the prompt says so.
+scenario resume-merge
 echo base > "$FIX/seed/f"; git -C "$FIX/seed" add f; git -C "$FIX/seed" commit -q -m f; git -C "$FIX/seed" push -q origin main
-git -C "$FIX/seed" checkout -q -b looper/alpha-4; echo ours > "$FIX/seed/f"; git -C "$FIX/seed" commit -qam wip
+git -C "$FIX/seed" checkout -q -b looper/alpha-4; echo ours > "$FIX/seed/f"; git -C "$FIX/seed" commit -qam try
+echo base > "$FIX/seed/f"; echo wip > "$FIX/seed/wip.txt"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm wip
 git -C "$FIX/seed" push -q origin looper/alpha-4
 git -C "$FIX/seed" checkout -q main; echo theirs > "$FIX/seed/f"; git -C "$FIX/seed" commit -qam theirs; git -C "$FIX/seed" push -q origin main
-echo '{ git status --porcelain; cat f; } > "$FIX/checkout"' >> "$FIX/claude.sh"
+echo '{ git rev-parse --abbrev-ref HEAD; [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] && echo at-main; git status --porcelain; cat f wip.txt; } > "$FIX/checkout"' >> "$FIX/claude.sh"
 run
-[[ "$(cat "$FIX/checkout")" == theirs ]] || fail "checkout: $(cat "$FIX/checkout")"
-has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "does not rebase"
+[[ "$(cat "$FIX/checkout")" == $'main\nat-main\n?? wip.txt\ntheirs\nwip' ]] || fail "checkout: $(cat "$FIX/checkout")"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "with main merged into it"
+lacks "$p" "Bring that work over by hand"
+has "$OUT" "resuming #4 from looper/alpha-4 (merged with main)"
+branch || fail "branch lost"
+pass
+
+# A branch whose merge with main conflicts: the run starts from the branch with
+# main merged in, the conflicts marked in the files, as uncommitted work on
+# main; the prompt names the conflicting paths to resolve first.
+scenario resume-conflict
+echo base > "$FIX/seed/f"; echo base > "$FIX/seed/g"; git -C "$FIX/seed" add f g; git -C "$FIX/seed" commit -q -m f; git -C "$FIX/seed" push -q origin main
+git -C "$FIX/seed" checkout -q -b looper/alpha-4; echo ours > "$FIX/seed/f"; echo wip > "$FIX/seed/wip.txt"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm wip
+git -C "$FIX/seed" push -q origin looper/alpha-4
+git -C "$FIX/seed" checkout -q main; echo theirs > "$FIX/seed/f"; echo later > "$FIX/seed/g"; git -C "$FIX/seed" commit -qam theirs; git -C "$FIX/seed" push -q origin main
+echo '{ git rev-parse --abbrev-ref HEAD; [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] && echo at-main; git status --porcelain; cat g wip.txt; } > "$FIX/checkout"; cp f "$FIX/f"' >> "$FIX/claude.sh"
+run
+[[ "$(cat "$FIX/checkout")" == $'main\nat-main\n M f\n?? wip.txt\nlater\nwip' ]] || fail "checkout: $(cat "$FIX/checkout")"
+f="$(cat "$FIX/f")"; has "$f" "<<<<<<<"; has "$f" "ours"; has "$f" "theirs"; has "$f" ">>>>>>>"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "conflicts with main"
+has "$p" "- \`f\`"
+lacks "$p" "Bring that work over by hand"
+has "$OUT" "resuming #4 from looper/alpha-4 (merged with main, conflicts in: f)"
 branch || fail "branch lost"
 pass
 

@@ -66,7 +66,11 @@ The runner VM is gone after the job, so a run keeps its work in progress on the 
   limit (`LOOPER_STOP_EARLY`) so that last checkpoint always happens.
 - **Resume:** a run on an issue whose branch exists starts from it, rebased on main, as uncommitted
   changes on main; its prompt has the last checkpoint's message and the issue's last comment. A branch
-  that does not rebase cleanly is left as it is and the prompt says so.
+  that does not rebase cleanly (it carries merges, say, or long-lived work) gets main merged into it
+  instead, rewriting no history, and starts the same way. When that merge conflicts too, the run still
+  starts from the branch with main merged in: the conflicts are marked in the files, and the prompt names
+  the conflicting paths to resolve first. Only a branch that cannot even be merged leaves the run on bare
+  main, and the prompt says so. The branch itself is never changed.
 - **The record rides along:** each checkpoint also carries the run's record under `.looper/` on that
   branch (`prompt.md` and the last 400 lines of `claude.log`, the job's tokens and anything shaped
   like a token redacted), so a run that is cancelled or killed, and so uploads no artifacts, still
