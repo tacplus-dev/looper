@@ -132,14 +132,22 @@ sync_checkout() {
     gh repo clone "$LOOPER_ORG/$REPO" "$CHECKOUT" -- --quiet
   fi
   git -C "$CHECKOUT" fetch -q origin
-  git -C "$CHECKOUT" checkout -q main 2>/dev/null || git -C "$CHECKOUT" checkout -q -b main origin/main
+  # Keep what a previous run left before moving: a cancelled or killed run can
+  # leave the checkout dirty, detached, or on main with local commits, and then
+  # switching to main fails (the reused-worker case, tacplus#161 2026-10-27).
+  local ahead_main=0
+  git -C "$CHECKOUT" rev-parse -q --verify refs/heads/main >/dev/null &&
+    ahead_main="$(git -C "$CHECKOUT" rev-list --count origin/main..main)"
   if [[ -n "$(git -C "$CHECKOUT" status --porcelain)" || \
-        "$(git -C "$CHECKOUT" rev-list --count origin/main..main)" != 0 ]]; then
+        "$(git -C "$CHECKOUT" rev-list --count origin/main..HEAD)" != 0 || "$ahead_main" != 0 ]]; then
     local keep; keep="looper/left-$(date -u +%Y%m%dT%H%M%SZ)"
     git -C "$CHECKOUT" add -A && git -C "$CHECKOUT" commit -q -m "left by an unfinished looper run" || true
     git -C "$CHECKOUT" branch -q "$keep"
+    [[ "$ahead_main" != 0 && "$(git -C "$CHECKOUT" symbolic-ref -q --short HEAD)" != main ]] &&
+      git -C "$CHECKOUT" branch -q "$keep-main" main
     log "kept unpushed work on local branch $keep"
   fi
+  git -C "$CHECKOUT" checkout -q -f -B main origin/main
   git -C "$CHECKOUT" reset -q --hard origin/main
 }
 
