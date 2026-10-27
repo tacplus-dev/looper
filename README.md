@@ -7,7 +7,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 ## Shape (Jody, 2026-10-26)
 
 - **Nothing is cloned or built on the Mac.** All looper work runs in this image as jobs of the GitLab
-  pipeline `seabeam/tools/looper`, on the autoscaled GCE runner (workers exist only while there is
+  pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (workers exist only while there is
   work; see `sonar/backend/ops/ci-runners.md`).
 - **`looper-dispatch`** is the only part on the Mac. It does no work itself: every 3 minutes, when a
   repository has a ready issue and no looper job of its own queued or running, it starts that

@@ -6,7 +6,7 @@
 # It clones nothing, builds nothing and starts no container. Every few minutes
 # it looks for tacplus-dev repositories with a ready issue and, when one of them
 # has no looper job queued or running, starts the looper pipeline in GitLab
-# (LOOPER_PIPELINE, default seabeam/tools/looper). That pipeline runs
+# (LOOPER_PIPELINE, default tacplus-dev/looper). That pipeline runs
 # repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled GCE runner.
 # The nightly scan is that pipeline's schedule, not this script.
 #
@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "$HERE/looper-lib.sh"
 
-PIPELINE="${LOOPER_PIPELINE:-seabeam/tools/looper}"
+PIPELINE="${LOOPER_PIPELINE:-tacplus-dev/looper}"
 INTERVAL="${LOOPER_INTERVAL:-180}"
 STATE="$HOME/.looper"
 mkdir -p "$STATE"
