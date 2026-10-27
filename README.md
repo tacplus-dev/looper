@@ -87,7 +87,8 @@ tests/repo-looper.test.sh                  # these outcomes, checkpoints, resume
 ## Port scan
 
 `ports.yaml` maps each SeaBeam source under `seabeam/schematic/platform/services` to its tacplus-dev
-target, and lists the sources that have none (`unmapped`). Every hour the pipeline's port-scan schedule
+target, lists the sources that have none (`unmapped`), and the sources that are never carried over
+(`retired`, each with its reason and date). Every hour the pipeline's port-scan schedule
 runs `looper-port` (mechanical: GitLab API with the group `GITLAB_TOKEN`, issues with `GH_TOKEN`):
 
 - **Mark:** the target's `PROVENANCE.md` line ``Ported through `<sha>` ``; until the first port, the
@@ -103,6 +104,10 @@ runs `looper-port` (mechanical: GitLab API with the group `GITLAB_TOKEN`, issues
 - **Unmapped sources** (and any project under the source group that `ports.yaml` does not list): each
   change is reported once on this repository's issue *Port scan: changes in unmapped SeaBeam sources*,
   which records the last commit reported per source.
+- **Retired sources** are skipped entirely: never ported, never reported, not even read. Since
+  2026-10-27 nothing comes over from SeaBeam that is not already in tacplus-dev, except stratum, so
+  every source without a target is retired (looper#5); a new source shows up as unmapped until it is
+  listed.
 
 ```sh
 GITLAB_TOKEN=... ./looper-port --dry-run   # what it would file, filing nothing

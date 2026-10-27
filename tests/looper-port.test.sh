@@ -78,7 +78,9 @@ target: tacplus-dev
 ports:
   alpha: alpha
 unmapped:
-  - zeta
+  - zeta  # undecided
+retired:
+  - rho  # dead (fixture, 2026-10-27)
 EOF
 
 scenario new-commits
@@ -184,6 +186,26 @@ ghf looper comments-3.json "[{\"body\":\"- **zeta**: through \`$D\`\"}]"
 gl "projects/seabeam%2Fsrc%2Fzeta/repository/commits/main" "$(commit "$D" "zeta new")"
 run
 [[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
+pass
+
+scenario retired-never-reported
+gl "groups/seabeam%2Fsrc/projects?per_page=100&archived=false" '[{"path":"alpha","default_branch":"main"},{"path":"omega","default_branch":"main"},{"path":"rho","default_branch":"main"},{"path":"zeta","default_branch":"main"}]'
+compare alpha aaaaaaa ""
+gl "projects/seabeam%2Fsrc%2Fzeta/repository/commits/main" "$(commit "$Z" "zeta head")"; gl "projects/seabeam%2Fsrc%2Fomega/repository/commits/main" "$(commit "$Y" "omega head")"
+gl "projects/seabeam%2Fsrc%2Frho/repository/commits/main" "$(commit "$D" "rho head")"
+run
+[[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
+body="$(field 1 .body)"; has "$body" "**zeta**: through \`$Z\`"; has "$body" "**omega**: through \`$Y\` (not in ports.yaml)"
+lacks "$body" "**zeta**: through \`$Z\` (not in ports.yaml)"; lacks "$body" rho; lacks "$OUT" rho; lacks "$(cat "$FIX/requests")" rho
+pass
+
+scenario retired-only
+gl "groups/seabeam%2Fsrc/projects?per_page=100&archived=false" '[{"path":"alpha","default_branch":"main"},{"path":"rho","default_branch":"main"}]'
+compare alpha aaaaaaa ""
+gl "projects/seabeam%2Fsrc%2Frho/repository/commits/main" "$(commit "$D" "rho head")"
+run
+[[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
+lacks "$(cat "$FIX/requests")" rho
 pass
 
 scenario write-fails

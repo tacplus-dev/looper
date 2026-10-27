@@ -9,10 +9,14 @@
 #
 # A source with no target is listed under `unmapped`: its changes are reported
 # once on the looper's tracking issue, never dropped. A project under `source`
-# listed in neither section is treated as unmapped too, and named as such.
+# listed in no section is treated as unmapped too, and named as such. A source
+# under `retired` is never ported and never reported: each line says why and
+# when it was retired. Nothing comes over from SeaBeam that is not already in
+# tacplus-dev, except stratum (Jody, 2026-10-27; looper#5).
 #
 # Shape (read by awk, keep it this simple): `key: value` lines, `ports:` with
-# `  <svc>: <tacplus-dev repo>` lines, `unmapped:` with `  - <svc>` lines.
+# `  <svc>: <tacplus-dev repo>` lines, `unmapped:` and `retired:` with
+# `  - <svc>` lines. A `# comment` may end any line.
 source: seabeam/schematic/platform/services
 target: tacplus-dev
 ports:
@@ -29,19 +33,20 @@ ports:
   operator: operator
   stratum: stratum
 unmapped:
-  - anthropic-proxy
-  - argus
-  - echo
-  - github-proxy
-  - gitlab-connector
-  - gitlab-proxy
-  - graphdb
-  - harness
-  - llmsettings
-  - msggateway
-  - openai-proxy
-  - personalauth
-  - saml
-  - sentinel
-  - timedb
-  - vanilla
+retired:
+  - anthropic-proxy  # not carried over; Jody, 2026-10-27 (looper#5)
+  - argus  # not carried over; Jody, 2026-10-27 (looper#5)
+  - echo  # not carried over; Jody, 2026-10-27 (looper#5)
+  - github-proxy  # not carried over; Jody, 2026-10-27 (looper#5)
+  - gitlab-connector  # not carried over; Jody, 2026-10-27 (looper#5)
+  - gitlab-proxy  # not carried over; Jody, 2026-10-27 (looper#5)
+  - graphdb  # boneyard; Jody, 2026-10-27 (looper#5)
+  - harness  # tacplus-dev testing uses the default fleet, fleet-dev; Jody, 2026-10-27 (looper#5)
+  - llmsettings  # dead; Jody, 2026-10-27 (looper#5)
+  - msggateway  # not carried over; Jody, 2026-10-27 (looper#5)
+  - openai-proxy  # not carried over; Jody, 2026-10-27 (looper#5)
+  - personalauth  # dead; Jody, 2026-10-27 (looper#5)
+  - saml  # not carried over; Jody, 2026-10-27 (looper#5)
+  - sentinel  # boneyard; Jody, 2026-10-27 (looper#5)
+  - timedb  # boneyard; Jody, 2026-10-27 (looper#5)
+  - vanilla  # not carried over; Jody, 2026-10-27 (looper#5)

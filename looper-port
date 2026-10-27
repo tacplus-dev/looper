@@ -20,8 +20,9 @@
 # issue on the target, never a guessed baseline.
 #
 # Unmapped sources (ports.yaml `unmapped:`, and any project under `source` in
-# neither list): each change is reported once on the looper's tracking issue
-# (needs-decision), so nothing is dropped silently.
+# no list): each change is reported once on the looper's tracking issue
+# (needs-decision), so nothing is dropped silently. Retired sources (ports.yaml
+# `retired:`) are never ported and never reported: the scan skips them.
 #
 # Environment: GITLAB_TOKEN (read the sources), GH_TOKEN (file issues),
 # LOOPER_PORTS (default: ports.yaml next to this script, or in the image's
@@ -55,9 +56,10 @@ TRACKING_TITLE="Port scan: changes in unmapped SeaBeam sources"
 
 # ports.yaml, in the restricted shape its header describes.
 ports_key() { awk -v k="$1" 'index($0, k ":") == 1 { sub("^[^:]*:[[:space:]]*", ""); sub("[[:space:]]*$", ""); print; exit }' "$PORTS"; }
-ports_section() { # section: the lines of `section:`, as "svc target" (ports) or "svc" (unmapped)
+ports_section() { # section: the lines of `section:`, as "svc target" (ports) or "svc" (unmapped, retired)
   awk -v s="$1" '
     /^[^[:space:]#]/ { in_s = (index($0, s ":") == 1); next }
+    { sub(/[[:space:]]+#.*$/, "") }
     in_s && /^  [A-Za-z0-9_.-]+:[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*$/ { gsub(/[:[:space:]]+/, " "); sub(/^ /, ""); sub(/ $/, ""); print }
     in_s && /^  - [A-Za-z0-9_.-]+[[:space:]]*$/ { print $2 }' "$PORTS"
 }
@@ -239,7 +241,7 @@ $report"
 projects="$(gl "groups/$(enc "$SOURCE")/projects?per_page=100&archived=false" | jq -r 'sort_by(.path) | .[] | "\(.path) \(.default_branch)"')" \
   || die "cannot list the projects of $SOURCE"
 branch_of() { awk -v p="$1" '$1 == p { print $2; exit }' <<<"$projects"; }
-mapped="$(ports_section ports)"; unmapped_listed="$(ports_section unmapped)"
+mapped="$(ports_section ports)"; unmapped_listed="$(ports_section unmapped)"; retired="$(ports_section retired)"
 
 rc=0
 while read -r svc t; do
@@ -253,6 +255,7 @@ unmapped=""
 while read -r p b; do
   [[ -n "$p" ]] || continue
   grep -qx "$p" <<<"$(cut -d' ' -f1 <<<"$mapped")" && continue
+  grep -qx "$p" <<<"$retired" && continue
   if grep -qx "$p" <<<"$unmapped_listed"; then unmapped="$unmapped$p $b
 "
   else unmapped="$unmapped$p $b not in ports.yaml
