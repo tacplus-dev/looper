@@ -51,6 +51,25 @@ opened it and whatever its text says.
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository) in an issue's body holds it until that issue is closed.
 
+Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
+instead, at most 10h. The pipeline's job for the issue gets an hour more (`repo-looper --job-timeout N`).
+
+### A run's work is never lost
+
+The runner VM is gone after the job, so a run keeps its work in progress on the branch
+`looper/<repo>-<issue>` of the repository (never on main):
+
+- **Checkpoint:** everything in the checkout, committed or not, is pushed there as one commit, without
+  touching the checkout: whenever the model finishes a step (the prompt has it run
+  `repo-looper --repo R --issue N --checkpoint "<what is done; what is left>"`), every hour
+  (`LOOPER_CHECKPOINT_INTERVAL`), and when the model stops. The model is stopped ten minutes before the
+  limit (`LOOPER_STOP_EARLY`) so that last checkpoint always happens.
+- **Resume:** a run on an issue whose branch exists starts from it, rebased on main, as uncommitted
+  changes on main; its prompt has the last checkpoint's message and the issue's last comment. A branch
+  that does not rebase cleanly is left as it is and the prompt says so.
+- The branch is deleted when the work lands on main (the issue is closed, or pushed with its gates
+  blocked).
+
 ### After a run
 
 | The run | The issue |
@@ -58,10 +77,11 @@ repository) in an issue's body holds it until that issue is closed.
 | pushed and closed it | closed |
 | asked a question | `needs-decision` |
 | pushed the fix, but the gates wait on another open issue (it writes `Blocked-by: <issue>` to the run's `outcome` file) | that `Blocked-by:` line is added to its body and it stays `approved`: it is worked again, for the gates, once that issue is closed |
-| ended any other way | `looper:stuck`, with a comment linking the job and its `claude.log` artifact |
+| reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
+| ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes (stub gh and claude, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints, resume and the time limit (stub gh and claude, a local origin)
 ```
 
 ## Port scan
