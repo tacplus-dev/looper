@@ -7,7 +7,7 @@ The per-repository loopers of tacplus-dev: `looper-dispatch` on the Mac starts t
 Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 
 ## Next
-- Run verify and fuzzing natively in the looper container; only generation goes through the compiler image (#15, after tacplus#192)
+- Looper image FROM tacplus `build:X.Y`; drop the wrapper; generate, gate, fuzz and verify natively (#15, after tacplus#193)
 - Loopers keep STATE/HISTORY/PROPOSALS, never ROADMAP; CI check for the four files in every repo (#13)
 - Org secret TACPLUS_REGISTRY_TOKEN for release CI (#12) (needs Jody's decision)
 
