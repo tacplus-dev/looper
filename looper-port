@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-port: the port scan (tacplus-dev/looper#2). While SeaBeam still
+# commits to its pre-migration GitLab projects, each change there is carried
+# into the authoritative tacplus-dev repository as we go. This scan changes no
+# code: it files an issue on the target, and the target's own looper ports.
+# Mechanical (no model call); the GitLab looper pipeline runs it hourly.
+#
+#   looper-port              scan every source in ports.yaml, file issues
+#   looper-port --dry-run    print what it would file, file nothing
+#
+# Per mapped source (ports.yaml `ports:`): read the mark in the target's
+# PROVENANCE.md ("Ported through `<sha>`", else the migration commit it names),
+# list the source's commits after it on its default branch, and file
+# `Port SeaBeam <svc> <from>..<to>` (approved) unless none, or an open port
+# issue already covers them. Commits after an open port issue's <to> get the
+# next issue, Blocked-by the open one. No usable mark: one needs-decision
+# issue on the target, never a guessed baseline.
+#
+# Unmapped sources (ports.yaml `unmapped:`, and any project under `source` in
+# neither list): each change is reported once on the looper's tracking issue
+# (needs-decision), so nothing is dropped silently.
+#
+# Environment: GITLAB_TOKEN (read the sources), GH_TOKEN (file issues),
+# LOOPER_PORTS (default: ports.yaml next to this script, or in the image's
+# lib dir), GITLAB_API (default CI_API_V4_URL or https://gitlab.com/api/v4).
+set -euo pipefail
+
+usage() { sed -n '5,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=looper-lib.sh
+source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
+
+DRY=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) die "unknown argument: $1 (see --help)" ;;
+  esac
+done
+need gh; need curl; need jq
+[[ -n "${GITLAB_TOKEN:-}" ]] || die "GITLAB_TOKEN is unset"
+
+PORTS="${LOOPER_PORTS:-}"
+if [[ -z "$PORTS" ]]; then
+  for f in "$HERE/ports.yaml" "$(dirname "${LOOPER_LIB:-$HERE/x}")/ports.yaml"; do [[ -f "$f" ]] && { PORTS="$f"; break; }; done
+fi
+[[ -f "$PORTS" ]] || die "no ports.yaml (LOOPER_PORTS)"
+GITLAB_API="${GITLAB_API:-${CI_API_V4_URL:-https://gitlab.com/api/v4}}"
+TRACKING_REPO="${LOOPER_TRACKING_REPO:-looper}"
+TRACKING_TITLE="Port scan: changes in unmapped SeaBeam sources"
+
+# ports.yaml, in the restricted shape its header describes.
+ports_key() { awk -v k="$1" 'index($0, k ":") == 1 { sub("^[^:]*:[[:space:]]*", ""); sub("[[:space:]]*$", ""); print; exit }' "$PORTS"; }
+ports_section() { # section: the lines of `section:`, as "svc target" (ports) or "svc" (unmapped)
+  awk -v s="$1" '
+    /^[^[:space:]#]/ { in_s = (index($0, s ":") == 1); next }
+    in_s && /^  [A-Za-z0-9_.-]+:[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*$/ { gsub(/[:[:space:]]+/, " "); sub(/^ /, ""); sub(/ $/, ""); print }
+    in_s && /^  - [A-Za-z0-9_.-]+[[:space:]]*$/ { print $2 }' "$PORTS"
+}
+SOURCE="$(ports_key source)"; ORG="$(ports_key target)"
+[[ -n "$SOURCE" && -n "$ORG" ]] || die "$PORTS: needs source: and target:"
+
+gl() { curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API/$1"; }
+# 0: the resource exists; 1: GitLab says 404; 2: any other answer (an error, never taken for absence).
+gl_exists() { # path
+  local code
+  code="$(curl -sS --retry 2 -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API/$1")" || return 2
+  case "$code" in 200) return 0 ;; 404) return 1 ;; *) return 2 ;; esac
+}
+enc() { local s="${1//\//%2F}"; printf '%s' "$s"; }
+project() { enc "$SOURCE/$1"; }
+
+# Issues: filed with labels, or printed under --dry-run.
+file_issue() { # repo title label body
+  if [[ -n "$DRY" ]]; then printf '\n=== would file on %s/%s [%s]: %s\n%s\n' "$ORG" "$1" "$3" "$2" "$4"; return 0; fi
+  local n
+  n="$(jq -n --arg t "$2" --arg b "$4" --arg l "$3" '{title: $t, body: $b, labels: [$l]}' \
+        | gh api "repos/$ORG/$1/issues" --input - --jq .number)" || { log "ERROR could not file on $ORG/$1: $2"; return 1; }
+  log "filed $ORG/$1#$n: $2"
+}
+comment() { # repo issue body
+  if [[ -n "$DRY" ]]; then printf '\n=== would comment on %s/%s#%s:\n%s\n' "$ORG" "$1" "$2" "$3"; return 0; fi
+  jq -n --arg b "$3" '{body: $b}' | gh api "repos/$ORG/$1/issues/$2/comments" --input - >/dev/null \
+    || { log "ERROR could not comment on $ORG/$1#$2"; return 1; }
+  log "commented on $ORG/$1#$2"
+}
+open_issues() { # repo: "number<TAB>title" of its open issues (not pull requests)
+  gh api "repos/$ORG/$1/issues?state=open&per_page=100" --paginate \
+    | jq -r '.[] | select(.pull_request | not) | "\(.number)\t\(.title)"'
+}
+
+# The commits after a ref on the source's branch, oldest first, as JSON lines.
+# Fails when the ref is not in the source.
+commits_after() { # svc ref branch
+  gl "projects/$(project "$1")/repository/compare?from=$2&to=$3" | jq -c '.commits[]'
+}
+commit_list() { # JSON lines of commits: a markdown list
+  jq -r '"- [`\(.short_id)`](\(.web_url)) \(.authored_date[0:10]) \(.title)"'
+}
+
+# The mark: a "Ported through `<sha>`" line, else the migration commit the
+# provenance names for this source ("<source>/<svc>` at commit `<sha>`").
+# Sets MARK (empty when there is none, with MARK_WHY saying why); fails when
+# PROVENANCE.md cannot be read for any reason but its absence.
+MARK=""; MARK_WHY=""
+mark() { # target svc
+  local text err rc=0 marks
+  MARK=""; MARK_WHY=""
+  err="$(mktemp)"
+  text="$(gh api "repos/$ORG/$1/contents/PROVENANCE.md" -H 'Accept: application/vnd.github.raw' 2>"$err")" || rc=$?
+  if [[ $rc != 0 ]]; then
+    if grep -q 'HTTP 404' "$err"; then rm -f "$err"; MARK_WHY="$ORG/$1 has no PROVENANCE.md"; return 0; fi
+    cat "$err" >&2; rm -f "$err"; return 1
+  fi
+  rm -f "$err"
+  text="$(tr -s '\n\t ' '   ' <<<"$text")"
+  marks="$(grep -oiE 'ported through `[0-9a-f]{7,40}`' <<<"$text" | grep -oE '[0-9a-f]{7,40}' | sort -u || true)"
+  if [[ -z "$marks" ]]; then
+    marks="$(grep -oE "${SOURCE//./\\.}/$2\` at commit \`[0-9a-f]{7,40}\`" <<<"$text" | grep -oE '[0-9a-f]{7,40}`$' | tr -d '`' | sort -u || true)"
+  fi
+  case "$(grep -c . <<<"$marks")" in
+    1) MARK="$marks" ;;
+    0) MARK_WHY="PROVENANCE.md names no mark: no \"Ported through \`<sha>\`\" line, and no \`$SOURCE/$2\` migration commit" ;;
+    *) MARK_WHY="PROVENANCE.md names more than one mark ($(tr '\n' ' ' <<<"$marks"))" ;;
+  esac
+}
+
+instructions() { # to
+  cat <<EOF
+For each commit above: port it, or find it is already covered here, or find it is not applicable (for example
+it touches something this repository replaced, or code that tacplus generates). Say which on this issue, per
+commit, with the reason. Port in this repository's own idiom; never copy generated code. A commit that needs a
+decision you may not make: add \`$LABEL_DECISION\` and say why.
+
+When done, set the mark in \`PROVENANCE.md\` to this one line (replacing any earlier one): Ported through \`$1\`.
+Then release a patch or minor per this repository's release issue.
+EOF
+}
+
+scan_mapped() { # svc target branch
+  local svc="$1" t="$2" branch="$3" from issues open_n="" open_to="" commits to body
+  mark "$t" "$svc" || { log "ERROR $svc: cannot read $ORG/$t's PROVENANCE.md"; return 1; }
+  from="$MARK"
+  issues="$(open_issues "$t")" || { log "ERROR $svc: cannot list $ORG/$t's issues"; return 1; }
+  if [[ -n "$from" ]]; then
+    local e=0; gl_exists "projects/$(project "$svc")/repository/commits/$from" || e=$?
+    case "$e" in
+      0) ;;
+      1) MARK_WHY="the mark \`$from\` in PROVENANCE.md is not a commit of \`$SOURCE/$svc\`"; from="" ;;
+      *) log "ERROR $svc: cannot look up $from in $SOURCE/$svc"; return 1 ;;
+    esac
+  fi
+  if [[ -z "$from" ]]; then
+    local title="Port SeaBeam $svc: no usable mark"
+    if cut -f2 <<<"$issues" | grep -qxF "$title"; then log "$svc: no usable mark; already asked"; return 0; fi
+    file_issue "$t" "$title" "$LABEL_DECISION" "The port scan (tacplus-dev/looper#2) cannot carry SeaBeam \`$SOURCE/$svc\` changes into this
+repository: $MARK_WHY. It never guesses a baseline.
+
+Decide which SeaBeam commit this repository was last brought up to (from history or content), and record it in
+\`PROVENANCE.md\` as one line: Ported through \`<full sha>\`. Then close this issue: the
+next hourly scan files the port issue for the commits after it. The source's \`$branch\` is at
+$(gl "projects/$(project "$svc")/repository/commits/$branch" | jq -r '"[`\(.short_id)`](\(.web_url)) (\(.authored_date[0:10]), \(.title))"')."
+    return
+  fi
+  # An open port issue covers the commits up to its <to>; only later ones need a new issue.
+  local line
+  line="$(grep -E "^[0-9]+	Port SeaBeam $svc [0-9a-f]+\.\.[0-9a-f]+\$" <<<"$issues" | sort -n | tail -1 || true)"
+  if [[ -n "$line" ]]; then open_n="${line%%	*}"; open_to="${line##*..}"; fi
+  commits="$(commits_after "$svc" "${open_to:-$from}" "$branch")" \
+    || { log "ERROR $svc: cannot compare ${open_to:-$from}..$branch in $SOURCE/$svc"; return 1; }
+  if [[ -z "$commits" ]]; then log "$svc: nothing after ${open_to:-$from}${open_n:+ (#$open_n)}"; return 0; fi
+  to="$(tail -1 <<<"$commits" | jq -r .id)"
+  local after="the mark in \`PROVENANCE.md\`, \`$from\`"
+  [[ -n "$open_n" ]] && after="\`$open_to\`, where the open port issue #$open_n ends"
+  from="${open_to:-$from}"
+  body="SeaBeam still commits to \`$SOURCE/$svc\`. These commits on its \`$branch\` came after $after.
+Filed by the port scan (tacplus-dev/looper#2).
+
+$(commit_list <<<"$commits")
+
+$(instructions "$to")"
+  [[ -n "$open_n" ]] && body="$body
+
+Blocked-by: #$open_n"
+  file_issue "$t" "Port SeaBeam $svc ${from:0:8}..${to:0:8}" "$LABEL_APPROVED" "$body"
+}
+
+# Unmapped sources: the tracking issue records, per source, the last commit
+# reported ("**<svc>**: through `<sha>`"); each scan reports what came after.
+scan_unmapped() { # "svc branch" lines
+  local list="$1" issues n text svc branch head last report="" first="" note commits
+  issues="$(open_issues "$TRACKING_REPO")" || { log "ERROR cannot list $ORG/$TRACKING_REPO's issues"; return 1; }
+  n="$(awk -F'\t' -v t="$TRACKING_TITLE" '$2 == t { print $1; exit }' <<<"$issues")"
+  text=""
+  if [[ -n "$n" ]]; then
+    local body comments
+    body="$(gh api "repos/$ORG/$TRACKING_REPO/issues/$n" --jq .body)" \
+      && comments="$(gh api "repos/$ORG/$TRACKING_REPO/issues/$n/comments" --paginate | jq -r '.[].body')" \
+      || { log "ERROR cannot read $ORG/$TRACKING_REPO#$n"; return 1; }
+    text="$body
+$comments"
+  fi
+  while read -r svc branch note; do
+    [[ -n "$svc" ]] || continue
+    head="$(gl "projects/$(project "$svc")/repository/commits/$branch" | jq -r .id)" || { log "ERROR $svc: no head"; continue; }
+    last="$(grep -oE "\*\*$svc\*\*: through \`[0-9a-f]{40}\`" <<<"$text" | tail -1 | grep -oE '[0-9a-f]{40}' || true)"
+    if [[ -z "$last" ]]; then
+      first="$first- **$svc**: through \`$head\`${note:+ ($note)}
+"
+    elif [[ "$last" != "$head" ]]; then
+      commits="$(commits_after "$svc" "$last" "$branch" 2>/dev/null || true)"
+      report="$report
+- **$svc**: through \`$head\`
+$(if [[ -n "$commits" ]]; then commit_list <<<"$commits" | sed 's/^/  /'; else echo "  (\`$last\` is no longer in its history)"; fi)
+"
+    fi
+  done <<<"$list"
+  if [[ -z "$n" ]]; then
+    [[ -n "$first" ]] || return 0
+    file_issue "$TRACKING_REPO" "$TRACKING_TITLE" "$LABEL_DECISION" "SeaBeam sources under \`$SOURCE\` with no tacplus-dev target (\`ports.yaml\`, \`unmapped\`). The port
+scan (#2) reports each change to them here, once: decide whether a change matters (map the source to a target in
+\`ports.yaml\`, or carry the change by hand), or leave it. Each line records the last commit reported.
+
+$first"
+    return
+  fi
+  [[ -n "$first" ]] && report="$report
+Now watched:
+$first"
+  [[ -n "$report" ]] || { log "unmapped: no change"; return 0; }
+  comment "$TRACKING_REPO" "$n" "New commits in unmapped SeaBeam sources:
+$report"
+}
+
+projects="$(gl "groups/$(enc "$SOURCE")/projects?per_page=100&archived=false" | jq -r 'sort_by(.path) | .[] | "\(.path) \(.default_branch)"')" \
+  || die "cannot list the projects of $SOURCE"
+branch_of() { awk -v p="$1" '$1 == p { print $2; exit }' <<<"$projects"; }
+mapped="$(ports_section ports)"; unmapped_listed="$(ports_section unmapped)"
+
+rc=0
+while read -r svc t; do
+  [[ -n "$svc" ]] || continue
+  b="$(branch_of "$svc")"
+  [[ -n "$b" ]] || { log "ERROR $svc: no project $SOURCE/$svc"; rc=1; continue; }
+  scan_mapped "$svc" "$t" "$b" || rc=1
+done <<<"$mapped"
+
+unmapped=""
+while read -r p b; do
+  [[ -n "$p" ]] || continue
+  grep -qx "$p" <<<"$(cut -d' ' -f1 <<<"$mapped")" && continue
+  if grep -qx "$p" <<<"$unmapped_listed"; then unmapped="$unmapped$p $b
+"
+  else unmapped="$unmapped$p $b not in ports.yaml
+"; log "$p: not in ports.yaml; treated as unmapped"; fi
+done <<<"$projects"
+scan_unmapped "$unmapped" || rc=1
+exit "$rc"

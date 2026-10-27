@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Jody Scott
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the looper image on every push to main (main, main-<sha>) and on a
-# vX.Y.Z tag (X.Y.Z, X.Y, latest), smoke-tests it, and pushes it to ghcr. arm64:
-# the build hosts (this Mac under colima, the arm64 runner) are arm64.
+# Runs the tests, then builds the looper image on every push to main (main,
+# main-<sha>) and on a vX.Y.Z tag (X.Y.Z, X.Y, latest), smoke-tests it, and
+# pushes it to ghcr. arm64: the build hosts (this Mac under colima, the arm64
+# runner) are arm64.
 name: image
 on:
   push:
@@ -21,6 +22,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Test
+        run: tests/looper-port.test.sh
       - name: Log in to ghcr
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build, smoke, push

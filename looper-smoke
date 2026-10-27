@@ -4,7 +4,7 @@
 #
 # looper-smoke: the image has what a looper needs, and no tacplus binary of its own.
 set -euo pipefail
-for t in claude gh git jq just docker repo-looper tacplus; do
+for t in claude gh git jq curl just docker repo-looper looper-port tacplus; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
 done
 head -c 2 "$(command -v tacplus)" | grep -q '#!' || { echo "tacplus must be the wrapper script, not a binary" >&2; exit 1; }
@@ -12,4 +12,6 @@ head -c 2 "$(command -v tacplus)" | grep -q '#!' || { echo "tacplus must be the 
 claude --version
 gh --version | head -1
 repo-looper --help >/dev/null
+looper-port --help >/dev/null
+[[ -f "$(dirname "$LOOPER_LIB")/ports.yaml" ]] || { echo "missing: ports.yaml next to $LOOPER_LIB" >&2; exit 1; }
 echo "looper-smoke: ok"
