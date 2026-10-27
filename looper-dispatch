@@ -16,7 +16,8 @@
 #   looper-dispatch uninstall
 #
 # Credentials: gh (GitHub issues) and glab (GitLab pipelines) as logged in on
-# this Mac. The pipeline's own credentials are seabeam group CI variables.
+# this Mac. The pipeline's own credentials are tacplus-dev GitLab group CI
+# variables (GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, GITLAB_TOKEN).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh

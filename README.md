@@ -8,7 +8,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 
 - **Nothing is cloned or built on the Mac.** All looper work runs in this image as jobs of the GitLab
   pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (workers exist only while there is
-  work; see `sonar/backend/ops/ci-runners.md`).
+  work; see [Infrastructure](#infrastructure)).
 - **`looper-dispatch`** is the only part on the Mac. It does no work itself: every 3 minutes, when a
   repository has a ready issue and no looper job of its own queued or running, it starts that
   pipeline. Nothing runs when there is no ready issue.
@@ -108,6 +108,10 @@ tests/repo-looper.test.sh                  # these outcomes, checkpoints and the
 
 ## Port scan
 
+The port scan is the one part of this repository that reads SeaBeam (Hub, 2026-10-27, looper#6): its
+script, `ports.yaml`, its test and this section are the only places SeaBeam is named, other than the
+dated note at the top. Nothing else here fetches from or depends on gitlab.com/seabeam.
+
 `ports.yaml` maps each SeaBeam source under `seabeam/schematic/platform/services` to its tacplus-dev
 target, lists the sources that have none (`unmapped`), and the sources that are never carried over
 (`retired`, each with its reason and date). Every hour the pipeline's port-scan schedule
@@ -143,9 +147,20 @@ tests/looper-port.test.sh                  # the scan against fixtures (stub gh 
 ./looper-dispatch status     # the looper jobs in GitLab, and what is ready
 ```
 
-The Mac needs `gh` and `glab` logged in. The jobs' credentials are seabeam group CI variables
-(`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`), never baked into the image. The model is `LOOPER_MODEL`
-(default `claude-opus-5-5`).
+The Mac needs `gh` and `glab` logged in. The jobs' credentials are tacplus-dev GitLab group CI
+variables, masked and protected (`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and `GITLAB_TOKEN`, read-only,
+for the port scan), never baked into the image. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
+
+## Infrastructure
+
+The pipeline is gitlab.com/tacplus-dev/looper. Its jobs run on the group runner 57939705
+*tacplus-dev arm64 autoscaler*, whose manager is the GCE VM `gitlab-runner-mgr` (us-central1-b,
+project jody1-328023). The manager runs the docker-autoscaler executor with the googlecloud fleeting
+plugin, driving its own managed instance group `runner-arm64-tacplus` (template
+`runner-arm64-t2a8-v5`, t2a-standard-8): up to 5 workers, size 0 at rest.
+
+- Changing `max_instances` needs a gitlab-runner restart, and a restart kills running jobs.
+- The project's maximum job timeout is 11h (a run's 10h at most, plus the job's hour).
 
 ## Later
 
