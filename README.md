@@ -67,8 +67,25 @@ The runner VM is gone after the job, so a run keeps its work in progress on the 
 - **Resume:** a run on an issue whose branch exists starts from it, rebased on main, as uncommitted
   changes on main; its prompt has the last checkpoint's message and the issue's last comment. A branch
   that does not rebase cleanly is left as it is and the prompt says so.
+- **The record rides along:** each checkpoint also carries the run's record under `.looper/` on that
+  branch (`prompt.md` and the last 400 lines of `claude.log`, the job's tokens and anything shaped
+  like a token redacted), so a run that is cancelled or killed, and so uploads no artifacts, still
+  leaves its log behind. A run that resumes from the branch does not get `.looper/` back as work.
 - The branch is deleted when the work lands on main (the issue is closed, or pushed with its gates
   blocked).
+
+### A finished or idle run ends
+
+A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
+
+- **Idle:** no output and nothing changed in the checkout for `LOOPER_IDLE_MINUTES` (20). Its work is
+  checkpointed and the issue gets a comment that the run went idle, with the tail of its log; it is
+  `looper:stuck`. The model's output is its event stream (`--output-format stream-json`), rendered
+  into `claude.log` as its text, each tool call and the start of each result, so a working run
+  always shows output.
+- **Done:** once the run closed the issue, or pushed the fix and wrote its `Blocked-by:` outcome, the
+  model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run ends as
+  done. The prompt has it close the issue as its last step, after any backport pull requests.
 
 ### After a run
 
@@ -78,10 +95,11 @@ The runner VM is gone after the job, so a run keeps its work in progress on the 
 | asked a question | `needs-decision` |
 | pushed the fix, but the gates wait on another open issue (it writes `Blocked-by: <issue>` to the run's `outcome` file) | that `Blocked-by:` line is added to its body and it stays `approved`: it is worked again, for the gates, once that issue is closed |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
-| ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch |
+| went idle | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
+| ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints, resume and the time limit (stub gh and claude, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done (stub gh and claude, a local origin)
 ```
 
 ## Port scan

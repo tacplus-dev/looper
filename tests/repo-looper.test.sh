@@ -80,6 +80,7 @@ push_fix() { # a claude.sh line: commit and push a fix
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
+      -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -189,11 +190,12 @@ has "$(cat "$FIX/seen")" "hourly"
 main_unchanged
 pass
 
-# Nothing to keep (the fix is on main) pushes no branch.
+# No work to keep (the fix is on main): the branch holds only the run's record.
 scenario checkpoint-nothing
 push_fix
 run LOOPER_CHECKPOINT_INTERVAL=1
-! branch || fail "a branch with nothing in it"
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md " ]] \
+  || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 pass
 
 # The time limit: the model is stopped LOOPER_STOP_EARLY seconds before it, its
@@ -213,7 +215,7 @@ has "$c" "c.txt written; left: the tests"
 has "$c" "https://github.com/tacplus-dev/alpha/tree/looper/alpha-4"
 has "$c" "https://gl.test/jobs/77"
 lacks "$c" "looper:stuck"
-[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == "c.txt d.txt " ]] || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md c.txt d.txt " ]] || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 main_unchanged
 pass
 
@@ -267,6 +269,88 @@ run
 [[ "$(cat "$FIX/checkout")" == theirs ]] || fail "checkout: $(cat "$FIX/checkout")"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "does not rebase"
 branch || fail "branch lost"
+pass
+
+# The record (prompt.md, the claude.log tail) rides on every checkpoint, under
+# .looper/, with known secrets redacted; a resumed run does not get it back as work.
+scenario record
+echo 'echo "token ghp_abcdefghijklmnopqrstuvwxyz0123456789 and $GH_TOKEN"; echo x > a.txt; sleep 1' >> "$FIX/claude.sh"
+step "a.txt written"
+run GH_TOKEN=s3cr3t-value-for-test
+r="$(origin show looper/alpha-4:.looper/claude.log)"
+has "$r" "token [redacted] and [redacted]"
+lacks "$r" "s3cr3t-value-for-test"
+has "$(origin show looper/alpha-4:.looper/prompt.md)" "working issue #4"
+: > "$FIX/claude.sh"; echo 'ls -A > "$FIX/checkout"' >> "$FIX/claude.sh"
+issue alpha 4 OPEN approved "Fix it."
+run
+[[ "$(tr '\n' ' ' < "$FIX/checkout")" == ".git a.txt " ]] || fail "checkout: $(cat "$FIX/checkout")"
+pass
+
+# A run killed outright (the job cancelled: no trap, no artifacts) still leaves
+# its log tail on the branch, from its last checkpoint.
+kill_tree() { local c; for c in $(pgrep -P "$1"); do kill_tree "$c"; done; kill -KILL "$1" 2>/dev/null || true; }
+scenario cancelled
+echo 'echo "the log so far"; echo x > a.txt; sleep 1' >> "$FIX/claude.sh"
+step "a.txt written"
+echo 'sleep 60' >> "$FIX/claude.sh"
+looper -- --repo alpha --issue 4 > "$FIX/out" 2>&1 & pid=$!
+for _ in $(seq 40); do branch && break; sleep 0.5; done
+kill_tree "$pid"; wait "$pid" 2>/dev/null || true
+branch || fail "no checkpoint before the cancel"
+has "$(origin show looper/alpha-4:.looper/claude.log)" "the log so far"
+pass
+
+# Idle: no output and no change in the checkout for LOOPER_IDLE_MINUTES stops
+# the model; its work is checkpointed and the issue says so, with the log tail.
+scenario idle
+echo 'echo "last words"; echo x > e.txt; sleep 60' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 20 )) || fail "the idle model was not stopped"
+[[ "$(labels alpha 4)" == "approved,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+c="$(cat "$FIX/comments")"
+has "$c" "went idle"
+has "$c" "last words"
+has "$c" "https://github.com/tacplus-dev/alpha/tree/looper/alpha-4"
+has "$(origin ls-tree -r --name-only looper/alpha-4)" "e.txt"
+pass
+
+# Output or changes in the checkout are not idle, however long the run.
+scenario busy
+echo 'for i in 1 2 3 4 5; do echo tick; sleep 1; done; for i in 1 2 3 4 5; do date +%N > f.txt; sleep 1; done' >> "$FIX/claude.sh"
+push_fix
+echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
+run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+pass
+
+# Done means done: once the run closed its issue, the model gets
+# LOOPER_DONE_GRACE seconds to exit, then it is stopped.
+scenario done-closed
+push_fix
+echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
+echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 20 )) || fail "the finished run was not ended"
+[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+has "$OUT" "done"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "ends your run"
+pass
+
+# Likewise once the fix is pushed and the run wrote its Blocked-by outcome.
+scenario done-blocked
+push_fix; echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue alpha 3 OPEN "" "First."
+echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 20 )) || fail "the finished run was not ended"
+[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Blocked-by: #3"
 pass
 
 echo "repo-looper: all scenarios pass"
