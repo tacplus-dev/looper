@@ -25,5 +25,14 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The scan's label guard by issue number** (2026-10-27, #14): after the nightly scan, issues numbered after the
   newest one before it are taken for the scan's; one a person opens during the scan would get `bug` or lose
   `approved` too. Filing through a wrapper that records what the scan filed would make it exact.
+- **The plan's script in this repository** (2026-10-27, #16): `looper-plan` is a script in
+  gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`, outside this repository and its tests; #16's busy check lives in
+  `repo-looper --list` so it ships with the image. A `repo-looper --plan` that writes `looper-jobs.yml` would put the
+  whole plan under test here and leave the GitLab file one line. Its comment also still says the Mac starts the
+  pipeline "when no looper pipeline is running", where it is now per repository.
+- **A run's limit within its job's timeout** (2026-10-27, #16): a planned job whose issue was taken meanwhile works
+  the oldest ready issue instead, but keeps the job timeout computed for the planned one; if the new issue asks for a
+  longer `Timeout:`, GitLab stops the job before the model's limit (its work survives as a checkpoint).
+  repo-looper could cap the run's limit at `CI_JOB_TIMEOUT` less the hour it reserves.
 
 ## Promoted / declined

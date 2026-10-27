@@ -105,6 +105,18 @@ next_ready() { # repo
   return 0
 }
 
+# A looper job holds its repository while it is created, pending, waiting for
+# the repository's resource_group or running (looper#16): the GitLab jobs API's
+# scope[] parameters for those states.
+LOOPER_JOB_SCOPES="scope[]=created&scope[]=pending&scope[]=waiting_for_resource&scope[]=running"
+
+# A repository is busy while one of the active jobs (names, one per line) is a
+# job of its looper: looper-<repo>-<issue>, as the pipeline's plan names them.
+# Prints those jobs.
+busy() { # repo jobs
+  grep -E "^looper-${1//./\\.}-[0-9]+\$" <<<"$2"
+}
+
 # GitHub credentials for a container that clones from GitHub (the tacplus
 # compiler resolving `depends` through the private tacplus-dev/registry,
 # looper#11): `docker run "${DOCKER_GITHUB_CREDS[@]}" ...`. Git in the

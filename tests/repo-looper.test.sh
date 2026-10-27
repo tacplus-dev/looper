@@ -83,7 +83,18 @@ esac
 [[ -f "$FIX/$s" ]] || exit 0
 OUTCOME="$(grep -oE '/[^ `]*/outcome' <<<"$prompt" | head -1)" bash "$FIX/$s"
 EOF
-chmod +x "$TMP/bin/gh" "$TMP/bin/claude"
+# GitLab's jobs API: $FIX/jobs.json ([{name,status}]) filtered by the URL's
+# scope[] parameters, as GitLab does; no file answers HTTP 500. Each request's
+# auth header and URL are appended to $FIX/gitlab.
+cat > "$TMP/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+url=""; auth=""
+while [[ $# -gt 0 ]]; do case "$1" in -H) auth="${2%%:*}"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac; done
+echo "$auth $url" >> "$FIX/gitlab"
+[[ -f "$FIX/jobs.json" ]] || { echo "curl: (22) The requested URL returned error: 500" >&2; exit 22; }
+jq --arg s "$(grep -oE 'scope\[\]=[a-z_]+' <<<"$url" | cut -d= -f2 | paste -sd, -)" '[.[] | select(.status | IN($s | split(",")[]))]' "$FIX/jobs.json"
+EOF
+chmod +x "$TMP/bin/gh" "$TMP/bin/claude" "$TMP/bin/curl"
 
 issue() { # repo n state labels(csv) body
   jq -n --argjson n "$2" --arg s "$3" --arg l "$4" --arg b "$5" \
@@ -104,6 +115,7 @@ looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL \
+      -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -647,6 +659,80 @@ scenario prompt-roadmap-first
 push_fix
 run
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "prioritized"
+pass
+
+# The plan (`--list` in a GitLab job, looper#16): a repository whose looper job
+# is already created, pending, waiting for its resource_group or running in the
+# project is not planned again, and the plan's log says so; stdout, the issue
+# the plan takes, stays empty. Another repository's job, a finished job, or a
+# job of a repository whose name only starts the same, does not hold it.
+GL=(CI_API_V4_URL=https://gl.test/api/v4 CI_PROJECT_ID=42 GITLAB_TOKEN=t)
+list() { # [VAR=value...]: alpha's ready issues; stdout in OUT, stderr in ERR
+  OUT="$(looper "$@" -- --repo alpha --list 2>"$FIX/err")" || { cat "$FIX/err"; fail "--list exited non-zero"; }
+  ERR="$(cat "$FIX/err")"
+}
+jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
+
+for st in created pending waiting_for_resource running; do
+  scenario "plan-busy-$st"
+  jobs "looper-alpha-3 $st" "looper-beta-7 running"
+  list "${GL[@]}"
+  [[ -z "$OUT" ]] || fail "planned: $OUT"
+  has "$ERR" "alpha already has a looper job"; has "$ERR" "looper-alpha-3"
+  pass
+done
+
+scenario plan-free
+jobs "looper-alpha-3 success" "looper-alpha-2 canceled" "looper-alpha-beta-5 running" "looper-beta-7 waiting_for_resource" "looper-plan running"
+list "${GL[@]}"
+[[ "$OUT" == 4 ]] || fail "planned: $OUT"
+lacks "$ERR" "already has"
+has "$(cat "$FIX/gitlab")" "PRIVATE-TOKEN https://gl.test/api/v4/projects/42/jobs?"
+pass
+
+# Without GITLAB_TOKEN the job's own token reads the project's jobs.
+scenario plan-job-token
+jobs "looper-alpha-3 waiting_for_resource"
+list CI_API_V4_URL=https://gl.test/api/v4 CI_PROJECT_ID=42 CI_JOB_TOKEN=j
+[[ -z "$OUT" ]] || fail "planned: $OUT"
+has "$(cat "$FIX/gitlab")" "JOB-TOKEN https://gl.test/api/v4/projects/42/jobs?"
+pass
+
+# GitLab unreadable: planned as before, and the log says why.
+scenario plan-gitlab-down
+list "${GL[@]}"
+[[ "$OUT" == 4 ]] || fail "planned: $OUT"
+has "$ERR" "could not read"
+pass
+
+# Outside a GitLab job, --list asks nothing of GitLab.
+scenario list-outside-ci
+jobs "looper-alpha-3 running"
+list
+[[ "$OUT" == 4 ]] || fail "listed: $OUT"
+[[ ! -e "$FIX/gitlab" ]] || fail "asked GitLab: $(cat "$FIX/gitlab")"
+pass
+
+# A planned job whose issue another run took or finished meanwhile works the
+# repository's oldest ready issue at run time instead.
+scenario run-takes-oldest-ready
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+issue alpha 5 OPEN approved,bug "Fix that."
+issue alpha 6 OPEN approved,bug "And this."
+jq '.createdAt = "2026-10-26T00:00:00Z"' "$FIX/issues/alpha-6.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-6.json"
+push_fix
+run
+has "$(prompts)" "working issue #6."; lacks "$(prompts)" "issue #4"
+has "$OUT" "#4 is no longer ready; working #6"
+pass
+
+scenario run-nothing-ready
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+push_fix
+run
+[[ -z "$(prompts)" ]] || fail "prompts: $(prompts)"
+has "$OUT" "nothing to do"
+main_unchanged
 pass
 
 echo "repo-looper: all scenarios pass"

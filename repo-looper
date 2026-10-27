@@ -8,9 +8,10 @@
 # has work.
 #
 #   repo-looper --repo NAME             drain NAME's ready issues, oldest first
-#   repo-looper --repo NAME --issue N   work issue N only, if it is still ready (what the pipeline runs)
+#   repo-looper --repo NAME --issue N   work issue N if it is still ready, else the oldest ready one (what the pipeline runs)
 #   repo-looper --repo NAME --scan      the nightly scan: file issues, change no code
-#   repo-looper --repo NAME --list      print the ready issues
+#   repo-looper --repo NAME --list      print the ready issues; in a GitLab job, none while NAME
+#                                       has a looper job queued, waiting or running there (the plan)
 #   repo-looper --repo NAME --job-timeout N   the CI job timeout for issue N (its limit, plus an hour)
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
 #
@@ -77,10 +78,11 @@
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
 # default 60), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
-# CI_PROJECT_DIR name the job and its artifacts in issue comments.
+# CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list reads
+# the project's jobs (CI_API_V4_URL, CI_PROJECT_ID) with GITLAB_TOKEN, else CI_JOB_TOKEN.
 set -euo pipefail
 
-usage() { sed -n '5,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,82p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -107,7 +109,32 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$REPO" ]] || die "no repository: --repo NAME (a $LOOPER_ORG repository)"
 need gh; need git; need jq
-[[ "$MODE" == list ]] && { approved_issues "$REPO" | while read -r n; do if ready "$REPO" "$n"; then echo "$n"; fi; done; exit 0; }
+
+# The names of the looper jobs that hold a repository (busy() in looper-lib.sh)
+# in this GitLab job's project, with GITLAB_TOKEN, else the job's own token.
+# Outside a GitLab job, none.
+project_jobs() {
+  [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 0
+  local auth=(-H "JOB-TOKEN: ${CI_JOB_TOKEN:-}")
+  [[ -n "${GITLAB_TOKEN:-}" ]] && auth=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
+  curl -fsS --retry 2 "${auth[@]}" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
+    | jq -r '.[].name'
+}
+
+# The plan (looper#16): a repository whose looper job is already created,
+# pending, waiting for its resource_group or running gets no other one; that
+# job takes the oldest ready issue when it runs. When GitLab cannot be read,
+# the repository is planned as before. The log is stderr: stdout is the list.
+if [[ "$MODE" == list ]]; then
+  if jobs="$(project_jobs)"; then
+    held="$(busy "$REPO" "$jobs" | tr '\n' ' ')" || true
+    [[ -z "$held" ]] || { log "$REPO already has a looper job: ${held% }; not planned again" >&2; exit 0; }
+  else
+    log "could not read this project's jobs; planning $REPO anyway" >&2
+  fi
+  approved_issues "$REPO" | while read -r n; do if ready "$REPO" "$n"; then echo "$n"; fi; done
+  exit 0
+fi
 [[ "$MODE" != checkpoint || -n "$ISSUE" ]] || die "--checkpoint needs --issue N"
 
 WORK="${LOOPER_WORK:-/work}/$REPO"
@@ -811,9 +838,13 @@ case "$MODE" in
   one)
     gh issue view "$ISSUE" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name' | grep -qx "$LABEL_APPROVED" \
       || die "#$ISSUE is not labeled $LABEL_APPROVED"
-    # A job planned for an issue another run took or finished meanwhile.
-    approved_issues "$REPO" | grep -qx "$ISSUE" && ready "$REPO" "$ISSUE" \
-      || { log "#$ISSUE is no longer ready; nothing to do"; exit 0; }
+    # A job planned for an issue another run took or finished meanwhile takes
+    # the oldest ready issue at run time instead (looper#16).
+    if ! { approved_issues "$REPO" | grep -qx "$ISSUE" && ready "$REPO" "$ISSUE"; }; then
+      n="$(next_ready "$REPO")"
+      [[ -n "$n" ]] || { log "#$ISSUE is no longer ready, nor is any other issue; nothing to do"; exit 0; }
+      log "#$ISSUE is no longer ready; working #$n, the oldest ready issue"; ISSUE="$n"
+    fi
     work_issue "$ISSUE" ;;
   drain)
     # One pass over each issue per run: if a label write ever fails, the same

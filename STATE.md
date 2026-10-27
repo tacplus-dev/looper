@@ -1,10 +1,13 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-27 by looper (#14).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-27 by looper (#16).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.4` environment (#1); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
-- **Works:** `looper-dispatch` on the Mac starts the GitLab pipeline; `repo-looper` works each repository's
+- **Works:** `looper-dispatch` on the Mac starts the GitLab pipeline; neither it nor the pipeline's plan
+  (`repo-looper --list`) starts another job for a repository whose looper job is created, pending, waiting
+  for its `resource_group` or running, and a planned job whose issue was taken meanwhile works the oldest
+  ready one (#16); `repo-looper` works each repository's
   `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, Blocked-by outcomes);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly

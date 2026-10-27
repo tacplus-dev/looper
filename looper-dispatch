@@ -5,7 +5,7 @@
 # looper-dispatch: the top-level loop, and the only part that runs on this Mac.
 # It clones nothing, builds nothing and starts no container. Every few minutes
 # it looks for tacplus-dev repositories with a ready issue and, when one of them
-# has no looper job queued or running, starts the looper pipeline in GitLab
+# has no looper job queued, waiting or running, starts the looper pipeline in GitLab
 # (LOOPER_PIPELINE, default tacplus-dev/looper). That pipeline runs
 # repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled GCE runner.
 # The nightly scan is that pipeline's schedule, not this script.
@@ -28,16 +28,11 @@ INTERVAL="${LOOPER_INTERVAL:-180}"
 STATE="$HOME/.looper"
 mkdir -p "$STATE"
 
-# Names of the looper pipeline's jobs that are created, pending or running.
+# Names of the looper pipeline's jobs that are created, pending, waiting for
+# their resource_group or running (busy() in looper-lib.sh).
 active_jobs() {
-  glab api "projects/${PIPELINE//\//%2F}/jobs?scope[]=created&scope[]=pending&scope[]=running&per_page=100" \
+  glab api "projects/${PIPELINE//\//%2F}/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
     | jq -r '.[].name'
-}
-
-# A repository is busy while a job of its looper is queued or running
-# (looper-<repo>-<issue>, written by the pipeline's looper-plan).
-busy() { # repo jobs
-  grep -qE "^looper-$1-[0-9]+\$" <<<"$2"
 }
 
 # Repositories with at least one open approved issue: one search for the whole org.
@@ -53,7 +48,7 @@ case "${1:-}" in
     # A plan under way will take every ready issue; wait for it.
     grep -qx 'looper-plan' <<<"$jobs" && exit 0
     for repo in $(repos_with_approved); do
-      busy "$repo" "$jobs" && continue
+      busy "$repo" "$jobs" >/dev/null && continue
       [[ -n "$(next_ready "$repo")" ]] || continue
       glab ci run --branch main --repo "$PIPELINE" >/dev/null
       log "started the $PIPELINE pipeline ($repo has a ready issue)"
@@ -63,7 +58,7 @@ case "${1:-}" in
     jobs="$(active_jobs)"
     echo "active jobs in $PIPELINE: $(tr '\n' ' ' <<<"$jobs")"
     for repo in $(repos_with_approved); do
-      echo "$repo: ready $(next_ready "$repo" | tr '\n' ' ')$(busy "$repo" "$jobs" && echo '(busy)')"
+      echo "$repo: ready $(next_ready "$repo" | tr '\n' ' ')$(busy "$repo" "$jobs" >/dev/null && echo '(busy)')"
     done ;;
   install)
     label="dev.tacplus.looper.run"; plist="$HOME/Library/LaunchAgents/$label.plist"

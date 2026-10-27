@@ -10,14 +10,20 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (workers exist only while there is
   work; see [Infrastructure](#infrastructure)).
 - **`looper-dispatch`** is the only part on the Mac. It does no work itself: every 3 minutes, when a
-  repository has a ready issue and no looper job of its own queued or running, it starts that
-  pipeline. Nothing runs when there is no ready issue.
+  repository has a ready issue and no looper job of its own created, pending, waiting for its
+  `resource_group` or running, it starts that pipeline. Nothing runs when there is no ready issue.
 - **The pipeline** plans one job per repository with a ready issue (`looper-<repo>-<issue>`), each
   working that repository's oldest ready issue; jobs of one repository never overlap (`resource_group`).
+  A repository that already has a looper job created, pending, waiting or running in the project gets
+  no other one, and the plan's log says so (`repo-looper --list` reads the project's jobs with
+  `GITLAB_TOKEN`, else the job's token; looper#16): a duplicate would only wait for the slot to find its
+  issue taken. A job takes its repository's oldest ready issue when it runs: the planned one if it is
+  still ready, else the one that is oldest now.
   Its schedules run the nightly scan of every repository and the hourly port scan (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
 - **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
-  the repository at origin/main, and does nothing if the issue is no longer ready. Claude may run sub-agents in that checkout; only the top-level run
+  the repository at origin/main, or the oldest ready one if that issue is no longer ready, and does
+  nothing if none is. Claude may run sub-agents in that checkout; only the top-level run
   commits and pushes, always to main (pre-production; a protected release line with review comes
   later). Bug fixes on repositories with release branches are also offered as backport pull requests.
   Each run's record (`prompt.md`, `claude.log`) is uploaded as the job's artifacts (`looper-runs/`,
@@ -139,7 +145,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature and the scan's labels (stub gh and claude, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -232,6 +238,7 @@ tests/looper-port.test.sh                  # the scan against fixtures (stub gh 
 ```sh
 ./looper-dispatch install    # launchd: start the pipeline every 3 minutes when a repository needs it
 ./looper-dispatch status     # the looper jobs in GitLab, and what is ready
+tests/looper-dispatch.test.sh  # a repository with a job created, pending, waiting or running is busy (stub gh and glab)
 ```
 
 The Mac needs `gh` and `glab` logged in. The jobs' credentials are tacplus-dev GitLab group CI
