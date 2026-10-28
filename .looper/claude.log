@@ -1,0 +1,104 @@
+= init
+> Bash gh issue view 19 --repo tacplus-dev/looper --comments && ls && cat STATE.md | head -50
+< Dockerfile HISTORY.md LICENSE PROPOSALS.md README.md ROADMAP.md STATE.md looper-dispatch looper-lib.sh looper-port looper-smoke planning-files-check ports.yaml repo-looper tacplus tests # State: looper  Overwritten to stay current (loopers and agents). Last updated: 2026-10-27 by looper (#16).  - **...
+> Bash gh issue view 19 --repo tacplus-dev/looper --comments 2>&1; echo rc=$?
+< rc=0
+> Bash gh issue view 19 --repo tacplus-dev/looper --json title,body,labels,comments,state 2>&1; echo rc=$?; gh auth status 2>&1
+< {"body":"Four looper jobs failed in two days before running anything, all the same way. They were looper-scan-fleet-seatrials (10-27 08:41Z), looper-eventbus-1 (10-27 14:57Z), looper-scan-tenantecho (10-28 08:40Z) and looper-port (10-28 11:10Z).\n\nEach one ran on a VM the autoscaler had just create...
+> Bash ls -a; ls tests; cat .gitlab-ci.yml; grep -n "looper-jobs\|retry\|resource_group\|image:" repo-looper looper-lib.sh looper-dispatch | head -60
+< . .. .git .github Dockerfile HISTORY.md LICENSE PROPOSALS.md README.md ROADMAP.md STATE.md looper-dispatch looper-lib.sh looper-port looper-smoke planning-files-check ports.yaml repo-looper tacplus tests git-server.py looper-dispatch.test.sh looper-port.test.sh planning-files.test.sh repo-looper.tes...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -rn -i "gitlab-ci\|looper-jobs\|generated\|child pipeline\|trigger" --include=* . 2>/dev/null | grep -v "^./.git/" | head -40; git remote -v; ls .github/workflows
+< ./tests/looper-port.test.sh:101:has "$body" "never copy generated code" ./looper-port:204:commit, with the reason. Port in this repository's own idiom; never copy generated code. A commit that needs a ./README.md:213:  is already covered or not applicable and why; never copy generated code; then set...
+The `.gitlab-ci.yml` the issue names isn't in this repository; checking where it lives before deciding anything.
+> Bash sed -n 15,45p PROPOSALS.md; grep -n -i "gitlab" README.md | head -30
+<   no ROADMAP.md links gets a design proposal and `needs-decision` instead of being ported, and a live roadmap entry   for a port turns new SeaBeam commits into a prioritization issue. If ports are meant to flow without a roadmap   step (Jody's standing decision, #6), either file them as `bug` or let...
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 240,262p README.md; env | grep -o '^GITLAB[A-Z_]*\|^CI_PROJECT_URL=.*\|^CI_JOB_TOKEN' ; which glab
+< Exit code 1 ./looper-dispatch status     # the looper jobs in GitLab, and what is ready tests/looper-dispatch.test.sh  # a repository with a job created, pending, waiting or running is busy (stub gh and glab) ```  The Mac needs `gh` and `glab` logged in. The jobs' credentials are tacplus-dev GitLab ...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && mkdir -p gl19 && curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/repository/files/.gitlab-ci.yml/raw?ref=main" -o gl19/ci.yml; echo rc=$?; cat gl19/ci.yml
+< rc=0 # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper:main); this project only runs them, on the # autoscale...
+= thinking_tokens
+= thinking_tokens
+The retry is already in the GitLab file. Checking when it landed relative to the four failures.
+> Bash curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/repository/commits?ref_name=main&per_page=8" | jq -r '.[] | "\(.short_id) \(.created_at) \(.title)"'; curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "https://gitlab.com/api/v4/projects/tacplus-dev%2Floo...
+< 02047f34 2026-10-27T04:08:49.000+00:00 looper-plan: a looper job's timeout follows its issue (repo-looper --job-timeout) 80810cc6 2026-10-26T21:48:31.000-06:00 The tacplus-dev looper pipeline, moved from seabeam/tools/looper 17536571445 looper-port 2026-10-28T11:08:52.175Z runner_system_failure retr...
+= thinking_tokens
+= thinking_tokens
+> Bash for j in 17536571445 17531583850 17508491133 17495913007; do p=$(curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/jobs/$j" | jq -r '.pipeline.id'); echo "== job $j pipeline $p"; curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "https://gitlab.com/api/v4...
+= task_started
+= task_notification
+< == job 17536571445 pipeline 2998798530 17536625323 looper-port success null 2026-10-28T11:10:40.999Z 2026-10-28T11:13:09.193Z 17536571445 looper-port failed runner_system_failure 2026-10-28T11:08:52.175Z 2026-10-28T11:10:39.503Z == job 17531583850 pipeline 2998184995 17531630827 looper-scan-tenantec...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cat > /tmp/c19.md <<'EOF' Looked into this before changing anything. **I think the retry this issue asks for is already in place and working.** Nothing is committed.  **1. The retry already exists.** gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` has had it since its first commit (80810cc6, 2026-1...
+< https://github.com/tacplus-dev/looper/issues/19#issuecomment-6468185202 https://github.com/tacplus-dev/looper/issues/19
+> Bash /usr/local/bin/repo-looper --repo looper --issue 19 --checkpoint "No change: retry already in gitlab.com/tacplus-dev/looper .gitlab-ci.yml since 80810cc6 and all four failed jobs were auto-retried successfully; commented with evidence, labelled needs-decision (add stuck_or_timeout_failure? recommend...
+< remote:      https://github.com/tacplus-dev/looper/pull/new/looper/looper-19         remote:  [2026-10-28T11:48:31Z] checkpoint of #19 (a step) pushed to looper/looper-19:  2 files changed, 123 insertions(+)
+I made no change and committed nothing, because the retry issue #19 asks for is already in place and working. I commented on #19 with the evidence and labelled it `needs-decision`.
+
+- **The retry already exists.** gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` has had `retry: {max: 2, when: [runner_system_failure, scheduler_failure, unknown_failure]}` since its first commit (80810cc6, 2026-10-26). It is on `looper-plan`, `looper-port` and every job the plan writes into `looper-jobs.yml`. Both acceptance criteria are already met.
+- **All four failed jobs were retried automatically, and each retry succeeded** (GitLab jobs API):
+
+| Failed job | Retry finished |
+|---|---|
+| looper-scan-fleet-seatrials | 10-27 09:27Z |
+| looper-eventbus-1 | 10-27 15:56Z |
+| looper-scan-tenantecho | 10-28 09:17Z |
+| looper-port | 10-28 11:13Z |
+
+  The failed jobs the issue lists were only the first attempts.
+- **What's left for a decision:** the issue lists `stuck_or_timeout_failure` where the file has `unknown_failure`. I recommended not adding it. A looper job can run up to 11h, so two retries after a timeout could keep one issue on the runner for up to 33h. The checkpoint resume already picks that issue up in a later pipeline.
+- **Why I stopped:** that file is in another repository, and the job's `GITLAB_TOKEN` is read-only, so I couldn't edit it anyway.
+
+The issue stays open for someone to either close it as already done or make the one-line edit in the three places. I pushed a checkpoint to `looper/looper-19` saying the same.
+= success: I made no change and committed nothing, because the retry issue #19 asks for is already in place and working. I commented on #19 with the evidence and labelled it `needs-decision`.
+
+- **The retry already exists.** gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` has had `retry: {max: 2, when: [runner_system_failure, scheduler_failure, unknown_failure]}` since its first commit (80810cc6, 2026-10-26). It is on `looper-plan`, `looper-port` and every job the plan writes into `looper-jobs.yml`. Both acceptance criteria are already met.
+- **All four failed jobs were retried automatically, and each retry succeeded** (GitLab jobs API):
+
+| Failed job | Retry finished |
+|---|---|
+| looper-scan-fleet-seatrials | 10-27 09:27Z |
+| looper-eventbus-1 | 10-27 15:56Z |
+| looper-scan-tenantecho | 10-28 09:17Z |
+| looper-port | 10-28 11:13Z |
+
+  The failed jobs the issue lists were only the first attempts.
+- **What's left for a decision:** the issue lists `stuck_or_timeout_failure` where the file has `unknown_failure`. I recommended not adding it. A looper job can run up to 11h, so two retries after a timeout could keep one issue on the runner for up to 33h. The checkpoint resume already picks that issue up in a later pipeline.
+- **Why I stopped:** that file is in another repository, and the job's `GITLAB_TOKEN` is read-only, so I couldn't edit it anyway.
+
+The issue stays open for someone to either close it as already done or make the one-line edit in the three places. I pushed a checkpoint to `looper/looper-19` saying the same.
