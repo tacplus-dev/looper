@@ -18,19 +18,25 @@ cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 cmd="$1 $2"; shift 2
-repo=""; n=""; q="."
+repo=""; n=""; q="."; label=""; rm=""; body=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2##*/}"; shift 2 ;;
     --jq) q="$2"; shift 2 ;;
-    --owner|--state|--label|--limit|--json) shift 2 ;;
+    --label) label="$2"; shift 2 ;;
+    --remove-label) rm="$2"; shift 2 ;;
+    --body) body="$2"; shift 2 ;;
+    --owner|--state|--limit|--json) shift 2 ;;
     *) n="$1"; shift ;;
   esac
 done
+f="$FIX/issues/$repo-$n.json"
 case "$cmd" in
-  "search issues") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")) | {repository: {name: .repo}})' "$FIX"/issues/*.json | jq -r "$q" ;;
+  "search issues") jq -s --arg l "$label" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})' "$FIX"/issues/*.json | jq -r "$q" ;;
   "issue list") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")))' "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
-  "issue view") jq -r "$q" "$FIX/issues/$repo-$n.json" ;;
+  "issue view") jq -r "$q" "$f" ;;
+  "issue edit") t="$(jq --arg l "$rm" '.labels |= map(select(.name != $l))' "$f")"; printf '%s\n' "$t" > "$f" ;;
+  "issue comment") printf '%s#%s %s\n' "$repo" "$n" "$body" >> "$FIX/comments" ;;
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
 esac
 EOF
@@ -59,6 +65,8 @@ dispatch() {
 started() { [[ -s "$FIX/started" ]]; }
 fail() { echo "FAIL $NAME: $*" >&2; exit 1; }
 pass() { echo "ok $NAME"; }
+labels() { jq -r '[.labels[].name] | join(",")' "$FIX/issues/$1-$2.json"; }
+in_progress() { jq '.labels += [{name: "looper:in-progress"}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"; }
 
 scenario ready-free
 jobs "looper-alpha-3 success" "looper-beta-7 waiting_for_resource"
@@ -85,5 +93,29 @@ jobs "looper-alpha-4 waiting_for_resource"
 dispatch status
 grep -q "alpha: ready 4 (busy)" <<<"$OUT" || fail "status: $OUT"
 pass
+
+# A run killed after it labelled its issue (looper#20) leaves looper:in-progress
+# with no job holding it: the pass removes the label, says so on the issue, and
+# starts the pipeline, whose job resumes the issue from its checkpoint.
+scenario orphan-released
+in_progress
+jobs "looper-alpha-4 failed" "looper-beta-7 running"
+dispatch run
+[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+grep -q '^alpha#4 .*no looper job' "$FIX/comments" || fail "comments: $(cat "$FIX/comments" 2>/dev/null)"
+started || fail "no pipeline started: $OUT"
+grep -q "alpha#4" <<<"$OUT" || fail "log: $OUT"
+pass
+
+# A job of the repository created, pending, waiting or running holds the label.
+for st in created pending waiting_for_resource running; do
+  scenario "orphan-held-$st"
+  in_progress
+  jobs "looper-alpha-9 $st"
+  dispatch run
+  [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "labels $(labels alpha 4)"
+  [[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
+  pass
+done
 
 echo "looper-dispatch: all scenarios pass"

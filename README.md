@@ -19,6 +19,12 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   `GITLAB_TOKEN`, else the job's token; looper#16): a duplicate would only wait for the slot to find its
   issue taken. A job takes its repository's oldest ready issue when it runs: the planned one if it is
   still ready, else the one that is oldest now.
+- **A run killed outright** (its runner VM gone mid-job, looper#20) never removes `looper:in-progress`.
+  The job for that issue (GitLab's automatic retry, say) takes it as a resume, from its checkpoint, when
+  no *other* looper job of the repository is created, pending, waiting or running: the label is that
+  job's. And every `looper-dispatch run` removes the label, with a comment, from any issue whose
+  repository has no such job, so the next pass resumes it. An issue whose job is really running, or
+  whose jobs GitLab cannot tell, is never taken twice.
   Its schedules run the nightly scan of every repository and the hourly port scan (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
 - **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
@@ -145,7 +151,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, a killed run resumed by its retry (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -238,7 +244,7 @@ tests/looper-port.test.sh                  # the scan against fixtures (stub gh 
 ```sh
 ./looper-dispatch install    # launchd: start the pipeline every 3 minutes when a repository needs it
 ./looper-dispatch status     # the looper jobs in GitLab, and what is ready
-tests/looper-dispatch.test.sh  # a repository with a job created, pending, waiting or running is busy (stub gh and glab)
+tests/looper-dispatch.test.sh  # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared (stub gh and glab)
 ```
 
 The Mac needs `gh` and `glab` logged in. The jobs' credentials are tacplus-dev GitLab group CI

@@ -671,7 +671,7 @@ list() { # [VAR=value...]: alpha's ready issues; stdout in OUT, stderr in ERR
   OUT="$(looper "$@" -- --repo alpha --list 2>"$FIX/err")" || { cat "$FIX/err"; fail "--list exited non-zero"; }
   ERR="$(cat "$FIX/err")"
 }
-jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
+jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1], id: (.[2] // "0" | tonumber)}' | jq -s . > "$FIX/jobs.json"; } # "name status [id]"...
 
 for st in created pending waiting_for_resource running; do
   scenario "plan-busy-$st"
@@ -733,6 +733,76 @@ run
 [[ -z "$(prompts)" ]] || fail "prompts: $(prompts)"
 has "$OUT" "nothing to do"
 main_unchanged
+pass
+
+# A run killed after it labelled its issue (its runner gone, looper#20) leaves
+# looper:in-progress behind. GitLab's retry, the job for that issue, takes it as
+# a resume from its checkpoint when no other looper job of the repository is
+# active (its own does not count), and the label goes when the run ends.
+scenario killed-run-resumed
+echo 'echo x > a.txt; sleep 1' >> "$FIX/claude.sh"
+step "a.txt written; left: close it"
+echo 'sleep 60' >> "$FIX/claude.sh"
+looper -- --repo alpha --issue 4 > "$FIX/out" 2>&1 & pid=$!
+for _ in $(seq 40); do branch && break; sleep 0.5; done
+kill_tree "$pid"; wait "$pid" 2>/dev/null || true
+branch || fail "no checkpoint before the kill"
+[[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels after the kill: $(labels alpha 4)"
+: > "$FIX/prompts"
+cat > "$FIX/claude.sh" <<'EOS'
+cat a.txt > "$FIX/checkout"
+git add -A && git commit -q -m fix && git push -q origin main
+jq '.state = "CLOSED"' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+EOS
+jobs "looper-alpha-4 failed 77" "looper-alpha-4 running 78" "looper-beta-7 running 79"
+run "${GL[@]}" CI_JOB_ID=78
+has "$(prompts)" "working issue #4."
+has "$OUT" "resuming #4 from looper/alpha-4"
+[[ "$(cat "$FIX/checkout")" == x ]] || fail "not resumed from the checkpoint: $(cat "$FIX/checkout")"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "a.txt written; left: close it"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+[[ "$(origin show main:a.txt)" == x ]] || fail "work not on main"
+pass
+
+# An issue whose run is really going is never taken twice: another active
+# looper job of the repository holds it, and so does GitLab being unreadable.
+for st in created pending waiting_for_resource running; do
+  scenario "in-progress-held-$st"
+  issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+  push_fix
+  jobs "looper-alpha-4 $st 77" "looper-alpha-4 running 78"
+  run "${GL[@]}" CI_JOB_ID=78
+  [[ -z "$(prompts)" ]] || fail "taken twice: $(prompts)"
+  has "$OUT" "nothing to do"
+  [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
+  main_unchanged
+  pass
+done
+
+scenario in-progress-gitlab-down
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+push_fix
+run "${GL[@]}" CI_JOB_ID=78
+[[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
+[[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
+pass
+
+# Held for a person (stuck, needs-decision) or outside a GitLab job: not resumed.
+for l in looper:stuck needs-decision; do
+  scenario "in-progress-and-$l"
+  issue alpha 4 OPEN "approved,bug,looper:in-progress,$l" "Fix it."
+  push_fix
+  jobs "looper-alpha-4 running 78"
+  run "${GL[@]}" CI_JOB_ID=78
+  [[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
+  pass
+done
+
+scenario in-progress-outside-ci
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+push_fix
+run
+[[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
 pass
 
 echo "repo-looper: all scenarios pass"

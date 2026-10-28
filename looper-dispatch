@@ -4,7 +4,8 @@
 #
 # looper-dispatch: the top-level loop, and the only part that runs on this Mac.
 # It clones nothing, builds nothing and starts no container. Every few minutes
-# it looks for tacplus-dev repositories with a ready issue and, when one of them
+# it clears looper:in-progress from issues no looper job holds any more, then
+# looks for tacplus-dev repositories with a ready issue and, when one of them
 # has no looper job queued, waiting or running, starts the looper pipeline in GitLab
 # (LOOPER_PIPELINE, default tacplus-dev/looper). That pipeline runs
 # repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled GCE runner.
@@ -41,10 +42,27 @@ repos_with_approved() {
     --json repository --jq '.[].repository.name' | sort -u
 }
 
+# A run killed outright (its runner gone, looper#20) never removes
+# looper:in-progress. An issue labelled so in a repository with no looper job
+# created, pending, waiting or running is held by no run: the label goes, the
+# issue says why, and the pipeline's job resumes it from its checkpoint.
+release_orphans() { # active jobs
+  local repo n
+  gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_IN_PROGRESS" --limit 200 \
+    --json repository,number --jq '.[] | "\(.repository.name) \(.number)"' \
+  | while read -r repo n; do
+      busy "$repo" "$1" >/dev/null && continue
+      gh issue edit "$n" --repo "$LOOPER_ORG/$repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
+      gh issue comment "$n" --repo "$LOOPER_ORG/$repo" --body "This issue was \`$LABEL_IN_PROGRESS\`, but $repo has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true
+      log "$repo#$n: $LABEL_IN_PROGRESS with no looper job; label removed"
+    done
+}
+
 case "${1:-}" in
   run)
     need gh; need glab; need jq
     jobs="$(active_jobs)"
+    release_orphans "$jobs"
     # A plan under way will take every ready issue; wait for it.
     grep -qx 'looper-plan' <<<"$jobs" && exit 0
     for repo in $(repos_with_approved); do
@@ -86,6 +104,6 @@ PL
       plist="$HOME/Library/LaunchAgents/dev.tacplus.looper.$job.plist"
       launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true; rm -f "$plist"
     done; log "uninstalled" ;;
-  -h|--help|help|"") sed -n '5,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '5,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (see --help)" ;;
 esac

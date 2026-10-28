@@ -17,6 +17,9 @@
 #
 # Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
 # needs-decision), and every `Blocked-by:` issue in its body closed.
+# With --issue N in a GitLab job, N labelled looper:in-progress but otherwise
+# ready, and no other looper job of NAME active, N is taken as a resume: its run
+# was killed outright (looper#20).
 #
 # One checkout per repository, kept across issues and runs under
 # LOOPER_WORK/NAME/checkout: the looper always works the same code base. Claude
@@ -78,11 +81,12 @@
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
 # default 60), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
-# CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list reads
-# the project's jobs (CI_API_V4_URL, CI_PROJECT_ID) with GITLAB_TOKEN, else CI_JOB_TOKEN.
+# CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
+# --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
+# job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN.
 set -euo pipefail
 
-usage() { sed -n '5,82p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,86p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -118,7 +122,23 @@ project_jobs() {
   local auth=(-H "JOB-TOKEN: ${CI_JOB_TOKEN:-}")
   [[ -n "${GITLAB_TOKEN:-}" ]] && auth=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
   curl -fsS --retry 2 "${auth[@]}" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
-    | jq -r '.[].name'
+    | jq -r --arg me "${CI_JOB_ID:-}" '.[] | select((.id | tostring) != $me) | .name'
+}
+
+# A run killed outright (its runner gone, looper#20) leaves its issue
+# looper:in-progress, and no run holds it. The job for that issue takes it as a
+# resume when it is otherwise ready and no other looper job of the repository
+# (this job excepted) is created, pending, waiting or running: the label is
+# this job's. Outside a GitLab job, or when GitLab cannot be read, never.
+orphaned() { # issue
+  local l jobs
+  [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 1
+  l="$(gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json state,labels --jq 'select(.state == "OPEN") | .labels[].name')" || return 1
+  grep -qx "$LABEL_IN_PROGRESS" <<<"$l" || return 1
+  if grep -qxE "$LABEL_STUCK|$LABEL_DECISION" <<<"$l"; then return 1; fi
+  ready "$REPO" "$1" || return 1
+  jobs="$(project_jobs)" || return 1
+  ! busy "$REPO" "$jobs" >/dev/null
 }
 
 # The plan (looper#16): a repository whose looper job is already created,
@@ -841,6 +861,10 @@ case "$MODE" in
     # A job planned for an issue another run took or finished meanwhile takes
     # the oldest ready issue at run time instead (looper#16).
     if ! { approved_issues "$REPO" | grep -qx "$ISSUE" && ready "$REPO" "$ISSUE"; }; then
+      if orphaned "$ISSUE"; then
+        log "#$ISSUE is $LABEL_IN_PROGRESS, but no other looper job of $REPO is active: its run is gone; this job resumes it"
+        work_issue "$ISSUE"; exit 0
+      fi
       n="$(next_ready "$REPO")"
       [[ -n "$n" ]] || { log "#$ISSUE is no longer ready, nor is any other issue; nothing to do"; exit 0; }
       log "#$ISSUE is no longer ready; working #$n, the oldest ready issue"; ISSUE="$n"
