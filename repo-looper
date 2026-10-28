@@ -26,6 +26,14 @@
 # may run sub-agents in that checkout for independent parts; only this script's
 # top-level run commits and pushes, to main (pre-production rule, Jody 2026-10-26).
 #
+# A run whose job GitLab no longer runs (looper#21): GitLab can mark a job
+# failed (runner_system_failure) while its container keeps working on the VM,
+# and retry it. In a GitLab job the run polls its own job every
+# LOOPER_JOB_POLL; once GitLab reports it anything but running (or refuses the
+# job's token after accepting it), the run checkpoints and stops, pushing
+# nothing else, commenting nothing and leaving the label to the retry, which
+# resumes from that checkpoint. A run that cannot read GitLab keeps going.
+#
 # Each run's record (prompt.md, claude.log, outcome) is a directory under
 # LOOPER_RUNS. The pipeline sets it inside the job's project directory and
 # uploads it as the job's artifacts: the runner VM does not outlive the job.
@@ -79,14 +87,14 @@
 # default 14400), LOOPER_STOP_EARLY (default 600), LOOPER_CHECKPOINT_INTERVAL
 # (seconds, default 3600), LOOPER_IDLE_MINUTES (default 20), LOOPER_DONE_GRACE
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
-# default 60), LOOPER_GATES (default `just gates` when the
+# default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
-# job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN.
+# job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
 set -euo pipefail
 
-usage() { sed -n '5,86p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,94p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -114,15 +122,34 @@ done
 [[ -n "$REPO" ]] || die "no repository: --repo NAME (a $LOOPER_ORG repository)"
 need gh; need git; need jq
 
+# The GitLab API's auth header: GITLAB_TOKEN, else the job's own token.
+gitlab_auth() {
+  if [[ -n "${GITLAB_TOKEN:-}" ]]; then echo "PRIVATE-TOKEN: $GITLAB_TOKEN"; else echo "JOB-TOKEN: ${CI_JOB_TOKEN:-}"; fi
+}
+
 # The names of the looper jobs that hold a repository (busy() in looper-lib.sh)
-# in this GitLab job's project, with GITLAB_TOKEN, else the job's own token.
-# Outside a GitLab job, none.
+# in this GitLab job's project. Outside a GitLab job, none.
 project_jobs() {
   [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 0
-  local auth=(-H "JOB-TOKEN: ${CI_JOB_TOKEN:-}")
-  [[ -n "${GITLAB_TOKEN:-}" ]] && auth=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
-  curl -fsS --retry 2 "${auth[@]}" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
+  curl -fsS --retry 2 -H "$(gitlab_auth)" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
     | jq -r --arg me "${CI_JOB_ID:-}" '.[] | select((.id | tostring) != $me) | .name'
+}
+
+# This GitLab job's status as GitLab reports it (running, failed, canceled...),
+# or `refused` when GitLab refuses the job's own token (it does once the job has
+# stopped running). Fails when GitLab cannot be read.
+job_status() {
+  local out code st url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/$CI_JOB_ID"
+  [[ -n "${GITLAB_TOKEN:-}" ]] || url="$CI_API_V4_URL/job"   # what a job token may read: its own job
+  out="$(mktemp)"
+  code="$(curl -sS --retry 2 -H "$(gitlab_auth)" -o "$out" -w '%{http_code}' "$url")" || code=""
+  st="$(jq -r '.status // empty' "$out" 2>/dev/null)" || st=""
+  rm -f "$out"
+  case "$code" in
+    200) [[ -n "$st" ]] && echo "$st" ;;
+    401|403) [[ -z "${GITLAB_TOKEN:-}" ]] && echo refused ;;
+    *) return 1 ;;
+  esac
 }
 
 # A run killed outright (its runner gone, looper#20) leaves its issue
@@ -167,6 +194,7 @@ CHECKPOINT_INTERVAL="${LOOPER_CHECKPOINT_INTERVAL:-3600}"
 IDLE="$(awk -v m="${LOOPER_IDLE_MINUTES:-20}" 'BEGIN { printf "%d", m * 60 }')"
 DONE_GRACE="${LOOPER_DONE_GRACE:-300}"
 WATCH_INTERVAL="${LOOPER_WATCH_INTERVAL:-60}"
+JOB_POLL="${LOOPER_JOB_POLL:-300}"
 RECORD_LINES=400   # the claude.log tail a checkpoint keeps under .looper/
 RUNS="${LOOPER_RUNS:-$WORK/runs}"
 
@@ -355,12 +383,16 @@ run_done() { # issue run-dir head-before
 
 # The watchdog, every LOOPER_WATCH_INTERVAL until killed: stops the model when
 # it went idle (no output and nothing changed in the checkout for
-# LOOPER_IDLE_MINUTES) or when its issue's run is done and it has not exited
-# LOOPER_DONE_GRACE seconds later. Writes why to the run's `stopped` file.
+# LOOPER_IDLE_MINUTES), when its issue's run is done and it has not exited
+# LOOPER_DONE_GRACE seconds later, or, polling every LOOPER_JOB_POLL in a
+# GitLab job, when GitLab no longer runs the issue run's job (looper#21): it
+# reports another status, or refuses the job's token after accepting it. An
+# answer that is no status (GitLab down) stops nothing. Writes why to the run's
+# `stopped` file.
 watch_run() { # pid log run-dir [issue head-before]
-  local pid="$1" run="$3" n="${4:-}" size=-1 s now done_at="" z=""
+  local pid="$1" run="$3" n="${4:-}" size=-1 s now done_at="" z="" polled st accepted=""
   trap 'kill "$z" 2>/dev/null; exit 0' TERM
-  touch "$run/.active"
+  touch "$run/.active"; polled="$(date +%s)"
   while :; do
     sleep "$WATCH_INTERVAL" & z=$!; wait "$z"
     now="$(date +%s)"; s="$(stat -c %s "$2" 2>/dev/null || echo 0)"
@@ -372,6 +404,16 @@ watch_run() { # pid log run-dir [issue head-before]
     if [[ -n "$n" ]] && run_done "$n" "$run" "$5"; then
       done_at="${done_at:-$now}"
       if (( now - done_at >= DONE_GRACE )); then echo "done" > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0; fi
+    fi
+    if [[ -n "$n" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" && -n "${CI_JOB_ID:-}" ]] && (( now - polled >= JOB_POLL )); then
+      polled="$now"
+      if st="$(job_status)"; then
+        case "$st" in
+          running) accepted=1 ;;
+          refused) [[ -z "$accepted" ]] || { echo job-gone > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0; } ;;
+          *) echo job-gone > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0 ;;
+        esac
+      fi
     fi
   done
 }
@@ -735,10 +777,18 @@ PR
   case "$stopped:$rc" in
     done:*) log "claude stopped on #$n: its run was done and it had not exited ${DONE_GRACE}s later" ;;
     idle:*) log "claude stopped on #$n: idle (no output, no change) for ${LOOPER_IDLE_MINUTES:-20} minutes" ;;
+    job-gone:*) log "claude stopped on #$n: GitLab no longer runs this job (${CI_JOB_URL:-$CI_JOB_ID})" ;;
     :0) log "claude finished #$n" ;;
     :124|:137) log "claude stopped on #$n: the time limit ($(hours "$limit"))" ;;
     *) log "claude exited $rc on #$n" ;;
   esac
+  # An orphaned run (looper#21) leaves the issue to its job's retry: its work
+  # checkpointed, nothing else pushed, no comment, the label kept, and no other
+  # issue taken.
+  if [[ "$stopped" == job-gone ]]; then
+    checkpoint "$n" "its job is no longer running" "$run"
+    log "#$n left to the job's retry, from $(wip_branch "$n")"; exit 0
+  fi
   git -C "$CHECKOUT" fetch -q origin
   head_after="$(git -C "$CHECKOUT" rev-parse origin/main)"
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true

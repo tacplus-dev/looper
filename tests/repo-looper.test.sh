@@ -83,16 +83,35 @@ esac
 [[ -f "$FIX/$s" ]] || exit 0
 OUTCOME="$(grep -oE '/[^ `]*/outcome' <<<"$prompt" | head -1)" bash "$FIX/$s"
 EOF
-# GitLab's jobs API: $FIX/jobs.json ([{name,status}]) filtered by the URL's
-# scope[] parameters, as GitLab does; no file answers HTTP 500. Each request's
-# auth header and URL are appended to $FIX/gitlab.
+# GitLab's jobs API: $FIX/jobs.json ([{name,status,id}]) filtered by the URL's
+# scope[] parameters, as GitLab does; one job by its id (/projects/:id/jobs/:id),
+# or this job, CI_JOB_ID, for its own token (/job). $FIX/revoked refuses the
+# job's token (HTTP 401), as GitLab does once the job ended; no file answers
+# HTTP 500. With -f a failure exits 22; -w prints the HTTP status. Each
+# request's auth header and URL are appended to $FIX/gitlab.
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-url=""; auth=""
-while [[ $# -gt 0 ]]; do case "$1" in -H) auth="${2%%:*}"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac; done
+url=""; auth=""; out=""; w=""; f=""
+while [[ $# -gt 0 ]]; do case "$1" in
+  -H) auth="${2%%:*}"; shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
+  http*) url="$1"; shift ;; -*f*) f=1; shift ;; *) shift ;;
+esac; done
 echo "$auth $url" >> "$FIX/gitlab"
-[[ -f "$FIX/jobs.json" ]] || { echo "curl: (22) The requested URL returned error: 500" >&2; exit 22; }
-jq --arg s "$(grep -oE 'scope\[\]=[a-z_]+' <<<"$url" | cut -d= -f2 | paste -sd, -)" '[.[] | select(.status | IN($s | split(",")[]))]' "$FIX/jobs.json"
+reply() { # code body
+  if [[ -n "$out" ]]; then printf '%s\n' "$2" > "$out"; else printf '%s\n' "$2"; fi
+  [[ "$1" == 200 || -z "$f" ]] || { echo "curl: (22) The requested URL returned error: $1" >&2; exit 22; }
+  [[ -z "$w" ]] || printf '%s' "$1"
+}
+if [[ "$auth" == JOB-TOKEN && -e "$FIX/revoked" ]]; then reply 401 '{"message":"401 Unauthorized"}'; exit 0; fi
+[[ -f "$FIX/jobs.json" ]] || { reply 500 '{"message":"500 Internal Server Error"}'; exit 0; }
+case "$url" in
+  */jobs\?*) reply 200 "$(jq --arg s "$(grep -oE 'scope\[\]=[a-z_]+' <<<"$url" | cut -d= -f2 | paste -sd, -)" '[.[] | select(.status | IN($s | split(",")[]))]' "$FIX/jobs.json")" ;;
+  */jobs/*|*/job)
+    id="${url##*/jobs/}"; [[ "$url" == */job ]] && id="${CI_JOB_ID:-}"
+    j="$(jq --arg id "$id" '.[] | select((.id | tostring) == $id)' "$FIX/jobs.json")"
+    if [[ -n "$j" ]]; then reply 200 "$j"; else reply 404 '{"message":"404 Not found"}'; fi ;;
+  *) reply 404 '{"message":"404 Not found"}' ;;
+esac
 EOF
 chmod +x "$TMP/bin/gh" "$TMP/bin/claude" "$TMP/bin/curl"
 
@@ -803,6 +822,111 @@ issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
 push_fix
 run
 [[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
+pass
+
+# A run whose job GitLab no longer runs (looper#21): GitLab can mark a job
+# failed (runner_system_failure) while its container keeps working on the VM,
+# and retry it. The run polls its own job every LOOPER_JOB_POLL seconds; once
+# GitLab reports it anything but running, the run checkpoints and stops: nothing
+# more on main, no comment, and the label left to the retry, which resumes from
+# that checkpoint.
+orphan() { # claude.sh: work, checkpoint a step, more work, then $1 (GitLab ends the job), then push and comment
+  cat > "$FIX/claude.sh" <<EOS
+echo x > a.txt
+"\$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "a.txt written; left: b.txt, close it"
+echo y > b.txt; sleep 2
+$1
+sleep 30
+git add -A && git commit -q -m "the orphan's fix" && git push -q origin main
+gh issue comment 4 --repo tacplus-dev/alpha --body "the orphan's comment"
+EOS
+}
+fail_job() { echo "jq 'map(if .id == $1 then .status = \"failed\" else . end)' \"\$FIX/jobs.json\" > \"\$FIX/x\" && mv \"\$FIX/x\" \"\$FIX/jobs.json\""; } # job id
+orphan_stopped() { # elapsed seconds
+  (( $1 < 20 )) || fail "the orphaned run was not stopped"
+  has "$OUT" "GitLab no longer runs this job"
+  main_unchanged
+  [[ ! -s "$FIX/comments" ]] || fail "commented"
+  [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
+  [[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt " ]] \
+    || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
+}
+POLL=(LOOPER_JOB_POLL=1 LOOPER_WATCH_INTERVAL=1)
+
+scenario job-gone
+jobs "looper-alpha-4 running 77"
+orphan "$(fail_job 77)"
+start=$SECONDS
+run "${GL[@]}" CI_JOB_ID=77 "${POLL[@]}"
+orphan_stopped "$(( SECONDS - start ))"
+has "$(cat "$FIX/gitlab")" "PRIVATE-TOKEN https://gl.test/api/v4/projects/42/jobs/77"
+: > "$FIX/prompts"
+cat > "$FIX/claude.sh" <<'EOS'
+cat a.txt b.txt > "$FIX/checkout"
+git add -A && git commit -q -m fix && git push -q origin main
+jq '.state = "CLOSED"' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+EOS
+jobs "looper-alpha-4 failed 77" "looper-alpha-4 running 78"
+run "${GL[@]}" CI_JOB_ID=78 "${POLL[@]}"
+has "$(prompts)" "working issue #4."
+has "$OUT" "resuming #4 from looper/alpha-4"
+[[ "$(cat "$FIX/checkout")" == $'x\ny' ]] || fail "not resumed from the checkpoint: $(cat "$FIX/checkout")"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "a.txt written; left: b.txt, close it"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+[[ "$(origin show main:b.txt)" == y ]] || fail "work not on main"
+pass
+
+# With only the job's own token, GitLab refusing it after it was accepted is the
+# job's end too: GitLab revokes a job's token when the job stops running.
+scenario job-gone-job-token
+jobs "looper-alpha-4 running 77"
+orphan 'touch "$FIX/revoked"'
+start=$SECONDS
+run CI_API_V4_URL=https://gl.test/api/v4 CI_PROJECT_ID=42 CI_JOB_TOKEN=j CI_JOB_ID=77 "${POLL[@]}"
+orphan_stopped "$(( SECONDS - start ))"
+has "$(cat "$FIX/gitlab")" "JOB-TOKEN https://gl.test/api/v4/job"
+pass
+
+# A run whose job is still running is never stopped, however often it polls;
+# nor is one that cannot read GitLab (down, or its token never accepted), nor
+# one outside a GitLab job, which asks GitLab nothing.
+working() { # claude.sh: work a while, then push and close
+  echo 'for i in 1 2 3 4 5; do echo tick; sleep 1; done' >> "$FIX/claude.sh"
+  push_fix; close_it
+}
+not_stopped() {
+  lacks "$OUT" "no longer runs"
+  [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+  [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+  [[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == CLOSED ]] || fail "not closed"
+}
+scenario job-running
+jobs "looper-alpha-4 running 77"
+working
+run "${GL[@]}" CI_JOB_ID=77 "${POLL[@]}"
+not_stopped
+(( $(grep -c '/projects/42/jobs/77$' "$FIX/gitlab") >= 2 )) || fail "polled: $(cat "$FIX/gitlab")"
+pass
+
+scenario job-gitlab-down
+working
+run "${GL[@]}" CI_JOB_ID=77 "${POLL[@]}"
+not_stopped
+grep -q '/jobs/77$' "$FIX/gitlab" || fail "not polled"
+pass
+
+scenario job-token-never-accepted
+jobs "looper-alpha-4 running 77"; touch "$FIX/revoked"
+working
+run CI_API_V4_URL=https://gl.test/api/v4 CI_PROJECT_ID=42 CI_JOB_TOKEN=j CI_JOB_ID=77 "${POLL[@]}"
+not_stopped
+pass
+
+scenario job-outside-ci
+working
+run CI_JOB_ID=77 "${POLL[@]}"
+not_stopped
+[[ ! -e "$FIX/gitlab" ]] || fail "asked GitLab: $(cat "$FIX/gitlab")"
 pass
 
 echo "repo-looper: all scenarios pass"

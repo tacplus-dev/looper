@@ -25,6 +25,13 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   job's. And every `looper-dispatch run` removes the label, with a comment, from any issue whose
   repository has no such job, so the next pass resumes it. An issue whose job is really running, or
   whose jobs GitLab cannot tell, is never taken twice.
+- **A run whose job GitLab no longer runs** (looper#21): GitLab can mark a job failed
+  (`runner_system_failure`, the manager's tunnel to the VM lost) while its container keeps working on the
+  VM, and retry it. So every few minutes (`LOOPER_JOB_POLL`, default 300 seconds) a run asks GitLab for its
+  own job (`CI_JOB_ID`; with `GITLAB_TOKEN`, else the job's token, which GitLab refuses once the job has
+  stopped). Once GitLab reports it anything but `running`, the run checkpoints and stops: nothing more
+  pushed to main, no comment, `looper:in-progress` left to the retry, which resumes from that checkpoint.
+  A run that cannot read GitLab keeps going: GitLab being down is not the job being gone.
   Its schedules run the nightly scan of every repository and the hourly port scan (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
 - **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
@@ -148,10 +155,11 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | pushed the fix, but the gates wait on another open issue (it writes `Blocked-by: <issue>` to the run's `outcome` file) | that `Blocked-by:` line is added to its body and it stays `approved`: it is worked again, for the gates, once that issue is closed |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | went idle | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
+| lost its job (GitLab no longer runs it, looper#21) | nothing: its work is checkpointed and the job's retry resumes it |
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, a killed run resumed by its retry (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files

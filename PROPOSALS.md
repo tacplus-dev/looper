@@ -34,5 +34,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   the oldest ready issue instead, but keeps the job timeout computed for the planned one; if the new issue asks for a
   longer `Timeout:`, GitLab stops the job before the model's limit (its work survives as a checkpoint).
   repo-looper could cap the run's limit at `CI_JOB_TIMEOUT` less the hour it reserves.
+- **An orphan's last checkpoint and its retry** (2026-10-28, #21): a run whose job GitLab no longer runs stops within
+  one `LOOPER_JOB_POLL` and checkpoints to `looper/<repo>-<n>`; a retry that has already resumed from the branch
+  meanwhile overwrites that checkpoint with its own (force-with-lease against what it read), losing at most that
+  interval's work. The retry could wait one poll interval before resuming when the job it retries was the issue's
+  last checkpointer (`CI_JOB_URL` is in each checkpoint's record), or merge a newer orphan checkpoint in.
+- **The job poll and the job token** (2026-10-28, #21): with only `CI_JOB_TOKEN`, an orphan is told by GitLab
+  refusing the token (`GET /job`, HTTP 401) after it was accepted; a token that never worked (an instance that limits
+  job-token API access) leaves the poll blind and the run going. `GITLAB_TOKEN` (read-only) in the looper jobs'
+  variables makes it exact (`GET /projects/:id/jobs/:id`), and is worth checking in the GitLab project's settings.
 
 ## Promoted / declined
