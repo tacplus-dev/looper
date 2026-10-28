@@ -7,3 +7,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-27 looper issue Issue flow: bug → fix + patch releases; feature → design, approval, ROADMAP first (labels, prompt, scan) (#14, cfb335e)
 - 2026-10-27 looper issue Plan doesn't re-plan a repo that already has a job queued or waiting (stale duplicates hold the slot) (#16, 45f3fec)
 - 2026-10-28 looper issue A run killed by a runner failure leaves looper:in-progress, so its automatic retry finds nothing to do (#20, 70c9b4c)
+- 2026-10-28 looper issue A job GitLab marks runner_system_failure can keep running on its VM, so a retry runs the same issue twice (#21, ae593ec)
