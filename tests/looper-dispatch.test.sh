@@ -15,11 +15,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # Issues: $FIX/issues/<repo>-<n>.json ({number,state,labels:[{name}],body,createdAt}).
+# Each call is appended to $FIX/gh. `api graphql` answers the aliased
+# `repository(...) { issue(number: N) { state } }` queries from the issue files,
+# null (and exit 1, as gh does) for a missing one; $FIX/rate-limited refuses it.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 cmd="$1 $2"; shift 2
+echo "$cmd" >> "$FIX/gh"
+if [[ "$cmd" == "api graphql" ]]; then
+  [[ ! -e "$FIX/rate-limited" ]] || { echo '{"errors":[{"type":"RATE_LIMIT","message":"API rate limit already exceeded"}]}'; exit 1; }
+  q="${2#query=}"; data='{}'; rc=0
+  while read -r a r n; do
+    f="$FIX/issues/$r-$n.json"
+    if [[ -f "$f" ]]; then data="$(jq --arg a "$a" --slurpfile i "$f" '.[$a] = {issue: {state: $i[0].state}}' <<<"$data")"
+    else data="$(jq --arg a "$a" '.[$a] = {issue: null}' <<<"$data")"; rc=1; fi
+  done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issue\(number: [0-9]+\)' <<<"$q" \
+             | sed -E 's/^([a-z0-9_]+): repository\(owner: "[^"]+", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3/')
+  jq -c '{data: .}' <<<"$data"; exit "$rc"
+fi
 repo=""; n=""; q="."; label=""; rm=""; body=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,12 +90,17 @@ scenario() { # name: alpha has a ready issue #4
 }
 jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
 run_dispatch() {
-  OUT="$(env -u CI_API_V4_URL PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
+  OUT="$(env -u CI_API_V4_URL LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
     "$ROOT/looper-dispatch" "$@" 2>&1)"
 }
 dispatch() { run_dispatch "$@" || { echo "$OUT"; fail "looper-dispatch exited non-zero"; }; }
 dispatch_fails() { ! run_dispatch "$@" || fail "looper-dispatch $* succeeded: $OUT"; }
 passes() { grep -c ' GET .*/jobs?' "$FIX/gitlab"; }
+issue() { # repo n state body label...: another issue
+  local r="$1" n="$2" st="$3" b="$4"; shift 4
+  jq -n --arg r "$r" --argjson n "$n" --arg st "$st" --arg b "$b" --arg c "2026-10-2${n: -1}T00:00:00Z" '$ARGS.positional as $l |
+    {repo: $r, number: $n, state: $st, labels: [$l[] | {name: .}], body: $b, createdAt: $c}' --args "$@" > "$FIX/issues/$r-$n.json"
+}
 started() { [[ -s "$FIX/started" ]]; }
 fail() { echo "FAIL $NAME: $*" >&2; exit 1; }
 pass() { echo "ok $NAME"; }
@@ -157,6 +177,69 @@ for st in created pending waiting_for_resource running; do
   [[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
   pass
 done
+
+# Blocked-by: ready only when every issue it names is closed; a missing one
+# (or a pull request, which is no issue) holds it as an open one does.
+scenario blocked-open
+issue alpha 4 OPEN $'Fix it.\nBlocked-by: #5' approved
+issue alpha 5 OPEN "The other half."
+dispatch run
+! started || fail "started a pipeline for a blocked issue"
+pass
+
+scenario blocked-closed
+issue alpha 4 OPEN $'Fix it.\r\n  blocked-by: tacplus-dev/beta#2\r\nBlocked-by: #5' approved
+issue alpha 5 CLOSED "Done."
+issue beta 2 CLOSED "Done."
+dispatch run
+started || fail "no pipeline started: $OUT"
+pass
+
+scenario blocked-missing
+issue alpha 4 OPEN $'Fix it.\nBlocked-by: #9' approved
+dispatch run
+! started || fail "started a pipeline for an issue blocked by a missing one"
+pass
+
+for held in looper:stuck needs-decision; do
+  scenario "held-$held"
+  issue alpha 4 OPEN "Fix it." approved "$held"
+  dispatch run
+  ! started || fail "started a pipeline for an issue labelled $held"
+  pass
+done
+
+# GitHub refusing (its rate limit, say): no issue can be told ready, the pass
+# fails and starts nothing.
+scenario rate-limited
+issue alpha 4 OPEN $'Fix it.\nBlocked-by: #5' approved
+issue alpha 5 CLOSED "Done."
+touch "$FIX/rate-limited"
+dispatch_fails run
+! started || fail "started a pipeline with GitHub refusing"
+pass
+
+# A pass reads GitHub for the whole org at once: its cost does not grow with
+# the issues (a request per issue and per blocker came to about 270 a pass,
+# past GitHub's 5000 an hour at one every 3 minutes; looper#24).
+scenario cost
+for r in alpha beta gamma; do
+  for n in 1 2 3 5 6 7; do issue "$r" "$n" OPEN "Blocked-by: #$((n + 1))" approved; done
+done
+issue gamma 8 OPEN "Not approved."
+dispatch run
+[[ "$(wc -l < "$FIX/gh")" -le 4 ]] || fail "$(wc -l < "$FIX/gh") GitHub calls: $(sort "$FIX/gh" | uniq -c)"
+grep -q 'started the .* (alpha has a ready issue)' <<<"$OUT" || fail "log: $OUT"
+pass
+
+scenario status-oldest
+issue alpha 2 OPEN "Older." approved
+issue beta 3 OPEN "Blocked-by: #4" approved
+issue beta 4 OPEN "Open."
+dispatch status
+grep -q "^alpha: ready 2\$" <<<"$OUT" || fail "status: $OUT"
+! grep -q "^beta" <<<"$OUT" || fail "status: $OUT"
+pass
 
 # The kicker (looper#24): an hourly scheduled job, since gitlab.com schedules
 # run at most hourly here, that repeats the pass every LOOPER_INTERVAL for

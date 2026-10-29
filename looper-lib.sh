@@ -105,6 +105,46 @@ next_ready() { # repo
   return 0
 }
 
+# Every repository's oldest ready issue, as "<repo> <number>" lines: the rule
+# of next_ready, read for the whole org at once (the kicker's pass, looper#24),
+# one search and one GraphQL query for the blockers' states. next_ready costs a
+# request per issue and per blocker: about 270 for the org in 2026-10, past
+# GitHub's 5000 an hour at a pass every 3 minutes. A blocker GitHub does not
+# resolve to an issue holds its issue. Fails when GitHub cannot be read.
+ready_by_repo() {
+  local all issues r n b64 refs q="" i=0 out states
+  all="$(gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_APPROVED" --limit 1000 \
+           --json repository,number,labels,createdAt,body)" || return 1
+  # Not held, oldest first: "<repo> <number> <body, base64>".
+  issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
+                   | sort_by(.createdAt) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1
+  # Each issue's blockers: "<repo> <number> <blocker repo> <blocker number>".
+  refs="$(while read -r r n b64; do
+            [[ -n "$r" ]] || continue
+            base64 -d <<<"$b64" | parse_blockers "$r" | sed "s/^/$r $n /"
+          done <<<"$issues")"
+  # The blockers' states, one aliased GraphQL query: "<repo> <number> <state>".
+  while read -r r n; do
+    [[ -n "$r" ]] || continue
+    q="$q b$i: repository(owner: \"$LOOPER_ORG\", name: \"$r\") { issue(number: $n) { state } }"; i=$((i + 1))
+  done < <(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u)
+  states=""
+  if [[ -n "$q" ]]; then
+    # A blocker that is no issue answers null and gh exits 1; no data at all is GitHub refusing.
+    out="$(gh api graphql -f query="{$q }" 2>/dev/null)" || true
+    jq -e '.data | type == "object"' <<<"$out" >/dev/null 2>&1 || return 1
+    states="$(paste -d' ' <(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u) \
+                          <(jq -r '.data as $d | range(0; $d | length) | $d["b\(.)"].issue.state // "MISSING"' <<<"$out"))"
+  fi
+  # Ready: every blocker closed. The first per repository is its oldest.
+  while read -r r n b64; do
+    [[ -n "$r" ]] || continue
+    if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
+         while read -r br bn; do grep -qx "$br $bn CLOSED" <<<"$states" || exit 1; done
+       }; then echo "$r $n"; fi
+  done <<<"$issues" | awk '!seen[$1]++'
+}
+
 # A looper job holds its repository while it is created, pending, waiting for
 # the repository's resource_group or running (looper#16): the GitLab jobs API's
 # scope[] parameters for those states.

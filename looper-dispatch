@@ -40,12 +40,6 @@ active_jobs() {
   gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[].name'
 }
 
-# Repositories with at least one open approved issue: one search for the whole org.
-repos_with_approved() {
-  gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_APPROVED" --limit 200 \
-    --json repository --jq '.[].repository.name' | sort -u
-}
-
 # A run killed outright (its runner gone, looper#20) never removes
 # looper:in-progress. An issue labelled so in a repository with no looper job
 # created, pending, waiting or running is held by no run: the label goes, the
@@ -65,18 +59,19 @@ release_orphans() { # active jobs
 # One pass: release the orphans, then start the pipeline for the first
 # repository with a ready issue and no looper job of its own.
 pass() {
-  local jobs repo
+  local jobs ready repo n
   jobs="$(active_jobs)"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
-  for repo in $(repos_with_approved); do
+  ready="$(ready_by_repo)"
+  while read -r repo n; do
+    [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" >/dev/null && continue
-    [[ -n "$(next_ready "$repo")" ]] || continue
     gitlab -X POST "$API/pipeline" -d ref=main >/dev/null
     log "started the $PIPELINE pipeline ($repo has a ready issue)"
     return 0
-  done
+  done <<<"$ready"
   log "no repository with a ready issue is free; nothing to start"
 }
 
@@ -97,11 +92,11 @@ case "${1:-}" in
     fi
     pass ;;
   status)
-    jobs="$(active_jobs)"
+    jobs="$(active_jobs)"; ready="$(ready_by_repo)"
     echo "active jobs in $PIPELINE: $(tr '\n' ' ' <<<"$jobs")"
-    for repo in $(repos_with_approved); do
-      echo "$repo: ready $(next_ready "$repo" | tr '\n' ' ')$(busy "$repo" "$jobs" >/dev/null && echo '(busy)')"
-    done ;;
+    while read -r repo n; do
+      [[ -n "$repo" ]] && echo "$repo: ready $n$(busy "$repo" "$jobs" >/dev/null && echo ' (busy)')"
+    done <<<"$ready" ;;
   uninstall)
     # run and nightly: the launchd jobs earlier versions installed (looper#24).
     for job in run nightly; do

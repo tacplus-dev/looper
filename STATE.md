@@ -5,7 +5,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.4` environment (#1); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
 - **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a
-  pass every 3 minutes, never two kicker jobs at once, nothing on the Mac (#24); it starts the pipeline; neither it nor the pipeline's plan
+  pass every 3 minutes that reads GitHub for the whole org in three requests, never two kicker jobs at once, nothing on
+  the Mac (#24); it starts the pipeline; neither it nor the pipeline's plan
   (`repo-looper --list`) starts another job for a repository whose looper job is created, pending, waiting
   for its `resource_group` or running, and a planned job whose issue was taken meanwhile works the oldest
   ready one (#16); a run killed outright no longer leaves `looper:in-progress` behind: the job for its issue

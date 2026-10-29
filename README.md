@@ -14,7 +14,9 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   starts that pipeline. It is the pipeline's kicker schedule (description containing `kicker`), hourly,
   since gitlab.com runs this group's schedules at most once an hour (Free tier): its job, `looper-kick`,
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
-  fails at the end if a pass failed. Two kicker jobs never overlap (`resource_group: kicker`): the next
+  fails at the end if a pass failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
+  `looper-lib.sh`: one search, one GraphQL query for the blockers' states), since the per-repository
+  reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`): the next
   hour's waits for the last. Nothing else runs when there is no ready issue.
 - **The pipeline** plans one job per repository with a ready issue (`looper-<repo>-<issue>`), each
   working that repository's oldest ready issue; jobs of one repository never overlap (`resource_group`).
@@ -265,7 +267,7 @@ tests/looper-port.test.sh                  # the scan against fixtures (stub gh 
 ```sh
 looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL seconds for 57 minutes
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
-tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab unreadable releases and starts nothing; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
 The jobs' credentials are tacplus-dev GitLab group CI variables, masked and protected (`GH_TOKEN`,

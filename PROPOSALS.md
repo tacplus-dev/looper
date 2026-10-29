@@ -63,6 +63,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   autoscaled arm64 runner (t2a-standard-8 workers, size 0 at rest before), in the full looper image, for a few `gh`
   and `curl` calls. A small runner of its own (a tag on the manager VM, say) or a slim image would cost a fraction;
   a paid tier's 5-minute schedules would let a one-pass job end in seconds.
+- **The loopers' GitHub budget** (2026-10-29, #24): every looper job, the plan, the scans and the kicker share
+  `GH_TOKEN`, and so one user's 5000 GraphQL points an hour (the Mac's `gh` login too, while it runs the old kicker).
+  The kicker's pass used about 270 (now three requests); on 2026-10-29 the budget ran out at 06:36 and a run's own
+  `gh` calls failed with it. A GitHub App installation token for the loopers (5000+ an hour of its own, per
+  installation) would take them off a person's budget; `repo-looper --list` could also use `ready_by_repo`.
 - **The port scan runs every two hours, not hourly** (2026-10-29, #24): gitlab.com runs this group's schedules at
   most hourly, on the hour, and a schedule's next run is the first hour after its cron's next time; so the port
   scan's `7 * * * *` fires at 21:07, 23:07, 01:08... (its pipelines on 2026-10-28/29). Its cron `0 * * * *` would
