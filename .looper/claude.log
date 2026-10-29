@@ -1,0 +1,201 @@
+= init
+> Bash gh issue view 29 --repo tacplus-dev/looper --comments; ls; git log --oneline -3
+< Dockerfile HISTORY.md LICENSE PROPOSALS.md README.md ROADMAP.md STATE.md ci looper-build looper-dispatch looper-lib.sh looper-port looper-smoke planning-files-check ports.yaml repo-looper tacplus tests 96dafde ROADMAP.md: GitLab forge backend for SeaBeam (#29) (agent, at Jody's request) 048b703 imag...
+The issue view printed nothing. Let me retry.
+> Bash gh issue view 29 --repo tacplus-dev/looper --comments 2>&1; echo "exit=$?"; gh issue view 29 --repo tacplus-dev/looper --json title,body,labels,state,comments 2>&1 | head -200
+< exit=0 {"body":"## What\n\nJody, 2026-10-29: SeaBeam gets a kicker too, using **this** looper. SeaBeam's code and issues live on **GitLab** (the `seabeam`\ngroup), so the looper gains a second forge backend. Each world keeps its own home; the code is shared.\n\n- **A forge abstraction** in `looper-l...
+Substantial feature. Let me read the codebase and planning files.
+> Bash wc -l * ci/* tests/* 2>/dev/null; ls -la ci tests .github 2>&1; cat ROADMAP.md STATE.md
+<      35 Dockerfile      14 HISTORY.md     202 LICENSE      95 PROPOSALS.md     401 README.md      26 ROADMAP.md      43 STATE.md       0 ci     424 looper-build     108 looper-dispatch     175 looper-lib.sh     433 looper-port      20 looper-smoke      48 planning-files-check      52 ports.yaml     ...
+> Bash cat looper-lib.sh looper-dispatch; cat .github/workflows/*; ls .github/workflows; cat .gitlab-ci.yml 2>/dev/null | head -100
+< # shellcheck shell=bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # looper-lib.sh: what the dispatcher (on the host) and repo-looper (in the # container) must agree on, sourced by both so the rules live in one place: # which labels mean what, and which issues are ready ...
+= thinking_tokens
+= thinking_tokens
+> Read /builds/looper/looper/checkout/repo-looper
+< 1	#!/usr/bin/env bash 2	# Copyright (c) 2026 Jody Scott 3	# SPDX-License-Identifier: Apache-2.0 4	# 5	# repo-looper: the one looper of one tacplus-dev repository. It runs in the 6	# looper container, as a job of the GitLab looper pipeline on the autoscaled 7	# runner (one job per repository at a tim...
+> Read /builds/looper/looper/checkout/README.md
+< 1	# looper 2	 3	Each tacplus-dev repository works on itself. Work reaches a repository only as an issue; an issue 4	someone with write access labels `approved` is worked by that repository's looper, which commits and 5	pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (6879...
+> Read /builds/looper/looper/checkout/repo-looper
+< 804	  # HISTORY.md: a line for the closed issue (with the run's last commit on 805	  # main, if it pushed) and one for each release the run made. 806	  local lines=() title t 807	  if [[ "$state" == CLOSED ]]; then 808	    title="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json title --jq .tit...
+= thinking_tokens
+= thinking_tokens
+> Bash cat PROPOSALS.md HISTORY.md; git ls-files; grep -rn "gitlab-ci\|looper-plan\|looper-kick" --include=* -l . | grep -v .git/
+< # Proposals: looper  Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones into ROADMAP.md (via an agent); the looper then marks it `promoted` or `declined` here with the date.  ## Open - **ROADMAP.md guard that a model cannot skip** (2026-10-27, #13): repo-looper refuses ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api repos/tacplus-dev/roadmap/contents/items/seabeam-realign-2026-10-29.md -H 'Accept: application/vnd.github.raw'; echo ----; gh api repos/tacplus-dev/roadmap/contents/ROADMAP.md -H 'Accept: application/vnd.github.raw' | head -80; gh api repos/tacplus-dev/roadmap/contents/items --jq '...
+< # SeaBeam realign brief: adopting tacplus-dev's work  - **For:** SeaBeam's loopers and the people steering them. - **From:** tacplus-dev, 2026-10-29, at Jody's request ("have seabeam restart its loopers and start work based on our new work and   design"). - **Status:** phase 1 may start now. Phase 2...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Reading the context done; next I'm studying the test stubs to design the forge abstraction.
+> Bash sed -n 1,200p tests/looper-dispatch.test.sh
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # looper-dispatch run: it starts the looper pipeline only for a repository with # a ready issue and no looper job of its own created, pending, waiting for its # resource_group or running (looper#16). A stub `...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n 'gh \|github\.com' repo-looper looper-lib.sh looper-dispatch looper-port | grep -v '^\s*#' ; cat Dockerfile; which glab gh; grep -n 'looper-lib\|source' looper-port looper-build | head
+< repo-looper:163:  l="$(gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json state,labels --jq 'select(.state == "OPEN") | .labels[].name')" || return 1 repo-looper:205:  body="$(gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json body --jq .body)" || { echo "$TIMEOUT"; return 0; } repo-looper:218:g...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 1,220p tests/repo-looper.test.sh
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # repo-looper's outcome handling (what it does to an issue after the run ends), # its checkpoints of work in progress, resuming from them, and the time limit. # A stub `gh` keeps issues as JSON files, a stub ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cat tests/git-server.py; sed -n 1,60p tests/tacplus.test.sh; curl -sS https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases?per_page=1 | jq -r '.[0].tag_name' 
+< # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # A stub git server for tests/tacplus.test.sh: an HTTPS proxy that answers # every CONNECT itself (TLS with the test CA's certificate for any host), so # https://github.com/... and any other host reach it without network. Each #...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && echo $CI_PROJECT_PATH; curl -sS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$CI_API_V4_URL/projects/${CI_PROJECT_PATH//\//%2F}/repository/files/.gitlab-ci.yml/raw?ref=main"
+< tacplus-dev/looper # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper:main); this project only runs them, on t...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Network works. Let me check `glab`'s CLI (for the model's prompt on GitLab) by fetching a release into a scratch dir.
+> Bash mkdir -p /tmp/glabdl && cd /tmp/glabdl && uname -m && V=1.126.0 && A=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/') && curl -fsSLO "https://gitlab.com/gitlab-org/cli/-/releases/v$V/downloads/glab_${V}_linux_${A}.tar.gz" && curl -fsSLO "https://gitlab.com/gitlab-org/cli/-/releases/v$V/downloads...
+< aarch64 9ee1154f98a37a7f7f607a55f5dcfe640f8bf218d3a02996ac58794277288c3b  glab_1.126.0_linux_386.apk ca3e1559d8a99492bc9a89f5d68ee27e3b668c35ac0923745a88c877b4dad670  glab_1.126.0_linux_386.deb 7c8d271b06c28aa0286cdfd41fa537e6687dea6543d6d8e7a3dc54e1dea5a17c  glab_1.126.0_linux_386.rpm 71d2ca7df82cd...
+> Bash cd /tmp/glabdl && sha256sum glab_*.tar.gz; G=./bin/glab; for c in "issue view" "issue close" "issue update" "issue note" "issue create" "issue list"; do echo "== $c"; HOME=/tmp/glabdl $G $c --help 2>&1 | grep -E '^\s+-' | head -30; done
+< de5e92c9c8b306eeebb19daa854d48101b78328850e7b9cd677ecd6f98cd4391  glab_1.126.0_linux_arm64.tar.gz == issue view     -c --comments     Show issue comments and activities.     -h --help         Show help for this command.     --jq              Filter JSON output with a jq expression.     -F --output  ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash /usr/local/bin/repo-looper --repo looper --issue 29 --checkpoint "Read the issue and context; design: forge layer in looper-lib.sh (github: gh, gitlab: REST via curl), call sites moved onto it, glab in the image, ci/looper.gitlab-ci.yml, tests/forge.test.sh. Nothing written yet." 2>&1 | tail -2
