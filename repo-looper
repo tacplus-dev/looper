@@ -52,18 +52,18 @@
 # A finished or idle run ends (tacplus-dev/looper#8): a watchdog stops the model
 # when it went idle (no output and no change in the checkout for
 # LOOPER_IDLE_MINUTES; the issue gets a comment with its log tail and is
-# looper:stuck), and when the run is done (it closed the issue, or pushed with a
+# looper:stuck), and when the run is done (it closed the issue, or wrote its
 # Blocked-by outcome) and the model has not exited LOOPER_DONE_GRACE seconds
 # later. Every checkpoint also carries the run's record (prompt.md, the
 # claude.log tail) under .looper/, so a cancelled run still leaves its log.
 #
-# After the run: closed or needs-decision is the run's own outcome. A fix that
-# is pushed while the gates wait on another open issue (the run writes
-# `Blocked-by: <issue>` to its outcome file) gets that line in the issue body
-# and stays approved, so it is worked again for the gates once that issue
-# closes. A run that reached its limit says what is done and what is left and
-# stays approved: the next run resumes from its branch. Anything else is
-# looper:stuck, for a person.
+# After the run: closed or needs-decision is the run's own outcome. An issue
+# that waits on other open issues (the run writes `Blocked-by: <issue>` lines
+# to its outcome file, whether it pushed a fix whose gates wait or rightly
+# pushed nothing, looper#22) gets those lines in its body and stays approved,
+# so it is worked again once they close. A run that reached its limit says
+# what is done and what is left and stays approved: the next run resumes from
+# its branch. Anything else is looper:stuck, for a person.
 #
 # The planning files (looper#13): before the model runs, a missing STATE.md,
 # PROPOSALS.md or HISTORY.md is created on main from its template in
@@ -353,7 +353,7 @@ RENDER='
 # Runs the model with the watchdog beside it. A run dir with an issue is an
 # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the
 # watchdog also ends it once the issue is done.
-run_claude() { # prompt-file log-file seconds run-dir [issue head-before]
+run_claude() { # prompt-file log-file seconds run-dir [issue]
   local rc=0 dir pid fmt watcher k
   dir="$(mktemp -d)"; mkfifo "$dir/out"
   jq -R -r --unbuffered "$RENDER" < "$dir/out" > "$2" & fmt=$!
@@ -361,7 +361,7 @@ run_claude() { # prompt-file log-file seconds run-dir [issue head-before]
       --model "$MODEL" --permission-mode acceptEdits \
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!
-  watch_run "$pid" "$2" "$4" "${5:-}" "${6:-}" & watcher=$!
+  watch_run "$pid" "$2" "$4" "${5:-}" & watcher=$!
   wait "$pid" || rc=$?
   kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null || true
   # The log is complete when the model's output closes; a process the model
@@ -373,11 +373,10 @@ run_claude() { # prompt-file log-file seconds run-dir [issue head-before]
   return "$rc"
 }
 
-# The issue's run is done: the issue is closed, or the fix is pushed (main
-# moved) and the run wrote its Blocked-by outcome.
-run_done() { # issue run-dir head-before
-  if [[ -f "$2/outcome" ]] && grep -qi '^[[:space:]]*blocked-by:' "$2/outcome" && \
-     [[ "$(git -C "$CHECKOUT" ls-remote origin refs/heads/main | cut -f1)" != "$3" ]]; then return 0; fi
+# The issue's run is done: the issue is closed, or the run wrote its
+# Blocked-by outcome (its last step, whether it pushed or not: looper#22).
+run_done() { # issue run-dir
+  if [[ -f "$2/outcome" ]] && grep -qi '^[[:space:]]*blocked-by:' "$2/outcome"; then return 0; fi
   [[ "$(gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json state --jq .state 2>/dev/null)" == CLOSED ]]
 }
 
@@ -389,7 +388,7 @@ run_done() { # issue run-dir head-before
 # reports another status, or refuses the job's token after accepting it. An
 # answer that is no status (GitLab down) stops nothing. Writes why to the run's
 # `stopped` file.
-watch_run() { # pid log run-dir [issue head-before]
+watch_run() { # pid log run-dir [issue]
   local pid="$1" run="$3" n="${4:-}" size=-1 s now done_at="" z="" polled st accepted=""
   trap 'kill "$z" 2>/dev/null; exit 0' TERM
   touch "$run/.active"; polled="$(date +%s)"
@@ -401,7 +400,7 @@ watch_run() { # pid log run-dir [issue head-before]
     elif (( now - $(stat -c %Y "$run/.active") >= IDLE )); then
       echo idle > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0
     fi
-    if [[ -n "$n" ]] && run_done "$n" "$run" "$5"; then
+    if [[ -n "$n" ]] && run_done "$n" "$run"; then
       done_at="${done_at:-$now}"
       if (( now - done_at >= DONE_GRACE )); then echo "done" > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0; fi
     fi
@@ -557,24 +556,30 @@ resume() { # issue
   printf '\nIts last checkpoint:\n\n%s\n' "$msg"
 }
 
-# The fix is pushed and only the gates wait: the run's outcome file names one
-# open issue as `Blocked-by:`. Adds that line to the issue's body (once) and
-# prints it; fails when the outcome is anything else.
-gates_blocked() { # issue run-dir head-before head-after
-  local n="$1" ref r b state body line
-  [[ "$3" != "$4" && -f "$2/outcome" ]] || return 1
-  ref="$(parse_blockers "$REPO" < "$2/outcome" | head -n 1)" || return 1
-  read -r r b <<<"$ref"; [[ -n "${b:-}" ]] || return 1
-  state="$(gh issue view "$b" --repo "$LOOPER_ORG/$r" --json state --jq .state)" || return 1
-  [[ "$state" == OPEN ]] || return 1
-  if [[ "$r" == "$REPO" ]]; then line="Blocked-by: #$b"; else line="Blocked-by: $LOOPER_ORG/$r#$b"; fi
+# The issue waits on other open issues: the run's outcome file names them as
+# `Blocked-by:` lines, whether it pushed a fix whose gates wait or rightly
+# pushed nothing (looper#22). Adds the lines its body lacks and prints them
+# all; fails, adding none, when the outcome names none, or any it names is
+# closed, does not exist or is the issue itself.
+outcome_blocked() { # issue run-dir
+  local n="$1" refs r b state body add="" lines=()
+  [[ -f "$2/outcome" ]] || return 1
+  refs="$(parse_blockers "$REPO" < "$2/outcome" | awk '!seen[$0]++')"
+  [[ -n "$refs" ]] || return 1
   body="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json body --jq .body)" || return 1
-  if ! parse_blockers "$REPO" <<<"$body" | grep -qx "$r $b"; then
+  while read -r r b; do
+    [[ "$r $b" != "$REPO $n" ]] || return 1
+    state="$(gh issue view "$b" --repo "$LOOPER_ORG/$r" --json state --jq .state)" || return 1
+    [[ "$state" == OPEN ]] || return 1
+    if [[ "$r" == "$REPO" ]]; then lines+=("Blocked-by: #$b"); else lines+=("Blocked-by: $LOOPER_ORG/$r#$b"); fi
+    parse_blockers "$REPO" <<<"$body" | grep -qx "$r $b" || add+="${lines[-1]}"$'\n'
+  done <<<"$refs"
+  if [[ -n "$add" ]]; then
     gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --body "$body
 
-$line" >/dev/null || return 1
+${add%$'\n'}" >/dev/null || return 1
   fi
-  echo "$line"
+  printf '%s\n' "${lines[@]}"
 }
 
 # The issue flow (looper#14): the issue's kind from its labels, `feature` when
@@ -757,10 +762,11 @@ $(kind_rule "$kind")
    last lines, and anything you could not verify; then, as your last step (any patch tagged and any backport
    pull requests open by then), close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`. Closing it ends your run.
 9. If the fix is pushed but the gates cannot run until another open issue is done (a compiler floor that
-   does not exist yet, say), do not close this issue: comment what you pushed and why the gates wait, and
-   write the one line \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\` to
-   $run/outcome as your last step: with the fix pushed, that ends your run. The looper adds it to the issue,
-   which is worked again for the gates once #N is closed.
+   does not exist yet, say), or there is rightly nothing to change here until another open issue is done,
+   do not close this issue: comment what you pushed (if anything) and why it waits, and write the line
+   \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\`, one per issue it waits on,
+   to $run/outcome as your last step: that ends your run. The looper adds them to the issue, which is
+   worked again once they are all closed. Never name this issue itself, nor a closed one.
 10. Your time limit is $(hours "$limit"); you are stopped $(( STOP_EARLY / 60 )) minutes before it. Whenever you finish a step,
    checkpoint it: \`$LOOPER_SELF --repo $REPO --issue $n --checkpoint "<what is done; what is left>"\`.
    It pushes everything in the checkout, committed or not, to the branch $(wip_branch "$n") (never main) and
@@ -771,7 +777,7 @@ $(opening_rule 11.)
 PR
   local rc=0 ticker
   checkpoint_ticker "$n" "$run" & ticker=$!
-  run_claude "$run/prompt.md" "$run/claude.log" "$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))" "$run" "$n" "$head_before" || rc=$?
+  run_claude "$run/prompt.md" "$run/claude.log" "$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))" "$run" "$n" || rc=$?
   kill "$ticker" 2>/dev/null; wait "$ticker" 2>/dev/null || true
   local stopped=""; [[ -s "$run/stopped" ]] && stopped="$(cat "$run/stopped")"
   case "$stopped:$rc" in
@@ -808,12 +814,21 @@ PR
   done
   if (( ${#lines[@]} )); then land "HISTORY.md: #$n (looper)" append_history "${lines[@]}"; fi
   if [[ "$state" == CLOSED ]]; then drop_wip "$n"; log "#$n done (main $head_before..$head_after)"; return 0; fi
-  local blocked
-  if blocked="$(gates_blocked "$n" "$run" "$head_before" "$head_after")"; then
-    drop_wip "$n"
+  local blocked what by those="that issue is"
+  if blocked="$(outcome_blocked "$n" "$run")"; then
+    if [[ "$head_after" != "$head_before" ]]; then
+      drop_wip "$n"
+      what="The fix is pushed (main $head_before..$head_after); the gates wait"
+    else
+      # Nothing landed: any work left in the checkout is kept on the branch.
+      checkpoint "$n" blocked
+      what="Nothing was pushed: the run found this issue waits on another"
+    fi
+    by="$(sed 's/.*/`&`/' <<<"$blocked" | paste -sd, - | sed 's/,/, /g')"
+    [[ "$blocked" == *$'\n'* ]] && those="those issues are"
     gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" \
-      --body "The fix is pushed (main $head_before..$head_after); the gates wait, so this issue is now \`$blocked\` and stays $LABEL_APPROVED: it is worked again for the gates once that issue is closed. Run record: $(run_record "$run")." >/dev/null || true
-    log "#$n pushed, gates wait ($blocked)"; return 0
+      --body "$what, so this issue is now $by and stays $LABEL_APPROVED: it is worked again once $those closed. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n blocked ($(paste -sd, - <<<"$blocked")), main $head_before..$head_after"; return 0
   fi
   # Not landed: whatever the run leaves is kept on the issue's branch.
   local timed_out="" why="the run's end"

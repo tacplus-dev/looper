@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-28 by looper (#21).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#22).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.4` environment (#1); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -12,7 +12,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-28 by lo
   from an issue no looper job holds (#20); a run whose job GitLab no longer reports running (marked failed while
   its container goes on) checkpoints and stops within one poll, pushing and commenting nothing, so it cannot race
   its retry (#21); `repo-looper` works each repository's
-  `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, Blocked-by outcomes);
+  `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, Blocked-by outcomes, one or more,
+  also from a run that pushed nothing because the issue waits on another, #22);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly
   SeaBeam port scan (stratum only, #5); the `tacplus` wrapper with GitHub credentials for the compiler container

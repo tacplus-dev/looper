@@ -142,7 +142,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
   `looper:stuck`. The model's output is its event stream (`--output-format stream-json`), rendered
   into `claude.log` as its text, each tool call and the start of each result, so a working run
   always shows output.
-- **Done:** once the run closed the issue, or pushed the fix and wrote its `Blocked-by:` outcome, the
+- **Done:** once the run closed the issue, or wrote its `Blocked-by:` outcome, the
   model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run ends as
   done. The prompt has it close the issue as its last step, after any backport pull requests.
 
@@ -152,7 +152,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | --- | --- |
 | pushed and closed it | closed |
 | asked a question | `needs-decision` |
-| pushed the fix, but the gates wait on another open issue (it writes `Blocked-by: <issue>` to the run's `outcome` file) | that `Blocked-by:` line is added to its body and it stays `approved`: it is worked again, for the gates, once that issue is closed |
+| found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. An outcome naming a closed or missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | went idle | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
 | lost its job (GitLab no longer runs it, looper#21) | nothing: its work is checkpointed and the job's retry resumes it |

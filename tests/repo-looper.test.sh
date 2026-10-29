@@ -185,9 +185,61 @@ has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#1"
 [[ "$(grep -c 'Blocked-by: #3' <<<"$(body alpha 4)")" == 1 ]] || fail "body $(body alpha 4)"
 pass
 
-scenario blocked-but-nothing-pushed
+# A run that rightly changes nothing because the issue waits on another one
+# (looper#22): the same outcome, no push, and the issue is blocked, not stuck.
+scenario blocked-nothing-pushed
 echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue tacplus 9 OPEN "" "A compiler floor."
+run
+main_unchanged
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/tacplus#9"
+has "$(body alpha 4)" "Fix it."
+has "$(cat "$FIX/comments")" "Nothing was pushed"
+has "$(cat "$FIX/comments")" "https://gl.test/jobs/77"
+lacks "$(cat "$FIX/comments")" "Marked looper:stuck"
+pass
+
+scenario blocked-nothing-pushed-two-blockers
+printf '%s\n' 'printf "Blocked-by: #3\nBlocked-by: tacplus-dev/tacplus#9\n" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue alpha 3 OPEN "" "Part 1."
+issue tacplus 9 OPEN "" "Part 2."
+run
+main_unchanged
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Blocked-by: #3"
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/tacplus#9"
+has "$(cat "$FIX/comments")" "Blocked-by: #3"
+has "$(cat "$FIX/comments")" "Blocked-by: tacplus-dev/tacplus#9"
+pass
+
+scenario blocked-nothing-pushed-by-closed-issue
+echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue tacplus 9 CLOSED "" "A compiler floor."
+run
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+lacks "$(body alpha 4)" "Blocked-by"
+pass
+
+scenario blocked-nothing-pushed-by-itself
+echo 'echo "Blocked-by: #4" > "$OUTCOME"' >> "$FIX/claude.sh"
+run
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+lacks "$(body alpha 4)" "Blocked-by"
+pass
+
+scenario blocked-by-missing-issue
+echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
+run
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+lacks "$(body alpha 4)" "Blocked-by"
+pass
+
+# One bad blocker among good ones rejects the outcome: none of it is added.
+scenario blocked-one-closed-of-two
+printf '%s\n' 'printf "Blocked-by: #3\nBlocked-by: tacplus-dev/tacplus#9\n" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue alpha 3 OPEN "" "Part 1."
+issue tacplus 9 CLOSED "" "Part 2."
 run
 [[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 lacks "$(body alpha 4)" "Blocked-by"
@@ -424,6 +476,18 @@ pass
 # Likewise once the fix is pushed and the run wrote its Blocked-by outcome.
 scenario done-blocked
 push_fix; echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue alpha 3 OPEN "" "First."
+echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 20 )) || fail "the finished run was not ended"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Blocked-by: #3"
+pass
+
+# And once a run that pushes nothing wrote its Blocked-by outcome (looper#22).
+scenario done-blocked-nothing-pushed
+echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue alpha 3 OPEN "" "First."
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 start=$SECONDS
