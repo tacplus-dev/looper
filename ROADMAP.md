@@ -7,6 +7,7 @@ The per-repository loopers of tacplus-dev: `looper-dispatch` on the Mac starts t
 Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 
 ## Next
+- The kicker runs as a scheduled GitLab pipeline; nothing on the Mac (#24)
 - Retire GitHub Actions in every repo; a gate refuses any workflow file (#18, after #17)
 - Build pipeline: (repo, commit) → pinned build image, no agent, read-only source → pass/fail + image (#17)
 - Looper image separate from the build image; branch → start a build → land on main only on a passing build (#15, after #17)
