@@ -72,5 +72,24 @@ the looper then marks it `promoted` or `declined` here with the date.
   most hourly, on the hour, and a schedule's next run is the first hour after its cron's next time; so the port
   scan's `7 * * * *` fires at 21:07, 23:07, 01:08... (its pipelines on 2026-10-28/29). Its cron `0 * * * *` would
   make it hourly, as README says.
+- **Pin the build pipeline's own image** (2026-10-29, #17): `ci/build.gitlab-ci.yml` runs plan, status and publish
+  in `ghcr.io/tacplus-dev/looper:main`, a moving tag, and that image carries the claude CLI (inert there: the build
+  project holds no Anthropic credential). A digest written by the image workflow, or a slim `looper-build` image
+  (git, curl, jq, openssl, gcloud, buildx), would make the orchestration as fixed as the gates' image.
+- **Keep ci/build.gitlab-ci.yml in step with the build project** (2026-10-29, #17): it is copied into
+  gitlab.com/tacplus-dev/build by hand (as fleet-seatrials' is). A job of the looper pipeline, or the image workflow,
+  could commit it there when it changes on main, or the build project could `include:` it from a project that
+  mirrors this repository.
+- **Line tags for released images** (2026-10-29, #17): publish pushes `<repo>:X.Y.Z` only. The services' GitHub
+  release workflows also move `X.Y` (scripts/release-tags.sh) for fleets that pin a line; a step after publish,
+  through the same federated token, could move it when the release is its line's highest.
+- **Private dependencies in a release image** (2026-10-29, #17): publish's `docker buildx build` gets no credential,
+  so a Dockerfile that fetches private tacplus-dev modules cannot. A BuildKit secret (`--secret id=github,env=...`)
+  holding the read-only token would give it one without it landing in a layer.
+- **Gates that need the reader app's key** (2026-10-29, #17): the gates job mints its read-only token, then deletes
+  the app's key file before the repository's code runs, because the key could mint tokens with the app's every
+  permission (commit statuses). Scoping `TACPLUS_READER_APP_KEY` to environments that only plan, status and publish
+  declare would keep it from the gates job altogether; the gates would then need their token from elsewhere (a
+  short-lived token passed in a masked, expiring way).
 
 ## Promoted / declined

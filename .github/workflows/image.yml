@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test
-        run: tests/looper-port.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh
+        run: tests/looper-port.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh
       - name: Log in to ghcr
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build, smoke, push

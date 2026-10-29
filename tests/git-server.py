@@ -7,8 +7,11 @@
 # host requires HTTP Basic auth and serves the bare repositories under
 # <root>/<host>/ through `git http-backend`. Every request is logged to <log>
 # as "<host> <user:password>", or "<host> -" when it carried no credential.
+# With a <writers> file (one password per line), only those passwords may push,
+# as GitHub refuses a push with a read-only token: any other gets 403 and the
+# log line "<host> <user:password> push refused".
 # Prints its port on stdout once listening.
-# Run: python3 -I git-server.py <root> <cert.pem> <key.pem> <log>
+# Run: python3 -I git-server.py <root> <cert.pem> <key.pem> <log> [<writers>]
 import base64
 import http.server
 import os
@@ -20,6 +23,7 @@ import sys
 import threading
 
 root, cert, key, logpath = sys.argv[1:5]
+writers = sys.argv[5] if len(sys.argv) > 5 else None
 tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 tls.load_cert_chain(cert, key)
 lock = threading.Lock()
@@ -45,8 +49,17 @@ class Git(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         cred = base64.b64decode(auth[6:]).decode()
-        log(f"{host} {cred}")
         path, _, query = self.path.partition("?")
+        if writers and ("service=git-receive-pack" in query or path.endswith("/git-receive-pack")):
+            with open(writers) as f:
+                allowed = f.read().split()
+            if cred.partition(":")[2] not in allowed:
+                log(f"{host} {cred} push refused")
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        log(f"{host} {cred}")
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         env = {
             "PATH": os.environ["PATH"],

@@ -222,7 +222,7 @@ dated note at the top. Nothing else here fetches from or depends on gitlab.com/s
 `ports.yaml` maps each SeaBeam source under `seabeam/schematic/platform/services` to its tacplus-dev
 target, lists the sources that have none (`unmapped`), and the sources that are never carried over
 (`retired`, each with its reason and date). Every hour the pipeline's port-scan schedule
-runs `looper-port` (mechanical: GitLab API with the group `GITLAB_TOKEN`, issues with `GH_TOKEN`):
+runs `looper-port` (mechanical: GitLab API with the project's `GITLAB_TOKEN`, issues with `GH_TOKEN`):
 
 - **Mark:** the target's `PROVENANCE.md` line ``Ported through `<sha>` ``; until the first port, the
   migration commit it names (`` `<source>/<svc>` at commit `<sha>` ``).
@@ -262,6 +262,112 @@ GITLAB_TOKEN=... ./looper-port --dry-run   # what it would file, filing nothing
 tests/looper-port.test.sh                  # the scan against fixtures (stub gh and curl)
 ```
 
+## Build pipeline
+
+A build is the only verdict (tacplus-dev/roadmap `decisions/deterministic-builds-2026-10-27.md`, looper#17): it
+takes a commit as it is, in the build image the repository pins, with no agent, and says pass or fail; on a
+release it also publishes the image. It never changes the repository. It is the GitLab project
+gitlab.com/tacplus-dev/build, whose `.gitlab-ci.yml` is `ci/build.gitlab-ci.yml` here, copied there as is; its
+jobs run `looper-build`, from this image.
+
+- **Started** from the API or the web with **inputs** `repo`, `sha` and, for a release, `tag`. The project forbids
+  pipeline variables (as this group does); inputs are typed and checked against their pattern before any job runs.
+  A push to the project starts nothing.
+
+  ```sh
+  curl -H "PRIVATE-TOKEN: $GITLAB_TOKEN" -H 'Content-Type: application/json' \
+    -X POST https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipeline \
+    -d '{"ref": "main", "inputs": {"repo": "kernel", "sha": "<40 hex>"}}'
+  ```
+- **`plan`** fetches exactly that commit and reads its `tacplus.lock` (as tacplus validates it: an exact release,
+  the build image by digest, of the same line). No pin, or a bad one, is a **fail** verdict, never a guess. It
+  writes the child pipeline: one `gates` job whose `image:` is the pinned digest.
+- **`gates`**, in the pinned build image: `just gates` on the commit. It fails if the commit has no `gates` recipe,
+  if a gate fails, or if the build changed a tracked file (`git status --porcelain --untracked-files=no`) or moved
+  HEAD. Its log is the artifact `gates.log`, and the job's log.
+- **`pending`, `report-pass`, `report-fail`** set the GitHub commit status, context `tacplus-dev/build`, linking
+  the pipeline, with the failure's reason as its description. This is the only thing a build writes to GitHub.
+- **`publish`**, on a release (below), once the gates passed: `docker buildx build` of the repository's
+  `Dockerfile` for `linux/amd64` and `linux/arm64`, pushed as `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z`
+  (tacplus-dev/tacplus#223), its digest recorded in the artifact `image`.
+- **The same commit gives the same verdict and digest.** The gates image is pinned by digest. The image is built
+  with every timestamp the commit's (`SOURCE_DATE_EPOCH`, `rewrite-timestamp=true`), without provenance or SBOM
+  attestations (which record the build's time and builder), and by a BuildKit pinned by digest. So publish first
+  builds the image to a file, then pushes it, and fails unless both have one digest. A release already in the
+  registry under another digest fails rather than being overwritten. The documented exception: a `Dockerfile`
+  whose bases are not pinned by digest, or whose steps fetch "latest", builds what its bases are that day.
+
+**Credentials.** A build reads GitHub only through the read-only `tacplus-reader` app (looper#12:
+`TACPLUS_READER_APP_ID`, `TACPLUS_READER_INSTALLATION_ID` and the file variable `TACPLUS_READER_APP_KEY`, protected
+variables of tacplus-dev/build). Each job mints its own one-hour installation token with only what it needs:
+`contents: read` for a fetch, `statuses: write` on the one repository for a status. It holds nothing that can
+change a repository:
+
+- every job refuses to run beside a write credential (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `GHCR_PUSH_TOKEN`, or any variable whose value looks like a
+  personal or OAuth token: `ghp_`, `github_pat_`, `gho_`, `ghu_`, `glpat-`);
+- before the gates run, the source credential must **fail** to push (a `git push --dry-run`, which GitHub refuses
+  to a read-only token), or the build fails. So a gate that pushes cannot. Then the app's key file is deleted, and
+  GitLab's job token (and the clone URL that holds it) are dropped, so the repository's code holds only the
+  read-only token;
+- **publish** has no registry secret: its GitLab `id_token` (`GCP_ID_TOKEN`) is exchanged through Workload Identity
+  Federation (`GCP_WIF_PROVIDER`, a project variable, and `GCP_PUBLISH_SA` if the hub's binding goes through a
+  service account) for a short-lived token holding `artifactregistry.writer` on that repository. GCP trusts only
+  this project's protected tags.
+
+**A release** (the release flow, looper#17): the looper tags the commit `vX.Y.Z` on GitHub after a green build, then
+creates the protected tag `<repo>/vX.Y.Z` in tacplus-dev/build (one project builds every repository, so its tags
+are per repository) and starts the pipeline on that tag with `"tag": "vX.Y.Z"`. The build checks that the GitHub
+tag names `sha`, runs the gates, and publishes; the looper then creates the GitHub release.
+
+```sh
+looper-build plan | gates | status STATE [TEXT] | publish [--dry-run]   # what the jobs run; --dry-run builds the release image and pushes nothing
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; publish (stub buildx and WIF), and with a real buildx the same digest twice
+```
+
+**The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A
+second runner entry on `gitlab-runner-mgr`, which the hub applies (restarting the manager kills running jobs, so at
+a moment when no looper job runs). It is a **project** runner of tacplus-dev/build, registered with
+`tag_list=arm64,build` and `run_untagged=false`. Every job of the pipeline carries `tags: [arm64, build]`, which the
+loopers' runner (`arm64, autoscale`) never takes. Each job gets a fresh VM, deleted after it:
+
+```toml
+[[runners]]
+  name = "tacplus-dev arm64 build (gitlab-runner-mgr, MIG runner-arm64-build)"
+  url = "https://gitlab.com"
+  token = "glrt-..."   # the build runner's own authentication token (POST /user/runners, project_type, project 88268985)
+  executor = "docker-autoscaler"
+  limit = 5
+  [runners.docker]
+    image = "alpine:3.20"
+    privileged = false
+    volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/builds:/builds", "/cache"]
+  [runners.autoscaler]
+    plugin = "googlecloud"   # the same fleeting plugin, and version, as the loopers' entry
+    capacity_per_instance = 1
+    max_use_count = 1
+    max_instances = 5
+    [runners.autoscaler.plugin_config]
+      name = "runner-arm64-build"
+      project = "jody1-328023"
+      zone = "us-central1-b"
+    [runners.autoscaler.connector_config]
+      username = "runner"    # as the loopers' entry
+    [[runners.autoscaler.policy]]
+      idle_count = 0
+      idle_time = "0s"
+```
+
+Its instance group `runner-arm64-build` (size 0 at rest) uses a template that is `runner-arm64-t2a8-v5` in every
+respect but one: the VM has **no service account and no scopes** (`--no-service-account --no-scopes`), so a build
+that reaches the metadata server gets no Google token. fleet-seatrials' `deploy` runner (tag `deploy`) is the same
+stanza with its own instance group (fleet-seatrials#18).
+
+**One-time setup of tacplus-dev/build** (done 2026-10-29 unless marked): the reader app's variables (looper#12);
+pipeline variables forbidden; job tokens cannot push to the project; group runners off, so only the build runner
+takes its jobs; release tags `*/v*` protected (Maintainers create them); `.gitlab-ci.yml` from `ci/build.gitlab-ci.yml`.
+Left to the hub: the build runner above, and `GCP_WIF_PROVIDER` with its binding (tacplus-dev/tacplus#223).
+
 ## Running it
 
 ```sh
@@ -270,10 +376,11 @@ looper-dispatch status           # the looper jobs in GitLab, and what is ready 
 tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
-The jobs' credentials are tacplus-dev GitLab group CI variables, masked and protected (`GH_TOKEN`,
-`CLAUDE_CODE_OAUTH_TOKEN`, and `GITLAB_TOKEN`, with `api` scope: the kicker reads the project's jobs
+The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/looper, masked and protected
+(`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and `GITLAB_TOKEN`, with `api` scope: the kicker reads the project's jobs
 and starts its pipeline with it, the port scan reads SeaBeam), never baked into the image nor on a
-laptop. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
+laptop. They are no group variables (moved 2026-10-29, looper#17; the ci-on-gitlab addendum): a group variable
+reaches every pipeline of the group, the builds' too. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
 
 ## Infrastructure
 

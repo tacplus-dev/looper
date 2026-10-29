@@ -1,0 +1,121 @@
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# The .gitlab-ci.yml of the GitLab project gitlab.com/tacplus-dev/build, kept
+# here (github.com/tacplus-dev/looper ci/build.gitlab-ci.yml) and copied into
+# that project as is: the project holds the build credentials and runs the
+# pipeline, this repository holds its definition and the script, looper-build,
+# in the image ghcr.io/tacplus-dev/looper. README: Build pipeline.
+#
+# The build pipeline (looper#17): (repo, commit) -> the repository's pinned
+# build image, no agent, read-only source -> a verdict, pass or fail, as a
+# GitHub commit status (context tacplus-dev/build), and on a release the image
+# in Artifact Registry, by digest.
+#
+# Started from the API or the web with inputs (the project forbids pipeline
+# variables; inputs are typed and checked here, before any job runs):
+#   POST /projects/tacplus-dev%2Fbuild/pipeline
+#   {"ref": "main", "inputs": {"repo": "<repo>", "sha": "<40 hex>"}}
+# (The empty defaults only let a push to this project create no pipeline: the
+# workflow rules below drop it. looper-build refuses an empty repo or sha.)
+# A release runs on this project's protected tag <repo>/vX.Y.Z, with
+# "tag": "vX.Y.Z" and the commit the repository's tag vX.Y.Z names; only there
+# does the publish job get its GCP identity (tacplus-dev/tacplus#223).
+#
+# Every job runs on the build runner (tags arm64, build): a fresh VM per job,
+# never one an agent's job ran on (Jody, 2026-10-29). plan, status and publish
+# run in the looper image, for looper-build; the gates run in the repository's
+# pinned build image, as the child pipeline plan writes.
+spec:
+  inputs:
+    repo:
+      description: "The tacplus-dev repository to build, by name"
+      default: ""
+      regex: '^([A-Za-z0-9][A-Za-z0-9._-]*)?$'
+    sha:
+      description: "The commit to build, in full (40 hex)"
+      default: ""
+      regex: '^([0-9a-f]{40})?$'
+    tag:
+      description: "A release: the repository's tag vX.Y.Z at that commit (run on this project's tag <repo>/vX.Y.Z)"
+      default: ""
+      regex: '^(v[0-9]+\.[0-9]+\.[0-9]+)?$'
+---
+workflow:
+  name: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]]"
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
+
+stages: [plan, gates, publish, report]
+
+variables:
+  BUILD_REPO: "$[[ inputs.repo ]]"
+  BUILD_SHA: "$[[ inputs.sha ]]"
+  BUILD_TAG: "$[[ inputs.tag ]]"
+  GIT_STRATEGY: none
+
+default:
+  image: ghcr.io/tacplus-dev/looper:main
+  tags: [arm64, build]
+  retry:
+    max: 2
+    when: [runner_system_failure, scheduler_failure, unknown_failure]
+
+# The commit is marked pending while it builds.
+pending:
+  stage: plan
+  needs: []
+  allow_failure: true
+  script:
+    - looper-build status pending
+
+# Fetch exactly the commit, read its tacplus.lock, write the gates job in the
+# pinned image. No pin, or a bad one, is a fail verdict.
+plan:
+  stage: plan
+  needs: []
+  script:
+    - looper-build plan
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [build-gates.yml, build-verdict]
+
+gates:
+  stage: gates
+  trigger:
+    include:
+      - artifact: build-gates.yml
+        job: plan
+    strategy: depend
+
+# A release, once the gates passed: the image, pushed through Workload
+# Identity Federation (GCP_WIF_PROVIDER, a project variable; no key, no token).
+publish:
+  stage: publish
+  rules:
+    - if: $CI_COMMIT_TAG && $BUILD_TAG
+  environment:
+    name: registry
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
+  timeout: 2h
+  script:
+    - looper-build publish
+  artifacts:
+    expire_in: 1 year
+    paths: [image]
+
+# The verdict, on the commit.
+report-pass:
+  stage: report
+  when: on_success
+  script:
+    - looper-build status success
+
+report-fail:
+  stage: report
+  when: on_failure
+  script:
+    - looper-build status failure

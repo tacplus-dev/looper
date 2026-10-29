@@ -12,6 +12,10 @@
 # GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN and GITLAB_TOKEN are the pipeline's CI
 # variables, given at run time.
 #
+# The build pipeline's jobs (gitlab.com/tacplus-dev/build) run looper-build in
+# this image too, with none of the loopers' credentials and no agent at work:
+# its gates run in each repository's pinned build image (looper#17).
+#
 # The build environment follows the newest released tacplus line (the project's
 # rule: a MAJOR.MINOR, never a patch pin).
 ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:2.5
@@ -26,6 +30,6 @@ LABEL org.opencontainers.image.title="looper" \
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
-COPY repo-looper looper-port looper-dispatch tacplus looper-smoke /usr/local/bin/
+COPY repo-looper looper-port looper-dispatch looper-build tacplus looper-smoke /usr/local/bin/
 ENV LOOPER_IMAGE=1 LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work

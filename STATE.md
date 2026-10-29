@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#26).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#17).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -24,7 +24,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   (#11); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
   `bug` and `feature` labels in every repository, unlabelled issues classified first, bugs fixed and released as
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
-  the scans file bugs as `bug`, never approve a feature, and read the roadmaps before opening an issue
+  the scans file bugs as `bug`, never approve a feature, and read the roadmaps before opening an issue; the build
+  pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
+  (started with inputs `repo`, `sha`, `tag`): the commit's gates in its pinned build image, no agent, read-only
+  source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status, and on a release
+  a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
+  and with a real buildx (same commit, same digest). The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
+  `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`
 - **Known gaps:** the kicker uses the group's `GITLAB_TOKEN` (api scope), not a project access token, which
@@ -32,4 +38,6 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green
   for a day; the ROADMAP.md guard is a pre-push hook in the looper's checkout, so a push that skips hooks
   is not refused (see PROPOSALS.md); no release line yet
-- **Blocked on:** #15 (native build image) waits on tacplus#193
+- **Blocked on:** #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build
+  runner (README, Build pipeline) and publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF); every
+  build fails "no pin" until a repository commits a `tacplus.lock`
