@@ -46,5 +46,13 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Say why a Blocked-by outcome was rejected** (2026-10-29, #22): an outcome naming a closed or missing issue, or
   the issue itself, is rejected whole and the issue is `looper:stuck` with the generic "ended without finishing"
   comment; naming the rejected blocker and the reason in that comment would save the person a trip to the run record.
+- **The realign's fail-closed match** (2026-10-29, #23): the port scan sends to `needs-decision` any untrailered
+  SeaBeam commit whose message contains `tacplus-dev` (any case) or a `Ported-from:` line, so a genuine change that
+  merely mentions tacplus-dev (a pinned image, a link) waits on a person too. If that proves noisy, narrow it to
+  references (`tacplus-dev/<repo>#N`, `@<sha>`, GitHub URLs); a realign commit that lacks its trailer cannot be
+  amended in SeaBeam's history, so a person moves the target's mark past it.
+- **The flood guard's issue goes stale** (2026-10-29, #23): while *Port scan: flood guard tripped* is open, a scan
+  still over the limit files nothing and does not update it, so its list is the first run's. A comment when the
+  list changes (as the unmapped tracking issue gets) would keep it current.
 
 ## Promoted / declined

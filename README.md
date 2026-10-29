@@ -231,6 +231,15 @@ runs `looper-port` (mechanical: GitLab API with the group `GITLAB_TOKEN`, issues
   naming `Port SeaBeam <svc>` whose first linked issue is open, or that links none), it files no port
   issue but, once, *Prioritize the roadmap entry: Port SeaBeam <svc>* (`feature`), quoting and linking the
   entry, with the new commits as the why-now. A roadmap it cannot read files nothing.
+- **The realign** (looper#23): a SeaBeam commit that ports tacplus-dev work carries
+  `Ported-from: tacplus-dev/<repo>@<sha>` (one line per source commit; tacplus-dev/roadmap
+  `items/seabeam-realign-2026-10-29.md`), and is never ported back: the issue leaves it out of its commits
+  (naming it as not to port), but its range and so the mark still move past it. A range of nothing but such
+  commits files nothing. Fail closed: a commit that names tacplus-dev, or has a malformed trailer, without a
+  trailer is listed for a person to decide, and the port issue is labelled `needs-decision`, not `approved`.
+- **The flood guard** (looper#23): a scan that would file more than `LOOPER_PORT_MAX_ISSUES` (default 5) issues
+  on the targets files none, and opens one *Port scan: flood guard tripped* on this repository (`bug`,
+  `needs-decision`) listing them; while it is open, a scan still over the limit files nothing more.
 - **No usable mark** (no PROVENANCE.md, no mark in it, or a mark that is not a commit of the source):
   one issue `Port SeaBeam <svc>: no usable mark`, labelled `bug` and `needs-decision`. The scan never guesses a
   baseline; a person records it and closes the issue.

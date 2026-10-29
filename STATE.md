@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#22).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#23).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.4` environment (#1); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -16,7 +16,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   also from a run that pushed nothing because the issue waits on another, #22);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly
-  SeaBeam port scan (stratum only, #5); the `tacplus` wrapper with GitHub credentials for the compiler container
+  SeaBeam port scan (stratum only, #5), which never ports back a SeaBeam commit
+  trailered `Ported-from: tacplus-dev/<repo>@<sha>` (the realign), sends one that names tacplus-dev without it to
+  `needs-decision`, and files nothing past a flood guard of 5 issues (#23); the `tacplus` wrapper with GitHub credentials for the compiler container
   (#11); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
   `bug` and `feature` labels in every repository, unlabelled issues classified first, bugs fixed and released as
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),

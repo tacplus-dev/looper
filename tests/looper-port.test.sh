@@ -54,7 +54,10 @@ Z=eeeeeeee55555555555555555555555555555555; Y=ffffffff66666666666666666666666666
 key() { printf '%s' "$1" | tr -c 'A-Za-z0-9.-' '_'; }
 gl() { mkdir -p "$FIX/gl"; printf '%s' "$2" > "$FIX/gl/$(key "$1")"; }       # path json
 ghf() { mkdir -p "$FIX/gh/$1"; printf '%s' "$3" > "$FIX/gh/$1/$2"; }          # repo file content
-commit() { printf '{"id":"%s","short_id":"%s","title":"%s","authored_date":"2026-10-26T10:00:00.000-06:00","web_url":"https://gl.test/c/%s"}' "$1" "${1:0:8}" "$2" "$1"; }
+commit() { # sha title [message, default the title]
+  jq -nc --arg id "$1" --arg t "$2" --arg m "${3:-$2}" \
+    '{id: $id, short_id: $id[0:8], title: $t, message: $m, authored_date: "2026-10-26T10:00:00.000-06:00", web_url: "https://gl.test/c/\($id)"}'
+}
 compare() { gl "projects/seabeam%2Fsrc%2F$1/repository/compare?from=$2&to=main" "{\"commits\":[$3]}"; }
 known() { gl "projects/seabeam%2Fsrc%2F$1/repository/commits/$2" "$(commit "$2" "$3")"; }   # svc ref title
 
@@ -66,7 +69,7 @@ commit `aaaaaaa` (history carried over).'
   known alpha aaaaaaa "migrated"; known alpha main "head"
 }
 run() {
-  OUT="$(PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOPER_PORTS="$TMP/ports.yaml" \
+  OUT="$(PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOPER_PORTS="${PORTS:-$TMP/ports.yaml}" \
          LOOPER_LIB="$ROOT/looper-lib.sh" "$ROOT/looper-port" 2>&1)" || { echo "$OUT"; fail "looper-port exited non-zero"; }
 }
 fail() { echo "FAIL $NAME: $*" >&2; [[ -s "$FIX/filed" ]] && cat "$FIX/filed" >&2; exit 1; }
@@ -280,6 +283,93 @@ if OUT="$(PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOP
           LOOPER_LIB="$ROOT/looper-lib.sh" "$ROOT/looper-port" 2>&1)"; then fail "exited 0"; fi
 [[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
 has "$OUT" "cannot read the roadmaps"
+pass
+
+# The realign (looper#23): a SeaBeam commit that ports tacplus-dev work carries
+# `Ported-from: tacplus-dev/<repo>@<sha>` and is never ported back.
+trailered() { commit "$1" "$2" "$2
+
+Adopt it as tacplus-dev has it.
+
+Ported-from: tacplus-dev/alpha@$3
+Ported-from: tacplus-dev/kernel@c630f29"; }
+scenario realign-all-trailered
+compare alpha aaaaaaa "$(trailered "$B" "adopt XIDs" 1234567),$(trailered "$C" "adopt tid routing" 89abcde)"
+run
+[[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
+has "$OUT" "ported from tacplus-dev"
+pass
+
+scenario realign-mixed
+compare alpha aaaaaaa "$(trailered "$B" "adopt XIDs" 1234567),$(commit "$C" "seabeam fix" "seabeam fix
+
+Only here."),$(trailered "$D" "adopt tid routing" 89abcde)"
+run
+[[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
+[[ "$(field 1 .title)" == "Port SeaBeam alpha aaaaaaa..dddddddd" ]] || fail "title $(field 1 .title)"
+[[ "$(field 1 '.labels|join(",")')" == feature,approved ]] || fail "labels $(field 1 .labels)"
+body="$(field 1 .body)"
+has "$body" '[`cccccccc`](https://gl.test/c/'"$C"') 2026-10-26 seabeam fix'
+lacks "$body" "](https://gl.test/c/$B)"; lacks "$body" "](https://gl.test/c/$D)"
+has "$body" '`bbbbbbbb` adopt XIDs'; has "$body" "Ported-from: tacplus-dev/alpha@89abcde"
+has "$body" "Ported through \`$D\`."
+pass
+
+# Fail closed: one that names tacplus-dev (or has a malformed trailer) without
+# a trailer is a person's call.
+scenario realign-untrailered
+compare alpha aaaaaaa "$(commit "$B" "seabeam fix"),$(commit "$C" "adopt XIDs" "adopt XIDs
+
+As in tacplus-dev/kernel#23."),$(commit "$D" "adopt tids" "adopt tids
+
+Ported-from: kernel@c630f29")"
+run
+[[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
+[[ "$(field 1 .title)" == "Port SeaBeam alpha aaaaaaa..dddddddd" ]] || fail "title $(field 1 .title)"
+[[ "$(field 1 '.labels|join(",")')" == feature,needs-decision ]] || fail "labels $(field 1 .labels)"
+body="$(field 1 .body)"
+has "$body" "](https://gl.test/c/$B) 2026-10-26 seabeam fix"
+has "$body" "no \`Ported-from:\` trailer"
+decide="$(sed -n '/no `Ported-from:` trailer/,/^$/p' <<<"$body")"
+has "$decide" "adopt XIDs"; has "$decide" "adopt tids"; lacks "$decide" "seabeam fix"
+pass
+
+# The flood guard: a scan that would file more than 5 issues files none, and
+# asks on looper instead, once.
+flood() { # sources
+  PORTS="$FIX/ports.yaml"; printf 'source: seabeam/src\ntarget: tacplus-dev\nports:\n' > "$PORTS"
+  local s projects=""
+  for s in "$@"; do
+    printf '  %s: %s\n' "$s" "$s" >> "$PORTS"; projects="$projects,{\"path\":\"$s\",\"default_branch\":\"main\"}"
+    ghf "$s" PROVENANCE.md "Ported through \`aaaaaaa\`."; known "$s" aaaaaaa migrated; known "$s" main head
+    compare "$s" aaaaaaa "$(commit "$B" "change in $s")"
+  done
+  gl "groups/seabeam%2Fsrc/projects?per_page=100&archived=false" "[${projects#,}]"
+}
+scenario flood-under
+flood s1 s2 s3 s4 s5
+run; PORTS=""
+[[ "$(filed)" == 5 ]] || fail "want five issues, got $(filed)"
+pass
+
+scenario flood-trips
+flood s1 s2 s3 s4 s5 s6
+run; PORTS=""
+[[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
+[[ "$(sed -n 1p "$FIX/filed" | cut -d' ' -f1)" == looper ]] || fail "not on looper"
+[[ "$(field 1 .title)" == "Port scan: flood guard tripped" ]] || fail "title $(field 1 .title)"
+[[ "$(field 1 '.labels|join(",")')" == bug,needs-decision ]] || fail "labels $(field 1 .labels)"
+body="$(field 1 .body)"
+for s in s1 s2 s3 s4 s5 s6; do has "$body" "tacplus-dev/$s: Port SeaBeam $s aaaaaaa..bbbbbbbb"; done
+has "$body" "LOOPER_PORT_MAX_ISSUES"
+pass
+
+scenario flood-asked
+flood s1 s2 s3 s4 s5 s6
+ghf looper issues.json '[{"number":9,"title":"Port scan: flood guard tripped"}]'
+run; PORTS=""
+[[ "$(filed)" == 0 ]] || fail "want nothing, got $(filed)"
+has "$OUT" "flood guard"
 pass
 
 echo "looper-port: all scenarios pass"

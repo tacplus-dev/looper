@@ -26,6 +26,18 @@
 # SeaBeam <svc>` whose first linked issue is open, or that links none), it files
 # no port issue but one, once, asking for that entry to be prioritized.
 #
+# The realign (looper#23): a SeaBeam commit that ports tacplus-dev work carries
+# `Ported-from: tacplus-dev/<repo>@<sha>`, one line per source commit. The scan
+# never ports it back: it is left out of the issue's commits, and the range
+# (and so the mark) still moves past it. All commits trailered: nothing filed.
+# Fail closed: a commit that names tacplus-dev, or has a malformed trailer, but
+# no trailer is listed for a person to decide, and the issue is needs-decision,
+# not approved.
+#
+# The flood guard (looper#23): a scan that would file more than
+# LOOPER_PORT_MAX_ISSUES (default 5) issues on the targets files none, and
+# opens one needs-decision issue on the looper listing them, once.
+#
 # Unmapped sources (ports.yaml `unmapped:`, and any project under `source` in
 # no list): each change is reported once on the looper's tracking issue
 # (needs-decision), so nothing is dropped silently. Retired sources (ports.yaml
@@ -33,10 +45,11 @@
 #
 # Environment: GITLAB_TOKEN (read the sources), GH_TOKEN (file issues),
 # LOOPER_PORTS (default: ports.yaml next to this script, or in the image's
-# lib dir), GITLAB_API (default CI_API_V4_URL or https://gitlab.com/api/v4).
+# lib dir), GITLAB_API (default CI_API_V4_URL or https://gitlab.com/api/v4),
+# LOOPER_PORT_MAX_ISSUES (the flood guard's limit, default 5).
 set -euo pipefail
 
-usage() { sed -n '5,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
@@ -60,6 +73,9 @@ fi
 GITLAB_API="${GITLAB_API:-${CI_API_V4_URL:-https://gitlab.com/api/v4}}"
 TRACKING_REPO="${LOOPER_TRACKING_REPO:-looper}"
 TRACKING_TITLE="Port scan: changes in unmapped SeaBeam sources"
+FLOOD_TITLE="Port scan: flood guard tripped"
+MAX_ISSUES="${LOOPER_PORT_MAX_ISSUES:-5}"
+[[ "$MAX_ISSUES" =~ ^[0-9]+$ ]] || die "LOOPER_PORT_MAX_ISSUES is not a number: $MAX_ISSUES"
 
 # ports.yaml, in the restricted shape its header describes.
 ports_key() { awk -v k="$1" 'index($0, k ":") == 1 { sub("^[^:]*:[[:space:]]*", ""); sub("[[:space:]]*$", ""); print; exit }' "$PORTS"; }
@@ -97,6 +113,9 @@ comment() { # repo issue body
     || { log "ERROR could not comment on $ORG/$1#$2"; return 1; }
   log "commented on $ORG/$1#$2"
 }
+# The issues the mapped scan would file, filed together once it is done (the flood guard).
+Q_REPO=(); Q_TITLE=(); Q_LABELS=(); Q_BODY=()
+queue_issue() { Q_REPO+=("$1"); Q_TITLE+=("$2"); Q_LABELS+=("$3"); Q_BODY+=("$4"); }
 open_issues() { # repo: "number<TAB>title" of its open issues (not pull requests)
   gh api "repos/$ORG/$1/issues?state=open&per_page=100" --paginate \
     | jq -r '.[] | select(.pull_request | not) | "\(.number)\t\(.title)"'
@@ -169,6 +188,17 @@ commits_after() { # svc ref branch
 commit_list() { # JSON lines of commits: a markdown list
   jq -r '"- [`\(.short_id)`](\(.web_url)) \(.authored_date[0:10]) \(.title)"'
 }
+# The realign: each commit gets .kind, "ported" (a well-formed Ported-from
+# trailer naming $ORG), "decide" (it names $ORG or has a malformed trailer), or "port".
+classify() { # JSON lines of commits
+  jq -c --arg org "$ORG" '(.message // .title) as $m | . + {kind: (
+    if ($m | test("(^|\n)Ported-from:[ \t]*" + $org + "/[A-Za-z0-9_.-]+@[0-9a-f]{7,40}[ \t\r]*(\n|$)")) then "ported"
+    elif ($m | test($org; "i") or test("(^|\n)[ \t]*ported-from:"; "i")) then "decide"
+    else "port" end)}'
+}
+ported_list() { # JSON lines of ported commits: a markdown list, with their trailers
+  jq -r '"- `\(.short_id)` \(.title) (Ported-from: \([(.message // "") | scan("(?:^|\n)Ported-from:[ \t]*([^\\s]+)") | .[0]] | join(", ")))"'
+}
 
 # The mark: a "Ported through `<sha>`" line, else the migration commit the
 # provenance names for this source ("<source>/<svc>` at commit `<sha>`").
@@ -225,7 +255,7 @@ scan_mapped() { # svc target branch
   if [[ -z "$from" ]]; then
     local title="Port SeaBeam $svc: no usable mark"
     if cut -f2 <<<"$issues" | grep -qxF "$title"; then log "$svc: no usable mark; already asked"; return 0; fi
-    file_issue "$t" "$title" "$LABEL_BUG,$LABEL_DECISION" "The port scan (tacplus-dev/looper#2) cannot carry SeaBeam \`$SOURCE/$svc\` changes into this
+    queue_issue "$t" "$title" "$LABEL_BUG,$LABEL_DECISION" "The port scan (tacplus-dev/looper#2) cannot carry SeaBeam \`$SOURCE/$svc\` changes into this
 repository: $MARK_WHY. It never guesses a baseline.
 
 Decide which SeaBeam commit this repository was last brought up to (from history or content), and record it in
@@ -242,6 +272,16 @@ $(gl "projects/$(project "$svc")/repository/commits/$branch" | jq -r '"[`\(.shor
     || { log "ERROR $svc: cannot compare ${open_to:-$from}..$branch in $SOURCE/$svc"; return 1; }
   if [[ -z "$commits" ]]; then log "$svc: nothing after ${open_to:-$from}${open_n:+ (#$open_n)}"; return 0; fi
   to="$(tail -1 <<<"$commits" | jq -r .id)"
+  # The realign: trailered commits are never ported back, but the range still moves past them.
+  local ported decide
+  commits="$(classify <<<"$commits")"
+  ported="$(jq -c 'select(.kind == "ported")' <<<"$commits")"
+  decide="$(jq -c 'select(.kind == "decide")' <<<"$commits")"
+  commits="$(jq -c 'select(.kind != "ported")' <<<"$commits")"
+  if [[ -z "$commits" ]]; then
+    log "$svc: $(grep -c . <<<"$ported") commit(s) after ${open_to:-$from}, all ported from $ORG (Ported-from:); nothing to port"
+    return 0
+  fi
   local after="the mark in \`PROVENANCE.md\`, \`$from\`"
   [[ -n "$open_n" ]] && after="\`$open_to\`, where the open port issue #$open_n ends"
   from="${open_to:-$from}"
@@ -250,7 +290,7 @@ $(gl "projects/$(project "$svc")/repository/commits/$branch" | jq -r '"[`\(.shor
   if [[ -n "$entry" ]]; then
     local ptitle="Prioritize the roadmap entry: Port SeaBeam $svc"
     if cut -f2 <<<"$issues" | grep -qxF "$ptitle"; then log "$svc: on a roadmap; prioritizing already asked"; return 0; fi
-    file_issue "$t" "$ptitle" "$LABEL_FEATURE" "SeaBeam still commits to \`$SOURCE/$svc\`: these commits on its \`$branch\` came after $after.
+    queue_issue "$t" "$ptitle" "$LABEL_FEATURE" "SeaBeam still commits to \`$SOURCE/$svc\`: these commits on its \`$branch\` came after $after.
 Porting them is already on a roadmap, so the port scan (tacplus-dev/looper#2) files no new port issue
 ($ISSUE_FLOW). It asks for that entry to be prioritized instead:
 
@@ -267,13 +307,32 @@ $(commit_list <<<"$commits")"
   body="SeaBeam still commits to \`$SOURCE/$svc\`. These commits on its \`$branch\` came after $after.
 Filed by the port scan (tacplus-dev/looper#2).
 
-$(commit_list <<<"$commits")
+$(commit_list <<<"$commits")"
+  local labels="$LABEL_FEATURE,$LABEL_APPROVED"
+  if [[ -n "$decide" ]]; then
+    labels="$LABEL_FEATURE,$LABEL_DECISION"
+    body="$body
+
+**A person decides first.** These commits name $ORG, but carry no \`Ported-from:\` trailer (or a malformed one):
+$(commit_list <<<"$decide")
+
+Each may be a port of $ORG work missing its trailer (then it is not applicable here: never port it back), or a
+genuine SeaBeam change (port it). Say which, per commit, on this issue; then replace \`$LABEL_DECISION\` with
+\`$LABEL_APPROVED\` (the realign, $ORG/looper#23)."
+  fi
+  body="$body
 
 $(instructions "$to")"
+  [[ -n "$ported" ]] && body="$body
+
+Not to port: the range also holds these ports of $ORG work (their \`Ported-from:\` trailer; the realign,
+$ORG/looper#23). The mark still moves past them.
+
+$(ported_list <<<"$ported")"
   [[ -n "$open_n" ]] && body="$body
 
 Blocked-by: #$open_n"
-  file_issue "$t" "Port SeaBeam $svc ${from:0:8}..${to:0:8}" "$LABEL_FEATURE,$LABEL_APPROVED" "$body"
+  queue_issue "$t" "Port SeaBeam $svc ${from:0:8}..${to:0:8}" "$labels" "$body"
 }
 
 # Unmapped sources: the tracking issue records, per source, the last commit
@@ -335,6 +394,30 @@ while read -r svc t; do
   [[ -n "$b" ]] || { log "ERROR $svc: no project $SOURCE/$svc"; rc=1; continue; }
   scan_mapped "$svc" "$t" "$b" || rc=1
 done <<<"$mapped"
+
+# The flood guard: more issues than the limit at once usually means the realign's
+# trailers are missing, and the issues would port tacplus-dev's own work back.
+if (( ${#Q_TITLE[@]} > MAX_ISSUES )); then
+  if ! issues="$(open_issues "$TRACKING_REPO")"; then log "ERROR cannot list $ORG/$TRACKING_REPO's issues"; rc=1
+  elif cut -f2 <<<"$issues" | grep -qxF "$FLOOD_TITLE"; then
+    log "flood guard: ${#Q_TITLE[@]} issues, more than $MAX_ISSUES; already asked, filing none"
+  else
+    list=""
+    for i in "${!Q_TITLE[@]}"; do list="$list- $ORG/${Q_REPO[$i]}: ${Q_TITLE[$i]} [${Q_LABELS[$i]}]
+"; done
+    file_issue "$TRACKING_REPO" "$FLOOD_TITLE" "$LABEL_BUG,$LABEL_DECISION" "The port scan (#2) would have filed ${#Q_TITLE[@]} issues at once, more than its limit of $MAX_ISSUES, so it filed none (#23).
+That many usually means SeaBeam's realign commits lack their \`Ported-from: $ORG/<repo>@<sha>\` trailer, and these
+issues would port $ORG's own work back:
+
+$list
+Decide: for the sources whose commits are realign ports, set the mark in the target's \`PROVENANCE.md\` past them
+(Ported through \`<sha>\`) and ask SeaBeam to add the trailer; if the rest are genuine, run the scan once with a
+higher limit (\`LOOPER_PORT_MAX_ISSUES=<n> ./looper-port\`) to file them. Then close this issue. While it is open, a
+scan that would still file more than $MAX_ISSUES files nothing and asks nothing more." || rc=1
+  fi
+else
+  for i in "${!Q_TITLE[@]}"; do file_issue "${Q_REPO[$i]}" "${Q_TITLE[$i]}" "${Q_LABELS[$i]}" "${Q_BODY[$i]}" || rc=1; done
+fi
 
 unmapped=""
 while read -r p b; do
