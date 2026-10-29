@@ -14,6 +14,8 @@
 #                                       has a looper job queued, waiting or running there (the plan)
 #   repo-looper --repo NAME --job-timeout N   the CI job timeout for issue N (its limit, plus an hour)
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
+#   repo-looper --repo NAME --issue N --think DIR   the think job of a looper with its own identity
+#                                       (looper#28): no write credential, writes its outcome to DIR
 #
 # Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
 # needs-decision), and every `Blocked-by:` issue in its body closed.
@@ -81,6 +83,16 @@
 # The nightly scan files its findings as bugs and never approves a feature;
 # every prompt reads the roadmaps before opening an issue.
 #
+# The think job (looper#28, the pilot on kernel; looper-identity and
+# ci/looper.gitlab-ci.yml do the rest): the model and the gates, with no
+# identity. It refuses to run beside a write credential or an id_token, reads
+# GitHub only with LOOPER_READER_TOKEN (the prepare job's read-only
+# tacplus-reader token, which must fail to push), and changes nothing on
+# GitHub: the model leaves its change in the checkout and writes its outcome
+# (pr, question, blocked) and its comment to DIR; the looper runs the gates on
+# that change and writes DIR/patch, DIR/base and DIR/tree, the tested tree.
+# The commit job writes it all as <repo>-looper[bot].
+#
 # Environment: GH_TOKEN (pushes and issue calls), CLAUDE_CODE_OAUTH_TOKEN (the
 # model), LOOPER_WORK (default /work), LOOPER_RUNS (default LOOPER_WORK/NAME/runs),
 # LOOPER_MODEL (default claude-opus-5-5), LOOPER_TIMEOUT (seconds per issue,
@@ -94,7 +106,7 @@
 # job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
 set -euo pipefail
 
-usage() { sed -n '5,94p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,106p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -116,10 +128,31 @@ while [[ $# -gt 0 ]]; do
     --job-timeout) ISSUE="$2"; MODE=job-timeout; shift 2 ;;
     --scan) MODE=scan; shift ;;
     --list) MODE=list; shift ;;
+    --think) THINK_OUT="$2"; MODE=think; shift 2 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 [[ -n "$REPO" ]] || die "no repository: --repo NAME (a $LOOPER_ORG repository)"
+
+# The think job holds no identity (looper#28): no write credential, no
+# id_token, nothing shaped like a personal or OAuth token. GitHub is read with
+# the prepare job's read-only token alone; GitLab's job token goes too.
+if [[ "$MODE" == think ]]; then
+  [[ -n "$ISSUE" ]] || die "--think needs --issue N"
+  held=()
+  for v in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITLAB_TOKEN GHCR_PUSH_TOKEN BUILD_TRIGGER_TOKEN \
+           TACPLUS_READER_APP_KEY GOOGLE_APPLICATION_CREDENTIALS CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2; do
+    [[ -n "${!v:-}" ]] && held+=("$v")
+  done
+  for v in $(compgen -e); do
+    [[ "$v" == *ID_TOKEN && -n "${!v:-}" && " ${held[*]} " != *" $v "* ]] && held+=("$v")
+    case "${!v:-}" in ghp_*|github_pat_*|gho_*|ghu_*|glpat-*) [[ " ${held[*]} " == *" $v "* ]] || held+=("$v") ;; esac
+  done
+  ((${#held[@]} == 0)) || die "the think job holds an identity (${held[*]}): it must hold none"
+  [[ -n "${LOOPER_READER_TOKEN:-}" ]] || die "the think job reads GitHub with LOOPER_READER_TOKEN (the prepare job's), and it has none"
+  export GH_TOKEN="$LOOPER_READER_TOKEN" LOOPER_THINK=1
+  unset LOOPER_READER_TOKEN CI_JOB_TOKEN CI_BUILD_TOKEN CI_REGISTRY_PASSWORD CI_DEPENDENCY_PROXY_PASSWORD CI_REPOSITORY_URL
+fi
 need gh; need git; need jq
 
 # The GitLab API's auth header: GITLAB_TOKEN, else the job's own token.
@@ -376,6 +409,7 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
 # The issue's run is done: the issue is closed, or the run wrote its
 # Blocked-by outcome (its last step, whether it pushed or not: looper#22).
 run_done() { # issue run-dir
+  if [[ "$MODE" == think ]]; then grep -qE '^type:[[:space:]]*[a-z]+' "$THINK_OUT/outcome" 2>/dev/null; return; fi
   if [[ -f "$2/outcome" ]] && grep -qi '^[[:space:]]*blocked-by:' "$2/outcome"; then return 0; fi
   [[ "$(gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json state --jq .state 2>/dev/null)" == CLOSED ]]
 }
@@ -865,6 +899,177 @@ $(log_tail "$run" 40)" >/dev/null || true
   return 0
 }
 
+# The think job's run of an issue (looper#28): the model works it in the
+# checkout with a read-only token, and writes nothing to GitHub. Its outcome,
+# data for the commit job, is DIR/outcome: `type: pr` (with `title:`),
+# `question`, `blocked` (with its `Blocked-by:` lines), `timeout` or `stuck`;
+# DIR/comment.md is the model's text. On a pull request the looper appends the
+# issue's HISTORY.md line and runs the gates on the change: they must pass. The
+# change is DIR/patch from DIR/base (origin/main), and DIR/tree is the tree the
+# gates passed on, which the commit job must reproduce.
+think_outcome() { # type [line...]: the outcome, normalized
+  { echo "type: $1"; shift; (( $# )) && printf '%s\n' "$@"; } > "$THINK_OUT/outcome.new"
+  mv "$THINK_OUT/outcome.new" "$THINK_OUT/outcome"
+  log "think: #$ISSUE: $(head -n 1 "$THINK_OUT/outcome")"
+}
+think_say() { # text: the looper's word in the comment, after the model's
+  if [[ -s "$THINK_OUT/comment.md" ]]; then printf '\n\n**The looper:** %s\n' "$1" >> "$THINK_OUT/comment.md"
+  else printf '%s\n' "$1" > "$THINK_OUT/comment.md"; fi
+}
+
+# The checkout's change against base (the run record left out): DIR/tree and DIR/patch.
+think_change() { # base
+  local idx tree
+  idx="$(mktemp)"; cp "$(git -C "$CHECKOUT" rev-parse --git-path index)" "$idx" 2>/dev/null || true
+  ( cd "$CHECKOUT" && GIT_INDEX_FILE="$idx" git add -A && GIT_INDEX_FILE="$idx" git rm -r -q --cached --ignore-unmatch .looper >/dev/null )
+  tree="$(cd "$CHECKOUT" && GIT_INDEX_FILE="$idx" git write-tree)"; rm -f "$idx"
+  echo "$tree" > "$THINK_OUT/tree"
+  git -C "$CHECKOUT" diff --binary --full-index "$1" "$tree" > "$THINK_OUT/patch"
+}
+
+think_issue() { # issue
+  local n="$1" run base limit kind resumed="" last_comment out
+  out="$(cd "$THINK_OUT" 2>/dev/null && pwd || { mkdir -p "$THINK_OUT" && cd "$THINK_OUT" && pwd; })"; THINK_OUT="$out"
+  rm -f "$out/outcome" "$out/comment.md" "$out/patch" "$out/tree" "$out/base"
+  run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
+  log "thinking about $LOOPER_ORG/$REPO#$n ($run)"
+  sync_checkout
+  base="$(git -C "$CHECKOUT" rev-parse origin/main)"; echo "$base" > "$out/base"
+  # The token must not be able to push: GitHub refuses even a dry run to a read-only one.
+  if git -C "$CHECKOUT" push -q --dry-run origin "HEAD:refs/heads/looper-think-push-probe" >/dev/null 2>&1; then
+    think_say "The think job's GitHub token can push to $LOOPER_ORG/$REPO: it must be read-only, so the issue was not worked."
+    think_outcome stuck; return 0
+  fi
+  limit="$(run_limit "$n")"
+  kind="$(issue_kind "$n")"
+  if [[ -z "$kind" ]]; then
+    think_say "This issue is labelled neither \`$LABEL_BUG\` nor \`$LABEL_FEATURE\` ($ISSUE_FLOW). A person labels it and removes \`$LABEL_DECISION\`."
+    think_outcome question; return 0
+  fi
+  if [[ "$kind" == "$LABEL_FEATURE" ]]; then
+    local on=0; on_roadmap "$n" || on=$?
+    case "$on" in
+      0) ;;
+      1) think_say "This is a \`$LABEL_FEATURE\` that no ROADMAP.md links, so it is not built ($ISSUE_FLOW). Once Jody approves a design and an agent adds it to a ROADMAP.md, linking this issue, remove \`$LABEL_DECISION\`."
+         think_outcome question; return 0 ;;
+      *) think_say "The looper could not read \`$LOOPER_ORG/roadmap:ROADMAP.md\`, so it cannot tell whether this feature is on a roadmap ($ISSUE_FLOW)."
+         think_outcome stuck; return 0 ;;
+    esac
+  fi
+  resumed="$(resume "$n")"
+  if [[ -n "$resumed" ]]; then
+    resumed="${resumed//commit it on main as rule 5 says/leave it in the checkout as rule 5 says}"
+    resumed="${resumed//commit it on
+main as rule 5 says/leave it in the
+checkout as rule 5 says}"
+    last_comment="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json comments --jq '.comments[-1].body // ""')" || true
+    [[ -z "$last_comment" ]] || resumed="$resumed
+
+The issue's last comment:
+
+$last_comment"
+    resumed="
+$resumed
+"
+  fi
+  cat > "$run/prompt.md" <<PR
+You are the looper of $LOOPER_ORG/$REPO, working issue #$n. Your working directory is this repository's
+checkout on main, at origin/main. Read the issue first: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`.
+It was approved by someone with write access; issues it links to and the documents it cites (decision
+records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.
+Your GitHub token is read-only: you can read any $LOOPER_ORG repository and issue, and write nothing to GitHub.
+$REPO-looper[bot] writes your outcome for you, after you: it is in the files below, never anything else.
+$resumed
+Rules:
+1. Do what the issue asks, completely: its acceptance criteria are the definition of done. If it asks for
+   something you believe is wrong, or needs a decision you may not make (a public contract the issue does
+   not settle, a change in another repository), write the question and your recommendation to
+   $out/comment.md and the outcome \`type: question\` (rule 8), and stop: the issue gets $LABEL_DECISION.
+2. Tests first where the change has behaviour: write the test that fails, then make it pass. Surgical
+   changes, the existing style, no hacks. Generated code is never edited by hand: change the generator or
+   the proto and regenerate. \`tacplus\` in this container runs the compiler image for this repository's
+   MAJOR.MINOR floor (tacplus.yaml), always its latest patch.
+3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same checkout.
+4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
+   poll with short checks; never end your reply while one runs. You run non-interactively: ending your
+   reply ends the run.
+5. Leave your change in this checkout (committing it locally is fine); do not push and do not open a pull
+   request. After you, the looper runs the gates on it, and $REPO-looper[bot] opens the pull request, which
+   GitHub squash-merges once the required check tacplus-dev/build passes. Never commit secrets.
+6. The planning files: update STATE.md when your change changes what it states (version, what works,
+   gaps, blockers). Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
+   only in comments. Never edit ROADMAP.md: it is Jody's, and a change that touches it is refused.
+   HISTORY.md is append-only and not yours: the looper adds the line for this issue.
+7. This issue is a $kind ($ISSUE_FLOW): $(if [[ "$kind" == "$LABEL_FEATURE" ]]; then echo "it ships in the next minor release, from main only."; else echo "fix it on main; the patch release follows the merge."; fi)
+8. When you are done, write $out/comment.md: what changed, the gates you ran and their last lines, and
+   anything you could not verify (for a question: the question and your recommendation). Then, as your last
+   step, write $out/outcome: \`type: pr\` and a line \`title: <the pull request's title>\`; or \`type: question\`;
+   or, when the change is done but its gates cannot run until another open issue is done, or there is
+   rightly nothing to change here until then, \`type: blocked\` and one line \`Blocked-by: #N\` (this repository)
+   or \`Blocked-by: $LOOPER_ORG/<repo>#N\` per issue it waits on (never this issue, nor a closed one).
+   Writing the outcome ends your run.
+9. Your time limit is $(hours "$limit"); you are stopped $(( STOP_EARLY / 60 )) minutes before it. Whenever you finish a step,
+   record it: \`$LOOPER_SELF --repo $REPO --issue $n --checkpoint "<what is done; what is left>"\`. If the time
+   runs out, your change is kept on the branch $(wip_branch "$n") and the next run resumes from it with that message.
+10. Open no issue (you cannot): put follow-ups in PROPOSALS.md, and name in your comment any issue a person should open.
+PR
+  local rc=0
+  run_claude "$run/prompt.md" "$run/claude.log" "$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))" "$run" "$n" || rc=$?
+  local stopped=""; [[ -s "$run/stopped" ]] && stopped="$(cat "$run/stopped")"
+  local type title="" step=""
+  type="$({ sed -n 's/^type:[[:space:]]*\([a-z]*\)[[:space:]]*$/\1/p' "$out/outcome" 2>/dev/null || true; } | head -n 1)"
+  [[ -s "$run/step" ]] && step="$(cat "$run/step")"
+  case "$type" in
+    pr)
+      title="$(sed -n 's/^title:[[:space:]]*//p' "$out/outcome" | head -n 1 | cut -c1-120)"
+      title="${title:-$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json title --jq .title 2>/dev/null || echo "#$n")}"
+      if [[ -n "$(cd "$CHECKOUT" && git status --porcelain -- ROADMAP.md; git diff --name-only "$base" HEAD -- ROADMAP.md)" ]]; then
+        think_say "The change touches ROADMAP.md, which only Jody changes."; think_outcome stuck; think_change "$base"; return 0
+      fi
+      # HISTORY.md's line for the issue, part of what the gates pass on.
+      local t; t="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json title --jq .title 2>/dev/null)" || t="#$n"
+      ( cd "$CHECKOUT" && append_history "- $(date -u +%F) looper issue $t (#$n, $REPO-looper[bot] pull request)" )
+      local gates="${LOOPER_GATES:-}" grc=0
+      [[ -n "$gates" || ! -f "$CHECKOUT/justfile" ]] || gates="just gates"
+      if [[ -z "$gates" ]]; then
+        think_say "The change is done, but $REPO has no gates (a justfile's \`gates\` recipe) to pass it on."; think_outcome stuck
+      else
+        think_change "$base"; local tested; tested="$(cat "$out/tree")"
+        log "think: #$n: the gates ($gates) on tree $tested"
+        ( cd "$CHECKOUT" && bash -c "$gates" ) > "$run/gates.log" 2>&1 || grc=$?
+        think_change "$base"
+        if (( grc == 0 )) && [[ "$(cat "$out/tree")" != "$tested" ]]; then
+          think_say "The gates changed the tree they ran on (a file not ignored, or a tracked one): it is not the tested tree."; think_outcome stuck
+        elif (( grc == 0 )); then think_outcome pr "title: $title"
+        else
+          think_say "$(printf 'the gates (`%s`) failed after the run, exit %s; their end:\n\n~~~~~~\n%s\n~~~~~~' "$gates" "$grc" "$(tail -n 30 "$run/gates.log" | redact)")"
+          think_outcome stuck
+        fi
+      fi ;;
+    question) think_outcome question ;;
+    blocked)
+      local refs r b lines=() bad=""
+      refs="$(parse_blockers "$REPO" < "$out/outcome" | awk '!seen[$0]++')"
+      while read -r r b; do
+        [[ -n "$r" ]] || continue
+        if [[ "$r $b" == "$REPO $n" || "$(gh issue view "$b" --repo "$LOOPER_ORG/$r" --json state --jq .state 2>/dev/null)" != OPEN ]]; then bad=1; continue; fi
+        if [[ "$r" == "$REPO" ]]; then lines+=("Blocked-by: #$b"); else lines+=("Blocked-by: $LOOPER_ORG/$r#$b"); fi
+      done <<<"$refs"
+      if [[ -z "$bad" ]] && (( ${#lines[@]} )); then think_outcome blocked "${lines[@]}"
+      else think_say "The run's outcome was blocked, but named no open issue, or this one."; think_outcome stuck; fi ;;
+    *)
+      if [[ "$rc" == 124 || "$rc" == 137 ]]; then
+        think_say "Its last step (what is done, what is left): ${step:-none recorded}"; think_outcome timeout
+      else
+        local why="The run ended without an outcome (exit $rc${stopped:+, $stopped})."
+        [[ "$stopped" == idle ]] && why="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes."
+        think_say "$why${step:+ Its last step: $step}"; think_outcome stuck
+      fi ;;
+  esac
+  think_change "$base"
+  log "think: #$n: $(git -C "$CHECKOUT" diff --shortstat "$base" "$(cat "$out/tree")")"
+}
+
 # After the scan, the issues it filed (numbered after the newest before it):
 # a finding is a bug, so one with no kind gets `bug`; a feature is never
 # approved by a scan, so `approved` comes off one (looper#14).
@@ -918,8 +1123,10 @@ case "$MODE" in
     # The model's step: what is done and what is left becomes the message of
     # every checkpoint after it.
     [[ -n "${LOOPER_RUN:-}" ]] && printf '%s\n' "$STEP" > "$LOOPER_RUN/step"
-    checkpoint "$ISSUE" "a step" "${LOOPER_RUN:-}" ;;
+    # A think job pushes nothing: its commit job keeps the work on the branch.
+    [[ -n "${LOOPER_THINK:-}" ]] || checkpoint "$ISSUE" "a step" "${LOOPER_RUN:-}" ;;
   scan) scan ;;
+  think) think_issue "$ISSUE" ;;
   one)
     gh issue view "$ISSUE" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name' | grep -qx "$LABEL_APPROVED" \
       || die "#$ISSUE is not labeled $LABEL_APPROVED"

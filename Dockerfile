@@ -16,6 +16,9 @@
 # this image too, with none of the loopers' credentials and no agent at work:
 # its gates run in each repository's pinned build image (looper#17).
 #
+# A looper with its own identity (looper#28, kernel first) runs looper-identity
+# (its LLM-free prepare and commit jobs) and repo-looper --think from it too.
+#
 # The build environment follows the newest released tacplus line (the project's
 # rule: a MAJOR.MINOR, never a patch pin).
 ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:2.5
@@ -30,6 +33,6 @@ LABEL org.opencontainers.image.title="looper" \
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
-COPY repo-looper looper-port looper-dispatch looper-build tacplus looper-smoke /usr/local/bin/
+COPY repo-looper looper-port looper-dispatch looper-build looper-identity tacplus looper-smoke /usr/local/bin/
 ENV LOOPER_IMAGE=1 LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work

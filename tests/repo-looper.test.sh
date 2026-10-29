@@ -993,4 +993,131 @@ not_stopped
 [[ ! -e "$FIX/gitlab" ]] || fail "asked GitLab: $(cat "$FIX/gitlab")"
 pass
 
+# --- the think job (looper#28): no identity, nothing written, the outcome --------
+# GitHub refuses a push with the read-only token: here, pushes go nowhere.
+think() { # [VAR=value...]: think about alpha#4 into $FIX/think
+  OUT="$(looper GH_TOKEN= GITHUB_TOKEN= GITLAB_TOKEN= LOOPER_READER_TOKEN=ghs_read LOOPER_GATES=true \
+           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$FIX/nowhere.git.pushInsteadOf" GIT_CONFIG_VALUE_0="$FIX/origin.git" \
+           "$@" -- --repo alpha --issue 4 --think "$FIX/think" 2>&1)" || { echo "$OUT"; fail "repo-looper --think exited non-zero"; }
+}
+outcome() { cat "$FIX/think/outcome"; }
+untouched() { # nothing written to GitHub: no branch, main, the issue as it was
+  main_unchanged
+  [[ -z "$(origin for-each-ref refs/heads/looper)" ]] || fail "pushed a branch"
+  [[ ! -s "$FIX/comments" ]] || fail "commented"
+  [[ "$(labels alpha 4)" == "$1" ]] || fail "labels $(labels alpha 4)"
+}
+says() { # what the model writes: a change, its comment and its outcome
+  printf '%s\n' "$@" >> "$FIX/claude.sh"
+}
+# The patch on base gives the tree, as the commit job checks.
+patch_gives_tree() {
+  local wt; wt="$(mktemp -d)"; git clone -q "$FIX/origin.git" "$wt"
+  [[ "$(git -C "$wt" rev-parse HEAD)" == "$(cat "$FIX/think/base")" ]] || fail "base is not main"
+  git -C "$wt" apply --index --binary "$FIX/think/patch" || fail "the patch does not apply"
+  [[ "$(git -C "$wt" write-tree)" == "$(cat "$FIX/think/tree")" ]] || fail "the patch does not give the tree"
+  rm -rf "$wt"
+}
+
+scenario think-pr
+says 'echo fixed > fix.txt' 'echo "Fixed; gates pass." > "$(dirname "$OUTCOME")/comment.md"' 'printf "type: pr\ntitle: Fix the thing\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == $'type: pr\ntitle: Fix the thing' ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "Fixed; gates pass."
+has "$(cat "$FIX/think/patch")" "+fixed"
+has "$(cat "$FIX/think/patch")" "looper issue Issue 4 (#4, alpha-looper[bot] pull request)"
+patch_gives_tree
+untouched approved,bug
+has "$(cat "$FIX/prompts")" "working issue #4"
+has "$(cat "$FIX"/project/looper-runs/*/prompt.md)" "Your GitHub token is read-only"
+pass
+
+scenario think-holds-identity
+for c in GH_TOKEN=ghp_x GCP_ID_TOKEN=eyJ.x.y GITLAB_TOKEN=x SOME=github_pat_x BUILD_TRIGGER_TOKEN=x; do
+  if looper LOOPER_READER_TOKEN=ghs_read GH_TOKEN= GITHUB_TOKEN= GITLAB_TOKEN= "$c" -- --repo alpha --issue 4 --think "$FIX/think" > "$FIX/out" 2>&1; then
+    fail "thought beside $c"
+  fi
+  has "$(cat "$FIX/out")" "the think job holds an identity"
+done
+if looper GH_TOKEN= GITHUB_TOKEN= GITLAB_TOKEN= -- --repo alpha --issue 4 --think "$FIX/think" > "$FIX/out" 2>&1; then fail "thought with no reader token"; fi
+[[ ! -s "$FIX/prompts" ]] || fail "the model ran"
+untouched approved,bug
+pass
+
+scenario think-token-can-push
+says 'printf "type: pr\n" > "$OUTCOME"'
+OUT="$(looper GH_TOKEN= GITHUB_TOKEN= GITLAB_TOKEN= LOOPER_READER_TOKEN=ghs_read -- --repo alpha --issue 4 --think "$FIX/think" 2>&1)" || fail "exited non-zero"
+[[ "$(outcome)" == "type: stuck" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "can push"
+[[ ! -s "$FIX/prompts" ]] || fail "the model ran"
+pass
+
+scenario think-gates-fail
+says 'echo broken > fix.txt' 'printf "type: pr\n" > "$OUTCOME"'
+think LOOPER_GATES='echo "a gate fails"; exit 3'
+[[ "$(outcome)" == "type: stuck" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "a gate fails"
+has "$(cat "$FIX/think/patch")" "+broken"
+untouched approved,bug
+pass
+
+scenario think-gates-change-the-tree
+says 'echo fixed > fix.txt' 'printf "type: pr\n" > "$OUTCOME"'
+think LOOPER_GATES='echo out > build-output.txt'
+[[ "$(outcome)" == "type: stuck" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "not the tested tree"
+pass
+
+scenario think-roadmap
+says 'echo mine > ROADMAP.md' 'printf "type: pr\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == "type: stuck" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "ROADMAP.md"
+pass
+
+scenario think-question
+says 'echo "Which one?" > "$(dirname "$OUTCOME")/comment.md"' 'printf "type: question\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == "type: question" ]] || fail "outcome: $(outcome)"
+untouched approved,bug
+pass
+
+scenario think-blocked
+issue tacplus 9 OPEN "" "A compiler floor."
+issue alpha 3 CLOSED "" "Done."
+says 'printf "type: blocked\nBlocked-by: tacplus-dev/tacplus#9\nBlocked-by: tacplus-dev/tacplus#9\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == $'type: blocked\nBlocked-by: tacplus-dev/tacplus#9' ]] || fail "outcome: $(outcome)"
+: > "$FIX/claude.sh"; says 'printf "type: blocked\nBlocked-by: #3\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == "type: stuck" ]] || fail "a closed blocker: $(outcome)"
+untouched approved,bug
+pass
+
+scenario think-feature-off-roadmap
+issue alpha 4 OPEN approved,feature "Build it."
+mkdir -p "$FIX/platform"; echo "# Roadmap" > "$FIX/platform/ROADMAP.md"
+think
+[[ "$(outcome)" == "type: question" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "no ROADMAP.md links"
+[[ ! -s "$FIX/prompts" ]] || fail "the model ran"
+pass
+
+scenario think-time-limit
+says 'echo half > half.txt' '"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "half done; the rest left"' 'sleep 30'
+think LOOPER_TIMEOUT=6 LOOPER_STOP_EARLY=3
+[[ "$(outcome)" == "type: timeout" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "half done; the rest left"
+has "$(cat "$FIX/think/patch")" "+half"
+untouched approved,bug
+pass
+
+scenario think-no-outcome
+says 'echo half > half.txt'
+think
+[[ "$(outcome)" == "type: stuck" ]] || fail "outcome: $(outcome)"
+has "$(cat "$FIX/think/patch")" "+half"
+patch_gives_tree
+pass
+
 echo "repo-looper: all scenarios pass"

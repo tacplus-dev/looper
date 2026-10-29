@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#17).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#28).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -29,7 +29,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   (started with inputs `repo`, `sha`, `tag`): the commit's gates in its pinned build image, no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status, and on a release
   a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
-  and with a real buildx (same commit, same digest). The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
+  and with a real buildx (same commit, same digest). The looper identity pilot (#28), built and tested, not yet
+  deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
+  `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:
+  outcome, patch, tested tree) and `looper-identity commit` (tree check, then `kernel-looper[bot]`: branch, pull
+  request with squash auto-merge, build trigger, comment, labels); one run at a time, in a child pipeline. The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
   `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`
@@ -38,6 +42,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green
   for a day; the ROADMAP.md guard is a pre-push hook in the looper's checkout, so a push that skips hooks
   is not refused (see PROPOSALS.md); no release line yet
-- **Blocked on:** #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build
+- **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
+  identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
+  tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`
+  app; #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build
   runner (README, Build pipeline) and publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF); every
   build fails "no pin" until a repository commits a `tacplus.lock`

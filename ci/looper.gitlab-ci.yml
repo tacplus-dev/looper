@@ -1,0 +1,130 @@
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# The .gitlab-ci.yml of a looper with its own identity (looper#28): the GitLab
+# project gitlab.com/tacplus-dev/<repo>, kernel first. Kept here
+# (github.com/tacplus-dev/looper ci/looper.gitlab-ci.yml) and copied into that
+# project as is, on its protected main, which only Jody or the hub changes; its
+# LOOPER_REPO is the project's own name. The project holds no code: its jobs
+# fetch the repository from GitHub. README: Looper identity.
+#
+# Three jobs per issue run (tacplus-dev/roadmap
+# decisions/looper-identity-panel-2026-10-29/SYNTHESIS.md, 17):
+#   prepare  LLM-free: the read-only tacplus-reader token (KMS-signed JWT) and
+#            the issue, handed to think as a dotenv report
+#   think    the model and the gates (repo-looper --think): no id_tokens, no
+#            identity, the model's credential alone (environment looper-think)
+#   commit   LLM-free, compiles nothing: the patch, checked against the tested
+#            tree, written as <repo>-looper[bot] (KMS-signed app JWT): a pull
+#            request GitHub squash-merges once tacplus-dev/build passes, or the
+#            question, the Blocked-by lines, what is left
+#
+# Started only by the project's schedule, or from the web by Jody or the hub,
+# on protected main. The project forbids pipeline variables (no_one_allowed);
+# the one input, typed and checked here before any job runs, is an issue to
+# take if it is ready. That pipeline has one job, `run`: it runs the three jobs
+# as a child pipeline of this same file and holds the resource group `looper`
+# until the child ends, so two runs never overlap and no issue is claimed
+# before it is worked. The jobs check that they are that child, on protected
+# main (looper-identity). Every job runs on a fresh VM, deleted after it.
+spec:
+  inputs:
+    issue:
+      description: "An issue to work if it is ready (else the oldest ready one)"
+      default: ""
+      regex: '^([0-9]+)?$'
+---
+workflow:
+  name: "looper $[[ inputs.issue ]]"
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|parent_pipeline)$/ && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"
+
+stages: [run, prepare, think, commit]
+
+variables:
+  LOOPER_REPO: $CI_PROJECT_NAME
+  GIT_STRATEGY: none
+
+default:
+  image: ghcr.io/tacplus-dev/looper:main
+  tags: [arm64, build]
+  retry:
+    max: 2
+    when: [runner_system_failure, scheduler_failure, unknown_failure]
+
+# The schedule's (or the web's) pipeline: one run at a time.
+run:
+  stage: run
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "parent_pipeline"
+  inherit:
+    default: false
+  resource_group: looper
+  trigger:
+    include:
+      - local: .gitlab-ci.yml
+        inputs:
+          issue: "$[[ inputs.issue ]]"
+    strategy: depend
+
+.child:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
+
+prepare:
+  extends: .child
+  stage: prepare
+  variables:
+    LOOPER_ISSUE: "$[[ inputs.issue ]]"
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
+  script:
+    - looper-identity prepare
+  artifacts:
+    # The read-only token lasts an hour, and nobody downloads it.
+    access: none
+    expire_in: 1 hour
+    reports:
+      dotenv: prepare.env
+
+think:
+  extends: .child
+  stage: think
+  needs: [prepare]
+  # Its one variable: CLAUDE_CODE_OAUTH_TOKEN, scoped to this environment.
+  environment:
+    name: looper-think
+    action: prepare
+  timeout: 5h
+  variables:
+    LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs
+  script:
+    - test -n "$LOOPER_ISSUE" || { echo "no ready issue"; exit 0; }
+    - repo-looper --repo "$LOOPER_REPO" --issue "$LOOPER_ISSUE" --think "$CI_PROJECT_DIR/think"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [think/, looper-runs/]
+
+commit:
+  stage: commit
+  # Also after a failed think job: its issue gets a comment and looper:stuck.
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
+      when: always
+  needs:
+    - job: prepare
+      artifacts: true
+    - job: think
+      artifacts: true
+  # Its one variable: BUILD_TRIGGER_TOKEN, scoped to this environment.
+  environment:
+    name: looper-commit
+    action: prepare
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
+  script:
+    - unset LOOPER_READER_TOKEN
+    - looper-identity commit

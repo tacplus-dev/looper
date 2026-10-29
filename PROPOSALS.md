@@ -91,5 +91,26 @@ the looper then marks it `promoted` or `declined` here with the date.
   permission (commit statuses). Scoping `TACPLUS_READER_APP_KEY` to environments that only plan, status and publish
   declare would keep it from the gates job altogether; the gates would then need their token from elsewhere (a
   short-lived token passed in a masked, expiring way).
+- **The build trigger's owner needs Maintainer** (2026-10-29, #28): D5 has the commit job start `tacplus-dev/build`
+  with a trigger token owned by a bot that is a Developer there. GitLab runs a triggered pipeline as the token's owner,
+  and on a protected main only a user allowed to merge to it may run one; GitLab Free grants that by role, so the bot
+  must be a Maintainer of `tacplus-dev/build` (its token is revoked once the trigger exists, so only the trigger token
+  is stored). Alternatives: let Developers merge to build's main (they could then merge changes to its CI), or have the
+  build project watch pull requests itself.
+- **The pilot's think job and releases** (2026-10-29, #28): a bug fixed through `repo-looper --think` lands by GitHub's
+  squash merge; nothing tags the patch release or opens backport pull requests yet (the old prompt's rule 7 had the
+  model do both with Jody's token). The commit job could tag after the merge, or a release step of the build pipeline.
+- **The think job's classify and propose** (2026-10-29, #28): an unlabelled issue, or a feature no ROADMAP.md links,
+  is answered `question` with a fixed text; the old flow had the model classify it, or write a design proposal into
+  PROPOSALS.md. Both fit the think/commit split (the model writes, the commit job labels or opens the pull request).
+- **HISTORY.md's line by pull request** (2026-10-29, #28): the think job appends the issue's line before the gates, so
+  it names the pull request, not the commit (GitHub's squash commit does not exist yet). A step after the merge could
+  rewrite nothing (append-only) but append the commit; or the line format could accept a pull request link.
+- **A think job killed outright loses its work** (2026-10-29, #28): it cannot push, so its checkpoints only record the
+  step; the commit job keeps what a run that ended left (`looper/<repo>-<n>`), but a VM lost mid-run leaves nothing.
+  Its work could ride in the job's artifacts at each checkpoint (`artifacts:when: always` only covers a job that ends).
+- **Keep ci/looper.gitlab-ci.yml in step with each looper's project** (2026-10-29, #28): copied by hand, as the build
+  project's is (above); one file for every repository's project, so the follow-up's rollout could generate the
+  projects, keys and bindings from one repository list (SYNTHESIS 4).
 
 ## Promoted / declined

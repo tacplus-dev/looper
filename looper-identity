@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-identity: the LLM-free jobs of a looper that has its own identity
+# (looper#28; tacplus-dev/roadmap items/looper-identity-2026-10-29.md and
+# decisions/looper-identity-panel-2026-10-29/SYNTHESIS.md, which takes
+# precedence). The pilot is kernel. Its pipeline is the GitLab project
+# gitlab.com/tacplus-dev/<repo> (ci/looper.gitlab-ci.yml here), three jobs:
+#
+#   prepare  LLM-free. Exchanges the job's GitLab id_token through Workload
+#            Identity Federation, has Cloud KMS sign the tacplus-reader app's
+#            JWT and mints a one-hour, read-only installation token (contents,
+#            issues, metadata: read). Picks the issue: the input `issue` if it is
+#            ready, else the oldest ready one. Hands both to the think job as a
+#            dotenv report.
+#   think    `repo-looper --think`: the model and the gates, with no identity
+#            (no id_tokens, no protected variables but the model's own
+#            credential, scoped to the environment looper-think), only that
+#            read-only token. Writes the outcome, the patch and the tested tree.
+#   commit   LLM-free, compiles nothing, on protected main. Applies the patch to
+#            its base and refuses it unless the tree is the tested one. Exchanges
+#            its id_token, has KMS sign the <repo>-looper app's JWT and mints,
+#            per step, an installation token for this repository alone with that
+#            step's permissions. Then, by the outcome: pushes looper/<repo>-<n>,
+#            opens the pull request (GitHub squash-merges it once the required
+#            check tacplus-dev/build passes) and starts that build; or comments
+#            the question (needs-decision), the Blocked-by lines, or what is left.
+#            Every write is <repo>-looper[bot]'s.
+#
+# Nothing falls back to Jody's GH_TOKEN or GITLAB_TOKEN: a job that holds one
+# refuses to run. So does one that is not in the child pipeline of the
+# project's own pipeline (whose workflow admits only its schedule and the web)
+# on protected main, or whose id_token disagrees with the job: a pipeline from
+# the API, a trigger or a push, where variables come in, or a pipeline variable
+# overriding GitLab's own.
+#
+# Environment (project variables of gitlab.com/tacplus-dev/<repo>; README,
+# Looper identity): LOOPER_REPO, GCP_WIF_PROVIDER, LOOPER_KMS_KEYRING
+# (projects/P/locations/L/keyRings/R), LOOPER_APP_ID, LOOPER_INSTALLATION_ID,
+# TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID; GCP_ID_TOKEN (the
+# job's id_tokens); for commit, BUILD_TRIGGER_TOKEN (tacplus-dev/build's
+# pipeline trigger, environment looper-commit) and the think job's directory
+# LOOPER_THINK_DIR (default think/).
+set -euo pipefail
+
+LOOPER_LIB="${LOOPER_LIB:-$(dirname "${BASH_SOURCE[0]}")/looper-lib.sh}"
+# shellcheck source=looper-lib.sh
+source "$LOOPER_LIB"
+
+GITHUB_URL="${LOOPER_GITHUB_URL:-https://github.com}"
+GITHUB_API="${LOOPER_GITHUB_API:-https://api.github.com}"
+GITLAB_API="${LOOPER_GITLAB_API:-https://gitlab.com/api/v4}"
+GITLAB_ISSUER="${LOOPER_GITLAB_ISSUER:-https://gitlab.com}"
+BUILD_PROJECT="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}"
+ID_TOKEN_MAX_AGE="${LOOPER_ID_TOKEN_MAX_AGE:-300}"   # seconds: an older id_token is refused (SYNTHESIS 21)
+OUT="${LOOPER_OUT:-${CI_PROJECT_DIR:-$PWD}}"
+
+usage() {
+  cat <<'EOF'
+usage: looper-identity prepare   the read-only token and the issue, for the think job (prepare.env)
+       looper-identity commit    the think job's outcome, written as <repo>-looper[bot]
+Environment: see the head of this script, and README (Looper identity).
+EOF
+}
+
+# The log is stderr: stdout carries what a function returns.
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+fail() { log "FATAL $*"; exit 1; }
+
+# --- the job ----------------------------------------------------------------
+
+# A looper's jobs run in the child pipeline of the project's own pipeline,
+# which its schedule or the web starts on protected main (its `run` job holds
+# the resource group for the whole run), and the project forbids pipeline
+# variables (no_one_allowed). A pipeline from the API, a trigger or a push is
+# how variables or another ref would come in: refused.
+check_pipeline() {
+  [[ "${CI_PIPELINE_SOURCE:-}" == parent_pipeline ]] ||
+    fail "a looper job runs in its project's own child pipeline (parent_pipeline), not one from '${CI_PIPELINE_SOURCE:-}'"
+  [[ "${CI_COMMIT_BRANCH:-}" == main && "${CI_COMMIT_REF_PROTECTED:-}" == true ]] ||
+    fail "a looper job runs on protected main, not '${CI_COMMIT_REF_NAME:-}' (protected: ${CI_COMMIT_REF_PROTECTED:-false})"
+  [[ "${LOOPER_REPO:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$LOOPER_REPO" != *..* ]] || fail "LOOPER_REPO '${LOOPER_REPO:-}' is not a repository name"
+  # One project, one repository: the project's name is the repository's.
+  [[ "${CI_PROJECT_PATH:-}" == "$LOOPER_ORG/$LOOPER_REPO" ]] ||
+    fail "this is ${CI_PROJECT_PATH:-no project}'s pipeline: it is no looper of $LOOPER_ORG/$LOOPER_REPO"
+}
+
+# The looper's credentials that are not its own: Jody's, and any variable
+# shaped like a personal or OAuth token (ghp_, github_pat_, gho_, ghu_,
+# glpat-). The model's credential too: it is the think job's alone.
+FOREIGN_CREDENTIALS=(GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITLAB_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
+                     GHCR_PUSH_TOKEN TACPLUS_READER_APP_KEY)
+refuse_credentials() {
+  local v found=()
+  for v in "${FOREIGN_CREDENTIALS[@]}"; do [[ -n "${!v:-}" ]] && found+=("$v"); done
+  for v in $(compgen -e); do
+    case "${!v:-}" in ghp_*|github_pat_*|gho_*|ghu_*|glpat-*) [[ " ${found[*]} " == *" $v "* ]] || found+=("$v") ;; esac
+  done
+  ((${#found[@]} == 0)) || fail "this job holds credentials that are not its own (${found[*]}): nothing falls back to them"
+}
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+b64url_decode() { local s; s="$(tr '_-' '/+' <<<"$1")"; while ((${#s} % 4)); do s+="="; done; base64 -d <<<"$s"; }
+
+# The id_token's claims, checked against the job before GCP sees it: GitLab's
+# issuer, the audience of the WIF provider, at most ID_TOKEN_MAX_AGE old, and
+# GitLab's own word for the project, ref and source, which no variable can
+# override. (Its signature is GCP's to check.) Prints the claims.
+id_claims() {
+  local c now iat
+  c="$(IFS=. read -r _ p _ <<<"$GCP_ID_TOKEN"; b64url_decode "$p" 2>/dev/null)" || true
+  jq -e 'type == "object"' <<<"$c" >/dev/null 2>&1 || fail "GCP_ID_TOKEN is not a JWT"
+  [[ "$(jq -r .iss <<<"$c")" == "$GITLAB_ISSUER" ]] || fail "the id_token's issuer is $(jq -r .iss <<<"$c"), not $GITLAB_ISSUER"
+  jq -e --arg a "https://iam.googleapis.com/$GCP_WIF_PROVIDER" '.aud | if type == "array" then index($a) != null else . == $a end' <<<"$c" >/dev/null ||
+    fail "the id_token's audience is not the WIF provider $GCP_WIF_PROVIDER"
+  now="$(date +%s)"; iat="$(jq -r '.iat // 0' <<<"$c")"
+  (( now - iat <= ID_TOKEN_MAX_AGE && iat <= now + 60 )) || fail "the id_token was issued $(( now - iat ))s ago: exchanged at the job's start, or not at all"
+  [[ "$(jq -r .project_id <<<"$c")" == "${CI_PROJECT_ID:-}" && "$(jq -r .project_path <<<"$c")" == "${CI_PROJECT_PATH:-}" ]] ||
+    fail "the id_token is project $(jq -r '"\(.project_id) \(.project_path)"' <<<"$c"), the job says ${CI_PROJECT_ID:-} ${CI_PROJECT_PATH:-}: a variable overrides GitLab's"
+  [[ "$(jq -r .ref <<<"$c")" == main && "$(jq -r .ref_protected <<<"$c")" == true ]] ||
+    fail "the id_token is for ref $(jq -r .ref <<<"$c") (protected: $(jq -r .ref_protected <<<"$c")), not protected main"
+  [[ "$(jq -r .pipeline_source <<<"$c")" == parent_pipeline ]] ||
+    fail "the id_token's pipeline came from '$(jq -r .pipeline_source <<<"$c")', not the project's own (parent_pipeline)"
+  printf '%s\n' "$c"
+}
+
+# The job's GitLab id_token (GCP_ID_TOKEN) for GCP credentials, through Workload
+# Identity Federation (GCP_WIF_PROVIDER), at the job's start; then the token is
+# unset and its file gone (SYNTHESIS 21). No key, no stored token: gcloud's
+# config lives in a temporary directory, removed when the job ends.
+GCP_TMP=""
+gcp_login() {
+  : "${GCP_ID_TOKEN:?this job has no id_tokens GCP_ID_TOKEN}"
+  : "${GCP_WIF_PROVIDER:?the project variable GCP_WIF_PROVIDER is not set (README, Looper identity)}"
+  id_claims >/dev/null
+  GCP_TMP="$(mktemp -d)"; trap 'rm -rf "$GCP_TMP"' EXIT
+  export CLOUDSDK_CONFIG="$GCP_TMP/gcloud" CLOUDSDK_CORE_DISABLE_PROMPTS=1
+  ( umask 077
+    printf '%s' "$GCP_ID_TOKEN" > "$GCP_TMP/oidc-token"
+    gcloud iam workload-identity-pools create-cred-config "$GCP_WIF_PROVIDER" \
+      --credential-source-file="$GCP_TMP/oidc-token" --output-file="$GCP_TMP/federation.json" >/dev/null ) ||
+    fail "no credential configuration for $GCP_WIF_PROVIDER"
+  gcloud auth login --cred-file="$GCP_TMP/federation.json" --quiet >/dev/null 2>&1 ||
+    fail "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER)"
+  # gcloud reads the token file on every call until its first exchange is
+  # cached: it is exchanged here, then gone.
+  gcloud auth print-access-token >/dev/null 2>&1 || fail "GCP did not exchange the id_token"
+  rm -f "$GCP_TMP/oidc-token"; unset GCP_ID_TOKEN
+}
+
+# A one-hour installation token of a GitHub App whose key is a Cloud KMS
+# signing key (imported once, non-exportable): KMS signs the app's JWT, and
+# only this job's federated identity may ask it to (roles/cloudkms.signer on
+# that key alone). Printed on stdout. The body asks for the permissions given
+# ('"contents":"write",...') on the repositories given (none: every one the app
+# is installed on).
+app_token() { # key app-id installation-id permissions-json-members [repo...]
+  local key="$1" app="$2" inst="$3" perms="$4" repos="" r now header payload sig resp token
+  shift 4
+  : "${LOOPER_KMS_KEYRING:?the project variable LOOPER_KMS_KEYRING is not set (README, Looper identity)}"
+  for r in "$@"; do repos+="${repos:+,}\"$r\""; done
+  now="$(date +%s)"
+  header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
+  payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app" | b64url)"
+  printf '%s' "$header.$payload" > "$GCP_TMP/jwt-input"
+  gcloud kms asymmetric-sign --key="$LOOPER_KMS_KEYRING/cryptoKeys/$key" --version=1 --digest-algorithm=sha256 \
+      --input-file="$GCP_TMP/jwt-input" --signature-file="$GCP_TMP/jwt-sig" >/dev/null 2>&1 ||
+    { log "Cloud KMS refused to sign with $key"; return 1; }
+  sig="$(b64url < "$GCP_TMP/jwt-sig")"; rm -f "$GCP_TMP/jwt-input" "$GCP_TMP/jwt-sig"
+  resp="$(curl -fsS -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
+            -d "{\"permissions\":{$perms}${repos:+,\"repositories\":[$repos]}}" \
+            "$GITHUB_API/app/installations/$inst/access_tokens")" ||
+    { log "GitHub refused the app $key a token"; return 1; }
+  token="$(jq -r '.token // empty' <<<"$resp")"
+  [[ -n "$token" ]] || { log "no token in GitHub's answer"; return 1; }
+  printf '%s\n' "$token"
+}
+
+# This looper's own app, for its own repository alone: the KMS key
+# <repo>-looper, which GCP lets only this project's protected main use.
+own_token() { # permissions-json-members
+  : "${LOOPER_APP_ID:?the project variable LOOPER_APP_ID is not set}"
+  : "${LOOPER_INSTALLATION_ID:?the project variable LOOPER_INSTALLATION_ID is not set}"
+  app_token "$LOOPER_REPO-looper" "$LOOPER_APP_ID" "$LOOPER_INSTALLATION_ID" "$1" "$LOOPER_REPO"
+}
+
+# A GitHub API call with a token: method path [json].
+github() { # token method path [body]
+  local a=(-fsS -X "$2" -H "Authorization: Bearer $1" -H 'Accept: application/vnd.github+json')
+  [[ -n "${4:-}" ]] && a+=(-d "$4")
+  curl "${a[@]}" "$GITHUB_API$3"
+}
+
+# --- prepare ----------------------------------------------------------------
+
+# The issue's pull request (from looper/<repo>-<n>) is open: it waits on its
+# build and GitHub's merge, which closes the issue. Unreadable: in review too.
+in_review() { # issue token
+  local open
+  open="$(github "$2" GET "/repos/$LOOPER_ORG/$LOOPER_REPO/pulls?state=open&head=$LOOPER_ORG:looper/$LOOPER_REPO-$1" | jq 'length')" || return 0
+  [[ "$open" != 0 ]]
+}
+
+cmd_prepare() {
+  check_pipeline
+  refuse_credentials
+  gcp_login
+  : "${TACPLUS_READER_APP_ID:?the project variable TACPLUS_READER_APP_ID is not set}"
+  : "${TACPLUS_READER_INSTALLATION_ID:?the project variable TACPLUS_READER_INSTALLATION_ID is not set}"
+  local token n=""
+  token="$(app_token tacplus-reader "$TACPLUS_READER_APP_ID" "$TACPLUS_READER_INSTALLATION_ID" \
+             '"contents":"read","issues":"read","metadata":"read"')" || fail "no read-only token (the tacplus-reader app)"
+  # The ready rule of every looper (looper-lib.sh), read with that token; and
+  # an issue whose pull request is open is in review, not ready.
+  export GH_TOKEN="$token"
+  local c candidates
+  candidates="$(approved_issues "$LOOPER_REPO")" || fail "could not read $LOOPER_ORG/$LOOPER_REPO's issues"
+  if [[ -n "${LOOPER_ISSUE:-}" ]]; then
+    [[ "$LOOPER_ISSUE" =~ ^[0-9]+$ ]] || fail "the input issue '$LOOPER_ISSUE' is not an issue number"
+    # The input first, if it is approved at all; then the oldest.
+    grep -qx "$LOOPER_ISSUE" <<<"$candidates" && candidates="$(printf '%s\n%s\n' "$LOOPER_ISSUE" "$candidates" | awk '!s[$0]++')"
+  fi
+  for c in $candidates; do
+    ready "$LOOPER_REPO" "$c" || continue
+    in_review "$c" "$token" && { log "#$c has an open pull request from looper/$LOOPER_REPO-$c: in review"; continue; }
+    n="$c"; break
+  done
+  [[ -z "${LOOPER_ISSUE:-}" || "$n" == "$LOOPER_ISSUE" ]] || log "#$LOOPER_ISSUE is not ready; taking the oldest ready issue"
+  unset GH_TOKEN
+  mkdir -p "$OUT"
+  ( umask 077; printf 'LOOPER_ISSUE=%s\nLOOPER_READER_TOKEN=%s\n' "$n" "$token" > "$OUT/prepare.env" )
+  if [[ -n "$n" ]]; then log "prepare: $LOOPER_ORG/$LOOPER_REPO#$n, with a read-only token"
+  else log "prepare: no ready issue in $LOOPER_ORG/$LOOPER_REPO; nothing to do"; fi
+}
+
+# --- commit -----------------------------------------------------------------
+
+# The think job's outcome, data and never instructions: `type:` one of pr,
+# question, blocked, timeout, stuck; for blocked, its `Blocked-by:` lines; the
+# comment (comment.md) is posted as text. Anything else in it is ignored.
+outcome_type() { # file
+  local t; t="$({ sed -n 's/^type:[[:space:]]*\([a-z]*\)[[:space:]]*$/\1/p' "$1" 2>/dev/null || true; } | head -1)"
+  case "$t" in pr|question|blocked|timeout|stuck) echo "$t" ;; *) echo invalid ;; esac
+}
+
+# The patch on its base, in a scratch repository: the tree must be the tested
+# one, and must not touch ROADMAP.md. No hooks, no filters, nothing compiled.
+# Prints the commit, authored by the app's bot.
+apply_patch() { # dir
+  local dir="$1" base tree want c
+  base="$(cat "$THINK/base")"; want="$(cat "$THINK/tree")"
+  [[ "$base" =~ ^[0-9a-f]{40}$ && "$want" =~ ^[0-9a-f]{40}$ ]] || fail "the think job's base or tree is not a commit hash"
+  git init -q "$dir"
+  git -C "$dir" config core.hooksPath /dev/null
+  git -C "$dir" remote add origin "$GITHUB_URL/$LOOPER_ORG/$LOOPER_REPO.git"
+  git -C "$dir" fetch -q --depth 1 origin "$base" || fail "$LOOPER_ORG/$LOOPER_REPO has no commit $base"
+  git -C "$dir" read-tree FETCH_HEAD
+  if [[ -s "$THINK/patch" ]]; then
+    git -C "$dir" apply --cached --binary "$THINK/patch" || fail "the patch does not apply to $base"
+  fi
+  tree="$(git -C "$dir" write-tree)"
+  [[ "$tree" == "$want" ]] || fail "tree mismatch: the patch on $base gives $tree, the think job tested $want; nothing written"
+  [[ -z "$(git -C "$dir" diff --cached --name-only FETCH_HEAD -- ROADMAP.md)" ]] || fail "the patch touches ROADMAP.md, which only Jody changes"
+  c="$(GIT_AUTHOR_NAME="$BOT" GIT_AUTHOR_EMAIL="$BOT_EMAIL" GIT_COMMITTER_NAME="$BOT" GIT_COMMITTER_EMAIL="$BOT_EMAIL" \
+         git -C "$dir" commit-tree "$tree" -p "$base" -m "$TITLE" -m "Refs #$ISSUE (looper run ${CI_PIPELINE_URL:-})")"
+  echo "$c"
+}
+
+# Git's token: this repository's contents alone, for the fetch and the push.
+git_token() {
+  [[ -n "${GIT_TOKEN:-}" ]] && return 0
+  GIT_TOKEN="$(own_token '"contents":"write","metadata":"read"')" || fail "no token for git (the $LOOPER_REPO-looper app)"
+  export GIT_TOKEN
+}
+
+# Pushes the commit to looper/<repo>-<n>: the pull request's head, and what the
+# next run resumes from when this one did not finish.
+push_branch() { # commit dir
+  git -C "$2" push -q -f origin "$1:refs/heads/$BRANCH" || fail "GitHub refused the push to $BRANCH"
+  log "pushed $1 to $BRANCH"
+}
+
+# Git authenticates to GitHub alone, from the environment (as looper-build).
+# shellcheck disable=SC2016  # expanded by git's shell, when git asks
+git_credentials() {
+  export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2
+  export GIT_CONFIG_KEY_0="credential.$GITHUB_URL.helper" GIT_CONFIG_VALUE_0=
+  export GIT_CONFIG_KEY_1="credential.$GITHUB_URL.helper"
+  export GIT_CONFIG_VALUE_1='!f() { test "$1" = get || exit 0; test -n "$GIT_TOKEN" || exit 0; echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f'
+}
+
+# The required check: tacplus-dev/build on the commit, started with its pipeline
+# trigger token (owned by a bot user, never Jody; environment looper-commit).
+start_build() { # commit
+  [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] || { log "no BUILD_TRIGGER_TOKEN: the build of $1 is not started"; return 1; }
+  curl -fsS -o /dev/null -X POST --form-string "token=$BUILD_TRIGGER_TOKEN" --form-string ref=main \
+    --form-string "inputs[repo]=$LOOPER_REPO" --form-string "inputs[sha]=$1" \
+    "$GITLAB_API/projects/$BUILD_PROJECT/trigger/pipeline" || { log "GitLab refused to start the build of $1"; return 1; }
+  log "started tacplus-dev/build for $LOOPER_REPO $1"
+}
+
+# The issue's comment and labels, with a token for issues alone.
+ISSUES_TOKEN=""
+issues_token() {
+  [[ -n "$ISSUES_TOKEN" ]] || ISSUES_TOKEN="$(own_token '"issues":"write","metadata":"read"')" || fail "no token for the issue (the $LOOPER_REPO-looper app)"
+}
+issue_call() { # method path [body]
+  issues_token
+  github "$ISSUES_TOKEN" "$@" >/dev/null
+}
+comment() { # text
+  issue_call POST "/repos/$LOOPER_ORG/$LOOPER_REPO/issues/$ISSUE/comments" "$(jq -cn --arg b "$1" '{body: $b}')" ||
+    log "GitHub refused the comment on #$ISSUE"
+}
+add_label() { # label
+  issue_call POST "/repos/$LOOPER_ORG/$LOOPER_REPO/issues/$ISSUE/labels" "$(jq -cn --arg l "$1" '{labels: [$l]}')" ||
+    log "GitHub refused the label $1 on #$ISSUE"
+}
+
+# The think job's comment, as text, and the run's record.
+think_text() {
+  local t=""; [[ -s "$THINK/comment.md" ]] && t="$(head -c 60000 "$THINK/comment.md")"
+  printf '%s\n\nRun: %s (by `%s`, from the think job'"'"'s outcome).' "${t:-(no comment from the run)}" "${CI_PIPELINE_URL:-this pipeline}" "$BOT"
+}
+
+cmd_commit() {
+  check_pipeline
+  refuse_credentials
+  # The think job's directory: its artifacts, read as data.
+  THINK="${LOOPER_THINK_DIR:-$OUT/think}"
+  ISSUE="${LOOPER_ISSUE:-}"
+  : "${GCP_ID_TOKEN:?this job has no id_tokens GCP_ID_TOKEN}"
+  id_claims >/dev/null
+  [[ -n "$ISSUE" ]] || { log "commit: no issue was taken; nothing to do"; return 0; }
+  [[ "$ISSUE" =~ ^[0-9]+$ ]] || fail "LOOPER_ISSUE '$ISSUE' is not an issue number"
+  gcp_login
+  BOT="$LOOPER_REPO-looper[bot]"
+  BOT_EMAIL="${LOOPER_BOT_EMAIL:-$LOOPER_REPO-looper[bot]@users.noreply.github.com}"
+  BRANCH="looper/$LOOPER_REPO-$ISSUE"
+  TITLE="$({ sed -n 's/^title:[[:space:]]*//p' "$THINK/outcome" 2>/dev/null || true; } | head -1 | tr -d '\r' | cut -c1-120)"
+  TITLE="${TITLE:-$LOOPER_REPO#$ISSUE (looper)}"
+  local type; type="$(outcome_type "$THINK/outcome")"
+  [[ "$type" != invalid ]] || { [[ -f "$THINK/outcome" ]] && log "the think job's outcome has no valid type"; type=none; }
+  log "commit: $LOOPER_ORG/$LOOPER_REPO#$ISSUE, outcome $type"
+  git_credentials
+  local src; src="$(mktemp -d)"
+  case "$type" in
+    pr)
+      local c pr token url
+      [[ -s "$THINK/patch" ]] || fail "the outcome is a pull request, but the patch is empty"
+      git_token
+      c="$(apply_patch "$src")"
+      push_branch "$c" "$src"
+      token="$(own_token '"pull_requests":"write","contents":"write","metadata":"read"')" || fail "no token for the pull request"
+      pr="$(github "$token" POST "/repos/$LOOPER_ORG/$LOOPER_REPO/pulls" \
+              "$(jq -cn --arg t "$TITLE" --arg h "$BRANCH" --arg b "Closes #$ISSUE
+
+The looper's change for #$ISSUE, tested in ${CI_PIPELINE_URL:-its run}: what changed and the gates are in its comment on the issue." \
+                 '{title: $t, head: $h, base: "main", body: $b}')")" || fail "GitHub refused the pull request from $BRANCH"
+      url="$(jq -r .html_url <<<"$pr")"
+      # GitHub squash-merges it once the required checks pass; until kernel's
+      # protection rules are on, auto-merge cannot be enabled and it waits.
+      github "$token" POST /graphql "$(jq -cn --arg id "$(jq -r .node_id <<<"$pr")" \
+          '{query: "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH}) { clientMutationId } }", variables: {id: $id}}')" \
+          >/dev/null || log "auto-merge could not be enabled on $url (are main's protection rules on?)"
+      start_build "$c" || true
+      comment "The looper's change is $url: GitHub squash-merges it once \`tacplus-dev/build\` passes, and that closes this issue.
+
+$(think_text)" ;;
+    question)
+      comment "$(think_text)"; add_label "$LABEL_DECISION" ;;
+    blocked)
+      local lines body add=""
+      lines="$(grep -iE '^blocked-by:[[:space:]]*(tacplus-dev/[A-Za-z0-9_.-]+)?#[0-9]+[[:space:]]*$' "$THINK/outcome" | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*$//' | awk '!s[$0]++')"
+      [[ -n "$lines" ]] && ! grep -qxE "#$ISSUE|$LOOPER_ORG/$LOOPER_REPO#$ISSUE" <<<"$lines" ||
+        { comment "The run's outcome was blocked, but named no issue, or this one. Marked $LABEL_STUCK for a person to look at."; add_label "$LABEL_STUCK"; return 0; }
+      issues_token
+      body="$(github "$ISSUES_TOKEN" GET "/repos/$LOOPER_ORG/$LOOPER_REPO/issues/$ISSUE" | jq -r '.body // ""')" ||
+        fail "could not read #$ISSUE"
+      while read -r l; do grep -qixF "Blocked-by: $l" <<<"$body" || add+="Blocked-by: $l"$'\n'; done <<<"$lines"
+      [[ -z "$add" ]] || issue_call PATCH "/repos/$LOOPER_ORG/$LOOPER_REPO/issues/$ISSUE" "$(jq -cn --arg b "$body
+
+${add%$'\n'}" '{body: $b}')" || fail "could not add the Blocked-by lines to #$ISSUE"
+      comment "$(think_text)" ;;
+    timeout|stuck|none)
+      # What the run left is kept on the issue's branch, which the next run resumes from.
+      local kept="" c
+      if [[ -s "$THINK/patch" ]] && git_token && c="$(apply_patch "$src")"; then
+        push_branch "$c" "$src"; kept=" Its work in progress is on [\`$BRANCH\`]($GITHUB_URL/$LOOPER_ORG/$LOOPER_REPO/tree/$BRANCH)."
+      fi
+      if [[ "$type" == timeout ]]; then
+        comment "The run reached its time limit before finishing.$kept This issue stays $LABEL_APPROVED: the next run resumes from that branch.
+
+$(think_text)"
+      else
+        comment "The looper ended without finishing this issue.$kept Marked $LABEL_STUCK for a person to look at.
+
+$(think_text)"
+        add_label "$LABEL_STUCK"
+      fi ;;
+  esac
+  rm -rf "$src"
+}
+
+case "${1:-}" in
+  prepare) cmd_prepare ;;
+  commit) cmd_commit ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
