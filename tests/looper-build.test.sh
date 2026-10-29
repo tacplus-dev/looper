@@ -13,6 +13,7 @@
 # that can push, a missing or bad pin are refused.
 # Run: tests/looper-build.test.sh
 set -euo pipefail
+command -v just >/dev/null || { echo "FAIL: these tests run the gates with just, and there is none here" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRV="$(mktemp -d)"; pid=""
 trap '[[ -n "$pid" ]] && kill "$pid" 2>/dev/null; rm -rf "$TMP" "$SRV"' EXIT
