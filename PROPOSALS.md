@@ -43,5 +43,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   refusing the token (`GET /job`, HTTP 401) after it was accepted; a token that never worked (an instance that limits
   job-token API access) leaves the poll blind and the run going. `GITLAB_TOKEN` (read-only) in the looper jobs'
   variables makes it exact (`GET /projects/:id/jobs/:id`), and is worth checking in the GitLab project's settings.
+- **Say why a Blocked-by outcome was rejected** (2026-10-29, #22): an outcome naming a closed or missing issue, or
+  the issue itself, is rejected whole and the issue is `looper:stuck` with the generic "ended without finishing"
+  comment; naming the rejected blocker and the reason in that comment would save the person a trip to the run record.
 
 ## Promoted / declined
