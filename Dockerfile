@@ -14,7 +14,7 @@
 #
 # The build environment follows the newest released tacplus line (the project's
 # rule: a MAJOR.MINOR, never a patch pin).
-ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:2.4
+ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:2.5
 ARG CLAUDE_CODE_VERSION=2.1.308
 
 FROM ${BUILD_IMAGE}
