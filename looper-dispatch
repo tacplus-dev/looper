@@ -87,10 +87,11 @@ case "${1:-}" in
       [[ "${3:-}" =~ ^[0-9]+$ ]] || die "run --for SECONDS"
       end=$((SECONDS + $3)); failed=0
       while :; do
+        next=$((SECONDS + INTERVAL))   # from this pass's start: a slow pass does not stretch the interval
         # Its own process: errexit holds in the pass, so GitLab unreadable is never "no jobs".
-        "${BASH_SOURCE[0]}" run || { failed=1; log "pass failed; the next one in ${INTERVAL}s"; }
-        (( SECONDS + INTERVAL <= end )) || break
-        sleep "$INTERVAL"
+        "${BASH_SOURCE[0]}" run || { failed=1; log "pass failed"; }
+        (( next <= end )) || break
+        (( next <= SECONDS )) || sleep $((next - SECONDS))
       done
       exit "$failed"
     fi

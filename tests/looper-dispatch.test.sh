@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 f="$FIX/issues/$repo-$n.json"
+[[ "$cmd" != "search issues" || ! -e "$FIX/slow" ]] || sleep 1   # $FIX/slow: a pass takes 2 seconds
 case "$cmd" in
   "search issues") jq -s --arg l "$label" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})' "$FIX"/issues/*.json | jq -r "$q" ;;
   "issue list") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")))' "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
@@ -165,6 +166,14 @@ INTERVAL=1 dispatch run --for 2
 [[ "$(passes)" -ge 2 ]] || fail "$(passes) pass(es): $OUT"
 [[ "$(passes)" -le 4 ]] || fail "$(passes) passes in 2 seconds: $OUT"
 started || fail "no pipeline started: $OUT"
+pass
+
+# The interval is from one pass's start to the next's: a slow pass does not
+# stretch it.
+scenario loop-slow-pass
+touch "$FIX/slow"
+INTERVAL=3 dispatch run --for 6
+[[ "$(passes)" -ge 3 ]] || fail "$(passes) pass(es) of 2 seconds in 6 seconds, every 3: $OUT"
 pass
 
 # A pass that fails (GitLab down) does not end the loop; the job fails at its
