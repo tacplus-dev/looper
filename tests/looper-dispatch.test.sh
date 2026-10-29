@@ -116,6 +116,7 @@ for st in created pending waiting_for_resource running; do
   jobs "looper-alpha-4 $st"
   dispatch run
   ! started || fail "started a pipeline while looper-alpha-4 is $st"
+  grep -q 'nothing to start' <<<"$OUT" || fail "a pass that starts nothing says nothing: $OUT"
   pass
 done
 
@@ -123,6 +124,7 @@ scenario plan-under-way
 jobs "looper-plan waiting_for_resource"
 dispatch run
 ! started || fail "started a pipeline while a plan waits"
+grep -q 'looper-plan under way' <<<"$OUT" || fail "log: $OUT"
 pass
 
 scenario status-busy
