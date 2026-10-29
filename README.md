@@ -6,12 +6,16 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 
 ## Shape (Jody, 2026-10-26)
 
-- **Nothing is cloned or built on the Mac.** All looper work runs in this image as jobs of the GitLab
-  pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (workers exist only while there is
-  work; see [Infrastructure](#infrastructure)).
-- **`looper-dispatch`** is the only part on the Mac. It does no work itself: every 3 minutes, when a
-  repository has a ready issue and no looper job of its own created, pending, waiting for its
-  `resource_group` or running, it starts that pipeline. Nothing runs when there is no ready issue.
+- **Nothing runs on the Mac** (Jody, 2026-10-29, looper#24). All looper work, the kicker included, runs
+  in this image as jobs of the GitLab pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (see
+  [Infrastructure](#infrastructure)).
+- **The kicker** (`looper-dispatch`) does no work itself: every 3 minutes, when a repository has a ready
+  issue and no looper job of its own created, pending, waiting for its `resource_group` or running, it
+  starts that pipeline. It is the pipeline's kicker schedule (description containing `kicker`), hourly,
+  since gitlab.com runs this group's schedules at most once an hour (Free tier): its job, `looper-kick`,
+  runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
+  fails at the end if a pass failed. Two kicker jobs never overlap (`resource_group: kicker`): the next
+  hour's waits for the last. Nothing else runs when there is no ready issue.
 - **The pipeline** plans one job per repository with a ready issue (`looper-<repo>-<issue>`), each
   working that repository's oldest ready issue; jobs of one repository never overlap (`resource_group`).
   A repository that already has a looper job created, pending, waiting or running in the project gets
@@ -32,7 +36,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   stopped). Once GitLab reports it anything but `running`, the run checkpoints and stops: nothing more
   pushed to main, no comment, `looper:in-progress` left to the retry, which resumes from that checkpoint.
   A run that cannot read GitLab keeps going: GitLab being down is not the job being gone.
-  Its schedules run the nightly scan of every repository and the hourly port scan (told apart by the
+  Its schedules run the kicker, the nightly scan of every repository and the port scan (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
 - **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
   the repository at origin/main, or the oldest ready one if that issue is no longer ready, and does
@@ -259,14 +263,15 @@ tests/looper-port.test.sh                  # the scan against fixtures (stub gh 
 ## Running it
 
 ```sh
-./looper-dispatch install    # launchd: start the pipeline every 3 minutes when a repository needs it
-./looper-dispatch status     # the looper jobs in GitLab, and what is ready
-tests/looper-dispatch.test.sh  # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared (stub gh and glab)
+looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL seconds for 57 minutes
+looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
+tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab unreadable releases and starts nothing; the kicker's loop (stub gh and curl)
 ```
 
-The Mac needs `gh` and `glab` logged in. The jobs' credentials are tacplus-dev GitLab group CI
-variables, masked and protected (`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and `GITLAB_TOKEN`, read-only,
-for the port scan), never baked into the image. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
+The jobs' credentials are tacplus-dev GitLab group CI variables, masked and protected (`GH_TOKEN`,
+`CLAUDE_CODE_OAUTH_TOKEN`, and `GITLAB_TOKEN`, with `api` scope: the kicker reads the project's jobs
+and starts its pipeline with it, the port scan reads SeaBeam), never baked into the image nor on a
+laptop. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
 
 ## Infrastructure
 
@@ -276,6 +281,8 @@ project jody1-328023). The manager runs the docker-autoscaler executor with the 
 plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 `runner-arm64-t2a8-v5`, t2a-standard-8): up to 5 workers, size 0 at rest.
 
+- The kicker's job runs around the clock (57 minutes of every hour), so a worker is up even when
+  there is no other work (looper#24).
 - Changing `max_instances` needs a gitlab-runner restart, and a restart kills running jobs.
 - The project's maximum job timeout is 11h (a run's 10h at most, plus the job's hour).
 

@@ -8,8 +8,9 @@
 #
 # No tacplus binary (Jody 2026-10-26): `tacplus` here is a wrapper that runs the
 # compiler image for the repository's MAJOR.MINOR floor, at its latest patch,
-# as a sibling container on the host's docker socket. No credential is baked in;
-# looper-dispatch passes GH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN at run time.
+# as a sibling container on the host's docker socket. No credential is baked in:
+# GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN and GITLAB_TOKEN are the pipeline's CI
+# variables, given at run time.
 #
 # The build environment follows the newest released tacplus line (the project's
 # rule: a MAJOR.MINOR, never a patch pin).
@@ -25,6 +26,6 @@ LABEL org.opencontainers.image.title="looper" \
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
-COPY repo-looper looper-port tacplus looper-smoke /usr/local/bin/
+COPY repo-looper looper-port looper-dispatch tacplus looper-smoke /usr/local/bin/
 ENV LOOPER_IMAGE=1 LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work

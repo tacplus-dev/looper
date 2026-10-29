@@ -54,5 +54,18 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The flood guard's issue goes stale** (2026-10-29, #23): while *Port scan: flood guard tripped* is open, a scan
   still over the limit files nothing and does not update it, so its list is the first run's. A comment when the
   list changes (as the unmapped tracking issue gets) would keep it current.
+- **A narrower credential for the kicker** (2026-10-29, #24): the issue asked for a project access token with `api`
+  scope, held as a protected project variable; gitlab.com's Free tier does not offer project access tokens (an Owner
+  gets "does not have permission"), so the kicker uses the group's `GITLAB_TOKEN`, which already has `api` and
+  `write_repository`. A pipeline trigger token (protected project variable, `POST /projects/:id/trigger/pipeline`)
+  could only start pipelines; the kicker would still need a read token for the jobs. Or a paid tier's project token.
+- **The kicker holds a worker around the clock** (2026-10-29, #24): its job runs 57 minutes of every hour on the
+  autoscaled arm64 runner (t2a-standard-8 workers, size 0 at rest before), in the full looper image, for a few `gh`
+  and `curl` calls. A small runner of its own (a tag on the manager VM, say) or a slim image would cost a fraction;
+  a paid tier's 5-minute schedules would let a one-pass job end in seconds.
+- **The port scan runs every two hours, not hourly** (2026-10-29, #24): gitlab.com runs this group's schedules at
+  most hourly, on the hour, and a schedule's next run is the first hour after its cron's next time; so the port
+  scan's `7 * * * *` fires at 21:07, 23:07, 01:08... (its pipelines on 2026-10-28/29). Its cron `0 * * * *` would
+  make it hourly, as README says.
 
 ## Promoted / declined

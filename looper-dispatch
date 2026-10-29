@@ -2,38 +2,42 @@
 # Copyright (c) 2026 Jody Scott
 # SPDX-License-Identifier: Apache-2.0
 #
-# looper-dispatch: the top-level loop, and the only part that runs on this Mac.
-# It clones nothing, builds nothing and starts no container. Every few minutes
-# it clears looper:in-progress from issues no looper job holds any more, then
-# looks for tacplus-dev repositories with a ready issue and, when one of them
-# has no looper job queued, waiting or running, starts the looper pipeline in GitLab
-# (LOOPER_PIPELINE, default tacplus-dev/looper). That pipeline runs
-# repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled GCE runner.
-# The nightly scan is that pipeline's schedule, not this script.
+# looper-dispatch: the kicker. It does no work itself and runs as the
+# kicker schedule of the GitLab looper pipeline (LOOPER_PIPELINE, default
+# tacplus-dev/looper; looper#24): nothing runs on the Mac. Each pass clears
+# looper:in-progress from issues no looper job holds any more, then looks for
+# tacplus-dev repositories with a ready issue and, when one of them has no
+# looper job created, pending, waiting or running, starts that pipeline, whose
+# plan runs repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled
+# runner. The nightly scan and the port scan are its other schedules.
 #
-#   looper-dispatch run        one pass: start the pipeline if a repository needs it
-#   looper-dispatch status     the looper jobs in GitLab, and what is ready
-#   looper-dispatch install    launchd: `run` every LOOPER_INTERVAL seconds (default 180)
-#   looper-dispatch uninstall
+#   looper-dispatch run                one pass: start the pipeline if a repository needs it
+#   looper-dispatch run --for SECONDS  a pass every LOOPER_INTERVAL seconds (default 180) for
+#                                      SECONDS (the kicker job); fails at the end if a pass failed
+#   looper-dispatch status             the looper jobs in GitLab, and what is ready
+#   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
 #
-# Credentials: gh (GitHub issues) and glab (GitLab pipelines) as logged in on
-# this Mac. The pipeline's own credentials are tacplus-dev GitLab group CI
-# variables (GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, GITLAB_TOKEN).
+# Credentials: GH_TOKEN (GitHub issues) and GITLAB_TOKEN, with api scope on the
+# pipeline's project (its jobs, and starting it), both tacplus-dev GitLab group
+# CI variables, masked and protected.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
-source "$HERE/looper-lib.sh"
+source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
 
 PIPELINE="${LOOPER_PIPELINE:-tacplus-dev/looper}"
 INTERVAL="${LOOPER_INTERVAL:-180}"
-STATE="$HOME/.looper"
-mkdir -p "$STATE"
+API="${CI_API_V4_URL:-https://gitlab.com/api/v4}/projects/${PIPELINE//\//%2F}"
+
+gitlab() { # curl args...
+  [[ -n "${GITLAB_TOKEN:-}" ]] || die "no GITLAB_TOKEN: a GitLab token with api scope on $PIPELINE"
+  curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$@"
+}
 
 # Names of the looper pipeline's jobs that are created, pending, waiting for
 # their resource_group or running (busy() in looper-lib.sh).
 active_jobs() {
-  glab api "projects/${PIPELINE//\//%2F}/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
-    | jq -r '.[].name'
+  gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[].name'
 }
 
 # Repositories with at least one open approved issue: one search for the whole org.
@@ -58,52 +62,50 @@ release_orphans() { # active jobs
     done
 }
 
+# One pass: release the orphans, then start the pipeline for the first
+# repository with a ready issue and no looper job of its own.
+pass() {
+  local jobs repo
+  jobs="$(active_jobs)"
+  release_orphans "$jobs"
+  # A plan under way will take every ready issue; wait for it.
+  grep -qx 'looper-plan' <<<"$jobs" && return 0
+  for repo in $(repos_with_approved); do
+    busy "$repo" "$jobs" >/dev/null && continue
+    [[ -n "$(next_ready "$repo")" ]] || continue
+    gitlab -X POST "$API/pipeline" -d ref=main >/dev/null
+    log "started the $PIPELINE pipeline ($repo has a ready issue)"
+    return 0
+  done
+}
+
 case "${1:-}" in
   run)
-    need gh; need glab; need jq
-    jobs="$(active_jobs)"
-    release_orphans "$jobs"
-    # A plan under way will take every ready issue; wait for it.
-    grep -qx 'looper-plan' <<<"$jobs" && exit 0
-    for repo in $(repos_with_approved); do
-      busy "$repo" "$jobs" >/dev/null && continue
-      [[ -n "$(next_ready "$repo")" ]] || continue
-      glab ci run --branch main --repo "$PIPELINE" >/dev/null
-      log "started the $PIPELINE pipeline ($repo has a ready issue)"
-      break
-    done ;;
+    need gh; need curl; need jq
+    if [[ "${2:-}" == --for ]]; then
+      [[ "${3:-}" =~ ^[0-9]+$ ]] || die "run --for SECONDS"
+      end=$((SECONDS + $3)); failed=0
+      while :; do
+        # Its own process: errexit holds in the pass, so GitLab unreadable is never "no jobs".
+        "${BASH_SOURCE[0]}" run || { failed=1; log "pass failed; the next one in ${INTERVAL}s"; }
+        (( SECONDS + INTERVAL <= end )) || break
+        sleep "$INTERVAL"
+      done
+      exit "$failed"
+    fi
+    pass ;;
   status)
     jobs="$(active_jobs)"
     echo "active jobs in $PIPELINE: $(tr '\n' ' ' <<<"$jobs")"
     for repo in $(repos_with_approved); do
       echo "$repo: ready $(next_ready "$repo" | tr '\n' ' ')$(busy "$repo" "$jobs" >/dev/null && echo '(busy)')"
     done ;;
-  install)
-    label="dev.tacplus.looper.run"; plist="$HOME/Library/LaunchAgents/$label.plist"
-    cat > "$plist" <<PL
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$HERE/looper-dispatch</string><string>run</string></array>
-  <key>StartInterval</key><integer>$INTERVAL</integer>
-  <key>RunAtLoad</key><true/>
-  <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string><key>HOME</key><string>$HOME</string>
-  </dict>
-  <key>StandardOutPath</key><string>$STATE/run.log</string>
-  <key>StandardErrorPath</key><string>$STATE/run.log</string>
-</dict></plist>
-PL
-    launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$plist"
-    log "installed $label" ;;
   uninstall)
-    # nightly: the job earlier versions installed.
+    # run and nightly: the launchd jobs earlier versions installed (looper#24).
     for job in run nightly; do
       plist="$HOME/Library/LaunchAgents/dev.tacplus.looper.$job.plist"
       launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true; rm -f "$plist"
     done; log "uninstalled" ;;
-  -h|--help|help|"") sed -n '5,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '5,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (see --help)" ;;
 esac
