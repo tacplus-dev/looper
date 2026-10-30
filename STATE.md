@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#34).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#25).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -46,11 +46,14 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:
   outcome, patch, tested tree) and `looper-identity commit` (tree check, then `kernel-looper[bot]`: branch, pull
   request with squash auto-merge, build trigger, comment, labels); one run at a time, in a child pipeline. The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
-  `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables
+  `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables; the
+  model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
+  `LOOPER_TRIGGER_TOKEN` and the port scan reads SeaBeam with `SEABEAM_READ_TOKEN` when they are set (#25)
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`
-- **Known gaps:** the kicker uses the group's `GITLAB_TOKEN` (api scope), not a project access token, which
-  gitlab.com's Free tier does not offer; its job keeps a runner worker up around the clock (see PROPOSALS.md);
+- **Known gaps:** until Jody and the hub apply README's Credentials (#25), the jobs' `GITLAB_TOKEN` is still
+  Jody's `looper-runtime` (`api`, Owner of the group: it reads fleet-seatrials' protected variables) and the workers
+  still run as `build-box` (Artifact Registry uploads, every bucket's objects); its job keeps a runner worker up around the clock (see PROPOSALS.md);
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green
   for a day; the ROADMAP.md guard is a pre-push hook in the looper's checkout, so a push that skips hooks
   is not refused (see PROPOSALS.md); the GitLab plan (`looper-plan` in gitlab.com/tacplus-dev/looper) still plans

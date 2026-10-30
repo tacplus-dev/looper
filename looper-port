@@ -43,13 +43,14 @@
 # (needs-decision), so nothing is dropped silently. Retired sources (ports.yaml
 # `retired:`) are never ported and never reported: the scan skips them.
 #
-# Environment: GITLAB_TOKEN (read the sources), GH_TOKEN (file issues),
+# Environment: SEABEAM_READ_TOKEN (read the sources: read_api, a member of the
+# source group alone; else GITLAB_TOKEN, looper#25), GH_TOKEN (file issues),
 # LOOPER_PORTS (default: ports.yaml next to this script, or in the image's
 # lib dir), GITLAB_API (default CI_API_V4_URL or https://gitlab.com/api/v4),
 # LOOPER_PORT_MAX_ISSUES (the flood guard's limit, default 5).
 set -euo pipefail
 
-usage() { sed -n '5,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
@@ -63,7 +64,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 need gh; need curl; need jq
-[[ -n "${GITLAB_TOKEN:-}" ]] || die "GITLAB_TOKEN is unset"
+SOURCE_TOKEN="${SEABEAM_READ_TOKEN:-${GITLAB_TOKEN:-}}"
+[[ -n "$SOURCE_TOKEN" ]] || die "SEABEAM_READ_TOKEN (or GITLAB_TOKEN) is unset"
 
 PORTS="${LOOPER_PORTS:-}"
 if [[ -z "$PORTS" ]]; then
@@ -89,11 +91,11 @@ ports_section() { # section: the lines of `section:`, as "svc target" (ports) or
 SOURCE="$(ports_key source)"; ORG="$(ports_key target)"
 [[ -n "$SOURCE" && -n "$ORG" ]] || die "$PORTS: needs source: and target:"
 
-gl() { curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API/$1"; }
+gl() { curl -fsS --retry 2 -H "PRIVATE-TOKEN: $SOURCE_TOKEN" "$GITLAB_API/$1"; }
 # 0: the resource exists; 1: GitLab says 404; 2: any other answer (an error, never taken for absence).
 gl_exists() { # path
   local code
-  code="$(curl -sS --retry 2 -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API/$1")" || return 2
+  code="$(curl -sS --retry 2 -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: $SOURCE_TOKEN" "$GITLAB_API/$1")" || return 2
   case "$code" in 200) return 0 ;; 404) return 1 ;; *) return 2 ;; esac
 }
 enc() { local s="${1//\//%2F}"; printf '%s' "$s"; }

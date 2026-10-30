@@ -68,6 +68,18 @@ the looper then marks it `promoted` or `declined` here with the date.
   gets "does not have permission"), so the kicker uses the group's `GITLAB_TOKEN`, which already has `api` and
   `write_repository`. A pipeline trigger token (protected project variable, `POST /projects/:id/trigger/pipeline`)
   could only start pipelines; the kicker would still need a read token for the jobs. Or a paid tier's project token.
+  Done in #25 (2026-10-30): the trigger token for the start, a `read_api` bot for the reads (README, Credentials).
+- **The model reads its parent's environment** (2026-10-30, #25): `repo-looper` withholds the GitLab credentials from
+  the model's environment, but the model runs as the job's user, so `/proc/<parent>/environ` still holds them; and
+  every `curl -H "PRIVATE-TOKEN: ..."` puts its token on a command line any process of the job can read. Running the
+  model as another user (or in a sandbox without the job's processes), and headers from a file (`-H @file`), would make
+  the withholding a boundary; until then the tokens' reach is (README, Credentials).
+- **Rotate the bots' tokens** (2026-10-30, #25): `tacplus-looper-bot`'s and `tacplus-port-reader`'s tokens and
+  memberships expire within a year; nothing reminds anyone. A scheduled check of `GET /personal_access_tokens/self`
+  (`expires_at`) filing an issue a month ahead would.
+- **Whether fleet-seatrials' key material counts as exposed** (2026-10-30, #25): the jobs' former `GITLAB_TOKEN`
+  (`api`, Owner) could read fleet-seatrials' protected variables, `FLEET_CRYPTO_YAML` among them, since they were
+  stored. Jody decides whether to re-key (a fleet re-init, `deploy/init.sh` in fleet-seatrials).
 - **The kicker holds a worker around the clock** (2026-10-29, #24): its job runs 57 minutes of every hour on the
   autoscaled arm64 runner (t2a-standard-8 workers, size 0 at rest before), in the full looper image, for a few `gh`
   and `curl` calls. A small runner of its own (a tag on the manager VM, say) or a slim image would cost a fraction;

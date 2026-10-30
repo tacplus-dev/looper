@@ -630,14 +630,28 @@ RENDER='
       else empty end
   ) catch $line'
 
+# What the model never holds (looper#25): the job's GitLab credentials (its
+# GITLAB_TOKEN, the job token and the variables that carry it, any id_token),
+# which the looper keeps for its own reads of GitLab. It runs as the job's user,
+# so this is not a boundary: the tokens' reach is (README, Credentials).
+MODEL_WITHHELD=(GITLAB_TOKEN LOOPER_TRIGGER_TOKEN SEABEAM_READ_TOKEN CI_JOB_TOKEN CI_BUILD_TOKEN CI_REGISTRY_PASSWORD
+                CI_DEPENDENCY_PROXY_PASSWORD CI_REPOSITORY_URL CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2)
+model_env() { # the env(1) arguments that withhold them
+  local v
+  for v in $(compgen -e); do
+    if [[ " ${MODEL_WITHHELD[*]} " == *" $v "* || "$v" == *ID_TOKEN ]]; then printf '%s\n' -u "$v"; fi
+  done
+}
+
 # Runs the model with the watchdog beside it. A run dir with an issue is an
 # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the
 # watchdog also ends it once the issue is done.
 run_claude() { # prompt-file log-file seconds run-dir [issue]
-  local rc=0 dir pid fmt watcher k
+  local rc=0 dir pid fmt watcher k withheld
+  mapfile -t withheld < <(model_env)
   dir="$(mktemp -d)"; mkfifo "$dir/out"
   jq -R -r --unbuffered "$RENDER" < "$dir/out" > "$2" & fmt=$!
-  ( cd "$CHECKOUT" && LOOPER_RUN="${5:+$4}" exec timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
+  ( cd "$CHECKOUT" && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
       --model "$MODEL" --permission-mode acceptEdits \
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!

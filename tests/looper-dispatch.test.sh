@@ -59,16 +59,19 @@ case "$cmd" in
 esac
 EOF
 # GitLab's API: GET .../jobs?scope[]=... answers $FIX/jobs.json filtered by the
-# URL's scopes (no file: HTTP 500), POST .../pipeline records the pipeline it
-# starts in $FIX/started. With -f a failure exits 22. Each request's auth
-# header, method and URL are appended to $FIX/gitlab.
+# URL's scopes (no file: HTTP 500), POST .../pipeline (or .../trigger/pipeline)
+# records the pipeline it starts in $FIX/started, with its data (`@-`: stdin).
+# With -f a failure exits 22. Each request's auth header, method and URL are
+# appended to $FIX/gitlab, its arguments to $FIX/argv.
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+echo "$*" >> "$FIX/argv"
 url=""; auth=""; m=GET; data=""; f=""
 while [[ $# -gt 0 ]]; do case "$1" in
   -H) auth="${2%%:*}"; shift 2 ;; -X) m="$2"; shift 2 ;; -d|--data) data="$2"; shift 2 ;; --retry) shift 2 ;;
   http*) url="$1"; shift ;; -*f*) f=1; shift ;; *) shift ;;
 esac; done
+[[ "$data" != @- ]] || data="$(cat)"
 echo "$auth $m $url" >> "$FIX/gitlab"
 reply() { # code body
   printf '%s\n' "$2"
@@ -90,7 +93,7 @@ scenario() { # name: alpha has a ready issue #4
 }
 jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
 run_dispatch() {
-  OUT="$(env -u CI_API_V4_URL LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
+  OUT="$(env -u CI_API_V4_URL -u LOOPER_TRIGGER_TOKEN ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
     "$ROOT/looper-dispatch" "$@" 2>&1)"
 }
 dispatch() { run_dispatch "$@" || { echo "$OUT"; fail "looper-dispatch exited non-zero"; }; }
@@ -113,6 +116,19 @@ dispatch run
 started || fail "no pipeline started: $OUT"
 grep -qx 'https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/pipeline ref=main' "$FIX/started" || fail "started: $(cat "$FIX/started")"
 ! grep -qv '^PRIVATE-TOKEN ' "$FIX/gitlab" || fail "a request without GITLAB_TOKEN: $(cat "$FIX/gitlab")"
+pass
+
+# With the pipeline's trigger token (LOOPER_TRIGGER_TOKEN, looper#25) it starts
+# the pipeline through the trigger, which can do nothing else, and GITLAB_TOKEN
+# only reads; the trigger token is on no command line.
+scenario ready-trigger
+jobs "looper-alpha-3 success"
+TRIGGER=glptt-secret dispatch run
+grep -qx 'https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/trigger/pipeline token=glptt-secret&ref=main' "$FIX/started" \
+  || fail "started: $(cat "$FIX/started")"
+grep -qx ' POST https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/trigger/pipeline' "$FIX/gitlab" || fail "requests: $(cat "$FIX/gitlab")"
+! grep -q '^PRIVATE-TOKEN POST' "$FIX/gitlab" || fail "started with GITLAB_TOKEN: $(cat "$FIX/gitlab")"
+! grep -q glptt-secret "$FIX/argv" || fail "the trigger token on the command line: $(cat "$FIX/argv")"
 pass
 
 # The kicker has no gh or glab login: without GITLAB_TOKEN it does nothing.

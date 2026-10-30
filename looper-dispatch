@@ -19,9 +19,12 @@
 #                                      order the plan takes them: priority:high first (looper#31)
 #   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
 #
-# Credentials: GH_TOKEN (GitHub issues) and GITLAB_TOKEN, with api scope on the
-# pipeline's project (its jobs, and starting it), both tacplus-dev GitLab group
-# CI variables, masked and protected.
+# Credentials (looper#25; README, Credentials): GH_TOKEN (GitHub issues),
+# GITLAB_TOKEN (read_api on the pipeline's project: its jobs) and
+# LOOPER_TRIGGER_TOKEN (the project's pipeline trigger: starting it), project
+# CI variables of the pipeline's project, masked and protected. Without
+# LOOPER_TRIGGER_TOKEN the pipeline is started with GITLAB_TOKEN, which then
+# needs api scope.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
@@ -34,6 +37,16 @@ API="${CI_API_V4_URL:-https://gitlab.com/api/v4}/projects/${PIPELINE//\//%2F}"
 gitlab() { # curl args...
   [[ -n "${GITLAB_TOKEN:-}" ]] || die "no GITLAB_TOKEN: a GitLab token with api scope on $PIPELINE"
   curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$@"
+}
+
+# Starts the pipeline on main: through its trigger, whose token is on no
+# command line, else with GITLAB_TOKEN.
+start_pipeline() {
+  if [[ -n "${LOOPER_TRIGGER_TOKEN:-}" ]]; then
+    printf 'token=%s&ref=main' "$LOOPER_TRIGGER_TOKEN" | curl -fsS --retry 2 -X POST "$API/trigger/pipeline" --data @- >/dev/null
+  else
+    gitlab -X POST "$API/pipeline" -d ref=main >/dev/null
+  fi
 }
 
 # Names of the looper pipeline's jobs that are created, pending, waiting for
@@ -71,7 +84,7 @@ pass() {
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" >/dev/null && continue
-    gitlab -X POST "$API/pipeline" -d ref=main >/dev/null
+    start_pipeline
     log "started the $PIPELINE pipeline ($repo has a ready issue)"
     return 0
   done <<<"$ready"

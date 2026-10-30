@@ -14,12 +14,13 @@ API=https://gl.test/api/v4
 # $FIX/gh/<repo>/{PROVENANCE.md,ROADMAP.md,issues.json,issue-N.json,comments-N.json},
 # and tacplus-dev/roadmap's items/ from $FIX/gh/roadmap/items/ (a file
 # <name>.fail answers HTTP 502);
-# writes are appended to $FIX/filed as "<repo> <json>".
+# writes are appended to $FIX/filed as "<repo> <json>", GitLab's auth headers
+# to $FIX/auth.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 url=""; w=""
-while [[ $# -gt 0 ]]; do case "$1" in -w) w=1; shift 2 ;; http*) url="$1"; shift ;; -H|-o) shift 2 ;; *) shift ;; esac; done
+while [[ $# -gt 0 ]]; do case "$1" in -w) w=1; shift 2 ;; http*) url="$1"; shift ;; -H) echo "$2" >> "$FIX/auth"; shift 2 ;; -o) shift 2 ;; *) shift ;; esac; done
 f="$FIX/gl/$(printf '%s' "${url#"$GITLAB_API"/}" | tr -c 'A-Za-z0-9.-' '_')"
 echo "${url#"$GITLAB_API"/}" >> "$FIX/requests"
 if [[ -n "$w" ]]; then [[ -f "$f" ]] && printf 200 || printf 404; exit 0; fi
@@ -69,7 +70,8 @@ commit `aaaaaaa` (history carried over).'
   known alpha aaaaaaa "migrated"; known alpha main "head"
 }
 run() {
-  OUT="$(PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOPER_PORTS="${PORTS:-$TMP/ports.yaml}" \
+  OUT="$(env -u SEABEAM_READ_TOKEN ${SEABEAM:+SEABEAM_READ_TOKEN="$SEABEAM"} \
+         PATH="$TMP/bin:$PATH" FIX="$FIX" GITLAB_API="$API" GITLAB_TOKEN=x LOOPER_PORTS="${PORTS:-$TMP/ports.yaml}" \
          LOOPER_LIB="$ROOT/looper-lib.sh" "$ROOT/looper-port" 2>&1)" || { echo "$OUT"; fail "looper-port exited non-zero"; }
 }
 fail() { echo "FAIL $NAME: $*" >&2; [[ -s "$FIX/filed" ]] && cat "$FIX/filed" >&2; exit 1; }
@@ -103,6 +105,15 @@ has "$body" '[`cccccccc`](https://gl.test/c/'"$C"') 2026-10-26 second change'
 has "$body" "Ported through \`$C\`."
 has "$body" "never copy generated code"
 lacks "$body" "Blocked-by"
+pass
+
+# SeaBeam is read with its own token when the job has one (looper#25): the
+# looper jobs' GITLAB_TOKEN reaches tacplus-dev/looper alone.
+scenario seabeam-token
+compare alpha aaaaaaa "$(commit "$B" "first change")"
+SEABEAM=s run
+[[ "$(filed)" == 1 ]] || fail "want one issue, got $(filed)"
+[[ "$(sort -u "$FIX/auth")" == "PRIVATE-TOKEN: s" ]] || fail "auth: $(sort -u "$FIX/auth")"
 pass
 
 scenario no-commits

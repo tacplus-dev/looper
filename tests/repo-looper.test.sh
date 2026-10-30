@@ -1042,6 +1042,23 @@ not_stopped
 (( $(grep -c '/projects/42/jobs/77$' "$FIX/gitlab") >= 2 )) || fail "polled: $(cat "$FIX/gitlab")"
 pass
 
+# The model holds no GitLab credential (looper#25): the job's GITLAB_TOKEN, its
+# job token and the variables that carry it stay with the looper, which still
+# polls with them; the model keeps what it works with (GH_TOKEN).
+scenario model-holds-no-gitlab-credential
+jobs "looper-alpha-4 running 77"
+echo 'env > "$FIX/model-env"' >> "$FIX/claude.sh"
+working
+run "${GL[@]}" CI_JOB_ID=77 CI_JOB_TOKEN=j CI_BUILD_TOKEN=j CI_REGISTRY_PASSWORD=j CI_DEPENDENCY_PROXY_PASSWORD=j \
+  CI_REPOSITORY_URL=https://gitlab-ci-token:j@gl.test/x.git LOOPER_TRIGGER_TOKEN=x SEABEAM_READ_TOKEN=x \
+  FLEET_ID_TOKEN=x CI_JOB_JWT_V2=x GH_TOKEN=g "${POLL[@]}"
+not_stopped
+held="$(cut -d= -f1 "$FIX/model-env" | grep -xE 'GITLAB_TOKEN|CI_JOB_TOKEN|CI_BUILD_TOKEN|CI_REGISTRY_PASSWORD|CI_DEPENDENCY_PROXY_PASSWORD|CI_REPOSITORY_URL|LOOPER_TRIGGER_TOKEN|SEABEAM_READ_TOKEN|FLEET_ID_TOKEN|CI_JOB_JWT_V2' || true)"
+[[ -z "$held" ]] || fail "the model held: $held"
+grep -qx 'GH_TOKEN=g' "$FIX/model-env" || fail "the model lost GH_TOKEN"
+has "$(cat "$FIX/gitlab")" "PRIVATE-TOKEN https://gl.test/api/v4/projects/42/jobs/77"
+pass
+
 scenario job-gitlab-down
 working
 run "${GL[@]}" CI_JOB_ID=77 "${POLL[@]}"

@@ -293,7 +293,7 @@ dated note at the top. Nothing else here fetches from or depends on gitlab.com/s
 `ports.yaml` maps each SeaBeam source under `seabeam/schematic/platform/services` to its tacplus-dev
 target, lists the sources that have none (`unmapped`), and the sources that are never carried over
 (`retired`, each with its reason and date). Every hour the pipeline's port-scan schedule
-runs `looper-port` (mechanical: GitLab API with the project's `GITLAB_TOKEN`, issues with `GH_TOKEN`):
+runs `looper-port` (mechanical: GitLab API with `SEABEAM_READ_TOKEN`, else `GITLAB_TOKEN`; issues with `GH_TOKEN`):
 
 - **Mark:** the target's `PROVENANCE.md` line ``Ported through `<sha>` ``; until the first port, the
   migration commit it names (`` `<source>/<svc>` at commit `<sha>` ``).
@@ -329,7 +329,7 @@ runs `looper-port` (mechanical: GitLab API with the project's `GITLAB_TOKEN`, is
   listed.
 
 ```sh
-GITLAB_TOKEN=... ./looper-port --dry-run   # what it would file, filing nothing
+SEABEAM_READ_TOKEN=... ./looper-port --dry-run   # what it would file, filing nothing
 tests/looper-port.test.sh                  # the scan against fixtures (stub gh and curl)
 ```
 
@@ -346,7 +346,7 @@ jobs run `looper-build`, from this image.
   A push to the project starts nothing.
 
   ```sh
-  curl -H "PRIVATE-TOKEN: $GITLAB_TOKEN" -H 'Content-Type: application/json' \
+  curl -H "PRIVATE-TOKEN: <a token that may run its pipeline>" -H 'Content-Type: application/json' \
     -X POST https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipeline \
     -d '{"ref": "main", "inputs": {"repo": "kernel", "sha": "<40 hex>"}}'
   ```
@@ -603,11 +603,93 @@ looper-dispatch ready            # each repository's next ready issue, priority:
 tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
-The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/looper, masked and protected
-(`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and `GITLAB_TOKEN`, with `api` scope: the kicker reads the project's jobs
-and starts its pipeline with it, the port scan reads SeaBeam), never baked into the image nor on a
-laptop. They are no group variables (moved 2026-10-29, looper#17; the ci-on-gitlab addendum): a group variable
-reaches every pipeline of the group, the builds' too. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
+The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/looper, masked and protected,
+never baked into the image nor on a laptop ([Credentials](#credentials)). They are no group variables (moved
+2026-10-29, looper#17; the ci-on-gitlab addendum): a group variable reaches every pipeline of the group, the
+builds' too. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
+
+### Credentials
+
+Every looper job's model runs on the same VM, as the same user, as the job that holds its credentials, so whatever
+a job's token may do, an agent may do (looper#25). The model's environment holds no GitLab credential: `repo-looper`
+withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, `SEABEAM_READ_TOKEN`, GitLab's job token and the variables that
+carry it, and any `*ID_TOKEN` (`MODEL_WITHHELD`), and keeps them for its own reads of GitLab. That is not a boundary
+(the model could read its parent's environment): **the boundary is each token's reach**, which is this project's
+and nothing else's, with only the scopes its job uses.
+
+| Variable | What it is | Who uses it |
+|---|---|---|
+| `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`repo-looper --list`) and each parent's job poll read the project's jobs; the kicker reads them too |
+| `LOOPER_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/looper (`glptt-`), environment scope `kicker` | the kicker starts the pipeline with it (`POST /projects/:id/trigger/pipeline`; the token is on no command line) |
+| `SEABEAM_READ_TOKEN` | a personal access token of the bot user `tacplus-port-reader`, scope `read_api` only, the bot a **Reporter** of `seabeam/schematic/platform/services` alone, environment scope `port-scan` | the port scan reads the SeaBeam sources |
+| `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before | GitHub, the model |
+
+A Reporter with `read_api` reads the project's code, pipelines and jobs. It cannot read CI variables (Maintainer),
+play a manual job, start a pipeline or change a setting, and it reaches no other project: not fleet-seatrials' protected
+variables nor its `apply` jobs. The trigger token can do one thing, start this project's pipeline. A triggered pipeline
+runs as the trigger's owner, and on protected main only one allowed to merge to it may run one, so it is Jody's, as the
+schedules are: the pipelines run as Jody as they do today (their bot identity is the looper-identity follow-up,
+looper#28). Without `LOOPER_TRIGGER_TOKEN` the kicker starts the pipeline with `GITLAB_TOKEN`, and without
+`SEABEAM_READ_TOKEN` the port scan reads with `GITLAB_TOKEN`: both work with today's token until the switch below.
+gitlab.com's Free tier has no project or group access tokens, hence the bot users (free gitlab.com accounts, never
+Jody, each a member of its one project or group).
+
+**Setting them up** (Jody; the values go from GitLab straight into the variables, no agent handles them).
+`G=https://gitlab.com/api/v4`, `H="PRIVATE-TOKEN: <Jody's token>"`, `L=tacplus-dev%2Flooper`:
+
+1. The pipeline file of gitlab.com/tacplus-dev/looper (its `.gitlab-ci.yml`, outside this repository): `looper-kick`
+   gets `environment: {name: kicker, action: prepare}` and `looper-port` gets `environment: {name: port-scan,
+   action: prepare}`, so only those jobs receive their variables; their comments' "the group GITLAB_TOKEN (api
+   scope)" becomes this section's tokens.
+2. The trigger (Settings, CI/CD, Pipeline trigger tokens, description `kicker`, or the API), stored as is:
+
+   ```sh
+   T="$(curl -sfH "$H" -X POST $G/projects/$L/triggers -d description=kicker | jq -r .token)"
+   curl -sfH "$H" -X POST $G/projects/$L/variables -d key=LOOPER_TRIGGER_TOKEN --data-urlencode value="$T" \
+     -d protected=true -d masked=true -d environment_scope=kicker >/dev/null; unset T
+   ```
+3. The bot users `tacplus-looper-bot` and `tacplus-port-reader` (sign up, each with an address of Jody's), then their
+   memberships, Reporter (`access_level=20`), expiring within a year:
+
+   ```sh
+   curl -sfH "$H" -X POST $G/projects/$L/members -d user_id=<tacplus-looper-bot's id> -d access_level=20 -d expires_at=<date>
+   curl -sfH "$H" -X POST $G/groups/seabeam%2Fschematic%2Fplatform%2Fservices/members -d user_id=<tacplus-port-reader's id> \
+     -d access_level=20 -d expires_at=<date>
+   ```
+4. Signed in as each bot, a personal access token with the one scope `read_api` (User settings, Access tokens; name
+   `looper-jobs` and `port-scan`, expiring within a year), stored by Jody: `SEABEAM_READ_TOKEN` as a new variable
+   (`-d protected=true -d masked=true -d environment_scope=port-scan`), then `GITLAB_TOKEN` replaced
+   (`curl -sfH "$H" -X PUT $G/projects/$L/variables/GITLAB_TOKEN --data-urlencode value=<the bot's token>`, protected,
+   masked, scope `*`).
+5. Checked on the next pipeline: the plan's log lists jobs, the kicker's says `started the tacplus-dev/looper
+   pipeline`, the port scan files or finds nothing new; `curl -sH "PRIVATE-TOKEN: <the bot's>" $G/projects/<fleet-seatrials' id>`
+   is a 404. Then Jody revokes `looper-runtime`, the token the jobs held before (`api`, `write_repository`, Jody's
+   own, Owner of the group).
+
+**The runner VMs' Google account.** The loopers' workers (instance group `runner-arm64-tacplus`, template
+`runner-arm64-t2a8-v5`) run as `build-box@jody1-328023.iam.gserviceaccount.com` with the `cloud-platform` scope,
+and any agent may use it through the metadata server. As of 2026-10-30 it may, in jody1-328023 (`testIamPermissions`
+from a looper job): upload to Artifact Registry (so overwrite a release the build pipeline published) and create,
+read and delete objects in any bucket of the project, the Cloud Build source bucket `jody1-328023_cloudbuild` among
+them. The loopers need none of that: their images are on ghcr.io, a build publishes through its own federated
+identity ([Build pipeline](#build-pipeline)), and fleet-seatrials deploys through its own. So their workers get an
+account of their own that may at most pull the tacplus build images (the hub, `P=jody1-328023`):
+
+```sh
+gcloud iam service-accounts create looper-runner --project=$P --display-name="tacplus-dev looper workers (looper#25)"
+gcloud artifacts repositories add-iam-policy-binding tacplus --location=us --project=$P \
+  --member=serviceAccount:looper-runner@$P.iam.gserviceaccount.com --role=roles/artifactregistry.reader
+gcloud compute instance-templates create runner-arm64-t2a8-v6 --project=$P --source-instance-template=runner-arm64-t2a8-v5 \
+  --service-account=looper-runner@$P.iam.gserviceaccount.com --scopes=cloud-platform
+gcloud compute instance-groups managed set-instance-template runner-arm64-tacplus --project=$P --zone=us-central1-b \
+  --template=runner-arm64-t2a8-v6
+```
+
+New workers take the new template (no gitlab-runner restart; a running worker keeps build-box until it is deleted).
+In the next looper job `gcloud auth list` names `looper-runner`, and the `testIamPermissions` of
+`projects/jody1-328023` grants none of `artifactregistry.repositories.uploadArtifacts`, `storage.objects.create`,
+`storage.objects.get`, `storage.objects.list`. build-box itself keeps its roles for whatever else runs as it; the
+hub reviews them, but no looper VM holds it.
 
 ## Infrastructure
 
@@ -617,6 +699,8 @@ project jody1-328023). The manager runs the docker-autoscaler executor with the 
 plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 `runner-arm64-t2a8-v5`, t2a-standard-8): up to 5 workers, size 0 at rest.
 
+- The workers run as their own Google account, `looper-runner`, which may only pull the tacplus build images
+  (once the hub applies [Credentials](#credentials); until then, `build-box`).
 - The kicker's job runs around the clock (57 minutes of every hour), so a worker is up even when
   there is no other work (looper#24).
 - Changing `max_instances` needs a gitlab-runner restart, and a restart kills running jobs.
