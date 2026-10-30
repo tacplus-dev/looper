@@ -7,6 +7,7 @@ The per-repository loopers of tacplus-dev: `looper-dispatch` on the Mac starts t
 Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 
 ## Next
+- Priority labels order the ready queue (#31)
 - GitLab forge backend; a SeaBeam instance (kicker, runner, credentials) in the seabeam group (#29)
 - Looper identity, pilot on kernel: one identity per repository, think/commit split, app JWT signed in KMS (#28)
 - The kicker runs as a scheduled GitLab pipeline; nothing on the Mac (#24)
