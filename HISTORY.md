@@ -16,3 +16,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-30 looper issue Parent looper per repository runs child loopers in parallel; the parent decides what can run concurrently and how many (#32, 62ede1e)
 - 2026-10-30 looper issue Parent never starts a second child: every child's 4h limit 'would outlast this job' (the job is sized for the lead issue) (#33, ffa38ec)
 - 2026-10-30 looper issue Parallel children lose finished fixes: the land runs inside the child's time limit, and a land-pending child is marked stuck (#34, 88256c5)
+- 2026-10-30 looper issue Agents' GITLAB_TOKEN is a group-Owner api token: it reads fleet-seatrials' protected variables and can start its protected deploy jobs (#25, 6d4c73b)
