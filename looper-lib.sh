@@ -26,12 +26,25 @@ LABEL_BUG="bug"
 LABEL_FEATURE="feature"
 ISSUE_FLOW="tacplus-dev/roadmap decisions/issue-flow-2026-10-27.md"
 
-# The two labels, in a repository that lacks them. Never fatal.
+# Priority (looper#31): what starts next, never what is stopped. Ready issues
+# are taken priority:high first, then unlabelled, then priority:low, oldest
+# first within each; ISSUE_ORDER is that order as a jq sort_by key, for issues
+# with labels and createdAt.
+LABEL_PRIORITY_HIGH="priority:high"
+LABEL_PRIORITY_LOW="priority:low"
+ISSUE_ORDER="[(if any(.labels[]; .name == \"$LABEL_PRIORITY_HIGH\") then 0
+                elif any(.labels[]; .name == \"$LABEL_PRIORITY_LOW\") then 2 else 1 end), .createdAt]"
+
+# The kind and priority labels, in a repository that lacks them. Never fatal.
 ensure_kind_labels() { # repo
   gh label create "$LABEL_BUG" --repo "$LOOPER_ORG/$1" --color d73a4a \
     --description "The code does not do what it already promises: fixed, and released as a patch" >/dev/null 2>&1 || true
   gh label create "$LABEL_FEATURE" --repo "$LOOPER_ORG/$1" --color a2eeef \
     --description "New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor" >/dev/null 2>&1 || true
+  gh label create "$LABEL_PRIORITY_HIGH" --repo "$LOOPER_ORG/$1" --color b60205 \
+    --description "The looper takes it before unlabelled ready issues; a running issue is never pre-empted" >/dev/null 2>&1 || true
+  gh label create "$LABEL_PRIORITY_LOW" --repo "$LOOPER_ORG/$1" --color c5def5 \
+    --description "The looper takes it after every other ready issue" >/dev/null 2>&1 || true
 }
 
 # A file of the platform's roadmap repository (ROADMAP.md, items/...), raw.
@@ -53,13 +66,13 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "FATAL $*" >&2; exit 2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
-# Open approved issues in one repository that no run holds or parked, oldest
-# first, as "number" lines.
+# Open approved issues in one repository that no run holds or parked, in
+# ISSUE_ORDER (by priority, then oldest first), as "number" lines.
 approved_issues() { # repo
   gh issue list --repo "$LOOPER_ORG/$1" --state open --label "$LABEL_APPROVED" --limit 200 \
     --json number,labels,createdAt --jq "
       [.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
-      | sort_by(.createdAt) | .[].number"
+      | sort_by($ISSUE_ORDER) | .[].number"
 }
 
 # The issues an issue waits on: lines `Blocked-by: #N` (same repository) or
@@ -96,7 +109,7 @@ ready() { # repo issue
   return 0
 }
 
-# The oldest ready issue in a repository, or nothing.
+# The first ready issue in a repository (ISSUE_ORDER), or nothing.
 next_ready() { # repo
   local n
   for n in $(approved_issues "$1"); do
@@ -105,19 +118,21 @@ next_ready() { # repo
   return 0
 }
 
-# Every repository's oldest ready issue, as "<repo> <number>" lines: the rule
+# Every repository's next ready issue, as "<repo> <number>" lines: the rule
 # of next_ready, read for the whole org at once (the kicker's pass, looper#24),
 # one search and one GraphQL query for the blockers' states. next_ready costs a
 # request per issue and per blocker: about 270 for the org in 2026-10, past
 # GitHub's 5000 an hour at a pass every 3 minutes. A blocker GitHub does not
 # resolve to an issue holds its issue. Fails when GitHub cannot be read.
+# The lines are in ISSUE_ORDER of those issues: a repository whose next issue
+# is priority:high comes first (looper#31), so it is planned first.
 ready_by_repo() {
   local all issues r n b64 refs q="" i=0 out states
   all="$(gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_APPROVED" --limit 1000 \
            --json repository,number,labels,createdAt,body)" || return 1
-  # Not held, oldest first: "<repo> <number> <body, base64>".
+  # Not held, in ISSUE_ORDER: "<repo> <number> <body, base64>".
   issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
-                   | sort_by(.createdAt) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1
+                   | sort_by($ISSUE_ORDER) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1
   # Each issue's blockers: "<repo> <number> <blocker repo> <blocker number>".
   refs="$(while read -r r n b64; do
             [[ -n "$r" ]] || continue
@@ -136,7 +151,7 @@ ready_by_repo() {
     states="$(paste -d' ' <(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u) \
                           <(jq -r '.data as $d | range(0; $d | length) | $d["b\(.)"].issue.state // "MISSING"' <<<"$out"))"
   fi
-  # Ready: every blocker closed. The first per repository is its oldest.
+  # Ready: every blocker closed. The first per repository is its next.
   while read -r r n b64; do
     [[ -n "$r" ]] || continue
     if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {

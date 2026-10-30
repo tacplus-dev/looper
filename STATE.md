@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by looper (#28).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#31).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -8,8 +8,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   pass every 3 minutes that reads GitHub for the whole org in three requests, never two kicker jobs at once, nothing on
   the Mac (#24); it starts the pipeline; neither it nor the pipeline's plan
   (`repo-looper --list`) starts another job for a repository whose looper job is created, pending, waiting
-  for its `resource_group` or running, and a planned job whose issue was taken meanwhile works the oldest
-  ready one (#16); a run killed outright no longer leaves `looper:in-progress` behind: the job for its issue
+  for its `resource_group` or running, and a planned job whose issue was taken meanwhile works the next
+  ready one (#16); priority labels (#31): ready issues are taken `priority:high`, then unlabelled, then
+  `priority:low`, oldest first within each, and across repositories `looper-dispatch ready` (the kicker's order)
+  puts first a repository whose next ready issue is `priority:high`; a running issue is never pre-empted; a run killed outright no longer leaves `looper:in-progress` behind: the job for its issue
   resumes it when no other looper job of the repository is active, and `looper-dispatch run` clears the label
   from an issue no looper job holds (#20); a run whose job GitLab no longer reports running (marked failed while
   its container goes on) checkpoints and stops within one poll, pushing and commenting nothing, so it cannot race
@@ -41,7 +43,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-29 by lo
   gitlab.com's Free tier does not offer; its job keeps a runner worker up around the clock (see PROPOSALS.md);
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green
   for a day; the ROADMAP.md guard is a pre-push hook in the looper's checkout, so a push that skips hooks
-  is not refused (see PROPOSALS.md); no release line yet
+  is not refused (see PROPOSALS.md); the GitLab plan (`looper-plan` in gitlab.com/tacplus-dev/looper) still plans
+  repositories in name order until the hub makes it iterate `looper-dispatch ready` (#31, PROPOSALS.md); no release
+  line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`

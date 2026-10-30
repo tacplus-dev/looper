@@ -19,12 +19,13 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`): the next
   hour's waits for the last. Nothing else runs when there is no ready issue.
 - **The pipeline** plans one job per repository with a ready issue (`looper-<repo>-<issue>`), each
-  working that repository's oldest ready issue; jobs of one repository never overlap (`resource_group`).
+  working that repository's next ready issue (by [priority](#priority), then oldest first), and plans first
+  the repositories whose next issue is `priority:high` (`looper-dispatch ready`); jobs of one repository never overlap (`resource_group`).
   A repository that already has a looper job created, pending, waiting or running in the project gets
   no other one, and the plan's log says so (`repo-looper --list` reads the project's jobs with
   `GITLAB_TOKEN`, else the job's token; looper#16): a duplicate would only wait for the slot to find its
-  issue taken. A job takes its repository's oldest ready issue when it runs: the planned one if it is
-  still ready, else the one that is oldest now.
+  issue taken. A job takes its repository's next ready issue when it runs: the planned one if it is
+  still ready, else the one that is next now.
 - **A run killed outright** (its runner VM gone mid-job, looper#20) never removes `looper:in-progress`.
   The job for that issue (GitLab's automatic retry, say) takes it as a resume, from its checkpoint, when
   no *other* looper job of the repository is created, pending, waiting or running: the label is that
@@ -41,7 +42,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   Its schedules run the kicker, the nightly scan of every repository and the port scan (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
 - **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
-  the repository at origin/main, or the oldest ready one if that issue is no longer ready, and does
+  the repository at origin/main, or the next ready one ([priority](#priority), then oldest) if that issue is no longer ready, and does
   nothing if none is. Claude may run sub-agents in that checkout; only the top-level run
   commits and pushes, always to main (pre-production; a protected release line with review comes
   later). Bug fixes on repositories with release branches are also offered as backport pull requests.
@@ -82,9 +83,21 @@ tests/tacplus.test.sh                      # the wrapper's credentials against a
 | `looper:in-progress` | a looper holds it |
 | `looper:stuck` | a run ended without finishing and without a known reason; a person looks |
 | `needs-decision` | the looper needs a decision it may not make |
+| `priority:high` | taken before the other ready issues (looper#31) |
+| `priority:low` | taken after every other ready issue |
 
 Only someone with write access can set a label, so an issue nobody approved is never worked, whoever
 opened it and whatever its text says.
+
+### Priority
+
+A repository's ready issues (approved, not held, every `Blocked-by:` closed) are taken `priority:high` first, then
+unlabelled, then `priority:low`, oldest first within each (`approved_issues` in `looper-lib.sh`, looper#31); the
+looper creates both labels with `bug` and `feature`. Across repositories, the kicker and the plan take a repository
+whose next ready issue is `priority:high` before the others, so it gets a runner first when they are short
+(`looper-dispatch ready`). Priority only decides what starts next: a running issue is never pre-empted, and a blocked
+issue waits whatever its priority. To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
+real dependency, not for ordering.
 
 ### Bug or feature
 
@@ -165,7 +178,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -384,7 +397,7 @@ commits, pull requests, comments and labels are `kernel-looper[bot]`'s, and noth
   overlap, and an issue whose pull request (`looper/kernel-<n>`) is open is in review, not ready.
 - **`prepare`** (`looper-identity prepare`, LLM-free): exchanges the job's GitLab `id_token` through Workload Identity
   Federation, has Cloud KMS sign the `tacplus-reader` app's JWT and mints a one-hour installation token with
-  `contents`, `issues` and `metadata` **read**. It takes the input `issue` if it is ready, else the oldest ready issue, and
+  `contents`, `issues` and `metadata` **read**. It takes the input `issue` if it is ready, else the next ready issue ([priority](#priority), then oldest), and
   hands both to `think` as a dotenv report (`access: none`, expiring in an hour).
 - **`think`** (`repo-looper --think`): the model and the gates. **No identity:** no `id_tokens`, no variable but the model's
   `CLAUDE_CODE_OAUTH_TOKEN`, scoped to the environment `looper-think`. It refuses to run beside a write credential, an
@@ -528,7 +541,8 @@ commit Verified on main), and a follow-up issue for every other repository; Jody
 ```sh
 looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL seconds for 57 minutes
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
-tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
+tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
 The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/looper, masked and protected

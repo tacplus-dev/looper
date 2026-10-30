@@ -15,6 +15,8 @@
 #   looper-dispatch run --for SECONDS  a pass every LOOPER_INTERVAL seconds (default 180) for
 #                                      SECONDS (the kicker job); fails at the end if a pass failed
 #   looper-dispatch status             the looper jobs in GitLab, and what is ready
+#   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
+#                                      order the plan takes them: priority:high first (looper#31)
 #   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
 #
 # Credentials: GH_TOKEN (GitHub issues) and GITLAB_TOKEN, with api scope on the
@@ -57,7 +59,8 @@ release_orphans() { # active jobs
 }
 
 # One pass: release the orphans, then start the pipeline for the first
-# repository with a ready issue and no looper job of its own.
+# repository with a ready issue and no looper job of its own, in the order of
+# ready_by_repo (priority:high first, looper#31).
 pass() {
   local jobs ready repo n
   jobs="$(active_jobs)"
@@ -97,12 +100,13 @@ case "${1:-}" in
     while read -r repo n; do
       [[ -n "$repo" ]] && echo "$repo: ready $n$(busy "$repo" "$jobs" >/dev/null && echo ' (busy)')"
     done <<<"$ready" ;;
+  ready) need gh; need jq; ready_by_repo ;;
   uninstall)
     # run and nightly: the launchd jobs earlier versions installed (looper#24).
     for job in run nightly; do
       plist="$HOME/Library/LaunchAgents/dev.tacplus.looper.$job.plist"
       launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true; rm -f "$plist"
     done; log "uninstalled" ;;
-  -h|--help|help|"") sed -n '5,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '5,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (see --help)" ;;
 esac

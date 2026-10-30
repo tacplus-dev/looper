@@ -30,7 +30,7 @@
 spec:
   inputs:
     issue:
-      description: "An issue to work if it is ready (else the oldest ready one)"
+      description: "An issue to work if it is ready (else the next ready one)"
       default: ""
       regex: '^([0-9]+)?$'
 ---

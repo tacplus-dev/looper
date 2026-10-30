@@ -30,6 +30,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   `repo-looper --list` so it ships with the image. A `repo-looper --plan` that writes `looper-jobs.yml` would put the
   whole plan under test here and leave the GitLab file one line. Its comment also still says the Mac starts the
   pipeline "when no looper pipeline is running", where it is now per repository.
+- **The plan in priority order** (2026-10-30, #31): `looper-plan` (gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`)
+  writes one job per repository in the order of `gh search issues ... | sort -u`, by name, so when runners are short
+  GitLab starts them in that order whatever their priority. Its loop over
+  `$(looper-dispatch ready | cut -d' ' -f1)` instead plans a repository whose next ready issue is `priority:high`
+  first (keeping `repo-looper --list` for the busy check), and saves the search; the hub changes that file. A
+  `repo-looper --plan` (above) would put that order under this repository's tests.
+- **Priority within a capacity-short pipeline** (2026-10-30, #31): the order holds only as far as GitLab starts
+  pending jobs in creation order. A `priority:high` issue whose repository's job is already pending behind its
+  `resource_group` waits for it; a separate high-priority runner tag or GitLab job priorities would make it firm.
 - **A run's limit within its job's timeout** (2026-10-27, #16): a planned job whose issue was taken meanwhile works
   the oldest ready issue instead, but keeps the job timeout computed for the planned one; if the new issue asks for a
   longer `Timeout:`, GitLab stops the job before the model's limit (its work survives as a checkpoint).

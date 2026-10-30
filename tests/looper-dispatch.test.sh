@@ -241,6 +241,37 @@ grep -q "^alpha: ready 2\$" <<<"$OUT" || fail "status: $OUT"
 ! grep -q "^beta" <<<"$OUT" || fail "status: $OUT"
 pass
 
+# Priority labels across repositories (looper#31): a repository whose next
+# ready issue is priority:high comes before the others, then those whose next
+# is unlabelled, then priority:low; oldest first within each. A blocked
+# priority:high issue makes nothing urgent. `ready` lists them so (the plan's
+# order), `status` too, and a pass names the first free one.
+scenario priority-order
+rm "$FIX/issues/alpha-4.json"
+issue alpha 2 OPEN "Unlabelled, oldest." approved
+issue beta 8 OPEN "High." approved priority:high
+issue beta 3 OPEN "Older, unlabelled." approved
+issue gamma 1 OPEN "Low, oldest of all." approved priority:low
+issue delta 9 OPEN "High, newest." approved priority:high
+issue eps 5 OPEN "Unlabelled." approved
+issue eps 4 OPEN $'High, blocked.\nBlocked-by: #6' approved priority:high
+issue eps 6 OPEN "Open."
+dispatch ready
+[[ "$(paste -sd' ' <<<"$OUT")" == "beta 8 delta 9 alpha 2 eps 5 gamma 1" ]] || fail "ready: $(paste -sd' ' <<<"$OUT")"
+[[ ! -e "$FIX/gitlab" ]] || fail "ready asked GitLab: $(cat "$FIX/gitlab")"
+dispatch status
+[[ "$(grep ': ready' <<<"$OUT" | paste -sd' ')" == "beta: ready 8 delta: ready 9 alpha: ready 2 eps: ready 5 gamma: ready 1" ]] || fail "status: $OUT"
+dispatch run
+grep -q 'started the .* (beta has a ready issue)' <<<"$OUT" || fail "log: $OUT"
+pass
+
+scenario priority-busy
+issue beta 8 OPEN "High." approved priority:high
+jobs "looper-beta-8 running"
+dispatch run
+grep -q 'started the .* (alpha has a ready issue)' <<<"$OUT" || fail "log: $OUT"
+pass
+
 # The kicker (looper#24): an hourly scheduled job, since gitlab.com schedules
 # run at most hourly here, that repeats the pass every LOOPER_INTERVAL for
 # --for SECONDS, so a ready issue waits one interval, not one schedule.

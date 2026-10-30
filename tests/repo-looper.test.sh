@@ -704,6 +704,7 @@ has "$pp" "is a bug"; has "$pp" "tag \`v1.2.4\`"; has "$pp" "newest release on m
 has "$(history)" "looper release v1.2.4 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.4)"
 has "$(history)" "looper issue Issue 4 (#4, "
 lc="$(cat "$FIX/labels-created")"; has "$lc" "alpha bug"; has "$lc" "alpha feature"
+has "$lc" "alpha priority:high"; has "$lc" "alpha priority:low"
 pass
 
 scenario bug-no-release
@@ -794,6 +795,34 @@ jobs "looper-alpha-3 running"
 list
 [[ "$OUT" == 4 ]] || fail "listed: $OUT"
 [[ ! -e "$FIX/gitlab" ]] || fail "asked GitLab: $(cat "$FIX/gitlab")"
+pass
+
+# Priority labels (looper#31): ready issues are ordered priority:high, then
+# unlabelled, then priority:low, oldest first within each; a blocked or held
+# issue is skipped whatever its priority.
+created() { jq --arg c "$3" '.createdAt = $c' "$FIX/issues/$1-$2.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/$1-$2.json"; }
+scenario list-priority
+issue alpha 4 OPEN approved,bug "Fix it."; created alpha 4 2026-10-24T00:00:00Z
+issue alpha 5 OPEN approved,bug,priority:low "Low, oldest."; created alpha 5 2026-10-20T00:00:00Z
+issue alpha 6 OPEN approved,bug,priority:high "High, newer."; created alpha 6 2026-10-29T00:00:00Z
+issue alpha 7 OPEN approved,bug,priority:high "High, older."; created alpha 7 2026-10-28T00:00:00Z
+issue alpha 8 OPEN approved,bug "Unlabelled, oldest."; created alpha 8 2026-10-21T00:00:00Z
+issue alpha 9 OPEN approved,bug,priority:low "Low, newer."; created alpha 9 2026-10-25T00:00:00Z
+issue alpha 10 OPEN approved,bug,priority:high $'High, blocked.\nBlocked-by: #11'; created alpha 10 2026-10-01T00:00:00Z
+issue alpha 11 OPEN bug "Open."
+issue alpha 12 OPEN approved,bug,priority:high,needs-decision "High, held."; created alpha 12 2026-10-01T00:00:00Z
+list
+[[ "$(paste -sd' ' <<<"$OUT")" == "7 6 8 4 5 9" ]] || fail "listed: $(paste -sd' ' <<<"$OUT")"
+pass
+
+# A job takes the highest-priority ready issue, not the oldest.
+scenario run-takes-priority
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+issue alpha 5 OPEN approved,bug "Older."; created alpha 5 2026-10-20T00:00:00Z
+issue alpha 6 OPEN approved,bug,priority:high "Urgent."; created alpha 6 2026-10-29T00:00:00Z
+push_fix
+run
+has "$(prompts)" "working issue #6."; lacks "$(prompts)" "issue #5"
 pass
 
 # A planned job whose issue another run took or finished meanwhile works the

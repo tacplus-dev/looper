@@ -12,8 +12,8 @@
 #            Identity Federation, has Cloud KMS sign the tacplus-reader app's
 #            JWT and mints a one-hour, read-only installation token (contents,
 #            issues, metadata: read). Picks the issue: the input `issue` if it is
-#            ready, else the oldest ready one. Hands both to the think job as a
-#            dotenv report.
+#            ready, else the next ready one (priority, then age). Hands both
+#            to the think job as a dotenv report.
 #   think    `repo-looper --think`: the model and the gates, with no identity
 #            (no id_tokens, no protected variables but the model's own
 #            credential, scoped to the environment looper-think), only that
@@ -218,7 +218,7 @@ cmd_prepare() {
   candidates="$(approved_issues "$LOOPER_REPO")" || fail "could not read $LOOPER_ORG/$LOOPER_REPO's issues"
   if [[ -n "${LOOPER_ISSUE:-}" ]]; then
     [[ "$LOOPER_ISSUE" =~ ^[0-9]+$ ]] || fail "the input issue '$LOOPER_ISSUE' is not an issue number"
-    # The input first, if it is approved at all; then the oldest.
+    # The input first, if it is approved at all; then the next (approved_issues' order).
     grep -qx "$LOOPER_ISSUE" <<<"$candidates" && candidates="$(printf '%s\n%s\n' "$LOOPER_ISSUE" "$candidates" | awk '!s[$0]++')"
   fi
   for c in $candidates; do
@@ -226,7 +226,7 @@ cmd_prepare() {
     in_review "$c" "$token" && { log "#$c has an open pull request from looper/$LOOPER_REPO-$c: in review"; continue; }
     n="$c"; break
   done
-  [[ -z "${LOOPER_ISSUE:-}" || "$n" == "$LOOPER_ISSUE" ]] || log "#$LOOPER_ISSUE is not ready; taking the oldest ready issue"
+  [[ -z "${LOOPER_ISSUE:-}" || "$n" == "$LOOPER_ISSUE" ]] || log "#$LOOPER_ISSUE is not ready; taking the next ready issue"
   unset GH_TOKEN
   mkdir -p "$OUT"
   ( umask 077; printf 'LOOPER_ISSUE=%s\nLOOPER_READER_TOKEN=%s\n' "$n" "$token" > "$OUT/prepare.env" )
