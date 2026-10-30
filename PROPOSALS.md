@@ -122,4 +122,28 @@ the looper then marks it `promoted` or `declined` here with the date.
   project's is (above); one file for every repository's project, so the follow-up's rollout could generate the
   projects, keys and bindings from one repository list (SYNTHESIS 4).
 
+- **Parallel children in the think/commit flow** (2026-10-30, #32): the parent and its children run in the pipeline
+  job of `tacplus-dev/looper`; kernel's identity pilot (#28) still runs one `prepare`/`think`/`commit` child pipeline
+  per run under its `looper` resource group. Its parent would plan as here and start one child pipeline per issue,
+  each with its own think and commit jobs; landing there is GitHub's squash merge of each pull request, so the lock
+  becomes the merge itself (or a merge queue), with the gates re-run by the build on the rebased head.
+- **Size the job for its queue** (2026-10-30, #32): the plan sizes a looper job by its planned issue's limit plus an
+  hour (`--job-timeout`), and the parent starts no other child that would outlast it, so a repository with several
+  ready 4h issues still works only those that start at once. `repo-looper --job-timeout` could size the job for the
+  repository's ready queue (say, the longest limit plus the next one's, at most the project's 11h), at the cost of a
+  job held longer when a run hangs.
+- **The plan's areas, kept** (2026-10-30, #32): each plan asks the model about every running and candidate issue
+  again (tokens are not the concern, but a plan takes minutes). The parent could keep each issue's areas from its
+  first plan and ask only about the new ones, and the record could show how well the areas matched what landed
+  (`git diff --name-only` of each child's commits), to tune the planning prompt.
+- **A landing lock across jobs** (2026-10-30, #32): the landing lock is a file lock in the job's work directory,
+  which serializes the children of one parent; one parent per repository (the `resource_group`) is what makes it the
+  repository's. A second writer of main (a person, the scan's PROPOSALS.md commit) only makes a landing rebase and
+  retry. If a repository ever gets two parents, the lock would have to be on GitHub (a merge queue, or a ref the
+  landing creates and deletes).
+- **The landing guard is a hook** (2026-10-30, #32): a push to main from a child's worktree other than `--land` is
+  refused by the checkout's pre-push hook, which `git push --no-verify` (or setting `LOOPER_LANDING`) skips, as with
+  the ROADMAP.md guard (above). Main's protection with a required check (the build pipeline's status, #17) would
+  make "broken work never lands" hold for any push.
+
 ## Promoted / declined

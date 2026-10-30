@@ -7,15 +7,36 @@
 # runner (one job per repository at a time), and only while the repository
 # has work.
 #
-#   repo-looper --repo NAME             drain NAME's ready issues, priority:high first, oldest first within a priority
-#   repo-looper --repo NAME --issue N   work issue N if it is still ready, else the next ready one (what the pipeline runs)
+#   repo-looper --repo NAME             the parent: work NAME's ready issues, priority:high first, oldest
+#                                       first within a priority, as many at once as it plans
+#   repo-looper --repo NAME --issue N   the same, issue N first if it is still ready (what the pipeline runs)
 #   repo-looper --repo NAME --scan      the nightly scan: file issues, change no code
 #   repo-looper --repo NAME --list      print the ready issues; in a GitLab job, none while NAME
 #                                       has a looper job queued, waiting or running there (the plan)
 #   repo-looper --repo NAME --job-timeout N   the CI job timeout for issue N (its limit, plus an hour)
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
+#   repo-looper --repo NAME --issue N --land [--gates CMD]   land the child's commits on main (the model's
+#                                       step): under the landing lock, rebased on main, gates re-run
 #   repo-looper --repo NAME --issue N --think DIR   the think job of a looper with its own identity
 #                                       (looper#28): no write credential, writes its outcome to DIR
+#
+# The parent and its children (looper#32): the job's repo-looper is the parent.
+# It takes the ready issues in priority order and plans which can run together:
+# not two that touch the same paths, generated outputs or contracts, or that
+# the model, asked for each issue's areas, names as a conflict (an issue whose
+# areas it cannot tell runs alone); as many as the runner's CPU and memory hold
+# (LOOPER_CHILD_CPUS, default 2, and LOOPER_CHILD_MEMORY_GB, default 4, per
+# child), never more than LOOPER_MAX_CHILDREN (default 6, a safety ceiling), and
+# in a GitLab job none whose limit outlasts the job (CI_JOB_TIMEOUT, less an
+# hour). The plan and its reasons go to the job's log and its record
+# (LOOPER_RUNS/<time>-plan), and to each issue it started beside others or held
+# back. Each issue is a child: this same script (--child N) running the
+# per-issue flow below in its own worktree, LOOPER_WORK/NAME/worktrees/N, on
+# its own branch looper/NAME-N. Children land one at a time: --land takes the
+# repository's landing lock, rebases onto the current main, re-runs the gates
+# and pushes; a push to main from a child's worktree any other way is refused.
+# As each child ends the parent logs its outcome and plans again, so a newly
+# ready issue starts while the others run; a child's time limit is its own.
 #
 # Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
 # needs-decision), and every `Blocked-by:` issue in its body closed.
@@ -24,9 +45,10 @@
 # was killed outright (looper#20).
 #
 # One checkout per repository, kept across issues and runs under
-# LOOPER_WORK/NAME/checkout: the looper always works the same code base. Claude
-# may run sub-agents in that checkout for independent parts; only this script's
-# top-level run commits and pushes, to main (pre-production rule, Jody 2026-10-26).
+# LOOPER_WORK/NAME/checkout, and the children's worktrees of it: the looper
+# always works the same code base. Claude may run sub-agents in its worktree for
+# independent parts; only the child's top-level run commits and lands, on main
+# (pre-production rule, Jody 2026-10-26).
 #
 # A run whose job GitLab no longer runs (looper#21): GitLab can mark a job
 # failed (runner_system_failure) while its container keeps working on the VM,
@@ -100,13 +122,14 @@
 # (seconds, default 3600), LOOPER_IDLE_MINUTES (default 20), LOOPER_DONE_GRACE
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
 # default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_GATES (default `just gates` when the
-# repository has a justfile), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
+# repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
+# LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_MAX_CHILDREN, GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
 # job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
 set -euo pipefail
 
-usage() { sed -n '5,106p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
 # Run from a private copy: a pull that rewrites this file mid-run must not corrupt the running process.
@@ -119,12 +142,15 @@ source "$LOOPER_LIB"
 # This script's own path, for the model's --checkpoint.
 : "${LOOPER_SELF:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")}"
 
-REPO=""; ISSUE=""; MODE=drain; STEP=""
+REPO=""; ISSUE=""; MODE=drain; STEP=""; LAND_GATES=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) REPO="$2"; shift 2 ;;
     --issue) ISSUE="$2"; [[ "$MODE" == drain ]] && MODE=one; shift 2 ;;
     --checkpoint) STEP="$2"; MODE=checkpoint; shift 2 ;;
+    --land) MODE=land; shift ;;
+    --gates) LAND_GATES="$2"; shift 2 ;;
+    --child) ISSUE="$2"; MODE=child; shift 2 ;;
     --job-timeout) ISSUE="$2"; MODE=job-timeout; shift 2 ;;
     --scan) MODE=scan; shift ;;
     --list) MODE=list; shift ;;
@@ -216,9 +242,18 @@ if [[ "$MODE" == list ]]; then
   exit 0
 fi
 [[ "$MODE" != checkpoint || -n "$ISSUE" ]] || die "--checkpoint needs --issue N"
+[[ "$MODE" != land || -n "$ISSUE" ]] || die "--land needs --issue N"
 
 WORK="${LOOPER_WORK:-/work}/$REPO"
-CHECKOUT="$WORK/checkout"
+# The repository's checkout, the parent's; each child works in its own
+# worktree of it, on its own branch (looper#32). BRANCH is the checkout's.
+MAIN_CHECKOUT="$WORK/checkout"
+CHECKOUT="$MAIN_CHECKOUT"; BRANCH=main
+child_dir() { echo "$WORK/worktrees/$1"; } # issue
+# A child, and the model's --checkpoint and --land from a child's worktree.
+if [[ "$MODE" == child ]] || [[ "$MODE" =~ ^(checkpoint|land)$ && -e "$(child_dir "$ISSUE")/.git" ]]; then
+  CHECKOUT="$(child_dir "$ISSUE")"; BRANCH="looper/$REPO-$ISSUE"
+fi
 MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
 TIMEOUT="${LOOPER_TIMEOUT:-14400}"
 MAX_LIMIT=36000   # 10h: what a `Timeout:` line may ask for
@@ -250,13 +285,25 @@ need claude
 mkdir -p "$RUNS"
 gh auth setup-git >/dev/null 2>&1 || true
 
+# git fetch from origin in a checkout or worktree, tried again a few times:
+# the children's worktrees share the checkout's refs, and two fetches at once
+# can fail to lock one.
+fetch() { # dir [refspec...]
+  local d="$1" i; shift
+  for i in 1 2 3 4 5; do
+    git -C "$d" fetch -q origin "$@" && return 0
+    sleep "$i"
+  done
+  return 1
+}
+
 # The repository's checkout at origin/main. Anything a previous run left
 # unpushed is kept on a local branch for a person to look at, never pushed.
 sync_checkout() {
   if [[ ! -d "$CHECKOUT/.git" ]]; then
     gh repo clone "$LOOPER_ORG/$REPO" "$CHECKOUT" -- --quiet
   fi
-  git -C "$CHECKOUT" fetch -q origin
+  fetch "$CHECKOUT"
   # Keep what a previous run left before moving: a cancelled or killed run can
   # leave the checkout dirty, detached, or on main with local commits, and then
   # switching to main fails (the reused-worker case, tacplus#161 2026-10-27).
@@ -275,6 +322,25 @@ sync_checkout() {
   git -C "$CHECKOUT" checkout -q -f -B main origin/main
   git -C "$CHECKOUT" reset -q --hard origin/main
   guard_roadmap
+}
+
+# A child's worktree (looper#32), made by the parent before the child starts:
+# a worktree of the checkout at origin/main, on the issue's own branch. One a
+# killed run left is replaced, anything unpushed in it kept on a local branch
+# first, as sync_checkout does.
+prepare_worktree() { # issue
+  local wt b keep; wt="$(child_dir "$1")"; b="looper/$REPO-$1"
+  if [[ -e "$wt/.git" ]]; then
+    if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" || "$(git -C "$wt" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)" != 0 ]]; then
+      keep="looper/left-$(date -u +%Y%m%dT%H%M%SZ)-$1"
+      git -C "$wt" add -A && git -C "$wt" commit -q --no-verify -m "left by an unfinished looper run" || true
+      git -C "$wt" branch -q "$keep" && log "kept unpushed work of #$1 on local branch $keep"
+    fi
+  fi
+  git -C "$MAIN_CHECKOUT" worktree remove -f "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  git -C "$MAIN_CHECKOUT" worktree prune
+  mkdir -p "$(dirname "$wt")"
+  git -C "$MAIN_CHECKOUT" worktree add -q -f -B "$b" "$wt" origin/main
 }
 
 # The planning files every repository carries (tacplus-dev/roadmap
@@ -297,13 +363,17 @@ template() { # file
 # ROADMAP.md: the model's pushes and this script's alike. The issue's own
 # branch (looper/*) is exempt, so a checkpoint still keeps all the work.
 # Commits already on origin (an agent's, at Jody's request) are not this push's.
+# The hook is the checkout's and every worktree's (the common git dir). From a
+# worktree it also refuses a push to main that is not a landing (looper#32):
+# --land, or this script's own commits, under the landing lock.
 guard_roadmap() {
-  local hook; hook="$(git -C "$CHECKOUT" rev-parse --absolute-git-dir)/hooks/pre-push"
+  local hook; hook="$(cd "$CHECKOUT" && cd "$(git rev-parse --git-common-dir)" && pwd)/hooks/pre-push"
   mkdir -p "$(dirname "$hook")"
   cat > "$hook" <<'HOOK'
 #!/usr/bin/env bash
 # Installed by repo-looper (looper#13): a looper never pushes a commit that touches ROADMAP.md.
 z=0000000000000000000000000000000000000000
+worktree=""; [[ "$(git rev-parse --absolute-git-dir)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd)" ]] && worktree=1
 while read -r _ lsha rref rsha; do
   [[ "$lsha" == "$z" || "$rref" == refs/heads/looper/* ]] && continue
   not=(--remotes="$1"); [[ "$rsha" != "$z" ]] && git cat-file -e "$rsha" 2>/dev/null && not+=("$rsha")
@@ -312,31 +382,96 @@ while read -r _ lsha rref rsha; do
     echo "repo-looper: refused to push $rref: commit $(git rev-parse --short "$c") touches ROADMAP.md, which only Jody changes (through an agent). Propose it in PROPOSALS.md instead." >&2
     exit 1
   fi
+  # Installed by repo-looper (looper#32): a child lands on main only through --land.
+  if [[ -n "$worktree" && "$rref" == refs/heads/main && -z "${LOOPER_LANDING:-}" ]]; then
+    echo "repo-looper: refused to push to main from this worktree: land it with repo-looper --land, which rebases it on main and re-runs the gates under the repository's landing lock." >&2
+    exit 1
+  fi
 done
 exit 0
 HOOK
   chmod +x "$hook"
 }
 
+# Everything that pushes to main holds the repository's landing lock
+# (looper#32): the children of one parent land one at a time.
+LAND_LOCK="$WORK/.land.lock"
+
 # Commits a change to main and pushes it, from a scratch worktree at
 # origin/main: the checkout is untouched. The change is a command run in that
 # worktree; when the push is rejected it is made again on the new origin/main.
-# Never fatal.
+# Holds the landing lock. Never fatal.
 land() { # message command [args...]
-  local msg="$1" wt i; shift
-  wt="$(mktemp -d)"
-  for i in 1 2 3; do
-    git -C "$CHECKOUT" fetch -q origin main || break
-    if (( i == 1 )); then git -C "$CHECKOUT" worktree add -q -f --detach "$wt" origin/main || break
-    else git -C "$wt" checkout -q -f --detach origin/main && git -C "$wt" clean -fdq; fi
-    ( cd "$wt" && "$@" ) || break
-    [[ -n "$(git -C "$wt" status --porcelain)" ]] || break
-    git -C "$wt" add -A && git -C "$wt" commit -q -m "$msg" || break
-    if git -C "$wt" push -q origin HEAD:refs/heads/main; then log "pushed to main: $msg"; break; fi
-    (( i < 3 )) || log "could not push to main: $msg"
-  done
-  git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"
-  git -C "$CHECKOUT" worktree prune
+  local msg="$1" wt; shift
+  wt="$(mktemp -d)"; mkdir -p "$WORK"
+  ( flock 8
+    for i in 1 2 3; do
+      fetch "$MAIN_CHECKOUT" main || break
+      if (( i == 1 )); then git -C "$MAIN_CHECKOUT" worktree add -q -f --detach "$wt" origin/main || break
+      else git -C "$wt" checkout -q -f --detach origin/main && git -C "$wt" clean -fdq; fi
+      ( cd "$wt" && "$@" ) || break
+      [[ -n "$(git -C "$wt" status --porcelain)" ]] || break
+      git -C "$wt" add -A && git -C "$wt" commit -q -m "$msg" || break
+      if LOOPER_LANDING=1 git -C "$wt" push -q origin HEAD:refs/heads/main; then log "pushed to main: $msg"; break; fi
+      (( i < 3 )) || log "could not push to main: $msg"
+    done
+  ) 8>"$LAND_LOCK" || true
+  git -C "$MAIN_CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"
+  git -C "$MAIN_CHECKOUT" worktree prune
+}
+
+# The gates a landing re-runs: --gates, else LOOPER_GATES, else `just gates`
+# when the repository has a justfile; nothing when none is known.
+land_gates() {
+  if [[ -n "$LAND_GATES" ]]; then echo "$LAND_GATES"
+  elif [[ -n "${LOOPER_GATES:-}" ]]; then echo "$LOOPER_GATES"
+  elif [[ -f "$CHECKOUT/justfile" ]]; then echo "just gates"; fi
+}
+
+# --land, the model's step (looper#32): lands the commits of the child's branch
+# on main. Under the repository's landing lock it rebases them onto the
+# current main, re-runs the gates on the result and pushes; a rejected push is
+# rebased and tried again. Lands nothing, and says why, when the change is not
+# committed, the rebase conflicts (the model rebases, resolves and lands
+# again), the gates fail or change a tracked file. Each landing is recorded in
+# the run's `landed` file, "<main before> <main after>".
+land_work() {
+  local gates out; gates="$(land_gates)"
+  [[ -n "$gates" ]] || die "no gates to re-run before landing: $REPO has no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
+  cd "$CHECKOUT"
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
+  out="${LOOPER_RUN:-$(mktemp -d)}"; mkdir -p "$WORK"
+  ( flock 8
+    for i in 1 2 3; do
+      fetch . main || { log "could not fetch main; nothing landed"; exit 1; }
+      [[ "$(git rev-list --count origin/main..HEAD)" != 0 ]] || { log "nothing to land: $BRANCH has no commit that main lacks"; exit 0; }
+      before="$(git rev-parse origin/main)"
+      if ! git rebase -q origin/main >/dev/null 2>&1; then
+        conflicts="$(git diff --name-only --diff-filter=U | paste -sd' ' -)"
+        git rebase --abort >/dev/null 2>&1 || true
+        log "nothing landed: rebasing $BRANCH onto main conflicts in: $conflicts. Rebase it yourself (git fetch origin && git rebase origin/main), resolve them, verify, and land again." >&2
+        exit 3
+      fi
+      log "landing $BRANCH: the gates ($gates) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
+      grc=0; bash -c "$gates" > "$out/gates.log" 2>&1 || grc=$?
+      if (( grc != 0 )); then
+        { log "nothing landed: the gates failed (exit $grc), on your commits rebased on main; their end:"; tail -n 30 "$out/gates.log"; } >&2
+        exit 4
+      fi
+      if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+        log "nothing landed: the gates changed tracked files ($(git status --porcelain --untracked-files=no | awk '{ print $2 }' | paste -sd' ' -)): it is not the tested tree" >&2
+        exit 4
+      fi
+      if LOOPER_LANDING=1 git push -q origin HEAD:refs/heads/main; then
+        echo "$before $(git rev-parse HEAD)" >> "$out/landed"
+        log "landed on main: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD)"
+        exit 0
+      fi
+      log "the push to main was rejected (main moved); rebasing again"
+    done
+    log "nothing landed: main kept moving; land again" >&2
+    exit 5
+  ) 8>"$LAND_LOCK"
 }
 
 add_planning_files() {
@@ -545,11 +680,12 @@ drop_wip() { # issue
 # main; else, with no history rewritten, main merged into it; else that merge
 # with its conflicts marked in the files, whose paths the prompt names to
 # resolve first. Only when even the merge cannot be made does the run start
-# from bare main. Prints what the prompt says about it.
-resume() { # issue
-  local n="$1" b msg how conflicts; b="$(wip_branch "$n")"
+# from bare main. The work is on the checkout's BRANCH (a child's own). Prints
+# what the prompt says about it; `then` is what the model does with the work.
+resume() { # issue then
+  local n="$1" then="$2" b msg how conflicts; b="$(wip_branch "$n")"
   wip_on_origin "$n" || return 0
-  git -C "$CHECKOUT" fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b"
+  fetch "$CHECKOUT" "+refs/heads/$b:refs/remotes/origin/$b"
   msg="$(git -C "$CHECKOUT" log -1 --format=%B "origin/$b")"
   if git -C "$CHECKOUT" checkout -q --detach "origin/$b" && git -C "$CHECKOUT" rebase -q origin/main >/dev/null 2>&1; then
     how=rebased
@@ -563,14 +699,14 @@ resume() { # issue
       how=conflicted
     else
       git -C "$CHECKOUT" merge --abort >/dev/null 2>&1 || true
-      git -C "$CHECKOUT" checkout -q -f main && git -C "$CHECKOUT" reset -q --hard origin/main
+      git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" origin/main
       log "#$n: $b neither rebases on nor merges with main; starting from main" >&2
       printf 'A previous run left work in progress on the branch `%s`, but it neither rebases on nor merges with main:\nyour checkout is main. Bring that work over by hand (`git diff origin/main...origin/%s`) where it still applies.' "$b" "$b"
       printf '\nIts last checkpoint:\n\n%s\n' "$msg"
       return 0
     fi
   fi
-  git -C "$CHECKOUT" checkout -q -B main "$(git -C "$CHECKOUT" rev-parse HEAD)"
+  git -C "$CHECKOUT" checkout -q -B "$BRANCH" "$(git -C "$CHECKOUT" rev-parse HEAD)"
   git -C "$CHECKOUT" reset -q --mixed origin/main
   # The run record is not work: it stays on the branch.
   git -C "$CHECKOUT" clean -fdq -- .looper || true
@@ -578,13 +714,13 @@ resume() { # issue
   case "$how" in
     rebased)
       log "resuming #$n from $b" >&2
-      printf 'A previous run left work in progress on the branch `%s`. It is in your checkout, rebased on main, as\nuncommitted changes: check it, finish the issue, and commit it on main as rule 5 says.' "$b" ;;
+      printf 'A previous run left work in progress on the branch `%s`. It is in your checkout, rebased on main, as\nuncommitted changes: check it, finish the issue, and %s as rule 5 says.' "$b" "$then" ;;
     merged)
       log "resuming #$n from $b (merged with main)" >&2
-      printf 'A previous run left work in progress on the branch `%s`. It does not rebase on main, so it is in your\ncheckout with main merged into it, as uncommitted changes: check it, finish the issue, and commit it on\nmain as rule 5 says.' "$b" ;;
+      printf 'A previous run left work in progress on the branch `%s`. It does not rebase on main, so it is in your\ncheckout with main merged into it, as uncommitted changes: check it, finish the issue, and\n%s as rule 5 says.' "$b" "$then" ;;
     conflicted)
       log "resuming #$n from $b (merged with main, conflicts in: $(echo $conflicts))" >&2
-      printf 'A previous run left work in progress on the branch `%s`. Its merge with main conflicts with main, so it\nis in your checkout with main merged into it and the conflicts marked in the files (<<<<<<< the branch,\n>>>>>>> main), as uncommitted changes. Resolve these first, then finish the issue and commit it on main\nas rule 5 says:\n\n' "$b"
+      printf 'A previous run left work in progress on the branch `%s`. Its merge with main conflicts with main, so it\nis in your checkout with main merged into it and the conflicts marked in the files (<<<<<<< the branch,\n>>>>>>> main), as uncommitted changes. Resolve these first, then finish the issue and\n%s as rule 5 says:\n\n' "$b" "$then"
       sed 's/.*/- `&`/' <<<"$conflicts" ;;
   esac
   printf '\nIts last checkpoint:\n\n%s\n' "$msg"
@@ -662,8 +798,8 @@ PR
 propose() { # issue run-dir limit
   local n="$1" run="$2"
   cat > "$run/prompt.md" <<PR
-You are the looper of $LOOPER_ORG/$REPO, proposing a design for issue #$n. Your working directory is this
-repository's checkout on main, at origin/main. Read the issue: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`,
+You are the looper of $LOOPER_ORG/$REPO, proposing a design for issue #$n. Your working directory is a worktree
+of this repository on its own branch, $BRANCH, at origin/main. Read the issue: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`,
 and the documents it cites.
 
 It is a feature, and no ROADMAP.md links it (neither this repository's nor tacplus-dev/roadmap's), so it is not
@@ -671,8 +807,8 @@ built ($ISSUE_FLOW): a feature needs design, Jody's approval and a ROADMAP.md en
 1. Comment on the issue with a design proposal: what and why, the approach and the alternatives, the surface or
    contract it changes, the risks, its size, and the questions Jody must answer.
 2. Add it to PROPOSALS.md, in that file's format (what, why, links: this issue). Commit only PROPOSALS.md on
-   main, with a message ending with \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then
-   \`git pull --rebase origin main\` and \`git push origin main\`. Change no other file; never ROADMAP.md.
+   $BRANCH, with a message ending with \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main:
+   $(land_command "$n"). Change no other file; never ROADMAP.md.
 The looper labels the issue $LABEL_DECISION when you are done.
 PR
   run_claude "$run/prompt.md" "$run/claude.log" "$(( $3 < 3600 ? $3 : 3600 ))" "$run" || log "proposing #$n exited non-zero"
@@ -709,6 +845,15 @@ kind_rule() { # kind
     "   names the patch tag to cut on that branch once it merges."
 }
 
+# How a child lands its commits on main (looper#32), for its prompt.
+land_command() { # issue
+  if [[ -n "$(land_gates)" ]]; then
+    echo "\`$LOOPER_SELF --repo $REPO --issue $1 --land\`"
+  else
+    echo "\`$LOOPER_SELF --repo $REPO --issue $1 --land --gates \"<the command you verified with>\"\` (this repository has no justfile, so name its gates)"
+  fi
+}
+
 # What every prompt that may open an issue says about opening one.
 opening_rule() { # [its number in the prompt]
   cat <<EOF
@@ -721,16 +866,18 @@ ${1:+$1 }Before you open any issue (a follow-up, say), read this repository's RO
 EOF
 }
 
+# A child's outcome, for its parent (looper#32): closed, blocked,
+# needs-decision, proposed, timeout, stuck or job-gone.
+report() { # issue outcome
+  mkdir -p "$WORK/results"; echo "$2" > "$WORK/results/$1"
+}
+
+# A child's run of an issue, in its worktree (the parent made it).
 work_issue() { # issue
-  local n="$1" run head_before head_after limit resumed last_comment
+  local n="$1" run limit resumed last_comment
   run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
-  log "taking $LOOPER_ORG/$REPO#$n ($run)"
+  log "taking $LOOPER_ORG/$REPO#$n ($run, in $CHECKOUT on $BRANCH)"
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_IN_PROGRESS" >/dev/null
-  sync_checkout
-  land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
-  sync_checkout
-  local tags_before; tags_before="$(release_tags)"
-  head_before="$(git -C "$CHECKOUT" rev-parse origin/main)"
   limit="$(run_limit "$n")"
   # Bug or feature (looper#14): an unlabelled issue is classified first; a
   # feature no ROADMAP.md links is proposed, never built.
@@ -739,18 +886,18 @@ work_issue() { # issue
   if [[ -z "$kind" ]]; then classify "$n" "$run" "$limit"; kind="$(issue_kind "$n")"; fi
   if [[ -z "$kind" ]]; then
     hold "$n" "$LABEL_DECISION" "This issue is labelled neither \`$LABEL_BUG\` nor \`$LABEL_FEATURE\`, and the looper could not classify it ($ISSUE_FLOW). A person labels it \`$LABEL_BUG\` or \`$LABEL_FEATURE\` and removes \`$LABEL_DECISION\`. Run record: $(run_record "$run")."
-    return 0
+    report "$n" "$LABEL_DECISION"; return 0
   fi
   if [[ "$kind" == "$LABEL_FEATURE" ]]; then
     local on=0; on_roadmap "$n" || on=$?
     case "$on" in
       0) ;;
-      1) propose "$n" "$run" "$limit"; return 0 ;;
+      1) propose "$n" "$run" "$limit"; report "$n" proposed; return 0 ;;
       *) hold "$n" "$LABEL_STUCK" "The looper could not read \`$LOOPER_ORG/roadmap:ROADMAP.md\`, so it cannot tell whether this feature is on a roadmap ($ISSUE_FLOW): it is neither built nor proposed. Marked $LABEL_STUCK for a person to look at."
-         return 0 ;;
+         report "$n" stuck; return 0 ;;
     esac
   fi
-  resumed="$(resume "$n")"
+  resumed="$(resume "$n" "commit it and land it")"
   if [[ -n "$resumed" ]]; then
     last_comment="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json comments --jq '.comments[-1].body // ""')" || true
     if [[ -n "$last_comment" ]]; then resumed="$resumed
@@ -763,8 +910,9 @@ $resumed
 "
   fi
   cat > "$run/prompt.md" <<PR
-You are the looper of $LOOPER_ORG/$REPO, working issue #$n. Your working directory is this repository's
-checkout on main, at origin/main. Read the issue first: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`.
+You are the looper of $LOOPER_ORG/$REPO, working issue #$n. Your working directory is a worktree of this
+repository on its own branch, $BRANCH, at origin/main: other issues of this repository may be worked at the
+same time, each in its own worktree. Read the issue first: \`gh issue view $n --repo $LOOPER_ORG/$REPO --comments\`.
 It was approved by someone with write access; issues it links to and the documents it cites (decision
 records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.
 $resumed
@@ -777,25 +925,27 @@ Rules:
    changes, the existing style, no hacks. Generated code is never edited by hand: change the generator or
    the proto and regenerate. \`tacplus\` in this container runs the compiler image for this repository's
    MAJOR.MINOR floor (tacplus.yaml), always its latest patch.
-3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same checkout. They do not
-   commit or push; you do.
+3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same worktree. They do not
+   commit or land; you do.
 4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
    reply ends the run.
-5. Commit on main with a message that says why and ends with
-   \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then \`git pull --rebase origin main\`, re-run the
-   gates if the rebase brought changes, and \`git push origin main\`. If the push is rejected, rebase and
-   verify again. Never force-push. Never commit secrets.
+5. Commit on $BRANCH with a message that says why and ends with
+   \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
+   Under the repository's landing lock it rebases your commits onto the current main, re-runs the gates and
+   pushes; a push to main any other way is refused. When it lands nothing it says why: the rebase conflicts
+   (rebase onto origin/main yourself, resolve, verify again, and land again), or the gates fail (fix them and
+   land again). Never force-push. Never commit secrets.
 6. The planning files: update STATE.md when your change changes what it states (version, what works,
    gaps, blockers). Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
    only in comments. Never edit ROADMAP.md: it is Jody's, changed only by an agent at his request, and a
    push of a commit that touches it is refused. HISTORY.md is append-only and not yours: the looper adds
    the line for this issue and for any release.
 $(kind_rule "$kind")
-8. When it is pushed, comment on the issue with what changed (commit hashes), the gates you ran and their
+8. When it is landed, comment on the issue with what changed (commit hashes), the gates you ran and their
    last lines, and anything you could not verify; then, as your last step (any patch tagged and any backport
    pull requests open by then), close it: \`gh issue close $n --repo $LOOPER_ORG/$REPO\`. Closing it ends your run.
-9. If the fix is pushed but the gates cannot run until another open issue is done (a compiler floor that
+9. If the fix is landed but the gates cannot run until another open issue is done (a compiler floor that
    does not exist yet, say), or there is rightly nothing to change here until another open issue is done,
    do not close this issue: comment what you pushed (if anything) and why it waits, and write the line
    \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\`, one per issue it waits on,
@@ -827,30 +977,31 @@ PR
   # issue taken.
   if [[ "$stopped" == job-gone ]]; then
     checkpoint "$n" "its job is no longer running" "$run"
+    report "$n" job-gone
     log "#$n left to the job's retry, from $(wip_branch "$n")"; exit 0
   fi
-  git -C "$CHECKOUT" fetch -q origin
-  head_after="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  # What the run landed on main (--land records it): its first base and last commit.
+  local head_before="" head_after=""
+  if [[ -s "$run/landed" ]]; then
+    head_before="$(head -n 1 "$run/landed" | cut -d' ' -f1)"; head_after="$(tail -n 1 "$run/landed" | cut -d' ' -f2)"
+  fi
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
   local state labels
   state="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json state --jq .state)"
   labels="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name')"
-  # HISTORY.md: a line for the closed issue (with the run's last commit on
-  # main, if it pushed) and one for each release the run made.
-  local lines=() title t
+  # HISTORY.md: a line for the closed issue, with the run's last commit on
+  # main if it landed one. The parent adds the releases' lines.
+  local title t
   if [[ "$state" == CLOSED ]]; then
     title="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json title --jq .title)" || title=""
-    t=""; [[ "$head_after" != "$head_before" ]] && t=", $(git -C "$CHECKOUT" rev-parse --short "$head_after")"
-    lines+=("- $(date -u +%F) looper issue $title (#$n$t)")
+    t=""; [[ -n "$head_after" ]] && t=", $(git -C "$CHECKOUT" rev-parse --short "$head_after")"
+    land "HISTORY.md: #$n (looper)" append_history "- $(date -u +%F) looper issue $title (#$n$t)"
+    drop_wip "$n"; report "$n" closed; log "#$n done${head_after:+ (main $head_before..$head_after)}"; return 0
   fi
-  for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_before") || true); do
-    lines+=("- $(date -u +%F) looper release $t (https://github.com/$LOOPER_ORG/$REPO/releases/tag/$t)")
-  done
-  if (( ${#lines[@]} )); then land "HISTORY.md: #$n (looper)" append_history "${lines[@]}"; fi
-  if [[ "$state" == CLOSED ]]; then drop_wip "$n"; log "#$n done (main $head_before..$head_after)"; return 0; fi
   local blocked what by those="that issue is"
   if blocked="$(outcome_blocked "$n" "$run")"; then
-    if [[ "$head_after" != "$head_before" ]]; then
+    report "$n" blocked
+    if [[ -n "$head_after" ]]; then
       drop_wip "$n"
       what="The fix is pushed (main $head_before..$head_after); the gates wait"
     else
@@ -862,7 +1013,7 @@ PR
     [[ "$blocked" == *$'\n'* ]] && those="those issues are"
     gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" \
       --body "$what, so this issue is now $by and stays $LABEL_APPROVED: it is worked again once $those closed. Run record: $(run_record "$run")." >/dev/null || true
-    log "#$n blocked ($(paste -sd, - <<<"$blocked")), main $head_before..$head_after"; return 0
+    log "#$n blocked ($(paste -sd, - <<<"$blocked"))${head_after:+, main $head_before..$head_after}"; return 0
   fi
   # Not landed: whatever the run leaves is kept on the issue's branch.
   local timed_out="" why="the run's end"
@@ -871,8 +1022,9 @@ PR
   checkpoint "$n" "$why" "$run"
   local wip="" b; b="$(wip_branch "$n")"
   wip_on_origin "$n" && wip="[\`$b\`]($(wip_url "$n"))"
-  if grep -qx "$LABEL_DECISION" <<<"$labels"; then log "#$n waits on a decision"; return 0; fi
+  if grep -qx "$LABEL_DECISION" <<<"$labels"; then report "$n" "$LABEL_DECISION"; log "#$n waits on a decision"; return 0; fi
   if [[ -n "$timed_out" ]]; then
+    report "$n" timeout
     local done_left where="It left no changes."
     [[ -n "$wip" ]] && where="Its work in progress is on $wip."
     if [[ -s "$run/step" ]]; then done_left="Its last checkpoint (what is done, what is left):
@@ -886,6 +1038,7 @@ $done_left
 This issue stays $LABEL_APPROVED: the next run resumes from that branch. A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time. Run record: $(run_record "$run")." >/dev/null || true
     log "#$n reached its time limit; it resumes on the next pass"; return 0
   fi
+  report "$n" stuck
   tail -n 40 "$run/claude.log" || true
   local ended="The looper ended without finishing this issue."
   [[ "$stopped" == idle ]] && ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
@@ -956,12 +1109,8 @@ think_issue() { # issue
          think_outcome stuck; return 0 ;;
     esac
   fi
-  resumed="$(resume "$n")"
+  resumed="$(resume "$n" "leave it in the checkout")"
   if [[ -n "$resumed" ]]; then
-    resumed="${resumed//commit it on main as rule 5 says/leave it in the checkout as rule 5 says}"
-    resumed="${resumed//commit it on
-main as rule 5 says/leave it in the
-checkout as rule 5 says}"
     last_comment="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json comments --jq '.comments[-1].body // ""')" || true
     [[ -z "$last_comment" ]] || resumed="$resumed
 
@@ -1118,7 +1267,220 @@ PR
   log "scan of $REPO finished"
 }
 
+# --- the parent (looper#32) ----------------------------------------------------
+
+# How many children the runner holds: its CPUs over LOOPER_CHILD_CPUS and its
+# memory over LOOPER_CHILD_MEMORY_GB, at least one, at most LOOPER_MAX_CHILDREN
+# (a safety ceiling, not the plan). Prints "<n> <why>".
+capacity() {
+  local cpus mem_kb
+  cpus="$(nproc 2>/dev/null || echo 1)"
+  mem_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null)"; mem_kb="${mem_kb:-0}"
+  awk -v c="$cpus" -v m="$mem_kb" -v pc="${LOOPER_CHILD_CPUS:-2}" -v pm="${LOOPER_CHILD_MEMORY_GB:-4}" -v max="${LOOPER_MAX_CHILDREN:-6}" 'BEGIN {
+    gb = m / 1048576; n = int(c / pc); k = int(gb / pm)
+    if (k < n) n = k
+    if (max > 0 && max < n) n = max
+    if (n < 1) n = 1
+    printf "%d %d CPUs at %s a child, %.0f GB at %s GB a child, ceiling %s\n", n, c, pc, gb, pm, max
+  }'
+}
+
+# Why issues a and b must not run at the same time, from the plan's areas
+# file, or nothing (exit 1) when they may: a conflict the plan names; a
+# contract both change; a path both touch (one the other's, or under it); an
+# issue whose areas the plan does not tell. The planning files are left out:
+# every issue may touch them, and a landing rebases over them.
+conflict_reason() { # areas a b
+  awk -v a="$2" -v b="$3" '
+    { sub(/^[[:space:]]*-?[[:space:]]*/, ""); i = $2; sub(/^#/, "", i) }
+    $1 == "conflict" { j = $3; sub(/^#/, "", j)
+      if ((i == a && j == b) || (i == b && j == a)) { $1 = $2 = $3 = ""; sub(/^ +/, ""); why = "the plan: " $0; exit } }
+    $1 == "touches" && (i == a || i == b) { known[i] = 1
+      for (f = 3; f <= NF; f++) { p = $f; sub(/^\.\//, "", p); sub(/\/+$/, "", p)
+        if (p == "" || p ~ /^(STATE|PROPOSALS|HISTORY|ROADMAP)\.md$/) continue
+        paths[i] = paths[i] " " p } }
+    $1 == "contract" && (i == a || i == b) { $1 = $2 = ""; sub(/^ +/, ""); contracts[i, $0] = 1; names[i] = names[i] "\n" $0 }
+    END {
+      if (why != "") { print why; exit 0 }
+      if (!(a in known)) { print "the plan does not tell what #" a " touches"; exit 0 }
+      if (!(b in known)) { print "the plan does not tell what #" b " touches"; exit 0 }
+      n = split(names[a], cs, "\n"); for (k = 1; k <= n; k++) if (cs[k] != "" && ((b, cs[k]) in contracts)) { print "both change " cs[k]; exit 0 }
+      na = split(paths[a], pa, " "); nb = split(paths[b], pb, " ")
+      for (x = 1; x <= na; x++) for (y = 1; y <= nb; y++) {
+        p = pa[x]; q = pb[y]
+        if (p == q || index(q, p "/") == 1) { print "both touch " p; exit 0 }
+        if (index(p, q "/") == 1) { print "both touch " q; exit 0 } }
+      exit 1
+    }' "$1"
+}
+
+# The model's part of the plan: what each issue will touch, and any other
+# conflict it sees, written to the areas file. Read-only, in the checkout.
+plan_areas() { # dir issue...
+  local dir="$1" n list=""; shift
+  for n in "$@"; do list+="- #$n: $(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json title --jq .title 2>/dev/null || echo '?')"$'\n'; done
+  cat > "$dir/prompt.md" <<PR
+You are the parent looper of $LOOPER_ORG/$REPO, planning which of its issues can be worked at the same time.
+Each runs in its own worktree and lands on main one at a time, rebased on main with its gates re-run. Your
+working directory is the repository's checkout at origin/main. Change nothing: no file, no issue, no label.
+The issues (\`gh issue view <n> --repo $LOOPER_ORG/$REPO --comments\` for each, and the code it concerns):
+$list
+For each issue, judge what its change will touch, and write to $dir/areas, one line each:
+- \`touches <n> <path> [<path>...]\`: every file or directory it will change, generated outputs included (the
+  files a generator writes, not only its input); a directory when you cannot tell the files. Leave out
+  STATE.md, PROPOSALS.md and HISTORY.md, which every issue may touch.
+- \`contract <n> <name>\`: each contract it changes that others may depend on (a proto package, an API, a CLI's
+  flags, a file format, a prompt), one name per line, the same name for the same contract in every issue.
+- \`conflict <a> <b> <why>\`: two issues that must not run at the same time for any other reason you see
+  (one changes what the other relies on, both would edit the same generated code, they need the same
+  scarce resource...).
+Write a \`touches\` line for every issue: one you cannot judge gets \`touches <n> .\` and so runs alone.
+Writing the file is your last step.
+PR
+  ( CHECKOUT="$MAIN_CHECKOUT"; run_claude "$dir/prompt.md" "$dir/claude.log" "${LOOPER_PLAN_TIMEOUT:-1200}" "$dir" ) \
+    || log "the plan's model exited non-zero"
+  touch "$dir/areas"
+}
+
+# The candidates, in the order they are taken: the job's own issue first if it
+# is still ready (or its run was killed, looper#20), then the ready issues in
+# ISSUE_ORDER, then any other issue a killed run left looper:in-progress.
+# None already started by this parent.
+candidates() { # first started
+  local first="$1" started="$2" n out=()
+  if [[ -n "$first" && "$started" != *" $first "* ]]; then
+    if approved_issues "$REPO" | grep -qx "$first" && ready "$REPO" "$first"; then out+=("$first")
+    elif orphaned "$first"; then
+      log "#$first is $LABEL_IN_PROGRESS, but no other looper job of $REPO is active: its run is gone; this job resumes it" >&2
+      out+=("$first")
+    fi
+  fi
+  for n in $(approved_issues "$REPO"); do
+    [[ "$started" == *" $n "* || " ${out[*]} " == *" $n "* ]] && continue
+    if ready "$REPO" "$n"; then out+=("$n"); fi
+  done
+  if [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]]; then
+    for n in $(gh issue list --repo "$LOOPER_ORG/$REPO" --state open --label "$LABEL_APPROVED" --label "$LABEL_IN_PROGRESS" \
+                 --limit 100 --json number --jq '.[].number' 2>/dev/null); do
+      [[ "$started" == *" $n "* || " ${out[*]} " == *" $n "* ]] && continue
+      if orphaned "$n"; then log "#$n is $LABEL_IN_PROGRESS, but no other looper job of $REPO is active: this job resumes it" >&2; out+=("$n"); fi
+    done
+  fi
+  echo "${out[@]}"
+}
+
+# Issues as "#3 #5", or "none".
+issue_list() { if (( $# )); then printf '#%s ' "$@" | sed 's/ $//'; else echo none; fi; }
+
+# The parent: plans, starts each planned issue as a child, and plans again
+# whenever one ends, until no child runs and nothing more can start.
+parent() { # [issue first]
+  local first="${1:-}" started=" " stop="" deadline="" t0 tags_seen n pid rc res t
+  local -A pids=() told=()
+  t0="$(date +%s)"
+  # In a GitLab job no child starts that would outlast it: the job's timeout
+  # is its planned issue's limit plus an hour (--job-timeout), so the first
+  # child always fits; the others must end an hour before the job does.
+  [[ "${CI_JOB_TIMEOUT:-}" =~ ^[0-9]+$ ]] && deadline=$(( t0 + CI_JOB_TIMEOUT - 3600 ))
+  sync_checkout
+  land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
+  sync_checkout
+  rm -rf "$WORK/results"; mkdir -p "$WORK/results"
+  tags_seen="$(release_tags)"
+
+  # One plan: which candidates start now, and why the others wait.
+  plan() {
+    local cands cap why free plan_dir chosen=() c o r limit reasons=() others beside=()
+    read -r -a cands <<<"$(candidates "$first" "$started")"
+    if (( ${#cands[@]} == 0 )); then
+      if [[ "$started" == " " ]]; then
+        if [[ -n "$first" ]]; then log "#$first is no longer ready, nor is any other issue; nothing to do"
+        else log "no ready issue in $REPO; exiting"; fi
+      fi
+      return 0
+    fi
+    [[ "$started" != " " || -z "$first" || "${cands[0]}" == "$first" ]] || log "#$first is no longer ready; working #${cands[0]}, the next ready issue"
+    read -r cap why <<<"$(capacity)"
+    free=$(( cap - ${#pids[@]} ))
+    plan_dir="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-plan"; mkdir -p "$plan_dir"
+    # The model judges the areas only when there is something to decide.
+    if (( free > 0 && ${#pids[@]} + ${#cands[@]} > 1 )); then
+      plan_areas "$plan_dir" "${pids[@]}" "${cands[@]}"
+    fi
+    for c in "${cands[@]}"; do
+      r=""
+      if (( ${#chosen[@]} >= free )); then r="no free slot (capacity $cap: $why)"
+      elif [[ -n "$deadline" && "$started${chosen[*]}" != " " ]] && limit="$(run_limit "$c")" && (( $(date +%s) + limit > deadline )); then
+        r="its limit ($(hours "$limit")) would outlast this job"
+      else
+        for o in "${pids[@]}"; do
+          if r="$(conflict_reason "$plan_dir/areas" "$c" "$o")"; then r="$r (#$o, running)"; break; fi
+          r=""
+        done
+        if [[ -z "$r" ]]; then
+          for o in "${chosen[@]}"; do
+            if r="$(conflict_reason "$plan_dir/areas" "$c" "$o")"; then r="$r (#$o, starting)"; break; fi
+            r=""
+          done
+        fi
+      fi
+      if [[ -z "$r" ]]; then chosen+=("$c"); reasons+=("#$c starts")
+      else reasons+=("#$c waits: $r"); fi
+    done
+    { echo "plan for $REPO: capacity $cap ($why); running: $(issue_list "${pids[@]}")"
+      printf '%s\n' "${reasons[@]}"; } > "$plan_dir/plan.md"
+    sed 's/^/plan: /' "$plan_dir/plan.md"
+    # On each issue, when there was a decision to make: why it starts beside
+    # the others, or why it waits (once per reason).
+    if (( ${#pids[@]} + ${#cands[@]} > 1 )); then
+      for r in "${reasons[@]}"; do
+        c="${r%% *}"; c="${c#\#}"
+        [[ "${told[$c]:-}" == "$r" ]] && continue
+        told[$c]="$r"
+        beside=(); for o in "${pids[@]}" "${chosen[@]}"; do [[ "$o" == "$c" ]] || beside+=("$o"); done
+        others=""; (( ${#beside[@]} == 0 )) || others="$(issue_list "${beside[@]}")"
+        if [[ "$r" == *" starts" ]]; then
+          gh issue comment "$c" --repo "$LOOPER_ORG/$REPO" --body "The looper of $REPO starts this issue${others:+ alongside $others, each in its own worktree, landing on main one at a time}. Its plan:
+
+$(sed 's/^/- /' "$plan_dir/plan.md")
+
+Plan record: $(run_record "$plan_dir")." >/dev/null || true
+        else
+          gh issue comment "$c" --repo "$LOOPER_ORG/$REPO" --body "The looper of $REPO holds this issue back for now: ${r#* waits: }. It plans again as each running issue ends. Plan record: $(run_record "$plan_dir")." >/dev/null || true
+        fi
+      done
+    fi
+    for c in "${chosen[@]}"; do
+      started+="$c "
+      prepare_worktree "$c"
+      rm -f "$WORK/results/$c"
+      bash "${LOOPER_RUNNING_COPY:-$LOOPER_SELF}" --repo "$REPO" --child "$c" > >(sed -u "s/^/[#$c] /") 2>&1 & pids[$!]="$c"
+    done
+  }
+
+  plan
+  while (( ${#pids[@]} )); do
+    rc=0; pid=""; wait -n -p pid "${!pids[@]}" || rc=$?
+    [[ -n "$pid" ]] || { log "lost track of the children ($(issue_list "${pids[@]}")); exiting"; break; }
+    n="${pids[$pid]}"; unset "pids[$pid]"
+    res="$(cat "$WORK/results/$n" 2>/dev/null || echo "ended without an outcome (exit $rc)")"
+    log "#$n: $res; still running: $(issue_list "${pids[@]}")"
+    # A child whose job GitLab no longer runs (looper#21): the job's retry takes over; nothing more starts.
+    [[ "$res" == job-gone ]] && stop=1
+    # HISTORY.md: a line for each release the children made.
+    local new=()
+    for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_seen") || true); do
+      new+=("- $(date -u +%F) looper release $t (https://github.com/$LOOPER_ORG/$REPO/releases/tag/$t)")
+      tags_seen+=$'\n'"$t"
+    done
+    if (( ${#new[@]} )); then land "HISTORY.md: releases (looper)" append_history "${new[@]}"; fi
+    [[ -n "$stop" ]] || plan
+  done
+}
+
 case "$MODE" in
+  land) land_work ;;
+  child) work_issue "$ISSUE" ;;
   checkpoint)
     # The model's step: what is done and what is left becomes the message of
     # every checkpoint after it.
@@ -1131,29 +1493,10 @@ case "$MODE" in
     gh issue view "$ISSUE" --repo "$LOOPER_ORG/$REPO" --json labels --jq '.labels[].name' | grep -qx "$LABEL_APPROVED" \
       || die "#$ISSUE is not labeled $LABEL_APPROVED"
     # A job planned for an issue another run took or finished meanwhile takes
-    # the next ready issue at run time instead (looper#16; priority first, #31).
-    if ! { approved_issues "$REPO" | grep -qx "$ISSUE" && ready "$REPO" "$ISSUE"; }; then
-      if orphaned "$ISSUE"; then
-        log "#$ISSUE is $LABEL_IN_PROGRESS, but no other looper job of $REPO is active: its run is gone; this job resumes it"
-        work_issue "$ISSUE"; exit 0
-      fi
-      n="$(next_ready "$REPO")"
-      [[ -n "$n" ]] || { log "#$ISSUE is no longer ready, nor is any other issue; nothing to do"; exit 0; }
-      log "#$ISSUE is no longer ready; working #$n, the next ready issue"; ISSUE="$n"
-    fi
-    work_issue "$ISSUE" ;;
-  drain)
-    # One pass over each issue per run: if a label write ever fails, the same
-    # issue must not be taken again and again.
-    seen=" "
-    while :; do
-      n=""
-      for c in $(approved_issues "$REPO"); do
-        [[ "$seen" == *" $c "* ]] && continue
-        if ready "$REPO" "$c"; then n="$c"; break; fi
-      done
-      [[ -n "$n" ]] || { log "no ready issue in $REPO; exiting"; break; }
-      seen="$seen$n "
-      work_issue "$n"
-    done ;;
+    # the next ready issue at run time instead (looper#16; priority first, #31);
+    # either way the parent goes on with the others it can plan (looper#32).
+    parent "$ISSUE" ;;
+  # One pass over each issue per run: an issue the parent started is never
+  # taken again, even if a label write failed.
+  drain) parent ;;
 esac

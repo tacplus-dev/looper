@@ -25,7 +25,8 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   no other one, and the plan's log says so (`repo-looper --list` reads the project's jobs with
   `GITLAB_TOKEN`, else the job's token; looper#16): a duplicate would only wait for the slot to find its
   issue taken. A job takes its repository's next ready issue when it runs: the planned one if it is
-  still ready, else the one that is next now.
+  still ready, else the one that is next now. The job is that repository's parent looper, which also works
+  its other ready issues, in parallel when they allow it ([Parent and children](#parent-and-children)).
 - **A run killed outright** (its runner VM gone mid-job, looper#20) never removes `looper:in-progress`.
   The job for that issue (GitLab's automatic retry, say) takes it as a resume, from its checkpoint, when
   no *other* looper job of the repository is created, pending, waiting or running: the label is that
@@ -41,11 +42,13 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   A run that cannot read GitLab keeps going: GitLab being down is not the job being gone.
   Its schedules run the kicker, the nightly scan of every repository and the port scan (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
-- **`repo-looper`** is the looper of one repository. It works the issue it was given in a checkout of
-  the repository at origin/main, or the next ready one ([priority](#priority), then oldest) if that issue is no longer ready, and does
-  nothing if none is. Claude may run sub-agents in that checkout; only the top-level run
-  commits and pushes, always to main (pre-production; a protected release line with review comes
-  later). Bug fixes on repositories with release branches are also offered as backport pull requests.
+- **`repo-looper`** is the looper of one repository: a parent that runs a child per issue
+  ([Parent and children](#parent-and-children)). It takes the issue it was given first, or the next ready one
+  ([priority](#priority), then oldest) if that issue is no longer ready, then the others it can plan, and does
+  nothing if none is ready. Each child works its issue in its own worktree of the repository at origin/main;
+  Claude may run sub-agents in that worktree; only the child's top-level run commits and lands, always on main
+  (pre-production; a protected release line with review comes later). Bug fixes on repositories with release
+  branches are also offered as backport pull requests.
   Each run's record (`prompt.md`, `claude.log`) is uploaded as the job's artifacts (`looper-runs/`,
   kept 30 days, also when the job fails): the runner VM is gone after the job, so the issue comments
   link the job, not a path on it. See [After a run](#after-a-run).
@@ -128,18 +131,60 @@ repository) in an issue's body holds it until that issue is closed.
 Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
 instead, at most 10h. The pipeline's job for the issue gets an hour more (`repo-looper --job-timeout N`).
 
+### Parent and children
+
+A repository's looper job is a **parent** that runs **child loopers** for its issues, in parallel when the work
+allows (Jody, 2026-10-30, looper#32). Children run in the parent's job, with the same code (`repo-looper --child N`).
+The kicker still starts one parent per repository (`resource_group`), and repositories run in parallel as before.
+
+- **The parent plans.** It takes the ready issues in [priority](#priority) order (each one's `Blocked-by:` lines
+  closed; the job's own issue first if it is still ready, and any issue a killed run left `looper:in-progress`),
+  then decides which can run together and how many:
+  - **the areas each will touch:** when there is more than one issue to place, the model (read-only, at most
+    `LOOPER_PLAN_TIMEOUT`, 20 minutes) writes for each the paths it will change, generated outputs included
+    (`touches N <path>...`), the contracts it changes (`contract N <name>`), and any other conflict it judges
+    (`conflict A B <why>`). Two issues that touch the same path (or one under the other) or the same contract, or
+    that it names, never run at the same time; an issue whose areas it does not tell runs alone. `STATE.md`,
+    `PROPOSALS.md` and `HISTORY.md` do not count: every issue may touch them, and a landing rebases over them;
+  - **the runner's CPU and memory:** as many children as the VM holds at `LOOPER_CHILD_CPUS` (2) and
+    `LOOPER_CHILD_MEMORY_GB` (4) a child (a t2a-standard-8 worker: 4), never more than `LOOPER_MAX_CHILDREN`
+    (6), a safety ceiling only;
+  - **the job's time:** in a GitLab job no child starts that would outlast it (`CI_JOB_TIMEOUT`, less the hour the
+    job keeps for itself); the job's own issue always does, since the job was sized for it.
+
+  Higher priority goes first, but an issue that conflicts with a running one waits while a lower one that does
+  not starts. The plan and its reasons are in the job's log (`plan: ...`), in its record (`looper-runs/<time>-plan/`:
+  `plan.md`, and the model's `prompt.md` and `claude.log`), and on each issue when there was a choice to make: a
+  comment when it starts beside others, or why it is held back (once per reason).
+- **Children:** one per issue, each in its own git worktree (`LOOPER_WORK/<repo>/worktrees/N`) on its own branch
+  (`looper/<repo>-N`, the name its checkpoints have on origin), running the per-issue flow below unchanged:
+  checkpoints and resume, time limit, idle and done, outcomes. Its log lines in the job's log start `[#N]`.
+- **Landing is serialized** by the repository's landing lock: the model lands its commits with
+  `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository has no justfile), which takes the
+  lock, rebases them onto the current main, re-runs the gates and pushes. A rejected push is rebased and tried
+  again. When the rebase conflicts it lands nothing and names the paths: the model rebases, resolves, verifies and
+  lands again, or the run ends stuck. Gates that fail, or that change a tracked file, land nothing, nor does an
+  uncommitted change: broken work never lands. A push to main from a child's worktree any other way is refused
+  (the checkout's pre-push hook, which `--no-verify` skips, as the ROADMAP.md guard). The looper's own commits
+  (planning files, `HISTORY.md`) take the same lock.
+- **The parent supervises:** as each child ends it logs its outcome (`#N: closed`, `blocked`, `needs-decision`,
+  `proposed`, `timeout`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
+  plans again, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
+  as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
+  others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.
+
 ### A run's work is never lost
 
 The runner VM is gone after the job, so a run keeps its work in progress on the branch
 `looper/<repo>-<issue>` of the repository (never on main):
 
-- **Checkpoint:** everything in the checkout, committed or not, is pushed there as one commit, without
-  touching the checkout: whenever the model finishes a step (the prompt has it run
+- **Checkpoint:** everything in the child's worktree, committed or not, is pushed there as one commit, without
+  touching the worktree: whenever the model finishes a step (the prompt has it run
   `repo-looper --repo R --issue N --checkpoint "<what is done; what is left>"`), every hour
   (`LOOPER_CHECKPOINT_INTERVAL`), and when the model stops. The model is stopped ten minutes before the
   limit (`LOOPER_STOP_EARLY`) so that last checkpoint always happens.
 - **Resume:** a run on an issue whose branch exists starts from it, rebased on main, as uncommitted
-  changes on main; its prompt has the last checkpoint's message and the issue's last comment. A branch
+  changes on main (in its worktree, on its own branch at origin/main); its prompt has the last checkpoint's message and the issue's last comment. A branch
   that does not rebase cleanly (it carries merges, say, or long-lived work) gets main merged into it
   instead, rewriting no history, and starts the same way. When that merge conflicts too, the run still
   starts from the branch with main merged in: the conflicts are marked in the files, and the prompt names
@@ -178,7 +223,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; a child's time limit not stopping the others; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
