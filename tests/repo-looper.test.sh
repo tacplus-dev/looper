@@ -1314,6 +1314,41 @@ drain "${ROOM[@]}" CI_JOB_TIMEOUT=21600 CI_JOB_STARTED_AT="$(date -u -d '-2 hour
 has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 waits: its limit (4h) would outlast this job"
 pass
 
+# A child whose issue asks for more time than the job has left (looper#35: a
+# `Timeout:` line added after the job was sized) is capped at the parent's
+# deadline, the job's end less its hour, and says so: it stops by itself, its
+# work checkpointed and its timeout outcome commented, before GitLab kills it.
+scenario child-capped-by-job
+issue alpha 4 OPEN approved,bug "Fix it.
+Timeout: 8h"
+echo 'echo y > c.txt' >> "$FIX/claude.sh"
+step "c.txt written; left: the tests"
+echo 'sleep 60; touch "$FIX/outlived"' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_STOP_EARLY=3 CI_JOB_TIMEOUT=3608 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+(( SECONDS - start < 30 )) || fail "the model was not stopped by the job's deadline"
+[[ ! -e "$FIX/outlived" ]] || fail "the model outlived the job's deadline"
+c="$(cat "$FIX/comments")"
+has "$c" "limit 8h capped at "; has "$c" " by this job"
+has "$c" "The run reached its time limit"
+has "$c" "c.txt written; left: the tests"
+lacks "$c" "looper:stuck"
+has "$OUT" "#4: timeout"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md c.txt " ]] || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
+lacks "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 8h"
+pass
+
+# A job with time enough leaves the limit as asked, and says nothing of it.
+scenario child-fits-job
+issue alpha 4 OPEN approved,bug "Fix it.
+Timeout: 2h"
+push_fix
+run CI_JOB_TIMEOUT=21600 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 2h"
+lacks "$(cat "$FIX/comments")" "capped"
+pass
+
 # --- the think job (looper#28): no identity, nothing written, the outcome --------
 # GitHub refuses a push with the read-only token: here, pushes go nowhere.
 think() { # [VAR=value...]: think about alpha#4 into $FIX/think

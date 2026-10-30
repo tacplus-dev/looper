@@ -178,5 +178,12 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The smoke's tacplus line** (2026-10-30, #27): `looper-smoke` generates Go at the image's own line
   (`LOOPER_TACPLUS_LINE`, the Dockerfile's `TACPLUS_LINE`); a repository on an older supported floor (2.4) is
   covered only by the wrapper's test. It could loop over every supported line.
+- **Cap the think job's limit at its job too** (2026-10-30, #35): a parent's children now cap an issue's `Timeout:`
+  at the job's deadline; the identity pilot's think job (`--think`, `timeout: 5h` in `ci/looper.gitlab-ci.yml`)
+  still takes the issue's limit as is, so a `Timeout: 6h` there is killed by GitLab. It could use the same cap
+  (`job_deadline`), with a margin sized for its gates rather than the parent's hour.
+- **Size the job when it starts, not when it is planned** (2026-10-30, #35): `--job-timeout` reads the issues when
+  the plan job runs; a `Timeout:` line added while the job waits for a runner now only shortens that run (capped), and
+  the next job resumes it. The kicker could re-plan a pending job whose issues' limits grew.
 
 ## Promoted / declined

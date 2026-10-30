@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#27).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#35).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -18,7 +18,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   its retry (#21); each repository's looper job is a parent that runs a child per issue, in parallel when the work
   allows (#32): it plans from the issues' `Blocked-by` lines, the areas the model says each will touch (paths,
   generated outputs, contracts, other conflicts), the runner's CPU and memory and the job's remaining time (from the job's start; the job sized by
-  `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33), logs
+  `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33); a child's limit is capped at the job's deadline, its end less an hour, so an issue's `Timeout:` grown after the job was sized stops by itself, checkpointed, not killed by GitLab, and the issue is told, #35, logs
   the plan and its reasons (job log, `looper-runs/<time>-plan/`, the issues), runs each child in its own worktree and
   branch, serializes landing (`repo-looper --land`: lock, rebase, gates, push; a direct push to main from a
   worktree is refused), which the parent owns (#34): `--land` queues with the parent's lander, so a land still

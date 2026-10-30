@@ -136,7 +136,10 @@ Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's 
 instead, at most 10h. The pipeline's job for a repository is sized for what its parent may run together
 (`repo-looper --job-timeout N`, looper#33): the longest limit of its issue and of the ready issues that could start
 beside it (up to `LOOPER_MAX_CHILDREN` in all), plus the plan's 20 minutes and an hour, rounded up to hours, at most
-`LOOPER_JOB_MAX_HOURS` (11h). With the default limits that is 6h, room for two 4h children from the start.
+`LOOPER_JOB_MAX_HOURS` (11h). With the default limits that is 6h, room for two 4h children from the start. A
+child's limit is capped at the parent's deadline, the job's end less that hour (looper#35): an issue's `Timeout:`
+line added after its job was sized gets the time the job has left, and its start comment says so ("limit 8h capped
+at 5h by this job"), so the run stops by itself, checkpointed, before GitLab kills the job.
 
 ### Parent and children
 
@@ -240,7 +243,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way (no progress) | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files

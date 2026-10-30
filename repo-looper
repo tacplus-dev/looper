@@ -75,6 +75,9 @@
 #
 # The run's limit is a line `Timeout: <hours>h` in the issue body (at most 10h),
 # else LOOPER_TIMEOUT; the model is stopped LOOPER_STOP_EARLY seconds before it.
+# In a GitLab job it is capped at the parent's deadline (the job's end less an
+# hour), and the issue is told so (looper#35): the run stops by itself, before
+# GitLab kills the job.
 #
 # A finished or idle run ends (tacplus-dev/looper#8): a watchdog stops the model
 # when it went idle (no output and no change in the checkout for
@@ -284,7 +287,21 @@ run_limit() { # issue
   elif (( 10#$h * 3600 > MAX_LIMIT )); then echo "$MAX_LIMIT"
   else echo "$((10#$h * 3600))"; fi
 }
-hours() { echo "$(( ($1 + 3599) / 3600 ))h"; } # seconds, rounded up
+hours() { # seconds, as 6h, 4h37m or 12m (minutes rounded up)
+  local m=$(( ($1 + 59) / 60 ))
+  if (( m < 60 )); then echo "${m}m"; elif (( m % 60 )); then echo "$(( m / 60 ))h$(( m % 60 ))m"; else echo "$(( m / 60 ))h"; fi
+}
+
+# In a GitLab job, the parent's deadline (epoch seconds): the job's end, from
+# its start (CI_JOB_STARTED_AT, else now) and CI_JOB_TIMEOUT, less the hour it
+# keeps for the checkpoints, the outcomes and the lands. Empty outside one.
+JOB_MARGIN=3600
+job_deadline() {
+  local t0
+  [[ "${CI_JOB_TIMEOUT:-}" =~ ^[0-9]+$ ]] || return 0
+  t0="$(date -d "${CI_JOB_STARTED_AT:-now}" +%s 2>/dev/null || date +%s)"
+  echo $(( t0 + CI_JOB_TIMEOUT - JOB_MARGIN ))
+}
 
 # The CI job's timeout, sized for the plan, not only its issue (looper#33):
 # the longest limit of the issue and the ready issues the parent could start
@@ -1005,6 +1022,17 @@ work_issue() { # issue
   log "taking $LOOPER_ORG/$REPO#$n ($run, in $CHECKOUT on $BRANCH)"
   gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --add-label "$LABEL_IN_PROGRESS" >/dev/null
   limit="$(run_limit "$n")"
+  # A limit that would outlast the job is capped at the parent's deadline
+  # (looper#35): the run stops by itself, checkpointed and its outcome
+  # commented, before GitLab kills the job (an issue's `Timeout:` line can
+  # change after the job was sized for it).
+  local deadline left; deadline="$(job_deadline)"
+  if [[ -n "$deadline" ]] && left=$(( deadline - $(date +%s) )) && (( limit > left )); then
+    (( left > 0 )) || left=1   # never 0: `timeout 0` would not stop it
+    log "#$n: limit $(hours "$limit") capped at $(hours "$left") by this job"
+    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "The looper of $REPO starts this issue with its limit $(hours "$limit") capped at $(hours "$left") by this job (${CI_JOB_URL:-$CI_JOB_ID}), which ends sooner: the run stops by itself before then, its work checkpointed, and the next run resumes it." >/dev/null || true
+    limit="$left"
+  fi
   # Bug or feature (looper#14): an unlabelled issue is classified first; a
   # feature no ROADMAP.md links is proposed, never built.
   ensure_kind_labels "$REPO"
@@ -1536,14 +1564,14 @@ issue_list() { if (( $# )); then printf '#%s ' "$@" | sed 's/ $//'; else echo no
 # The parent: plans, starts each planned issue as a child, and plans again
 # whenever one ends, until no child runs and nothing more can start.
 parent() { # [issue first]
-  local first="${1:-}" started=" " stop="" deadline="" t0 tags_seen n pid rc res t
+  local first="${1:-}" started=" " stop="" deadline tags_seen n pid rc res t
   local -A pids=() told=()
   # In a GitLab job no child starts that would outlast it: the others must end
-  # an hour before the job does, counted from the job's start (CI_JOB_STARTED_AT,
-  # else now). The first child always starts; --job-timeout sizes the job for
-  # it and for the ready issues that could run beside it (looper#33).
-  t0="$(date -d "${CI_JOB_STARTED_AT:-now}" +%s 2>/dev/null || date +%s)"
-  [[ "${CI_JOB_TIMEOUT:-}" =~ ^[0-9]+$ ]] && deadline=$(( t0 + CI_JOB_TIMEOUT - 3600 ))
+  # an hour before the job does, counted from the job's start. The first child
+  # always starts; --job-timeout sizes the job for it and for the ready issues
+  # that could run beside it (looper#33), and a child caps its own limit at the
+  # deadline (looper#35).
+  deadline="$(job_deadline)"
   sync_checkout
   land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
   sync_checkout
