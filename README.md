@@ -84,7 +84,7 @@ tests/tacplus.test.sh                      # the wrapper's credentials against a
 | `bug` | the code does not do what it already promises: fixed, and released as a patch |
 | `feature` | new behaviour: needs design, Jody's approval and a ROADMAP.md entry; ships in a minor |
 | `looper:in-progress` | a looper holds it |
-| `looper:stuck` | a run ended without finishing and without a known reason; a person looks |
+| `looper:stuck` | a run ended without finishing and without progress or a known reason; a person looks |
 | `needs-decision` | the looper needs a decision it may not make |
 | `priority:high` | taken before the other ready issues (looper#31) |
 | `priority:low` | taken after every other ready issue |
@@ -164,16 +164,21 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
 - **Children:** one per issue, each in its own git worktree (`LOOPER_WORK/<repo>/worktrees/N`) on its own branch
   (`looper/<repo>-N`, the name its checkpoints have on origin), running the per-issue flow below unchanged:
   checkpoints and resume, time limit, idle and done, outcomes. Its log lines in the job's log start `[#N]`.
-- **Landing is serialized** by the repository's landing lock: the model lands its commits with
-  `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository has no justfile), which takes the
-  lock, rebases them onto the current main, re-runs the gates and pushes. A rejected push is rebased and tried
-  again. When the rebase conflicts it lands nothing and names the paths: the model rebases, resolves, verifies and
+- **Landing is serialized, and the parent owns it** (looper#34): the model lands its commits with
+  `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository has no justfile), which queues them
+  with the parent's lander and waits for the result. The lander lands one at a time, in the parent's process, not
+  the child's: it takes the repository's landing lock, rebases the commits onto the current main, re-runs the
+  gates and pushes. A rejected push is rebased and tried again. The lock wait and the gates (over two hours with
+  three children on one runner, tacplus 2026-10-30) no longer lose a finished fix: a land still queued or running
+  when its child's limit fires (or its run ends) is landed all the same, under the parent's job timeout, which
+  waits for the queue before it ends; the lander says on the issue what came of it, and the issue stays `approved`
+  for the next run to comment and close. While its land is queued or running a model is not idle. When the rebase conflicts it lands nothing and names the paths: the model rebases, resolves, verifies and
   lands again, or the run ends stuck. Gates that fail, or that change a tracked file, land nothing, nor does an
   uncommitted change: broken work never lands. A push to main from a child's worktree any other way is refused
   (the checkout's pre-push hook, which `--no-verify` skips, as the ROADMAP.md guard). The looper's own commits
   (planning files, `HISTORY.md`) take the same lock.
 - **The parent supervises:** as each child ends it logs its outcome (`#N: closed`, `blocked`, `needs-decision`,
-  `proposed`, `timeout`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
+  `proposed`, `timeout`, `land-pending`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
   plans again, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
   as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
   others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.
@@ -206,7 +211,8 @@ The runner VM is gone after the job, so a run keeps its work in progress on the 
 
 A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 
-- **Idle:** no output and nothing changed in the checkout for `LOOPER_IDLE_MINUTES` (20). Its work is
+- **Idle:** no output, nothing changed in the checkout and no land of its queued or running for
+  `LOOPER_IDLE_MINUTES` (20). Its work is
   checkpointed and the issue gets a comment that the run went idle, with the tail of its log; it is
   `looper:stuck`. The model's output is its event stream (`--output-format stream-json`), rendered
   into `claude.log` as its text, each tool call and the start of each result, so a working run
@@ -223,12 +229,14 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | asked a question | `needs-decision` |
 | found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. An outcome naming a closed or missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
+| ended (its limit, or earlier) with its land queued or running (looper#34) | the same, and the parent lands it after the run and comments what came of it (landed, with main's range, or why not); it stays `approved` |
+| ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |
 | went idle | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
 | lost its job (GitLab no longer runs it, looper#21) | nothing: its work is checkpointed and the job's retry resumes it |
-| ended any other way | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
+| ended any other way (no progress) | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; a child's time limit not stopping the others; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files

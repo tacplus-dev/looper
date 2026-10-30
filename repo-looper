@@ -33,9 +33,11 @@
 # (LOOPER_RUNS/<time>-plan), and to each issue it started beside others or held
 # back. Each issue is a child: this same script (--child N) running the
 # per-issue flow below in its own worktree, LOOPER_WORK/NAME/worktrees/N, on
-# its own branch looper/NAME-N. Children land one at a time: --land takes the
-# repository's landing lock, rebases onto the current main, re-runs the gates
-# and pushes; a push to main from a child's worktree any other way is refused.
+# its own branch looper/NAME-N. Children land one at a time, by the parent
+# (looper#34): --land queues the child's commits with the parent's lander, which
+# takes the repository's landing lock, rebases onto the current main, re-runs
+# the gates and pushes, even after the child has ended; a push to main from a
+# child's worktree any other way is refused.
 # As each child ends the parent logs its outcome and plans again, so a newly
 # ready issue starts while the others run; a child's time limit is its own.
 #
@@ -86,9 +88,11 @@
 # that waits on other open issues (the run writes `Blocked-by: <issue>` lines
 # to its outcome file, whether it pushed a fix whose gates wait or rightly
 # pushed nothing, looper#22) gets those lines in its body and stays approved,
-# so it is worked again once they close. A run that reached its limit says
-# what is done and what is left and stays approved: the next run resumes from
-# its branch. Anything else is looper:stuck, for a person.
+# so it is worked again once they close. A run that reached its limit, that
+# ended with its land queued (the parent lands it), or that ended early having
+# made progress (a fix landed, a new step checkpointed; looper#34) says what is
+# done and what is left and stays approved: the next run resumes from its
+# branch. Anything else (idle, no progress) is looper:stuck, for a person.
 #
 # The planning files (looper#13): before the model runs, a missing STATE.md,
 # PROPOSALS.md or HISTORY.md is created on main from its template in
@@ -497,6 +501,91 @@ land_work() {
   ) 8>"$LAND_LOCK"
 }
 
+# The parent owns its children's lands (looper#34). A land waits for the lock
+# and runs the full gates, which took over two hours with three children on
+# one runner: run inside the model, it was lost with everything queued behind
+# it when the child's limit fired. So --land from a child (LOOPER_LANDER, the
+# parent's queue) only queues it: the parent's lander runs the queued lands one
+# at a time, in its own process, and --land waits for the result and prints it.
+# A land still queued or running when its child ends is landed all the same,
+# under the parent's job timeout; the lander says on the issue what came of it,
+# and the issue stays approved for the next run to finish (comment, close).
+# The queue, LANDS, per issue: N.req (queued), N.running, then N.ran (the
+# request), N.out, N.err and N.rc (the result, written last); N.orphan when the
+# child ended first, and N.claimed by whichever reads the result.
+LANDS="$WORK/lands"
+land_pending() { [[ -n "${LOOPER_LANDER:-}" && ( -e "$LANDS/$1.req" || -e "$LANDS/$1.running" ) ]]; } # issue
+
+# --land from a child: queues the land with the parent and waits for it. When
+# the parent's lander is gone and has not taken the request, lands it here.
+land_request() {
+  local gates n="$ISSUE" rc; gates="$(land_gates)"
+  [[ -n "$gates" ]] || die "no gates to re-run before landing: $REPO has no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
+  cd "$CHECKOUT"
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
+  if [[ -e "$LANDS/$n.rc" ]]; then log "a land of $BRANCH ended unread; its result:"
+  elif land_pending "$n"; then log "a land of $BRANCH is already queued; waiting for it"
+  else
+    printf 'run=%s\ngates=%s\n' "${LOOPER_RUN:-}" "$gates" > "$LANDS/$n.req.new" && mv "$LANDS/$n.req.new" "$LANDS/$n.req"
+    log "queued: the looper lands $BRANCH after the lands queued before it, one at a time; waiting for it. If your time runs out first, it still lands it after you and says so on the issue."
+  fi
+  until [[ -e "$LANDS/$n.rc" ]]; do
+    if ! kill -0 "${LOOPER_LANDER_PID:-0}" 2>/dev/null && mv "$LANDS/$n.req" "$LANDS/$n.taken" 2>/dev/null; then
+      rm -f "$LANDS/$n.taken"; log "the looper's lander is gone; landing here"; land_work; return
+    fi
+    sleep 1
+  done
+  { [[ ! -e "$LANDS/$n.orphan" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; } || die "this run has ended: the looper reports the land on the issue"
+  rc="$(cat "$LANDS/$n.rc")"; cat "$LANDS/$n.out"; cat "$LANDS/$n.err" >&2
+  rm -rf "$LANDS/$n".{ran,out,err,rc,claimed}
+  return "$rc"
+}
+
+# The parent's lander: the queued lands, oldest first, one at a time, each in
+# its child's worktree, until the parent says it is done (LANDS/.done: the
+# queue drained first) or must stop (LANDS/.stop: after the land under way).
+lander() {
+  local f n run gates rc
+  while :; do
+    [[ -e "$LANDS/.stop" ]] && return 0
+    f="$(ls -tr "$LANDS"/*.req 2>/dev/null | head -n 1)" || true
+    if [[ -z "$f" ]]; then [[ -e "$LANDS/.done" ]] && return 0; sleep 1; continue; fi
+    n="$(basename "$f" .req)"
+    mv "$f" "$LANDS/$n.running" 2>/dev/null || continue
+    run="$(sed -n 's/^run=//p' "$LANDS/$n.running")"; gates="$(sed -n 's/^gates=//p' "$LANDS/$n.running")"
+    log "landing #$n ($(wip_branch "$n"))"
+    rc=0
+    ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
+      > "$LANDS/$n.out" 2> "$LANDS/$n.err" || rc=$?
+    if (( rc == 0 )); then log "#$n: $(tail -n 1 "$LANDS/$n.out" | cut -c24-)"; else log "#$n: nothing landed (exit $rc)"; fi
+    mv "$LANDS/$n.running" "$LANDS/$n.ran"
+    echo "$rc" > "$LANDS/$n.rc.new" && mv "$LANDS/$n.rc.new" "$LANDS/$n.rc"
+    if [[ -e "$LANDS/$n.orphan" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
+  done
+}
+
+# The result of a land whose child ended first, on its issue: landed (and the
+# branch checkpointed again from the worktree, now on main), or why not. The
+# issue stays approved either way: the next run resumes from the branch.
+orphan_land() { # issue
+  local n="$1" rc run b what left="lands it again"
+  rc="$(cat "$LANDS/$n.rc")"; run="$(sed -n 's/^run=//p' "$LANDS/$n.ran")"; b="$(wip_branch "$n")"
+  ( CHECKOUT="$(child_dir "$n")"; checkpoint "$n" "landed by the looper after the run" "$run" )
+  if [[ "$rc" == 0 ]]; then
+    what="The looper landed this issue's commits on main after its run ended: they were queued to land when the run stopped."
+    [[ -n "$run" && -s "$run/landed" ]] && what+=" Main: $(tail -n 1 "$run/landed" | awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }')."
+    left="finishes it (comment, any release, close)"
+  else
+    what="The looper could not land the commits this issue's run queued before it stopped (exit $rc):
+
+$(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$LANDS/$n.err" | redact)")"
+  fi
+  gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$what
+
+This issue stays $LABEL_APPROVED: the next run resumes from [\`$b\`]($(wip_url "$n")) and $left.${run:+ Run record: $(run_record "$run").}" >/dev/null || true
+  rm -rf "$LANDS/$n".{ran,out,err,rc,orphan,claimed}
+}
+
 add_planning_files() {
   local f
   for f in "${PLANNING_FILES[@]}"; do
@@ -573,8 +662,8 @@ run_done() { # issue run-dir
 }
 
 # The watchdog, every LOOPER_WATCH_INTERVAL until killed: stops the model when
-# it went idle (no output and nothing changed in the checkout for
-# LOOPER_IDLE_MINUTES), when its issue's run is done and it has not exited
+# it went idle (no output, nothing changed in the checkout and no land of its
+# queued or running for LOOPER_IDLE_MINUTES), when its issue's run is done and it has not exited
 # LOOPER_DONE_GRACE seconds later, or, polling every LOOPER_JOB_POLL in a
 # GitLab job, when GitLab no longer runs the issue run's job (looper#21): it
 # reports another status, or refuses the job's token after accepting it. An
@@ -587,7 +676,7 @@ watch_run() { # pid log run-dir [issue]
   while :; do
     sleep "$WATCH_INTERVAL" & z=$!; wait "$z"
     now="$(date +%s)"; s="$(stat -c %s "$2" 2>/dev/null || echo 0)"
-    if [[ "$s" != "$size" || -n "$(find "$CHECKOUT" -newer "$run/.active" -print -quit 2>/dev/null)" ]]; then
+    if [[ "$s" != "$size" || -n "$(find "$CHECKOUT" -newer "$run/.active" -print -quit 2>/dev/null)" ]] || { [[ -n "$n" ]] && land_pending "$n"; }; then
       size="$s"; touch "$run/.active"
     elif (( now - $(stat -c %Y "$run/.active") >= IDLE )); then
       echo idle > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0
@@ -890,7 +979,7 @@ EOF
 }
 
 # A child's outcome, for its parent (looper#32): closed, blocked,
-# needs-decision, proposed, timeout, stuck or job-gone.
+# needs-decision, proposed, timeout, land-pending, ended (resumes), stuck or job-gone.
 report() { # issue outcome
   mkdir -p "$WORK/results"; echo "$2" > "$WORK/results/$1"
 }
@@ -922,6 +1011,8 @@ work_issue() { # issue
   fi
   resumed="$(resume "$n" "commit it and land it")"
   if [[ -n "$resumed" ]]; then
+    # The step it resumes from: the same step again, nothing landed, is no progress.
+    git -C "$CHECKOUT" log -1 --format=%b "origin/$(wip_branch "$n")" > "$run/resumed-step" 2>/dev/null || true
     last_comment="$(gh issue view "$n" --repo "$LOOPER_ORG/$REPO" --json comments --jq '.comments[-1].body // ""')" || true
     if [[ -n "$last_comment" ]]; then resumed="$resumed
 
@@ -955,8 +1046,12 @@ Rules:
    reply ends the run.
 5. Commit on $BRANCH with a message that says why and ends with
    \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
-   Under the repository's landing lock it rebases your commits onto the current main, re-runs the gates and
-   pushes; a push to main any other way is refused. When it lands nothing it says why: the rebase conflicts
+   It queues your commits with the looper, which lands one at a time: under the repository's landing lock it
+   rebases them onto the current main, re-runs the gates and pushes; the command waits for that and prints what
+   came of it, which can take long (the lock, then the full gates): run it detached and poll its output (rule 4).
+   Checkpoint before you land (rule 10): if your time runs out while your land is queued or running, the looper
+   still lands it after you and says so on the issue, and the next run finishes the issue from your checkpoint.
+   A push to main any other way is refused. When it lands nothing it says why: the rebase conflicts
    (rebase onto origin/main yourself, resolve, verify again, and land again), or the gates fail (fix them and
    land again). Never force-push. Never commit secrets.
 6. The planning files: update STATE.md when your change changes what it states (version, what works,
@@ -1003,6 +1098,13 @@ PR
     report "$n" job-gone
     log "#$n left to the job's retry, from $(wip_branch "$n")"; exit 0
   fi
+  # A land of its still queued or running (looper#34) is the parent's now: the
+  # lander lands it and reports it on the issue. One that ended unread is
+  # reported here.
+  local pending=""
+  if [[ -n "${LOOPER_LANDER:-}" ]] && { land_pending "$n" || [[ -e "$LANDS/$n.rc" ]]; }; then
+    pending=1; touch "$LANDS/$n.orphan"
+  fi
   # What the run landed on main (--land records it): its first base and last commit.
   local head_before="" head_after=""
   if [[ -s "$run/landed" ]]; then
@@ -1046,25 +1148,47 @@ PR
   local wip="" b; b="$(wip_branch "$n")"
   wip_on_origin "$n" && wip="[\`$b\`]($(wip_url "$n"))"
   if grep -qx "$LABEL_DECISION" <<<"$labels"; then report "$n" "$LABEL_DECISION"; log "#$n waits on a decision"; return 0; fi
-  if [[ -n "$timed_out" ]]; then
-    report "$n" timeout
-    local done_left where="It left no changes."
-    [[ -n "$wip" ]] && where="Its work in progress is on $wip."
-    if [[ -s "$run/step" ]]; then done_left="Its last checkpoint (what is done, what is left):
+  # Resumable, not for a person (looper#34): the time limit; a land the parent
+  # now owns; or an early end that made progress (a fix landed, or a step
+  # checkpointed other than the one it resumed from).
+  local done_left where="It left no changes." ended progress=""
+  [[ -n "$wip" ]] && where="Its work in progress is on $wip."
+  if [[ -s "$run/step" ]]; then done_left="Its last checkpoint (what is done, what is left):
 
 $(sed 's/^/> /' "$run/step")"
-    else done_left="It checkpointed no step, so what is done is only what the branch holds."; fi
-    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "The run reached its time limit ($(hours "$limit")) before finishing. $where
+  else done_left="It checkpointed no step, so what is done is only what the branch holds."; fi
+  if [[ -n "$head_after" ]] || { [[ -s "$run/step" ]] && [[ "$(cat "$run/step")" != "$(cat "$run/resumed-step" 2>/dev/null)" ]]; }; then progress=1; fi
+  # An outcome it wrote that was not taken (a Blocked-by naming a closed issue, or this one) is for a person.
+  [[ ! -s "$run/outcome" ]] || progress=""
+  if [[ -n "$timed_out" ]]; then ended="The run reached its time limit ($(hours "$limit")) before finishing."
+  elif [[ "$stopped" == idle ]]; then ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
+  else ended="The run ended before finishing (exit $rc)."; fi
+  if [[ -n "$pending" ]]; then
+    report "$n" land-pending
+    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$ended Its commits were queued to land on main: the looper lands them after the run and says here what came of it. $where
 
 $done_left
 
-This issue stays $LABEL_APPROVED: the next run resumes from that branch. A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time. Run record: $(run_record "$run")." >/dev/null || true
-    log "#$n reached its time limit; it resumes on the next pass"; return 0
+This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n ended with its land queued; the parent lands it, and the issue resumes on the next pass"
+    if [[ -e "$LANDS/$n.rc" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
+    return 0
+  fi
+  if [[ -n "$timed_out" ]] || [[ "$stopped" != idle && -n "$progress" ]]; then
+    local more=""
+    if [[ -n "$timed_out" ]]; then report "$n" timeout; more=" A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time."
+    else report "$n" ended; fi
+    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$ended${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after").} $where
+
+$done_left
+
+This issue stays $LABEL_APPROVED: the next run resumes from that branch.$more Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n: $ended It resumes on the next pass"; return 0
   fi
   report "$n" stuck
   tail -n 40 "$run/claude.log" || true
-  local ended="The looper ended without finishing this issue."
-  [[ "$stopped" == idle ]] && ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
+  if [[ -s "$run/outcome" ]]; then ended="The run's outcome names no open issue it waits on (a closed one, or this one), so it was not taken."
+  elif [[ "$stopped" != idle ]]; then ended="The looper ended without finishing this issue, and with no progress: nothing landed, and no step checkpointed${resumed:+ beyond the one it resumed from}."; fi
   gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" \
     --body "$ended ${wip:+Its work in progress is on $wip. }Run record: $(run_record "$run"). Marked $LABEL_STUCK for a person to look at.
 
@@ -1411,6 +1535,11 @@ parent() { # [issue first]
   sync_checkout
   rm -rf "$WORK/results"; mkdir -p "$WORK/results"
   tags_seen="$(release_tags)"
+  # The lander (looper#34): the children's lands, one at a time, in the parent.
+  local lander_pid
+  rm -rf "$LANDS"; mkdir -p "$LANDS"
+  lander > >(sed -u 's/^/[lander] /') 2>&1 & lander_pid=$!
+  export LOOPER_LANDER="$LANDS" LOOPER_LANDER_PID="$lander_pid"
 
   # One plan: which candidates start now, and why the others wait.
   plan() {
@@ -1489,8 +1618,9 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
     n="${pids[$pid]}"; unset "pids[$pid]"
     res="$(cat "$WORK/results/$n" 2>/dev/null || echo "ended without an outcome (exit $rc)")"
     log "#$n: $res; still running: $(issue_list "${pids[@]}")"
-    # A child whose job GitLab no longer runs (looper#21): the job's retry takes over; nothing more starts.
-    [[ "$res" == job-gone ]] && stop=1
+    # A child whose job GitLab no longer runs (looper#21): the job's retry takes over; nothing more starts,
+    # and nothing more lands after the land under way (looper#34).
+    [[ "$res" == job-gone ]] && { stop=1; touch "$LANDS/.stop"; }
     # HISTORY.md: a line for each release the children made.
     local new=()
     for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_seen") || true); do
@@ -1500,10 +1630,18 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
     if (( ${#new[@]} )); then land "HISTORY.md: releases (looper)" append_history "${new[@]}"; fi
     [[ -n "$stop" ]] || plan
   done
+  # The lands the children left queued: the lander lands them before the job
+  # ends. A job GitLab no longer runs lands no more: its retry resumes them.
+  touch "$LANDS/.done"
+  if [[ -z "$stop" ]] && { compgen -G "$LANDS/*.req" >/dev/null || compgen -G "$LANDS/*.running" >/dev/null; }; then
+    log "landing what the children left queued"
+  fi
+  wait "$lander_pid" || true
 }
 
 case "$MODE" in
-  land) land_work ;;
+  # From a child of a parent, the parent lands it (looper#34).
+  land) if [[ -n "${LOOPER_LANDER:-}" && -d "$LOOPER_LANDER" && "$CHECKOUT" != "$MAIN_CHECKOUT" ]]; then land_request; else land_work; fi ;;
   child) work_issue "$ISSUE" ;;
   checkpoint)
     # The model's step: what is done and what is left becomes the message of

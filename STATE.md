@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#33).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#34).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -21,9 +21,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33), logs
   the plan and its reasons (job log, `looper-runs/<time>-plan/`, the issues), runs each child in its own worktree and
   branch, serializes landing (`repo-looper --land`: lock, rebase, gates, push; a direct push to main from a
-  worktree is refused) and plans again as each child ends; `repo-looper` works each repository's
+  worktree is refused), which the parent owns (#34): `--land` queues with the parent's lander, so a land still
+  queued or running when its child's limit fires is landed all the same and reported on the issue, and the parent
+  waits for the queue before the job ends; it plans again as each child ends; `repo-looper` works each repository's
   `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, Blocked-by outcomes, one or more,
-  also from a run that pushed nothing because the issue waits on another, #22);
+  also from a run that pushed nothing because the issue waits on another, #22; a run that ends with its land
+  queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
+  that went idle or made no progress is `looper:stuck`, #34);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly
   SeaBeam port scan (stratum only, #5), which never ports back a SeaBeam commit

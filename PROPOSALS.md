@@ -146,5 +146,17 @@ the looper then marks it `promoted` or `declined` here with the date.
   refused by the checkout's pre-push hook, which `git push --no-verify` (or setting `LOOPER_LANDING`) skips, as with
   the ROADMAP.md guard (above). Main's protection with a required check (the build pipeline's status, #17) would
   make "broken work never lands" hold for any push.
+- **Time a land out of the model's limit, not only out of its loss** (2026-10-30, #34): the parent's lander now owns
+  every land, so a child's limit no longer loses a finished fix; but the model still waits for the lock and the gates
+  inside its limit, and when the limit fires first the next run (a later job) only comments and closes. The child's
+  limit could pause while its land is queued or running (the watchdog already sees it), or the parent could finish
+  the issue itself after landing it when the run's last checkpoint says nothing else is left.
+- **Size the job for the lands left queued** (2026-10-30, #34): the parent waits for the lander before the job
+  ends, inside the hour the job keeps for itself; with full gates over an hour (tacplus, 2026-10-30) a queue of two
+  can outlast it. `--job-timeout` or the plan's deadline could count a land per child (the repository's last gates
+  time, say).
+- **A transient read failure is not stuck** (2026-10-30, #34): a feature whose platform roadmap cannot be read is
+  still `looper:stuck`; a GitHub hiccup there needs no person. It could stay `approved` and be retried a few times
+  before it is held.
 
 ## Promoted / declined

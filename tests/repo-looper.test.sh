@@ -257,7 +257,6 @@ lacks "$(body alpha 4)" "Blocked-by"
 pass
 
 scenario ended-unknown
-push_fix
 run
 [[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 c="$(cat "$FIX/comments")"
@@ -266,6 +265,33 @@ has "$c" "looper-runs/"
 lacks "$c" "looper host"
 ls "$FIX"/project/looper-runs/*-issue-4/prompt.md "$FIX"/project/looper-runs/*-issue-4/claude.log >/dev/null \
   || fail "no run record under LOOPER_RUNS"
+pass
+
+# A run that ends early with progress (looper#34): a checkpointed step, or a
+# fix landed, is resumable, not for a person. The same step again, with nothing
+# landed, is no progress: that one is stuck.
+scenario ended-resumable
+echo 'echo x > a.txt' >> "$FIX/claude.sh"
+step "a.txt written; left: the tests"
+run
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+c="$(cat "$FIX/comments")"
+has "$c" "a.txt written; left: the tests"; has "$c" "the next run resumes"
+lacks "$c" "looper:stuck"
+has "$OUT" "#4: ended"
+branch || fail "no branch to resume from"
+: > "$FIX/comments"
+run
+[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "no progress, yet labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "no progress"
+pass
+
+scenario ended-landed
+push_fix
+run
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "the next run resumes"
+lacks "$(cat "$FIX/comments")" "looper:stuck"
 pass
 
 scenario closed
@@ -549,7 +575,7 @@ git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -q -m files && git -C "$F
 seeded="$(origin rev-parse main)"
 push_fix
 run
-[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 [[ "$(origin rev-parse main~1)" == "$seeded" ]] || fail "main: $(origin log --oneline main)"
 [[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)' ]] || fail "HISTORY.md: $(history)"
 push_fix; close_it; issue alpha 4 OPEN approved,bug "Fix it."
@@ -1208,6 +1234,43 @@ has "$OUT" "#4: timeout"; has "$OUT" "#6: closed"; has "$OUT" "#5: closed"
 [[ "$(cat "$FIX/saw")" == 1 ]] || fail "#5 did not outlive #4's time limit: $OUT"
 closed 5; closed 6
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+pass
+
+# The parent owns a child's land (looper#34): --land queues it with the
+# parent, which lands one at a time. A child whose limit fires while its land
+# is running (#4) or still queued behind another (#5) is not stuck: the parent
+# still lands its commits after it, says so on the issue, and the issue stays
+# approved for the next run to comment and close.
+scenario land-after-limit
+issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+areas "touches 4 a.txt" "touches 5 b.txt"
+cat > "$FIX/claude.sh" <<'EOS'
+echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
+"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "fixed; left: land, comment, close"
+"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates 'sleep 4' > "$FIX/land-$ISSUE" 2>&1
+touch "$FIX/saw-$ISSUE"
+EOS
+drain "${ROOM[@]}" LOOPER_TIMEOUT=6 LOOPER_STOP_EARLY=3
+[[ ! -e "$FIX/saw-4" && ! -e "$FIX/saw-5" ]] || fail "a model outlived its limit: $OUT"
+[[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "not landed: $(origin log --oneline main); $OUT"
+has "$OUT" "#4: land-pending"; has "$OUT" "#5: land-pending"
+for i in 4 5; do [[ "$(labels alpha $i)" == approved,bug ]] || fail "labels of #$i: $(labels alpha $i)"; done
+c="$(cat "$FIX/comments")"
+has "$c" "alpha#4 The looper landed this issue's commits on main"; has "$c" "alpha#5 The looper landed this issue's commits on main"
+lacks "$c" "looper:stuck"
+has "$(cat "$FIX/land-5")" "queued"
+# The branch is main and the record: the next run resumes to an empty change.
+[[ "$(origin rev-parse looper/alpha-4^)" == "$(origin log --format=%H -1 --grep='^fix 4$' main)" ]] || fail "branch: $(origin log --oneline -2 looper/alpha-4)"
+pass
+
+# A model waiting on its land is not idle, however long the land's gates run.
+scenario land-wait-not-idle
+echo "git commit -q --allow-empty -m fix && \"\$ROOT/repo-looper\" --repo alpha --issue 4 --land --gates 'sleep 6'" >> "$FIX/claude.sh"
+close_it
+run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+closed 4
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
 pass
 
 # In a GitLab job no other child starts that would outlast the job, less the
