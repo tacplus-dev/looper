@@ -1,9 +1,9 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#25).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#27).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
-  `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
+  `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
 - **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a
   pass every 3 minutes that reads GitHub for the whole org in three requests, never two kicker jobs at once, nothing on
   the Mac (#24); it starts the pipeline; neither it nor the pipeline's plan
@@ -32,8 +32,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly
   SeaBeam port scan (stratum only, #5), which never ports back a SeaBeam commit
   trailered `Ported-from: tacplus-dev/<repo>@<sha>` (the realign), sends one that names tacplus-dev without it to
-  `needs-decision`, and files nothing past a flood guard of 5 issues (#23); the `tacplus` wrapper with GitHub credentials for the compiler container
-  (#11); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
+  `needs-decision`, and files nothing past a flood guard of 5 issues (#23); the `tacplus` wrapper with GitHub credentials for its container
+  (#11), which runs the released tacplus (the repository's `tacplus.lock` pin, else its floor's newest patch,
+  checksum-verified) in the `build:<MAJOR.MINOR>` image of its line, so Go repositories generate (no longer the
+  retired, Go-less `tacplus/tacplus` image), and `looper-smoke` generates Go through it on every image build (#27); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
   `bug` and `feature` labels in every repository, unlabelled issues classified first, bugs fixed and released as
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
   the scans file bugs as `bug`, never approve a feature, and read the roadmaps before opening an issue; the build

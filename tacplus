@@ -2,52 +2,109 @@
 # Copyright (c) 2026 Jody Scott
 # SPDX-License-Identifier: Apache-2.0
 #
-# tacplus, as the looper image provides it: not a binary, but the tacplus
-# compiler image for this repository's MAJOR.MINOR floor, always at that
-# line's latest patch (Jody 2026-10-26). The floor is the `tacplus:` key of the
-# nearest tacplus.yaml (or fleet.yaml) above the working directory;
-# TACPLUS_MINOR overrides it.
+# tacplus, as the looper image provides it: not a binary of its own, but the
+# released tacplus for this repository, run in the tacplus build image of its
+# line, `build:<MAJOR.MINOR>` (which has every SDK, so Go generates: the
+# compiler image tacplus/tacplus had no go and is retired, tacplus#193,
+# looper#27). Which release: the one the repository's tacplus.lock pins, as a
+# build runs it (tacplus-dev/roadmap decisions/deterministic-builds-2026-10-27.md);
+# without a pin, the newest patch of its MAJOR.MINOR floor (Jody 2026-10-26).
+# The floor is the `tacplus:` key of the nearest tacplus.yaml (or fleet.yaml)
+# above the working directory; TACPLUS_MINOR overrides it.
 #
-# The compiler runs as a sibling container on the host's docker socket, so the
+# The binary is downloaded once, checked against its release's checksums.txt
+# (a mismatch is refused and nothing is cached) and cached where the build
+# image's own launcher keeps it ($HOME/.cache/tacplus/<version>/tacplus, HOME
+# being LOOPER_WORK/.tacplus-home). The newest patch and the image are looked
+# up at most every ten minutes per line. TACPLUS_RELEASES_URL,
+# TACPLUS_DOWNLOAD_URL and TACPLUS_IMAGE_REPO override where they come from.
+#
+# It runs as a sibling container on the host's docker socket, so the
 # checkout must be at the same path on the host and here: looper-dispatch
 # mounts its work directory at an identical path for exactly this.
 #
-# Git in the compiler container authenticates to https://github.com, and only
+# Git in the container authenticates to https://github.com, and only
 # there, with $GH_TOKEN (the private tacplus-dev/registry that `depends`
 # resolve through since 2.4): DOCKER_GITHUB_CREDS in looper-lib.sh.
 set -euo pipefail
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$(dirname "${BASH_SOURCE[0]}")/looper-lib.sh}"
 
-minor="${TACPLUS_MINOR:-}"
-if [[ -z "$minor" ]]; then
-  d="$PWD"
-  while [[ "$d" != / && -z "$minor" ]]; do
-    for f in "$d/tacplus.yaml" "$d/fleet.yaml"; do
-      if [[ -f "$f" ]]; then
-        minor="$(sed -n -E 's/^tacplus:[[:space:]]*"?([0-9]+\.[0-9]+)"?.*$/\1/p' "$f" | head -1)"
-        [[ -n "$minor" ]] && break
-      fi
-    done
-    d="$(dirname "$d")"
+minor="${TACPLUS_MINOR:-}" project=""
+d="$PWD"
+while [[ "$d" != / && -z "$project" ]]; do
+  for f in "$d/tacplus.yaml" "$d/fleet.yaml"; do
+    if [[ -f "$f" ]]; then
+      project="$d"
+      [[ -n "$minor" ]] || minor="$(sed -n -E 's/^tacplus:[[:space:]]*"?([0-9]+\.[0-9]+)"?.*$/\1/p' "$f" | head -1)"
+      break
+    fi
   done
-fi
+  d="$(dirname "$d")"
+done
 [[ -n "$minor" ]] || { echo "tacplus: no MAJOR.MINOR floor (tacplus: in tacplus.yaml or fleet.yaml), and TACPLUS_MINOR is unset" >&2; exit 2; }
 
-image="${TACPLUS_IMAGE_REPO:-ghcr.io/tacplus-dev/tacplus/tacplus}:$minor"
+releases_url="${TACPLUS_RELEASES_URL:-https://api.github.com/repos/tacplus-dev/tacplus/releases?per_page=100}"
+download_url="${TACPLUS_DOWNLOAD_URL:-https://github.com/tacplus-dev/tacplus/releases/download}"
+cache="${LOOPER_WORK:-/work}/.tacplus-home"
+bins="$cache/.cache/tacplus"
+stamps="${TMPDIR:-/tmp}"
+fresh() { [[ -f "$1" && -z "$(find "$1" -mmin +10 2>/dev/null)" ]]; }
 
-# Latest patch of the line: pull at most every ten minutes per line.
-stamp="${TMPDIR:-/tmp}/tacplus-pull-$minor"
-if [[ ! -f "$stamp" || -n "$(find "$stamp" -mmin +10 2>/dev/null)" ]]; then
+# The release: the pin, else the floor's newest patch. The releases list is
+# asked with the token when it is GitHub's (a higher rate limit), the token
+# given on curl's stdin, never its command line.
+version=""
+[[ -n "$project" && -f "$project/tacplus.lock" ]] &&
+  version="$(sed -n -E 's/^tacplus:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?[[:space:]]*$/\1/p' "$project/tacplus.lock" | head -1)"
+if [[ -z "$version" ]]; then
+  newest="$stamps/tacplus-newest-$minor"
+  if ! fresh "$newest"; then
+    t="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+    auth=""; [[ -n "$t" && "$releases_url" == https://api.github.com/* ]] && auth="header = \"Authorization: Bearer $t\""
+    if json="$(printf '%s\n' "$auth" | curl -fsSL --retry 3 --connect-timeout 10 -K - "$releases_url" 2>/dev/null)"; then
+      v="$(jq -r '.[] | select(.draft | not) | .tag_name' <<<"$json" |
+        sed -n -E "s/^v(${minor//./\\.}\.[0-9]+)$/\1/p" | sort -t. -k3,3n | tail -1)"
+      [[ -n "$v" ]] || { echo "tacplus: no release of line $minor at $releases_url" >&2; exit 2; }
+      echo "$v" > "$newest"
+    elif [[ ! -s "$newest" ]]; then
+      echo "tacplus: cannot list releases ($releases_url)" >&2; exit 1
+    fi
+  fi
+  version="$(cat "$newest")"
+fi
+line="${version%.*}"
+
+if [[ ! -x "$bins/$version/tacplus" ]]; then
+  case "$(uname -m)" in x86_64 | amd64) arch=amd64 ;; aarch64 | arm64) arch=arm64 ;; *) echo "tacplus: no release binary for $(uname -m)" >&2; exit 1 ;; esac
+  asset="tacplus-${version//./-}-linux-$arch"
+  mkdir -p "$bins/$version"
+  tmp="$(mktemp -d "$bins/$version/.download.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+  curl -fsSL --retry 3 --connect-timeout 10 -o "$tmp/sums" "$download_url/v$version/checksums.txt" ||
+    { echo "tacplus: cannot download checksums.txt of v$version" >&2; exit 1; }
+  want="$(awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$tmp/sums")"
+  [[ -n "$want" ]] || { echo "tacplus: checksums.txt of v$version has no entry for $asset" >&2; exit 2; }
+  curl -fsSL --retry 3 --connect-timeout 10 -o "$tmp/tacplus" "$download_url/v$version/$asset" ||
+    { echo "tacplus: cannot download $asset of v$version" >&2; exit 1; }
+  got="$(sha256sum "$tmp/tacplus" | awk '{print $1}')"
+  [[ "$got" == "$want" ]] ||
+    { echo "tacplus: checksum mismatch for $asset of v$version: checksums.txt says $want, the download is $got; refusing to run it" >&2; exit 2; }
+  chmod 0755 "$tmp/tacplus" && mv -f "$tmp/tacplus" "$bins/$version/tacplus"
+  rm -rf "$tmp"; trap - EXIT
+fi
+
+# The build image of the release's line, at its latest patch.
+image="${TACPLUS_IMAGE_REPO:-ghcr.io/tacplus-dev/tacplus/build}:$line"
+stamp="$stamps/tacplus-pull-$line"
+if ! fresh "$stamp"; then
   docker pull -q "$image" >/dev/null && touch "$stamp"
 fi
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-cache="${LOOPER_WORK:-/work}/.tacplus-home"
-mkdir -p "$cache"
 tty=(); [[ -t 0 && -t 1 ]] && tty=(-t)
 exec docker run --rm -i "${tty[@]}" \
   -u "$(id -u):$(id -g)" \
   -e HOME="$cache" "${DOCKER_GITHUB_CREDS[@]}" \
   -v "$root:$root" -v "$cache:$cache" -w "$PWD" \
-  "$image" tacplus "$@"
+  "$image" "$bins/$version/tacplus" "$@"

@@ -30,6 +30,8 @@ jobs:
       - name: Log in to ghcr
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build, smoke, push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           IMAGE=ghcr.io/tacplus-dev/looper
@@ -40,5 +42,10 @@ jobs:
             TAGS="main main-${GITHUB_SHA::7}"
           fi
           docker build --pull --label org.opencontainers.image.revision="$GITHUB_SHA" -t "$IMAGE:build" .
-          docker run --rm "$IMAGE:build" looper-smoke
+          # The smoke generates Go through the tacplus wrapper (looper#27): the host's
+          # docker socket, a work directory at the same path here and there, and a
+          # token for the releases list (inherited, on no command line).
+          W="$RUNNER_TEMP/looper-work"; mkdir -p "$W"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$W:$W" -e LOOPER_WORK="$W" -e GH_TOKEN \
+            "$IMAGE:build" looper-smoke
           for t in $TAGS; do docker tag "$IMAGE:build" "$IMAGE:$t"; docker push "$IMAGE:$t"; done

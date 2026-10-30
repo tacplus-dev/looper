@@ -170,5 +170,13 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **A transient read failure is not stuck** (2026-10-30, #34): a feature whose platform roadmap cannot be read is
   still `looper:stuck`; a GitHub hiccup there needs no person. It could stay `approved` and be retried a few times
   before it is held.
+- **Let the build image's launcher pick tacplus** (2026-10-30, #27): the wrapper now downloads, verifies and
+  caches the release itself, as tacplus's `images/tacplus.sh` does, because `build:2.5` has no launcher (it came
+  with tacplus#193, from 2.6) and the launcher refuses a repository without `tacplus.lock` (none has one yet, opa
+  included). Once every supported line's build image has the launcher and the repositories pin, the wrapper could
+  run the image's own `tacplus` and drop its copy of that logic.
+- **The smoke's tacplus line** (2026-10-30, #27): `looper-smoke` generates Go at the image's own line
+  (`LOOPER_TACPLUS_LINE`, the Dockerfile's `TACPLUS_LINE`); a repository on an older supported floor (2.4) is
+  covered only by the wrapper's test. It could loop over every supported line.
 
 ## Promoted / declined

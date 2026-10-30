@@ -59,13 +59,17 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   pre-migration GitLab projects, it files an issue on the tacplus-dev repository each one moved to, and
   that repository's looper does the port. See [Port scan](#port-scan).
 - **The image** is the tacplus build image (the complete build environment) plus the claude CLI and
-  these scripts. It has **no tacplus binary**: `tacplus` is a wrapper that runs
-  `ghcr.io/tacplus-dev/tacplus/tacplus:<MAJOR.MINOR>`, the compiler image for the repository's floor
-  (`tacplus:` in tacplus.yaml or fleet.yaml), always that line's latest patch, as a sibling container on
-  the worker's docker socket. The work directory is under the runner's `/builds` bind mount, the same
-  path on the worker and in every container, so sibling containers see the same files.
+  these scripts. It has **no tacplus binary**: `tacplus` is a wrapper that runs the released tacplus the
+  repository's `tacplus.lock` pins, else the newest patch of its floor (`tacplus:` in tacplus.yaml or
+  fleet.yaml), in `ghcr.io/tacplus-dev/tacplus/build:<MAJOR.MINOR>`, the build image of that line (which
+  has Go and every SDK), always at its latest patch, as a sibling container on the worker's docker socket
+  (looper#27; the `tacplus/tacplus` compiler image, which had no Go, is retired, tacplus#193). The binary
+  is checked against its release's `checksums.txt` and cached under the work directory. The work
+  directory is under the runner's `/builds` bind mount, the same path on the worker and in every
+  container, so sibling containers see the same files. `looper-smoke` (run on every image build with
+  the host's docker socket) generates a Go repository through it.
 - **GitHub credentials in containers** (looper#11): since tacplus 2.4 a repository's `depends` resolve
-  through the private `tacplus-dev/registry`, so the compiler container clones from GitHub. The wrapper
+  through the private `tacplus-dev/registry`, so tacplus clones from GitHub in its container. The wrapper
   gives it, through its environment alone (`DOCKER_GITHUB_CREDS` in `looper-lib.sh`), a git credential
   helper for `https://github.com` and no other host, which answers from `$GH_TOKEN` (else
   `$GITHUB_TOKEN`) when git asks, and drops any other helper for github.com so none stores it. The token
@@ -73,7 +77,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   `docker run` of something that clones from GitHub passes the same `"${DOCKER_GITHUB_CREDS[@]}"`.
 
 ```sh
-tests/tacplus.test.sh                      # the wrapper's credentials against a stub git server: github.com gets the token, any other host none, nothing on disk holds it
+tests/tacplus.test.sh                      # which tacplus: the pin, else the floor's newest patch (looked up at most every ten minutes), in build:<line>, never tacplus/tacplus; a checksum mismatch refused; its credentials against a stub git server: github.com gets the token, any other host none, nothing on disk or command line holds it
 ```
 
 ## Issues

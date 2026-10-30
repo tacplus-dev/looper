@@ -2,7 +2,11 @@
 # Copyright (c) 2026 Jody Scott
 # SPDX-License-Identifier: Apache-2.0
 #
-# looper-smoke: the image has what a looper needs, and no tacplus binary of its own.
+# looper-smoke: the image has what a looper needs, and no tacplus binary of its own;
+# and its tacplus generates Go (looper#27): a Go repository at the image's tacplus
+# line, generated through the wrapper, as a looper's gates run it. That needs the
+# host's docker socket and LOOPER_WORK mounted at the same path (the wrapper runs
+# the build image as a sibling container), and the network (the release).
 set -euo pipefail
 for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-port looper-dispatch looper-build looper-identity tacplus; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
@@ -18,4 +22,16 @@ looper-build --help >/dev/null
 looper-identity --help >/dev/null
 docker buildx version >/dev/null
 [[ -f "$(dirname "$LOOPER_LIB")/ports.yaml" ]] || { echo "missing: ports.yaml next to $LOOPER_LIB" >&2; exit 1; }
-echo "looper-smoke: ok"
+
+line="${LOOPER_TACPLUS_LINE:?the image sets LOOPER_TACPLUS_LINE}"
+docker info >/dev/null 2>&1 || { echo "no docker daemon: run with the host's docker socket and LOOPER_WORK mounted at its own path" >&2; exit 1; }
+mkdir -p "${LOOPER_WORK:-/work}"
+w="$(mktemp -d "${LOOPER_WORK:-/work}/looper-smoke.XXXXXX")"
+trap 'rm -rf "$w"' EXIT
+mkdir -p "$w/proto/smoke"
+printf 'language: go\ntacplus: "%s"\npkg: dev.tacplus.smoke\noutput-dir: model\nsrc: proto\n' "$line" > "$w/tacplus.yaml"
+printf 'tools:\n    go: "1.23"\nlang:\n    go:\n        dependencies:\n            google.golang.org/protobuf: v1.36.11\n' > "$w/proto/dependencies.yaml"
+printf 'syntax = "proto3";\n\npackage ping;\n\nmessage Ping {\n  string text = 1;\n}\n' > "$w/proto/smoke/smoke.proto"
+(cd "$w" && tacplus build --tag latest) > "$w/generate.log" 2>&1 || { tail -20 "$w/generate.log" >&2; echo "tacplus $line: Go generation failed" >&2; exit 1; }
+grep -q '^type Ping struct' "$w/model/types/smoke/ping/smoke.pb.go" || { echo "tacplus $line: no Go for message Ping" >&2; exit 1; }
+echo "looper-smoke: ok (Go generated with tacplus $line)"
