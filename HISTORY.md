@@ -18,3 +18,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-30 looper issue Parallel children lose finished fixes: the land runs inside the child's time limit, and a land-pending child is marked stuck (#34, 88256c5)
 - 2026-10-30 looper issue Agents' GITLAB_TOKEN is a group-Owner api token: it reads fleet-seatrials' protected variables and can start its protected deploy jobs (#25, 6d4c73b)
 - 2026-10-30 looper issue tacplus wrapper runs the deprecated compiler image (no go): Go repos cannot generate; use the build:X.Y line (tacplus#193) (#27, 71591c7)
+- 2026-10-30 looper issue A child's limit can outlast its job: an issue's Timeout read at start is not capped by the job's own timeout (#35, 95430d0)
