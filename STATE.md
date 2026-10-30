@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#32).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#33).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's floor)
@@ -17,7 +17,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   its container goes on) checkpoints and stops within one poll, pushing and commenting nothing, so it cannot race
   its retry (#21); each repository's looper job is a parent that runs a child per issue, in parallel when the work
   allows (#32): it plans from the issues' `Blocked-by` lines, the areas the model says each will touch (paths,
-  generated outputs, contracts, other conflicts), the runner's CPU and memory and the job's remaining time, logs
+  generated outputs, contracts, other conflicts), the runner's CPU and memory and the job's remaining time (from the job's start; the job sized by
+  `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33), logs
   the plan and its reasons (job log, `looper-runs/<time>-plan/`, the issues), runs each child in its own worktree and
   branch, serializes landing (`repo-looper --land`: lock, rebase, gates, push; a direct push to main from a
   worktree is refused) and plans again as each child ends; `repo-looper` works each repository's

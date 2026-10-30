@@ -137,7 +137,7 @@ looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL \
-      -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT \
+      -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -328,19 +328,28 @@ lacks "$c" "looper:stuck"
 main_unchanged
 pass
 
-# Timeout: <hours>h in the body sets the run's limit (at most 10h); the job's is an hour more.
+# Timeout: <hours>h in the body sets the run's limit (at most 10h). The job's
+# is sized for the plan (looper#33): the longest limit of its issue and the
+# ready issues that could run beside it, plus the plan's 20 minutes and an
+# hour, rounded up, at most 11h.
 scenario timeout-per-issue
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 5h ]] || fail "default job timeout"
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 6h ]] || fail "default job timeout"
 issue alpha 4 OPEN approved,bug "Fix it.
 Timeout: 6h"
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 7h ]] || fail "job timeout for 6h"
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 8h ]] || fail "job timeout for 6h"
 push_fix
 run
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 6h"
 issue alpha 4 OPEN approved,bug "Timeout: 12h"
 [[ "$(looper -- --repo alpha --job-timeout 4)" == 11h ]] || fail "job timeout for 12h"
 issue alpha 4 OPEN approved,bug "Timeout: 2h"
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 3h ]] || fail "job timeout for 2h"
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 4h ]] || fail "job timeout for 2h"
+# A ready issue that could run beside it sizes the job too; a blocked one does not.
+issue alpha 5 OPEN approved,bug "Timeout: 7h"
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 9h ]] || fail "job timeout for a 7h issue beside it"
+issue alpha 5 OPEN approved,bug "Timeout: 7h
+Blocked-by: #9"; issue alpha 9 OPEN bug "Later."
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 4h ]] || fail "job timeout with a blocked issue"
 pass
 
 # Resume: the branch, rebased on main, is the run's uncommitted work on main;
@@ -1201,13 +1210,27 @@ closed 5; closed 6
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
-# In a GitLab job no other child starts that would outlast the job: its own
-# issue always does (the job was sized for it).
+# In a GitLab job no other child starts that would outlast the job, less the
+# hour it keeps for itself, counted from the job's start: its own issue always
+# does (the job was sized for it). With the default limits, the job the plan
+# sizes (--job-timeout) runs two independent issues together (looper#33).
 scenario parallel-job-time
 issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
 areas "touches 4 a" "touches 5 b"
-push_fix
-drain "${ROOM[@]}" CI_JOB_TIMEOUT=14400
+echo "git commit -q --allow-empty -m \"fix \$ISSUE\" && $LAND" >> "$FIX/claude.sh"
+t="$(looper -- --repo alpha --job-timeout 4)"
+[[ "$t" == 6h ]] || fail "job timeout $t"
+drain "${ROOM[@]}" CI_JOB_TIMEOUT=$(( ${t%h} * 3600 )) CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 starts"
+# One whose limit does not fit the job's remaining time still waits: a longer
+# limit, or a job that started earlier.
+issue alpha 4 OPEN approved,bug "Fix it."
+issue alpha 5 OPEN approved,bug "Timeout: 6h"; created alpha 5 2026-10-27T00:00:01Z
+drain "${ROOM[@]}" CI_JOB_TIMEOUT=21600
+has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 waits: its limit (6h) would outlast this job"
+for i in 4 5; do issue alpha "$i" OPEN approved,bug "Fix it."; done
+created alpha 5 2026-10-27T00:00:01Z
+drain "${ROOM[@]}" CI_JOB_TIMEOUT=21600 CI_JOB_STARTED_AT="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
 has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 waits: its limit (4h) would outlast this job"
 pass
 

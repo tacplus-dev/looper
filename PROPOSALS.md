@@ -127,11 +127,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   per run under its `looper` resource group. Its parent would plan as here and start one child pipeline per issue,
   each with its own think and commit jobs; landing there is GitHub's squash merge of each pull request, so the lock
   becomes the merge itself (or a merge queue), with the gates re-run by the build on the rebased head.
-- **Size the job for its queue** (2026-10-30, #32): the plan sizes a looper job by its planned issue's limit plus an
-  hour (`--job-timeout`), and the parent starts no other child that would outlast it, so a repository with several
-  ready 4h issues still works only those that start at once. `repo-looper --job-timeout` could size the job for the
-  repository's ready queue (say, the longest limit plus the next one's, at most the project's 11h), at the cost of a
-  job held longer when a run hangs.
+- **Size the job for what fills a slot later** (2026-10-30, #33): `--job-timeout` now sizes the job for the
+  longest limit among the issues ready at planning time, so they can all start together; an issue that becomes ready
+  later, or one that waits for a free slot and then needs the whole limit, starts only if it still fits the job's
+  remaining time. Sizing for a second round (the longest limit plus the next one's, at most 11h) would trade that for
+  a job held longer when a run hangs. Also: `looper-plan` (gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`) takes
+  the timeout from `--job-timeout` as before, so it needs no change, but it is still outside this repository's tests.
 - **The plan's areas, kept** (2026-10-30, #32): each plan asks the model about every running and candidate issue
   again (tokens are not the concern, but a plan takes minutes). The parent could keep each issue's areas from its
   first plan and ask only about the new ones, and the record could show how well the areas matched what landed

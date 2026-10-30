@@ -129,7 +129,10 @@ Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocke
 repository) in an issue's body holds it until that issue is closed.
 
 Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
-instead, at most 10h. The pipeline's job for the issue gets an hour more (`repo-looper --job-timeout N`).
+instead, at most 10h. The pipeline's job for a repository is sized for what its parent may run together
+(`repo-looper --job-timeout N`, looper#33): the longest limit of its issue and of the ready issues that could start
+beside it (up to `LOOPER_MAX_CHILDREN` in all), plus the plan's 20 minutes and an hour, rounded up to hours, at most
+`LOOPER_JOB_MAX_HOURS` (11h). With the default limits that is 6h, room for two 4h children from the start.
 
 ### Parent and children
 
@@ -149,8 +152,10 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   - **the runner's CPU and memory:** as many children as the VM holds at `LOOPER_CHILD_CPUS` (2) and
     `LOOPER_CHILD_MEMORY_GB` (4) a child (a t2a-standard-8 worker: 4), never more than `LOOPER_MAX_CHILDREN`
     (6), a safety ceiling only;
-  - **the job's time:** in a GitLab job no child starts that would outlast it (`CI_JOB_TIMEOUT`, less the hour the
-    job keeps for itself); the job's own issue always does, since the job was sized for it.
+  - **the job's time:** in a GitLab job no child starts that would outlast it (`CI_JOB_TIMEOUT` from the job's
+    start, `CI_JOB_STARTED_AT`, less the hour the job keeps for itself); the job's own issue always does, and the
+    job is sized for the others that are ready with it. When a child ends, the parent plans again and fills its
+    slot if an issue's limit still fits.
 
   Higher priority goes first, but an issue that conflicts with a running one waits while a lower one that does
   not starts. The plan and its reasons are in the job's log (`plan: ...`), in its record (`looper-runs/<time>-plan/`:

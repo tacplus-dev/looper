@@ -13,7 +13,8 @@
 #   repo-looper --repo NAME --scan      the nightly scan: file issues, change no code
 #   repo-looper --repo NAME --list      print the ready issues; in a GitLab job, none while NAME
 #                                       has a looper job queued, waiting or running there (the plan)
-#   repo-looper --repo NAME --job-timeout N   the CI job timeout for issue N (its limit, plus an hour)
+#   repo-looper --repo NAME --job-timeout N   the CI job timeout for issue N and the ready issues that
+#                                       could run beside it (the longest limit, the plan's time and an hour)
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
 #   repo-looper --repo NAME --issue N --land [--gates CMD]   land the child's commits on main (the model's
 #                                       step): under the landing lock, rebased on main, gates re-run
@@ -27,8 +28,8 @@
 # areas it cannot tell runs alone); as many as the runner's CPU and memory hold
 # (LOOPER_CHILD_CPUS, default 2, and LOOPER_CHILD_MEMORY_GB, default 4, per
 # child), never more than LOOPER_MAX_CHILDREN (default 6, a safety ceiling), and
-# in a GitLab job none whose limit outlasts the job (CI_JOB_TIMEOUT, less an
-# hour). The plan and its reasons go to the job's log and its record
+# in a GitLab job none whose limit outlasts the job (CI_JOB_TIMEOUT from the
+# job's start, less an hour). The plan and its reasons go to the job's log and its record
 # (LOOPER_RUNS/<time>-plan), and to each issue it started beside others or held
 # back. Each issue is a child: this same script (--child N) running the
 # per-issue flow below in its own worktree, LOOPER_WORK/NAME/worktrees/N, on
@@ -123,7 +124,8 @@
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
 # default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
-# LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_MAX_CHILDREN, GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
+# LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_MAX_CHILDREN, LOOPER_JOB_MAX_HOURS (the longest
+# --job-timeout, default 11), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
 # job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
@@ -257,6 +259,8 @@ fi
 MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
 TIMEOUT="${LOOPER_TIMEOUT:-14400}"
 MAX_LIMIT=36000   # 10h: what a `Timeout:` line may ask for
+JOB_MAX_HOURS="${LOOPER_JOB_MAX_HOURS:-11}"   # the longest job --job-timeout asks GitLab for
+PLAN_TIMEOUT="${LOOPER_PLAN_TIMEOUT:-1200}"
 STOP_EARLY="${LOOPER_STOP_EARLY:-600}"
 CHECKPOINT_INTERVAL="${LOOPER_CHECKPOINT_INTERVAL:-3600}"
 IDLE="$(awk -v m="${LOOPER_IDLE_MINUTES:-20}" 'BEGIN { printf "%d", m * 60 }')"
@@ -278,9 +282,28 @@ run_limit() { # issue
 }
 hours() { echo "$(( ($1 + 3599) / 3600 ))h"; } # seconds, rounded up
 
-# The CI job's timeout: the run's limit plus an hour for the checkout, the
-# checkpoint and the outcome.
-[[ "$MODE" == job-timeout ]] && { echo "$(( ($(run_limit "$ISSUE") + 3599) / 3600 + 1 ))h"; exit 0; }
+# The CI job's timeout, sized for the plan, not only its issue (looper#33):
+# the longest limit of the issue and the ready issues the parent could start
+# beside it (up to LOOPER_MAX_CHILDREN in all), plus the plan's model's time
+# before they start and an hour for the checkout, the checkpoints and the
+# outcomes, rounded up to hours and at most JOB_MAX_HOURS. A job sized for its
+# issue alone left no room for any other child (the parent's deadline is the
+# job's end less that hour).
+job_timeout() { # issue
+  local n limit longest k=1 max="${LOOPER_MAX_CHILDREN:-6}" h
+  longest="$(run_limit "$1")"
+  for n in $(approved_issues "$REPO"); do
+    (( max <= 0 || k < max )) || break
+    [[ "$n" == "$1" ]] && continue
+    ready "$REPO" "$n" || continue
+    k=$(( k + 1 ))
+    limit="$(run_limit "$n")"; (( limit <= longest )) || longest="$limit"
+  done
+  h=$(( (longest + PLAN_TIMEOUT + 3599) / 3600 + 1 ))
+  (( h <= JOB_MAX_HOURS )) || h="$JOB_MAX_HOURS"
+  echo "${h}h"
+}
+[[ "$MODE" == job-timeout ]] && { job_timeout "$ISSUE"; exit 0; }
 need claude
 mkdir -p "$RUNS"
 gh auth setup-git >/dev/null 2>&1 || true
@@ -1073,7 +1096,7 @@ think_say() { # text: the looper's word in the comment, after the model's
 # The checkout's change against base (the run record left out): DIR/tree and DIR/patch.
 think_change() { # base
   local idx tree
-  idx="$(mktemp)"; cp "$(git -C "$CHECKOUT" rev-parse --git-path index)" "$idx" 2>/dev/null || true
+  idx="$(mktemp)"; cp "$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null || true
   ( cd "$CHECKOUT" && GIT_INDEX_FILE="$idx" git add -A && GIT_INDEX_FILE="$idx" git rm -r -q --cached --ignore-unmatch .looper >/dev/null )
   tree="$(cd "$CHECKOUT" && GIT_INDEX_FILE="$idx" git write-tree)"; rm -f "$idx"
   echo "$tree" > "$THINK_OUT/tree"
@@ -1337,7 +1360,7 @@ For each issue, judge what its change will touch, and write to $dir/areas, one l
 Write a \`touches\` line for every issue: one you cannot judge gets \`touches <n> .\` and so runs alone.
 Writing the file is your last step.
 PR
-  ( CHECKOUT="$MAIN_CHECKOUT"; run_claude "$dir/prompt.md" "$dir/claude.log" "${LOOPER_PLAN_TIMEOUT:-1200}" "$dir" ) \
+  ( CHECKOUT="$MAIN_CHECKOUT"; run_claude "$dir/prompt.md" "$dir/claude.log" "$PLAN_TIMEOUT" "$dir" ) \
     || log "the plan's model exited non-zero"
   touch "$dir/areas"
 }
@@ -1377,10 +1400,11 @@ issue_list() { if (( $# )); then printf '#%s ' "$@" | sed 's/ $//'; else echo no
 parent() { # [issue first]
   local first="${1:-}" started=" " stop="" deadline="" t0 tags_seen n pid rc res t
   local -A pids=() told=()
-  t0="$(date +%s)"
-  # In a GitLab job no child starts that would outlast it: the job's timeout
-  # is its planned issue's limit plus an hour (--job-timeout), so the first
-  # child always fits; the others must end an hour before the job does.
+  # In a GitLab job no child starts that would outlast it: the others must end
+  # an hour before the job does, counted from the job's start (CI_JOB_STARTED_AT,
+  # else now). The first child always starts; --job-timeout sizes the job for
+  # it and for the ready issues that could run beside it (looper#33).
+  t0="$(date -d "${CI_JOB_STARTED_AT:-now}" +%s 2>/dev/null || date +%s)"
   [[ "${CI_JOB_TIMEOUT:-}" =~ ^[0-9]+$ ]] && deadline=$(( t0 + CI_JOB_TIMEOUT - 3600 ))
   sync_checkout
   land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
