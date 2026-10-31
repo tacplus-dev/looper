@@ -185,5 +185,11 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Size the job when it starts, not when it is planned** (2026-10-30, #35): `--job-timeout` reads the issues when
   the plan job runs; a `Timeout:` line added while the job waits for a runner now only shortens that run (capped), and
   the next job resumes it. The kicker could re-plan a pending job whose issues' limits grew.
+- **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`
+  boolean input (default false) and a workflow rule for a web run on `main` with it set, whose pipeline holds only a
+  manual `macos-smoke` job (tag `macos`, the Tart image `macos-tahoe-xcode:27.1`, no credentials) checking arm64,
+  `sw_vers`, Xcode 27.x and Swift; the build's own jobs and publish get rules that leave it. It proves Jody's Mac
+  runner before tacplus#195's `swift:` and darwin/arm64 `rust:` recipes rely on it. Approved, but no ROADMAP.md
+  links it (tacplus's lists #195 only); the design and Jody's questions are on the issue.
 
 ## Promoted / declined
