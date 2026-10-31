@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# runner-image: the runner VMs' image and templates (looper#43). A fresh VM's
+# first job failed when the template's startup-script installed Docker at boot
+# and restarted it while the autoscaler was already connecting; with a fresh VM
+# for every job (looper#42) every job would have. So the VMs boot an image with
+# Docker already installed, and the autoscaler waits for runner/startup.sh's
+# /var/run/runner-ready before it places a job. README: Infrastructure.
+#
+#   build     bake the image: a stock Ubuntu arm64 VM runs runner/startup.sh and
+#             runner/bake.sh, its disk becomes a candidate image, a VM booted
+#             from the candidate must be ready without installing anything, and
+#             only then is it published in the family runner-arm64-docker (the
+#             newest RUNNER_IMAGE_KEEP kept). Every VM it made is deleted, and
+#             the candidate. The build pipeline's runner-image job runs it
+#             (ci/build.gitlab-ci.yml), through Workload Identity Federation.
+#   template SOURCE NEW
+#             the instance template NEW: SOURCE as it is (machine, disk size,
+#             network, service account, scopes, keys), but booting the family
+#             and with runner/startup.sh as its startup-script. The hub runs it.
+#   measure [N]
+#             the last N (20) finished jobs of a GitLab project: from creation
+#             to "Running on" (the job log's prepare_script section), and the
+#             ones that failed before it. GITLAB_TOKEN (read_api).
+#
+# Environment: RUNNER_IMAGE_PROJECT (jody1-328023), RUNNER_IMAGE_ZONE
+# (us-central1-b), RUNNER_IMAGE_FAMILY (runner-arm64-docker); build: GCP_ID_TOKEN
+# and GCP_WIF_PROVIDER (else gcloud's own login), RUNNER_IMAGE_SA (impersonated),
+# RUNNER_IMAGE_KEEP (3); measure: RUNNER_IMAGE_GITLAB_PROJECT (tacplus-dev/looper),
+# RUNNER_IMAGE_RUNNER (a runner id: only its jobs).
+set -euo pipefail
+
+P="${RUNNER_IMAGE_PROJECT:-jody1-328023}"
+ZONE="${RUNNER_IMAGE_ZONE:-us-central1-b}"
+FAMILY="${RUNNER_IMAGE_FAMILY:-runner-arm64-docker}"
+KEEP="${RUNNER_IMAGE_KEEP:-3}"
+MACHINE="${RUNNER_IMAGE_MACHINE:-t2a-standard-2}"
+SOURCE_FAMILY="${RUNNER_IMAGE_SOURCE_FAMILY:-ubuntu-2404-lts-arm64}"
+SOURCE_PROJECT="${RUNNER_IMAGE_SOURCE_PROJECT:-ubuntu-os-cloud}"
+POLL="${RUNNER_IMAGE_POLL:-10}"
+BAKE_TIMEOUT="${RUNNER_IMAGE_BAKE_TIMEOUT:-1200}"
+READY_TIMEOUT="${RUNNER_IMAGE_READY_TIMEOUT:-600}"
+COMPUTE_API="${RUNNER_IMAGE_COMPUTE_API:-https://compute.googleapis.com/compute/v1}"
+GITLAB_API="${RUNNER_IMAGE_GITLAB_API:-https://gitlab.com/api/v4}"
+GITLAB_PROJECT="${RUNNER_IMAGE_GITLAB_PROJECT:-tacplus-dev/looper}"
+
+# runner/ beside this script in a checkout, else where the looper image puts it.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+RUNNER_DIR="$here/runner"
+[[ -f "$RUNNER_DIR/startup.sh" ]] || RUNNER_DIR=/usr/local/lib/looper/runner
+
+usage() {
+  cat <<'EOF'
+usage: runner-image build               bake, check and publish the image (family runner-arm64-docker)
+       runner-image template SOURCE NEW  instance template NEW: SOURCE booting the family, with runner/startup.sh
+       runner-image measure [N]          the last N (20) jobs: creation to "Running on", failures before it
+EOF
+}
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+die() { log "FATAL $*"; exit 1; }
+gc() { gcloud --quiet --project="$P" "$@"; }
+
+# --- build -------------------------------------------------------------------
+
+# The job's GitLab id_token (GCP_ID_TOKEN) through Workload Identity Federation,
+# as looper-build's publish: no key, no stored token. Without one, gcloud's own
+# login (the hub's).
+login() { # tmp
+  [[ -n "${GCP_ID_TOKEN:-}" ]] || return 0
+  : "${GCP_WIF_PROVIDER:?the project variable GCP_WIF_PROVIDER is not set}"
+  local sa=()
+  [[ -n "${RUNNER_IMAGE_SA:-}" ]] && sa=(--service-account="$RUNNER_IMAGE_SA")
+  export CLOUDSDK_CONFIG="$1/gcloud" CLOUDSDK_CORE_DISABLE_PROMPTS=1
+  ( umask 077
+    printf '%s' "$GCP_ID_TOKEN" > "$1/oidc-token"
+    gcloud iam workload-identity-pools create-cred-config "$GCP_WIF_PROVIDER" "${sa[@]}" \
+      --credential-source-file="$1/oidc-token" --output-file="$1/federation.json" >/dev/null )
+  gcloud auth login --cred-file="$1/federation.json" --quiet >/dev/null 2>&1 ||
+    die "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER)"
+}
+
+# A guest attribute of a VM, or nothing while it has none.
+attribute() { # vm key
+  gc compute instances get-guest-attributes "$1" --zone="$ZONE" --query-path="$2" --format='value(value)' 2>/dev/null || true
+}
+
+# Wait for one of the attributes to be set (key) or to have a value (key=value);
+# print "key value", or "timeout".
+await() { # vm timeout key[=value]...
+  local vm="$1" timeout="$2" start=$SECONDS k v; shift 2
+  while :; do
+    for k in "$@"; do
+      v="$(attribute "$vm" "${k%%=*}")"
+      [[ -z "$v" || ( "$k" == *=* && "$v" != "${k#*=}" ) ]] || { echo "${k%%=*} $v"; return 0; }
+    done
+    ((SECONDS - start < timeout)) || { echo "timeout"; return 0; }
+    sleep "$POLL"
+  done
+}
+
+serial_tail() { # vm
+  gc compute instances get-serial-port-output "$1" --zone="$ZONE" 2>/dev/null | tail -40 >&2 || true
+}
+
+VMS=() CANDIDATE=""
+cleanup() {
+  local vm
+  for vm in "${VMS[@]}"; do gc compute instances delete "$vm" --zone="$ZONE" >/dev/null 2>&1 || true; done
+  [[ -z "$CANDIDATE" ]] || gc compute images delete "$CANDIDATE" >/dev/null 2>&1 || true
+}
+
+vm_create() { # name startup-script-file image-flags...
+  local vm="$1" script="$2"; shift 2
+  VMS+=("$vm")
+  gc compute instances create "$vm" --zone="$ZONE" --machine-type="$MACHINE" "$@" \
+    --boot-disk-size=10GB --no-service-account --no-scopes --labels=looper=runner-image \
+    --metadata=block-project-ssh-keys=TRUE,enable-guest-attributes=TRUE \
+    --metadata-from-file=startup-script="$script" >/dev/null
+}
+
+cmd_build() {
+  local stamp image bake smoke got start
+  WORK="$(mktemp -d)"
+  trap 'cleanup; rm -rf "$WORK"' EXIT
+  login "$WORK"
+  stamp="$(date -u +%Y%m%d-%H%M%S)"
+  image="$FAMILY-$stamp" bake="runner-image-bake-$stamp" smoke="runner-image-smoke-$stamp"
+
+  # The bake: startup.sh installs Docker as a worker would at boot, bake.sh readies the disk.
+  cat "$RUNNER_DIR/startup.sh" "$RUNNER_DIR/bake.sh" > "$WORK/bake.sh"
+  log "baking on $bake ($SOURCE_PROJECT/$SOURCE_FAMILY)"
+  vm_create "$bake" "$WORK/bake.sh" --image-family="$SOURCE_FAMILY" --image-project="$SOURCE_PROJECT"
+  # startup.sh's runner/ready comes first ("<s> installed"): only its failure ends the wait.
+  got="$(await "$bake" "$BAKE_TIMEOUT" runner-image/baked runner/ready=failed)"
+  case "$got" in
+    "runner-image/baked done") ;;
+    *) serial_tail "$bake"; die "the bake did not finish: ${got/runner\/ready failed/startup.sh failed}" ;;
+  esac
+  gc compute instances stop "$bake" --zone="$ZONE" >/dev/null
+  CANDIDATE="$image-candidate"
+  gc compute images create "$CANDIDATE" --source-disk="$bake" --source-disk-zone="$ZONE" \
+    --labels=looper=runner-image >/dev/null
+  gc compute instances delete "$bake" --zone="$ZONE" >/dev/null; VMS=()
+
+  # The candidate must boot ready with nothing to install, as a worker will.
+  log "checking $CANDIDATE on $smoke"
+  start=$SECONDS
+  vm_create "$smoke" "$RUNNER_DIR/startup.sh" --image="$CANDIDATE" --image-project="$P"
+  got="$(await "$smoke" "$READY_TIMEOUT" runner/ready)"
+  [[ "$got" =~ ^runner/ready\ ([0-9]+)\ baked$ ]] || { serial_tail "$smoke"; die "a VM of $CANDIDATE is not ready as baked: ${got#runner/ready }"; }
+  log "$CANDIDATE: ready ${BASH_REMATCH[1]}s after boot, $((SECONDS - start))s after its create returned"
+
+  gc compute images create "$image" --source-image="$CANDIDATE" --source-image-project="$P" --family="$FAMILY" \
+    --labels=looper=runner-image >/dev/null
+  log "published $image (family $FAMILY)"
+  local old
+  gc compute images list --no-standard-images --filter="family=$FAMILY" --sort-by=~creationTimestamp \
+    --format='value(name)' | tail -n +"$((KEEP + 1))" | while read -r old; do
+      gc compute images delete "$old" >/dev/null && log "deleted $old"
+    done
+  echo "$image"
+}
+
+# --- template ----------------------------------------------------------------
+
+cmd_template() { # source new
+  [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+  local src="$1" new="$2" token current body op
+  current="$(gc compute instance-templates describe "$src" --format=json)" || die "no instance template $src in $P"
+  body="$(jq \
+    --arg name "$new" --arg src "$src" --arg image "projects/$P/global/images/family/$FAMILY" \
+    --rawfile script "$RUNNER_DIR/startup.sh" '
+    {name: $name,
+     description: ("\($src), booting the image family \($image | split("/") | last) with runner/startup.sh (looper#43)"),
+     properties: (.properties
+       | .disks |= map(if .boot then .initializeParams.sourceImage = $image else . end)
+       | .metadata |= ((. // {}) | del(.fingerprint, .kind)
+           | .items = ([.items[]? | select(.key != "startup-script" and .key != "enable-guest-attributes")]
+                       + [{key: "startup-script", value: $script}, {key: "enable-guest-attributes", value: "TRUE"}])))}' <<<"$current")"
+  [[ "$(jq '[.properties.disks[] | select(.boot)] | length' <<<"$body")" == 1 ]] ||
+    die "$src has no boot disk to point at the family"
+  token="$(gc auth print-access-token)"
+  op="$(curl -fsS -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    --data-binary @- "$COMPUTE_API/projects/$P/global/instanceTemplates" <<<"$body")" ||
+    die "the template $new was refused (does it exist already?)"
+  op="$(curl -fsS -X POST -H "Authorization: Bearer $token" \
+    "$COMPUTE_API/projects/$P/global/operations/$(jq -r .name <<<"$op")/wait")"
+  [[ "$(jq -r .status <<<"$op")" == DONE ]] || die "the template $new is not created yet: $(jq -c . <<<"$op")"
+  [[ "$(jq -r '.error // empty' <<<"$op")" == "" ]] || die "the template $new failed: $(jq -c .error <<<"$op")"
+  log "created $new from $src: image family $FAMILY, startup-script runner/startup.sh"
+}
+
+# --- measure -----------------------------------------------------------------
+
+gitlab() { # path
+  curl -fsS -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API/$1"
+}
+
+cmd_measure() { # [n]
+  local n="${1:-20}" project jobs id name status created reason runner started secs prep=0 waits=()
+  : "${GITLAB_TOKEN:?GITLAB_TOKEN (read_api) reads the jobs}"
+  project="$(jq -rn --arg p "$GITLAB_PROJECT" '$p | @uri')"
+  jobs="$(gitlab "projects/$project/jobs?per_page=100&scope[]=success&scope[]=failed" | jq -c --arg r "${RUNNER_IMAGE_RUNNER:-}" \
+    '[.[] | select($r == "" or ((.runner.id // "") | tostring) == $r)] | sort_by(.id) | reverse | .[]')"
+  printf '%-12s %-24s %-8s %-20s %s\n' job name status created "to Running on"
+  while IFS=$'\t' read -r id name status created reason; do
+    ((n > 0)) || break; n=$((n - 1))
+    started="$(gitlab "projects/$project/jobs/$id/trace" | grep -ao 'section_start:[0-9]*:prepare_script' | head -1 | cut -d: -f2 || true)"
+    if [[ -n "$started" ]]; then
+      secs=$((started - $(date -d "$created" +%s))); waits+=("$secs")
+      printf '%-12s %-24.24s %-8s %-20s %ss\n' "$id" "$name" "$status" "${created%%.*}" "$secs"
+    else
+      prep=$((prep + 1))
+      printf '%-12s %-24.24s %-8s %-20s failed before it (%s)\n' "$id" "$name" "$status" "${created%%.*}" "${reason:-?}"
+    fi
+  done < <(jq -r '[.id, .name, .status, .created_at, (.failure_reason // "")] | @tsv' <<<"$jobs")
+  if ((${#waits[@]})); then
+    printf '%s\n' "${waits[@]}" | sort -n | awk -v f="$prep" '{a[NR] = $1} END {
+      printf "%d jobs reached Running on, %d failed before it; seconds from creation: min %d, median %d, max %d\n",
+        NR, f, a[1], a[int((NR + 1) / 2)], a[NR] }'
+  else
+    echo "0 jobs reached Running on, $prep failed before it"
+  fi
+}
+
+case "${1:-}" in
+  build) cmd_build ;;
+  template) shift; cmd_template "$@" ;;
+  measure) shift; cmd_measure "$@" ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

@@ -4,6 +4,18 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Keep gitlab-runner-mgr's config here** (2026-10-31, #43): the runner entries (`[runners.autoscaler]`: #42's keys,
+  #43's `instance_ready_command`) and the instance templates are README snippets that the hub applies by hand,
+  and nothing checks that the manager matches them. A `runner/config.toml` (tokens as placeholders) and a hub
+  check that diffs it against the manager and lists each group's template would keep the record honest. The README
+  also says the runner entries connect as `username = "runner"`, but the workers' docker socket is group `fleeting`
+  and the startup-script's comment says the manager connects as `fleeting` (seen on a worker, 2026-10-31). One of
+  the two is stale, and only the manager's config.toml can say which.
+- **Pin the bake's Docker** (2026-10-31, #43): `runner-image build` installs the newest `docker-ce` from Docker's
+  apt repository, so two bakes a month apart differ, and a bad Docker release reaches the workers by the monthly
+  schedule (the boot check catches only a Docker that does not start). Pinning the version in `runner/startup.sh`
+  (bumped by a looper issue) would make each rebake a change on main; deprecating the newest image is the rollback
+  meanwhile.
 - **Stop a job's containers when it ends** (2026-10-31, #42): a worker per job (`max_use_count = 1`) deletes a
   failed job's containers with its VM, but nothing in the job stops them itself: a VM the manager fails to delete,
   or any later return to reused workers, brings orphans back. `looper-docker` could label each container

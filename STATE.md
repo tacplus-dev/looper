@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#42).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#43).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -59,11 +59,22 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   request with squash auto-merge, build trigger, comment, labels); one run at a time, in a child pipeline. The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
   `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables; the
   model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
-  `LOOPER_TRIGGER_TOKEN` and the port scan reads SeaBeam with `SEABEAM_READ_TOKEN` when they are set (#25)
+  `LOOPER_TRIGGER_TOKEN` and the port scan reads SeaBeam with `SEABEAM_READ_TOKEN` when they are set (#25); the runner
+  VMs' image and readiness (#43): `runner/startup.sh`, the templates' startup-script, marks a VM ready
+  (`/var/run/runner-ready`) only once Docker answers, for the autoscaler's `instance_ready_command`; `runner-image build`
+  (the build pipeline's `runner-image` job, input `runner_image: true`) bakes the image family `runner-arm64-docker`
+  (Docker preinstalled) and publishes an image only once a VM booted from it is ready with nothing to install;
+  `runner-image template` copies a template onto the family and the script; `runner-image measure` gives jobs'
+  creation-to-"Running on" times; tested in an Ubuntu container and against stub gcloud and curl
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
-  (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr`
-- **Known gaps:** until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
+  (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
+  runner image and readiness gate (#43)
+- **Known gaps:** until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
+  account and WIF binding, the first image, the templates, `instance_ready_command`), a fresh worker installs and
+  restarts Docker at boot under its first job, which fails in preparation and is retried; the bake's IAM role and
+  `runner-image build` have not run against GCP (no looper may change IAM or create VMs), and #43's acceptance (twenty
+  jobs on fresh VMs, before and after times, `runner-image measure`) waits on that; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
   once it no longer answers SSH (tacplus, 2026-10-31); until Jody and the hub apply README's Credentials (#25), the jobs' `GITLAB_TOKEN` is still
   Jody's `looper-runtime` (`api`, Owner of the group: it reads fleet-seatrials' protected variables) and the workers

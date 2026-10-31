@@ -32,6 +32,14 @@
 # macos, a fresh Tart VM per job, protected refs only), and none of the build's
 # jobs. It proves that runner before tacplus-dev/tacplus#195's macOS builds use
 # it. A push, and every (repo, sha) run, never creates it.
+#
+# The runner image (looper#43): a web or scheduled run on main with
+# "runner_image": true is a pipeline of one job, runner-image, which bakes the
+# runner VMs' image (family runner-arm64-docker: Docker installed, nothing
+# installed at boot) and publishes it once a VM booted from it is ready, through
+# Workload Identity Federation as the service account GCP_RUNNER_IMAGE_SA. On
+# the build runner, as every job here: it holds a GCP identity, so never on a VM
+# an agent's job ran on. README: Infrastructure.
 spec:
   inputs:
     repo:
@@ -50,11 +58,17 @@ spec:
       description: "The macOS smoke: a web run on main whose one manual job checks the Mac runner (no repo, sha or tag)"
       type: boolean
       default: false
+    runner_image:
+      description: "The runner VMs' image: a web or scheduled run on main whose one job bakes and publishes it (no repo, sha, tag or smoke)"
+      type: boolean
+      default: false
 ---
 workflow:
   name: $BUILD_PIPELINE_NAME
   rules:
     - if: $BUILD_SMOKE == "true" && ($BUILD_REPO || $BUILD_SHA || $BUILD_TAG)
+      when: never
+    - if: $BUILD_RUNNER_IMAGE == "true" && ($BUILD_REPO || $BUILD_SHA || $BUILD_TAG || $BUILD_SMOKE == "true")
       when: never
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
       variables:
@@ -62,6 +76,9 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME == "main" && $BUILD_SMOKE == "true"
       variables:
         BUILD_PIPELINE_NAME: "macos smoke"
+    - if: $CI_PIPELINE_SOURCE =~ /^(web|schedule)$/ && $CI_COMMIT_REF_NAME == "main" && $BUILD_RUNNER_IMAGE == "true"
+      variables:
+        BUILD_PIPELINE_NAME: "runner image"
 
 stages: [plan, gates, publish, report]
 
@@ -70,6 +87,7 @@ variables:
   BUILD_SHA: "$[[ inputs.sha ]]"
   BUILD_TAG: "$[[ inputs.tag ]]"
   BUILD_SMOKE: "$[[ inputs.smoke ]]"
+  BUILD_RUNNER_IMAGE: "$[[ inputs.runner_image ]]"
   GIT_STRATEGY: none
 
 default:
@@ -79,10 +97,10 @@ default:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]
 
-# The build's jobs, never in a smoke pipeline.
+# The build's jobs, never in a smoke or runner image pipeline.
 .build-run:
   rules:
-    - if: $BUILD_SMOKE != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
 
 # The commit is marked pending while it builds.
 pending:
@@ -120,7 +138,7 @@ gates:
 publish:
   stage: publish
   rules:
-    - if: $CI_COMMIT_TAG && $BUILD_TAG && $BUILD_SMOKE != "true"
+    - if: $CI_COMMIT_TAG && $BUILD_TAG && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
   environment:
     name: registry
   id_tokens:
@@ -137,7 +155,7 @@ publish:
 report-pass:
   stage: report
   rules:
-    - if: $BUILD_SMOKE != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
       when: on_success
   script:
     - looper-build status success
@@ -145,7 +163,7 @@ report-pass:
 report-fail:
   stage: report
   rules:
-    - if: $BUILD_SMOKE != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
       when: on_failure
   script:
     - looper-build status failure
@@ -168,3 +186,23 @@ macos-smoke:
     - sw_vers
     - xcodebuild -version | tee xcode.txt; grep -Eq '^Xcode 27\.' xcode.txt
     - swift --version 2>&1 | tee swift.txt; grep -q 'Swift version' swift.txt
+
+# The runner image (looper#43): bake, boot-check and publish the runner VMs'
+# image. Its identity is the job's id_token, exchanged through Workload Identity
+# Federation for GCP_RUNNER_IMAGE_SA (a project variable), which may create,
+# stop and delete the bake's VMs and images and nothing else (README:
+# Infrastructure). It needs no other job and reads no other credential.
+runner-image:
+  stage: plan
+  rules:
+    - if: $BUILD_RUNNER_IMAGE == "true"
+  environment:
+    name: runner-image
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
+  timeout: 1h
+  variables:
+    RUNNER_IMAGE_SA: $GCP_RUNNER_IMAGE_SA
+  script:
+    - runner-image build

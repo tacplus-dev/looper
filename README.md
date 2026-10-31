@@ -506,7 +506,8 @@ loopers' runner (`arm64, autoscale`) never takes. Each job gets a fresh VM, dele
 Its instance group `runner-arm64-build` (size 0 at rest) uses a template that is `runner-arm64-t2a8-v5` in every
 respect but one: the VM has **no service account and no scopes** (`--no-service-account --no-scopes`), so a build
 that reaches the metadata server gets no Google token. fleet-seatrials' `deploy` runner (tag `deploy`) is the same
-stanza with its own instance group (fleet-seatrials#18).
+stanza with its own instance group (fleet-seatrials#18). All three boot the image family `runner-arm64-docker` and
+wait for the VM's readiness marker ([A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job), looper#43).
 
 **The Mac runner** (live since 2026-10-31, for tacplus-dev/tacplus#195): project runner 58154450 of tacplus-dev/build,
 "jody-desktop macOS (Tart)", tag `macos`, protected refs only, untagged jobs off, at most 2 VMs at once. Its Tart
@@ -765,6 +766,8 @@ gcloud compute instance-groups managed set-instance-template runner-arm64-tacplu
 ```
 
 New workers take the new template (no gitlab-runner restart; a running worker keeps build-box until it is deleted).
+If the group already runs `runner-arm64-t2a8-v7` ([A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)),
+make the new template from v7 instead, and name it v8, so the workers keep the image.
 In the next looper job `gcloud auth list` names `looper-runner`, and the `testIamPermissions` of
 `projects/jody1-328023` grants none of `artifactregistry.repositories.uploadArtifacts`, `storage.objects.create`,
 `storage.objects.get`, `storage.objects.list`. build-box itself keeps its roles for whatever else runs as it; the
@@ -776,7 +779,8 @@ The pipeline is gitlab.com/tacplus-dev/looper. Its jobs run on the group runner 
 *tacplus-dev arm64 autoscaler*, whose manager is the GCE VM `gitlab-runner-mgr` (us-central1-b,
 project jody1-328023). The manager runs the docker-autoscaler executor with the googlecloud fleeting
 plugin, driving its own managed instance group `runner-arm64-tacplus` (template
-`runner-arm64-t2a8-v5`, t2a-standard-8): up to 5 workers, size 0 at rest.
+`runner-arm64-t2a8-v5`, t2a-standard-8; `runner-arm64-t2a8-v7`, booting the image family `runner-arm64-docker`, once
+the hub applies [A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)): up to 5 workers, size 0 at rest.
 
 - The workers run as their own Google account, `looper-runner`, which may only pull the tacplus build images
   (once the hub applies [Credentials](#credentials); until then, `build-box`).
@@ -785,7 +789,9 @@ plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 - Changing `max_instances` needs a gitlab-runner restart, and a restart kills running jobs.
 - The project's maximum job timeout is 11h (a run's 10h at most, plus the job's hour).
 - **A fresh VM for every job** (looper#42), as the [build runner](#build-pipeline) has: `capacity_per_instance = 1`
-  and `max_use_count = 1`, so a worker takes one job and is deleted after it, however the job ended.
+  and `max_use_count = 1`, so a worker takes one job and is deleted after it, however the job ended. Applied only
+  after [A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job) (looper#43): until then every
+  job's first attempt would fail.
 
 **The loopers' workers are never reused** (looper#42). On 2026-10-31 three tacplus jobs in a row failed with
 `runner_system_failure` (the docker tunnel lost, then twice `dial ssh: handshake failed`). Their worker,
@@ -833,6 +839,125 @@ What it changes for the loopers:
   for a VM the manager fails to delete.
 - `looper-docker`'s per-container memory limit (looper#41) still protects the job itself. One container over its
   limit is killed alone, and the parent and the other children go on.
+
+### A fresh VM is ready before its job
+
+**What happened** (looper#43). The first job on a newly created looper worker failed while it was being prepared,
+and GitLab's retry then succeeded: `failed to pull image "ghcr.io/tacplus-dev/looper:main" … Canceled: grpc: the
+client connection is closing` (2026-10-31, 16:19Z on VM `b9e6f0110d006657` and 18:15Z on `44eb5314985ace18`). The
+startup-script of template `runner-arm64-t2a8-v5` installed Docker with apt at every boot, then ran `systemctl restart
+docker.socket docker`. The autoscaler connects as soon as SSH answers, so that restart cut the first job's Docker
+connection. With a fresh VM for every job (looper#42) every job's first attempt would hit it, and pay for the apt
+install. Two changes fix it:
+
+- **A readiness gate.** The startup-script, [`runner/startup.sh`](runner/startup.sh), touches
+  `/var/run/runner-ready` as its last step, once Docker is active and answers (it is on tmpfs, so a reboot or an image
+  never carries it). The autoscaler's `instance_ready_command` waits for it, so no job is placed on a half-booted VM.
+  If Docker is not up within ten minutes the command fails and the autoscaler removes the VM.
+- **A pre-baked image**, the family `runner-arm64-docker` in jody1-328023: stock Ubuntu 24.04 arm64 with Docker,
+  the `fleeting` user and the docker.socket drop-in already in place, and apt's daily timers off (a worker lives for
+  one job; the image is rebaked for updates). On it the startup-script installs nothing and restarts nothing: it
+  checks, waits for Docker and marks the VM ready. On a stock image it still installs Docker first, as before, and
+  the gate holds the job back until that is done.
+
+The image is baked by `runner-image build`, the job `runner-image` of the [build pipeline](#build-pipeline)
+(`ci/build.gitlab-ci.yml`), started from the web on main with the input `runner_image: true`, or by its monthly
+schedule. It runs on the build runner, so it never shares a VM with an agent's job. It boots a stock Ubuntu VM
+whose startup-script is `runner/startup.sh` followed by [`runner/bake.sh`](runner/bake.sh) and images the VM's
+stopped disk as a candidate. Then it boots a VM from the candidate, which must be ready without installing
+anything. Only then is the candidate published in the family, as `runner-arm64-docker-<date>-<time>`, and the
+oldest images beyond the newest three are deleted. Every VM it made (labelled `looper=runner-image`) is deleted,
+whatever happened. The job log gives the boot-to-ready time of the new image.
+
+```sh
+runner-image build                 # bake, boot-check and publish (the pipeline's job; the hub's own gcloud login works too)
+runner-image template SOURCE NEW   # instance template NEW: SOURCE, booting the family, with runner/startup.sh as its startup-script
+runner-image measure [N]           # the last N (20) finished jobs: creation to "Running on", and those that failed before it (GITLAB_TOKEN)
+tests/runner-image.test.sh         # startup.sh in an Ubuntu container (ready only once Docker is; a baked image restarts nothing), and build, template and measure against stub gcloud and curl
+```
+
+A template names the **family**, not an image, so a new VM boots the newest image. A rebake needs no template
+change. A new template is needed only when `runner/startup.sh` changes. `runner-image template` copies everything
+from the source template (machine type, disk size, network, service account and scopes, ssh keys), changing only the
+boot disk's image (the family), the `startup-script` (`runner/startup.sh`) and `enable-guest-attributes`.
+**Rollback:** `gcloud compute images deprecate <the newest image> --state=DEPRECATED` points the family at the image
+before it. `set-instance-template` back to the old template returns to the install at boot.
+
+**Applying it** (the hub; `P=jody1-328023`, `PN` its number,
+`BP` tacplus-dev/build's project id). The order matters. Steps 1 to 4 change no running job; step 5 is the one
+restart, and it brings looper#42's keys in only once the image and the gate are in place.
+
+1. **The bake's identity.** It gets a service account that can only manage the bake's own VMs, disks and images, and
+   that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER`
+   is the pool `gitlab-loopers` of [Looper identity](#setting-it-up-the-hub-with-jodys-approval-as-recorded-on-looper28),
+   whose attribute `looper` is `<project id>:<ref>:<protected>:<pipeline source>`. If the build's provider is another
+   pool, use the same attribute in that pool.
+
+   ```sh
+   gcloud iam service-accounts create runner-image --project=$P --display-name="runner VM image bake (looper#43)"
+   gcloud iam roles create runnerImageBaker --project=$P --title="runner image bake (looper#43)" --permissions=\
+   compute.instances.create,compute.instances.get,compute.instances.delete,compute.instances.stop,\
+   compute.instances.setMetadata,compute.instances.setLabels,compute.instances.getGuestAttributes,\
+   compute.instances.getSerialPortOutput,compute.disks.create,compute.disks.get,compute.disks.delete,compute.disks.use,\
+   compute.disks.useReadOnly,compute.disks.setLabels,compute.images.create,compute.images.get,compute.images.list,\
+   compute.images.delete,compute.images.setLabels,compute.images.useReadOnly,compute.images.getFromFamily,\
+   compute.subnetworks.use,compute.subnetworks.useExternalIp,compute.zoneOperations.get,compute.globalOperations.get,\
+   compute.machineTypes.get,compute.zones.get,compute.projects.get
+   cat > runner-image-condition.yaml <<'YAML'
+   title: runner-image only
+   expression: >-
+     !(resource.type in ["compute.googleapis.com/Instance", "compute.googleapis.com/Disk", "compute.googleapis.com/Image"])
+     || resource.name.extract("/instances/{n}").startsWith("runner-image-")
+     || resource.name.extract("/disks/{n}").startsWith("runner-image-")
+     || resource.name.extract("/images/{n}").startsWith("runner-arm64-docker-")
+   YAML
+   gcloud projects add-iam-policy-binding $P --member=serviceAccount:runner-image@$P.iam.gserviceaccount.com \
+     --role=projects/$P/roles/runnerImageBaker --condition-from-file=runner-image-condition.yaml
+   for source in web schedule; do
+     gcloud iam service-accounts add-iam-policy-binding runner-image@$P.iam.gserviceaccount.com --project=$P \
+       --role=roles/iam.workloadIdentityUser \
+       --member="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/attribute.looper/$BP:main:true:$source"
+   done
+   # G and H as in Credentials
+   curl -sfH "$H" -X POST $G/projects/$BP/variables -d key=GCP_RUNNER_IMAGE_SA \
+     --data-urlencode value=runner-image@$P.iam.gserviceaccount.com -d protected=true -d environment_scope=runner-image
+   ```
+
+   This is untested here: no looper may change IAM. If the job is refused a permission, its log names it; add it to
+   the role.
+2. **The image.** Run tacplus-dev/build's pipeline from the web, on main, with `runner_image` true. The job log ends
+   with the image's name and its boot-to-ready time. Then add a schedule on main that sets the input `runner_image`
+   true, monthly (`17 3 1 * *`), so the image keeps up with Ubuntu's and Docker's updates.
+3. **The times before** (for looper#43), in the looper image with the read-only `GITLAB_TOKEN` of
+   [Credentials](#credentials): `docker run --rm -e GITLAB_TOKEN -e RUNNER_IMAGE_RUNNER=57939705
+   ghcr.io/tacplus-dev/looper:main runner-image measure 20`.
+4. **The templates.** One for each runner's instance group, made from the group's current template:
+
+   ```sh
+   cur() { gcloud compute instance-groups managed describe "$1" --project=$P --zone=us-central1-b --format='value(instanceTemplate.basename())'; }
+   runner-image template "$(cur runner-arm64-tacplus)" runner-arm64-t2a8-v7     # v5 today; v6 is the Credentials change's name
+   runner-image template "$(cur runner-arm64-build)" <its next name>            # no service account, as before
+   runner-image template "$(cur <the deploy runner's group>)" <its next name>   # fleet-seatrials' deploy runner
+   gcloud compute instance-groups managed set-instance-template runner-arm64-tacplus --project=$P --zone=us-central1-b \
+     --template=runner-arm64-t2a8-v7      # and the same for the other two groups
+   ```
+
+   New VMs take the new templates (no gitlab-runner restart). A worker already up keeps its old one until it is deleted.
+5. **The gate, then looper#42.** gitlab-runner 16.11 or later (`gitlab-runner --version`). In the last minutes of an
+   hour, once `looper-dispatch status` shows no looper job running and no build or deploy job runs, with the steps of
+   [The loopers' workers are never reused](#infrastructure) (stop, resize `runner-arm64-tacplus` to 0, edit, start).
+   Every runner entry on `gitlab-runner-mgr` (the loopers', the build runner's, the deploy runner's) gets the
+   ready command in `[runners.autoscaler]`, and the loopers' entry gets looper#42's keys in the same edit:
+
+   ```toml
+     [runners.autoscaler]
+       instance_ready_command = "timeout 600 sh -c 'until test -f /var/run/runner-ready && systemctl is-active --quiet docker; do sleep 2; done'"
+   ```
+
+6. **The times after.** Twenty consecutive jobs on fresh VMs, with no preparation failures: `runner-image measure 20`
+   as in step 3, once twenty jobs have finished after step 5. Post both tables on looper#43. A job that failed
+   before "Running on" is listed with its failure reason. Each job's log shows `Running on runner-arm64-tacplus-<id>`
+   on a different instance, and the startup-script's serial output ends with `runner: ready (baked)`.
 
 ## Later
 
