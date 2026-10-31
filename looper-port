@@ -34,6 +34,11 @@
 # no trailer is listed for a person to decide, and the issue is needs-decision,
 # not approved.
 #
+# Provenance (looper#40): SeaBeam's own text in an issue (its commits' titles
+# and trailers) sits between the source-text markers (looper-lib.sh), `<` and
+# `>` escaped, so the looper that works the issue gives it to the model as
+# data, never instructions, though the issue is the looper's.
+#
 # The flood guard (looper#23): a scan that would file more than
 # LOOPER_PORT_MAX_ISSUES (default 5) issues on the targets files none, and
 # opens one needs-decision issue on the looper listing them, once.
@@ -50,7 +55,7 @@
 # LOOPER_PORT_MAX_ISSUES (the flood guard's limit, default 5).
 set -euo pipefail
 
-usage() { sed -n '5,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
@@ -187,8 +192,16 @@ port_entry() { # svc target
 commits_after() { # svc ref branch
   gl "projects/$(project "$1")/repository/compare?from=$2&to=$3" | jq -c '.commits[]'
 }
+# SeaBeam's own text (its commits' titles and trailers) is quoted between the
+# source-text markers, so the looper that works the issue gives it to the model
+# as data, never instructions (looper#40); `<` and `>` in it are escaped, so it
+# cannot end the section early.
+SAFE='def safe: tostring | gsub("<"; "&lt;") | gsub(">"; "&gt;");'
+source_text() { # the text on stdin: SeaBeam's, between the markers
+  source_text_begin seabeam; cat; echo "$SOURCE_TEXT_END"
+}
 commit_list() { # JSON lines of commits: a markdown list
-  jq -r '"- [`\(.short_id)`](\(.web_url)) \(.authored_date[0:10]) \(.title)"'
+  jq -r "$SAFE"'"- [`\(.short_id)`](\(.web_url)) \(.authored_date[0:10]) \(.title | safe)"' | source_text
 }
 # The realign: each commit gets .kind, "ported" (a well-formed Ported-from
 # trailer naming $ORG), "decide" (it names $ORG or has a malformed trailer), or "port".
@@ -199,7 +212,7 @@ classify() { # JSON lines of commits
     else "port" end)}'
 }
 ported_list() { # JSON lines of ported commits: a markdown list, with their trailers
-  jq -r '"- `\(.short_id)` \(.title) (Ported-from: \([(.message // "") | scan("(?:^|\n)Ported-from:[ \t]*([^\\s]+)") | .[0]] | join(", ")))"'
+  jq -r "$SAFE"'"- `\(.short_id)` \(.title | safe) (Ported-from: \([(.message // "") | scan("(?:^|\n)Ported-from:[ \t]*([^\\s]+)") | .[0]] | join(", ") | safe))"' | source_text
 }
 
 # The mark: a "Ported through `<sha>`" line, else the migration commit the

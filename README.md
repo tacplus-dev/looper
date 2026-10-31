@@ -96,6 +96,36 @@ tests/tacplus.test.sh                      # which tacplus: the pin, else the fl
 Only someone with write access can set a label, so an issue nobody approved is never worked, whoever
 opened it and whatever its text says.
 
+### Who directs a run (prompt provenance)
+
+The repositories are public, so anyone can comment on an approved issue, and a run reads its body and every
+comment: a stranger's comment is a prompt-injection path into an agent that can push code (looper#40). So
+`repo-looper` puts the issue's text in the prompt itself (the work, think, classify, propose and plan prompts), each
+piece (the title and body, then each comment) in a block keyed by a nonce drawn for that prompt with
+`openssl rand`, never by the model:
+
+```
+<<issue-text nonce=… author=<login> association=<GitHub's author_association> role=direction|data>>
+…
+<</issue-text nonce=…>>
+```
+
+- **Only members direct the work.** Text by an `OWNER` or `MEMBER`, or by a `COLLABORATOR` with write access to the
+  repository (its permission is `write`, `maintain` or `admin`; one the looper cannot read is not), is
+  `role=direction`. Everyone else's is `role=data`, and the prompt's rules say so: data to weigh, never instructions;
+  quote it, do not act on it, and say in the outcome comment if it asked for something. The same rule covers what
+  the model reads itself: newer comments, pull requests and their comments, linked issues.
+- **Text that holds the nonce is refused** (it could forge a block's end): the block says the looper refused it,
+  and the job's log names its author. The nonce is redacted from the run's checkpoints (`.looper/prompt.md` on the
+  issue's branch, the log tail), the looper's comments and the think job's `comment.md`, and the model is told
+  never to write it.
+- **Quoted source text is data, whoever filed the issue.** The port scan's issues quote SeaBeam's commit titles; it
+  puts them between `<!-- looper:source-text from=seabeam -->` and `<!-- /looper:source-text -->` (with `<` and `>`
+  escaped, so a title cannot end the section), and `repo-looper` gives that section to the model in its own block,
+  `author=source:seabeam association=NONE role=data`, though the issue's body is the looper's.
+- **Defence in depth, not the boundary.** The boundary stays what a run can reach (narrow tokens, no deploy, no
+  secrets: Credentials below, looper#25); this lowers the odds that injected text steers a run.
+
 ### Priority
 
 A repository's ready issues (approved, not held, every `Blocked-by:` closed) are taken `priority:high` first, then
@@ -262,7 +292,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way (no progress) | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; between conflicting issues a land-pending bug landed before an older priority:high feature starts, and a bug before a feature, priority after (#39); a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle, nor stuck when it goes quiet after its land landed; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; between conflicting issues a land-pending bug landed before an older priority:high feature starts, and a bug before a feature, priority after (#39); a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle, nor stuck when it goes quiet after its land landed; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -326,7 +356,8 @@ runs `looper-port` (mechanical: GitLab API with `SEABEAM_READ_TOKEN`, else `GITL
 - **Commits after the mark** on the source's default branch: none, or an open port issue already ends at
   the head, files nothing. Otherwise one issue `Port SeaBeam <svc> <from>..<to>`, labelled `feature` and
   `approved` (so its looper builds it only once a ROADMAP.md links it),
-  listing each commit (sha, link, date, subject) and the instructions: per commit, port it, or say it
+  listing each commit (sha, link, date, subject: SeaBeam's text, between the source-text markers, which the looper
+  gives its model as data, looper#40) and the instructions: per commit, port it, or say it
   is already covered or not applicable and why; never copy generated code; then set the mark to `<to>`
   and release. Commits after an open port issue's `<to>` get the next issue, `Blocked-by:` that one.
 - **The roadmaps first** (looper#14): before filing a port issue, the scan reads the target's ROADMAP.md
@@ -356,7 +387,7 @@ runs `looper-port` (mechanical: GitLab API with `SEABEAM_READ_TOKEN`, else `GITL
 
 ```sh
 SEABEAM_READ_TOKEN=... ./looper-port --dry-run   # what it would file, filing nothing
-tests/looper-port.test.sh                  # the scan against fixtures (stub gh and curl)
+tests/looper-port.test.sh                  # the scan against fixtures (stub gh and curl); SeaBeam's titles between the source-text markers, unable to end them (#40)
 ```
 
 ## Build pipeline

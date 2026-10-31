@@ -4,6 +4,15 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Wrapped issue text when the model reads it again** (2026-10-31, #40): the prompt carries the issue's text in
+  nonce blocks, but a comment posted during the run, a linked issue or a pull request the model reads itself
+  (`gh issue view`) comes unwrapped: there only the prompt's rule (its author's association) stands between it and
+  the run. A `repo-looper --issue-text N` the model calls instead (the same blocks, the run's nonce from its
+  `.nonce`) would carry the provenance to those reads too.
+- **Limit who may comment on the public repositories** (2026-10-31, #40): GitHub's interaction limits (org or
+  repository: collaborators only, renewable for up to six months) would stop strangers' comments at the source,
+  where looper#40 only marks them as data; it also stops legitimate outside reports, so it is Jody's call, maybe only
+  on the repositories whose loopers push.
 - **A land's time across jobs** (2026-10-31, #38): the lander's estimate is the repository's last land that passed
   its gates, kept in `LOOPER_WORK/<repo>/land-seconds`, which a fresh runner VM does not have: a job's first land uses
   `LOOPER_LAND_MINUTES` or the built-in default (70 minutes for tacplus, 30 for the others). Recording each land's

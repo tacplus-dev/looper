@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#39).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#40).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -32,7 +32,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   default (70 minutes for tacplus), fits the job's time left: one that does not is deferred, its issue told and its
   branch left land-pending, and the issue's next run lands it first, as it does a land the job's end cut off, #38);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
-  tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly
+  tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); prompt provenance (#40): every
+  prompt carries the issue's text (title and body, each comment) in blocks keyed by a per-prompt nonce (`openssl rand`)
+  with author and association, only an OWNER's or MEMBER's text, or a write COLLABORATOR's, directing the run and the
+  rest, with the port scan's quoted SeaBeam text (source-text markers), data; text holding the nonce refused, the
+  nonce redacted from what leaves the job; the nightly scan; the hourly
   SeaBeam port scan (stratum only, #5), which never ports back a SeaBeam commit
   trailered `Ported-from: tacplus-dev/<repo>@<sha>` (the realign), sends one that names tacplus-dev without it to
   `needs-decision`, and files nothing past a flood guard of 5 issues (#23); the `tacplus` wrapper with GitHub credentials for its container
@@ -67,7 +71,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   children (#32) are tested against a stub repository but not yet seen end to end on a real repository (they run
   once the image from main is published and a repository has two independent ready issues); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
-  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); no release line yet
+  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); text the model reads itself during a run (a newer comment, a
+  pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); no release line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`

@@ -35,6 +35,8 @@ LABEL org.opencontainers.image.title="looper" \
       org.opencontainers.image.source="https://github.com/tacplus-dev/looper" \
       org.opencontainers.image.licenses="Apache-2.0"
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
+# openssl: the nonce of each prompt (repo-looper, looper#40).
+RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
 COPY repo-looper looper-port looper-dispatch looper-build looper-identity tacplus looper-smoke /usr/local/bin/
