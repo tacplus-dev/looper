@@ -14,6 +14,7 @@ Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 - The kicker runs as a scheduled GitLab pipeline; nothing on the Mac (#24)
 - Retire GitHub Actions in every repo; a gate refuses any workflow file (#18, after #17)
 - Build pipeline: (repo, commit) → pinned build image, no agent, read-only source → pass/fail + image (#17)
+- Prompt provenance: issue and PR text in per-run nonce blocks; only members' text directs a run (#40) (Jody, 2026-10-31)
 - Build pipeline: a manual macOS smoke job on the Mac runner (tag `macos`, Tart VM), the first piece of tacplus#195's macOS builds (#36) (Jody, 2026-10-30)
 - Looper image separate from the build image; branch → start a build → land on main only on a passing build (#15, after #17)
 - Loopers keep STATE/HISTORY/PROPOSALS, never ROADMAP; CI check for the four files in every repo (#13)
