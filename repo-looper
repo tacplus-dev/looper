@@ -93,9 +93,10 @@
 # pushed nothing, looper#22) gets those lines in its body and stays approved,
 # so it is worked again once they close. A run that reached its limit, that
 # ended with its land queued (the parent lands it), or that ended early having
-# made progress (a fix landed, a new step checkpointed; looper#34) says what is
-# done and what is left and stays approved: the next run resumes from its
-# branch. Anything else (idle, no progress) is looper:stuck, for a person.
+# made progress (a fix landed, a new step checkpointed; looper#34), or that went
+# idle after its fix landed (looper#37) says what is done and what is left and
+# stays approved: the next run resumes from its branch. Anything else (idle
+# with nothing landed or queued, no progress) is looper:stuck, for a person.
 #
 # The planning files (looper#13): before the model runs, a missing STATE.md,
 # PROPOSALS.md or HISTORY.md is created on main from its template in
@@ -1010,7 +1011,8 @@ EOF
 }
 
 # A child's outcome, for its parent (looper#32): closed, blocked,
-# needs-decision, proposed, timeout, land-pending, ended (resumes), stuck or job-gone.
+# needs-decision, proposed, timeout, land-pending, landed or ended (resumes), stuck or
+# job-gone.
 report() { # issue outcome
   mkdir -p "$WORK/results"; echo "$2" > "$WORK/results/$1"
 }
@@ -1203,6 +1205,8 @@ $(sed 's/^/> /' "$run/step")"
   # An outcome it wrote that was not taken (a Blocked-by naming a closed issue, or this one) is for a person.
   [[ ! -s "$run/outcome" ]] || progress=""
   if [[ -n "$timed_out" ]]; then ended="The run reached its time limit ($(hours "$limit")) before finishing."
+  elif [[ "$stopped" == idle && -n "$head_after" && -n "$progress" ]]; then
+    ended="The run went idle after its fix landed: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ "$stopped" == idle ]]; then ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   else ended="The run ended before finishing (exit $rc)."; fi
   if [[ -n "$pending" ]]; then
@@ -1216,9 +1220,12 @@ This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run rec
     if [[ -e "$LANDS/$n.rc" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
     return 0
   fi
-  if [[ -n "$timed_out" ]] || [[ "$stopped" != idle && -n "$progress" ]]; then
+  # A fix landed is progress however the run ended: one that went idle waiting
+  # on its land after the land was done is not stuck (looper#37).
+  if [[ -n "$timed_out" ]] || [[ -n "$progress" && ( "$stopped" != idle || -n "$head_after" ) ]]; then
     local more=""
     if [[ -n "$timed_out" ]]; then report "$n" timeout; more=" A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time."
+    elif [[ -n "$head_after" ]]; then report "$n" landed
     else report "$n" ended; fi
     gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$ended${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after").} $where
 

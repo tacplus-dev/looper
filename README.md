@@ -185,7 +185,7 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   (the checkout's pre-push hook, which `--no-verify` skips, as the ROADMAP.md guard). The looper's own commits
   (planning files, `HISTORY.md`) take the same lock.
 - **The parent supervises:** as each child ends it logs its outcome (`#N: closed`, `blocked`, `needs-decision`,
-  `proposed`, `timeout`, `land-pending`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
+  `proposed`, `timeout`, `land-pending`, `landed`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
   plans again, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
   as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
   others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.
@@ -238,12 +238,13 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | ended (its limit, or earlier) with its land queued or running (looper#34) | the same, and the parent lands it after the run and comments what came of it (landed, with main's range, or why not); it stays `approved` |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |
-| went idle | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
+| went idle after its fix landed: waiting on a land that was done (looper#37) | as an early end with progress: a comment with main's range and its last checkpoint; it stays `approved` and the next run comments and closes |
+| went idle (nothing landed or queued) | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
 | lost its job (GitLab no longer runs it, looper#21) | nothing: its work is checkpointed and the job's retry resumes it |
 | ended any other way (no progress) | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle, nor stuck when it goes quiet after its land landed; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files

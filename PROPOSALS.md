@@ -190,6 +190,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   the build; `smoke: true`: only `macos-smoke`) is reviewed by hand. GitLab's CI lint (`POST /projects/:id/ci/lint`,
   `dry_run`) with a read token in the image's CI, or a small rules evaluator in a test, would catch a rule that lets a
   smoke run report a status or a push create a pipeline.
+- **Close an idle-after-landed issue in the same run** (2026-10-31, #37): a run that goes idle after its fix landed
+  now stays `approved` and the next run only comments and closes, a whole run (worktree, prompt, model) for two
+  `gh` calls. When the run's last checkpoint says only "comment and close" is left, the looper could post the
+  landed range and close it itself; it needs a reliable reading of the checkpoint (a structured "left:" field
+  rather than free text). Also open: an idle run that only checkpointed a new step, nothing landed or queued, is
+  still `looper:stuck` (#34's rule); if headless sessions going quiet is the harness, not the model, it could
+  resume instead.
 
 ## Promoted / declined
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`

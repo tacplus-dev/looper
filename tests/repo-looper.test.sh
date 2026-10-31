@@ -1290,6 +1290,34 @@ closed 4
 [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
 pass
 
+# A model that lands detached, ends its turn waiting on it and goes quiet
+# (looper#37, seen on #36) went idle after its fix landed: not stuck. The issue
+# says what landed and stays approved, and the next run comments and closes.
+scenario idle-after-landed
+cat > "$FIX/claude.sh" <<'EOS'
+echo 4 > f-4.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "fixed; left: land, comment, close"
+nohup "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'sleep 2' > "$FIX/land-4" 2>&1 &
+echo "The land is queued; waiting on it."
+until grep -q "landed on main" "$FIX/land-4"; do sleep 0.2; done
+sleep 60; touch "$FIX/outlived"
+EOS
+start=$SECONDS
+run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 30 )) || fail "the idle model was not stopped"
+[[ ! -e "$FIX/outlived" ]] || fail "the model outlived its idle stop"
+[[ "$(landed f-4.txt)" == 4 ]] || fail "not landed: $(origin log --oneline main)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+c="$(cat "$FIX/comments")"
+has "$c" "after its fix landed"; has "$c" "It landed main "; has "$c" "the next run resumes"
+lacks "$c" "looper:stuck"
+has "$OUT" "#4: landed"
+: > "$FIX/claude.sh"; close_it
+run
+closed 4
+has "$(history)" "looper issue Issue 4 (#4)"
+pass
+
 # In a GitLab job no other child starts that would outlast the job, less the
 # hour it keeps for itself, counted from the job's start: its own issue always
 # does (the job was sized for it). With the default limits, the job the plan
