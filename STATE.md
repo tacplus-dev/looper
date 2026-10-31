@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#40).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#41).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -17,8 +17,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   its container goes on) checkpoints and stops within one poll, pushing and commenting nothing, so it cannot race
   its retry (#21); each repository's looper job is a parent that runs a child per issue, in parallel when the work
   allows (#32): it plans from the issues' `Blocked-by` lines, the areas the model says each will touch (paths,
-  generated outputs, contracts, other conflicts), between issues that conflict the rank, not the order taken (#39): a land-pending one first (landed before any conflicting issue starts), then a bug before a feature, then priority, then age, the other waiting even for one that waits too; the runner's CPU and memory and the job's remaining time (from the job's start; the job sized by
-  `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33); a child's limit is capped at the job's deadline, its end less an hour, so an issue's `Timeout:` grown after the job was sized stops by itself, checkpointed, not killed by GitLab, and the issue is told, #35, logs
+  generated outputs, contracts, other conflicts), between issues that conflict the rank, not the order taken (#39): a land-pending one first (landed before any conflicting issue starts), then a bug before a feature, then priority, then age, the other waiting even for one that waits too; the runner's CPU and memory (4 GB a child, 12 in a repository whose gates run Kani, #41) and the job's remaining time (from the job's start; the job sized by
+  `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33); a child's limit is capped at the job's deadline, its end less an hour, so an issue's `Timeout:` grown after the job was sized stops by itself, checkpointed, not killed by GitLab, and the issue is told, #35, each container a child's model starts (`docker run`, `tacplus`) limited to the child's memory without swap by
+  `looper-docker`, the model's `docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone, not the VM (#41); logs
   the plan and its reasons (job log, `looper-runs/<time>-plan/`, the issues), runs each child in its own worktree and
   branch, serializes landing (`repo-looper --land`: lock, rebase, gates, push; a direct push to main from a
   worktree is refused), which the parent owns (#34): `--land` queues with the parent's lander, so a land still
@@ -71,7 +72,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   children (#32) are tested against a stub repository but not yet seen end to end on a real repository (they run
   once the image from main is published and a repository has two independent ready issues); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
-  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); text the model reads itself during a run (a newer comment, a
+  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a child's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the land's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); no release line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project

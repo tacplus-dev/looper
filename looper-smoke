@@ -8,7 +8,7 @@
 # host's docker socket and LOOPER_WORK mounted at the same path (the wrapper runs
 # the build image as a sibling container), and the network (the release).
 set -euo pipefail
-for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-port looper-dispatch looper-build looper-identity tacplus; do
+for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-port looper-dispatch looper-build looper-identity tacplus looper-docker; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
 done
 head -c 2 "$(command -v tacplus)" | grep -q '#!' || { echo "tacplus must be the wrapper script, not a binary" >&2; exit 1; }

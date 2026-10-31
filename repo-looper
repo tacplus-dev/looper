@@ -31,12 +31,16 @@
 # a feature, then priority, then age; the other waits, even for one that waits
 # too, and a running issue is never pre-empted. As many as the runner's CPU and memory hold
 # (LOOPER_CHILD_CPUS, default 2, and LOOPER_CHILD_MEMORY_GB, default 4, per
-# child), never more than LOOPER_MAX_CHILDREN (default 6, a safety ceiling), and
+# child; LOOPER_KANI_MEMORY_GB, default 12, in a repository whose gates run Kani),
+# never more than LOOPER_MAX_CHILDREN (default 6, a safety ceiling), and
 # in a GitLab job none whose limit outlasts the job (CI_JOB_TIMEOUT from the
 # job's start, less an hour). The plan and its reasons go to the job's log and its record
 # (LOOPER_RUNS/<time>-plan), and to each issue it started beside others or held
-# back. Each issue is a child: this same script (--child N) running the
-# per-issue flow below in its own worktree, LOOPER_WORK/NAME/worktrees/N, on
+# back. Each container a child's model starts (docker run, tacplus) is limited
+# to the child's memory, without swap (looper#41): the model's docker is
+# looper-docker, so one over it is OOM-killed alone, not the runner VM. Each
+# issue is a child: this same script (--child N) running the per-issue flow
+# below in its own worktree, LOOPER_WORK/NAME/worktrees/N, on
 # its own branch looper/NAME-N. Children land one at a time, by the parent
 # (looper#34): --land queues the child's commits with the parent's lander, which
 # takes the repository's landing lock, rebases onto the current main, re-runs
@@ -146,7 +150,7 @@
 # default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_LAND_MINUTES (a land's
 # time before one is recorded), LOOPER_LAND_MARGIN (seconds kept after a land, default 600), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
-# LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_MAX_CHILDREN, LOOPER_JOB_MAX_HOURS (the longest
+# LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_KANI_MEMORY_GB, LOOPER_MAX_CHILDREN, LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
@@ -799,12 +803,20 @@ model_env() { # the env(1) arguments that withhold them
 # Runs the model with the watchdog beside it. A run dir with an issue is an
 # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the
 # watchdog also ends it once the issue is done.
+#
+# A child's model (LOOPER_CHILD_MEMORY set, by the parent's plan) finds
+# looper-docker first on its PATH as `docker` (looper#41): each container it
+# starts, itself or through tacplus, is limited to the child's memory.
 run_claude() { # prompt-file log-file seconds run-dir [issue]
-  local rc=0 dir pid fmt watcher k withheld
+  local rc=0 dir pid fmt watcher k withheld limited=()
   mapfile -t withheld < <(model_env)
   dir="$(mktemp -d)"; mkfifo "$dir/out"
+  if [[ -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
+    mkdir "$dir/bin"; ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
+    limited=(PATH="$dir/bin:$PATH" LOOPER_REAL_DOCKER="$(command -v docker || true)")
+  fi
   jq -R -r --unbuffered "$RENDER" < "$dir/out" > "$2" & fmt=$!
-  ( cd "$CHECKOUT" && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
+  ( cd "$CHECKOUT" && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" "${limited[@]+"${limited[@]}"}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
       --model "$MODEL" --permission-mode acceptEdits \
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!
@@ -1260,6 +1272,15 @@ EOF
   fi
 }
 
+# Rule 4's word on the child's memory (looper#41), when the parent set it.
+memory_rule() {
+  [[ -n "${LOOPER_CHILD_MEMORY:-}" ]] || return 0
+  printf '\n   %s\n   %s\n   %s' \
+    "Containers you start (\`docker run\`, \`tacplus\`) are limited to $LOOPER_CHILD_MEMORY of memory, without swap: your" \
+    "share of the runner, beside the other children. One over it is OOM-killed (exit 137), and a larger --memory is" \
+    "refused. Never run a step that needs more ad hoc (\`cargo kani\`, say): leave Kani to the land's gates."
+}
+
 # A child's outcome, for its parent (looper#32): closed, blocked,
 # needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), stuck or
 # job-gone.
@@ -1341,7 +1362,7 @@ Rules:
    commit or land; you do.
 4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
-   reply ends the run.
+   reply ends the run.$(memory_rule)
 5. Commit on $BRANCH with a message that says why and ends with
    \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
    It queues your commits with the looper, which lands one at a time: under the repository's landing lock it
@@ -1608,7 +1629,7 @@ Rules:
 3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same checkout.
 4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
-   reply ends the run.
+   reply ends the run.$(memory_rule)
 5. Leave your change in this checkout (committing it locally is fine); do not push and do not open a pull
    request. After you, the looper runs the gates on it, and $REPO-looper[bot] opens the pull request, which
    GitHub squash-merges once the required check tacplus-dev/build passes. Never commit secrets.
@@ -1744,19 +1765,37 @@ PR
 
 # --- the parent (looper#32) ----------------------------------------------------
 
+# A child's memory, in GB (looper#41): LOOPER_CHILD_MEMORY_GB, default 4; in a
+# repository whose gates run Kani (the word in a justfile, a Makefile or a CI
+# workflow on main), at least LOOPER_KANI_MEMORY_GB, default 12: Kani's proofs
+# need many GB (tacplus#196). Prints "<GB>[ (why)]".
+child_memory() {
+  local gb="${LOOPER_CHILD_MEMORY_GB:-4}" kani="${LOOPER_KANI_MEMORY_GB:-12}"
+  if git -C "$MAIN_CHECKOUT" grep -qiwI kani -- justfile '*/justfile' '*.just' Makefile '.github/workflows/*' 2>/dev/null &&
+     awk -v a="$gb" -v b="$kani" 'BEGIN { exit !(b > a) }'; then
+    echo "$kani (its gates run Kani)"
+  else echo "$gb"; fi
+}
+
+# The limit of each container a child starts (looper#41), as a docker size: its
+# memory in MB, at least docker's 6. The parent gives it to its children as
+# LOOPER_CHILD_MEMORY; run_claude puts looper-docker in front of the model's docker.
+child_memory_size() { child_memory | awk '{ m = int($1 * 1024); if (m < 6) m = 6; printf "%dm\n", m }'; }
+
 # How many children the runner holds: its CPUs over LOOPER_CHILD_CPUS and its
-# memory over LOOPER_CHILD_MEMORY_GB, at least one, at most LOOPER_MAX_CHILDREN
+# memory over a child's (child_memory), at least one, at most LOOPER_MAX_CHILDREN
 # (a safety ceiling, not the plan). Prints "<n> <why>".
 capacity() {
-  local cpus mem_kb
+  local cpus mem_kb pm why
   cpus="$(nproc 2>/dev/null || echo 1)"
   mem_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null)"; mem_kb="${mem_kb:-0}"
-  awk -v c="$cpus" -v m="$mem_kb" -v pc="${LOOPER_CHILD_CPUS:-2}" -v pm="${LOOPER_CHILD_MEMORY_GB:-4}" -v max="${LOOPER_MAX_CHILDREN:-6}" 'BEGIN {
+  read -r pm why <<<"$(child_memory)"
+  awk -v c="$cpus" -v m="$mem_kb" -v pc="${LOOPER_CHILD_CPUS:-2}" -v pm="$pm" -v why="${why:+ $why}" -v max="${LOOPER_MAX_CHILDREN:-6}" 'BEGIN {
     gb = m / 1048576; n = int(c / pc); k = int(gb / pm)
     if (k < n) n = k
     if (max > 0 && max < n) n = max
     if (n < 1) n = 1
-    printf "%d %d CPUs at %s a child, %.0f GB at %s GB a child, ceiling %s\n", n, c, pc, gb, pm, max
+    printf "%d %d CPUs at %s a child, %.0f GB at %s GB a child%s, ceiling %s\n", n, c, pc, gb, pm, why, max
   }'
 }
 
@@ -1924,6 +1963,8 @@ parent() { # [issue first]
     fi
     [[ "$started" != " " || -z "$first" || "${cands[0]}" == "$first" ]] || log "#$first is no longer ready; working #${cands[0]}, the next ready issue"
     read -r cap why <<<"$(capacity)"
+    # Each child's containers are limited to its share (looper#41).
+    LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
     free=$(( cap - ${#pids[@]} ))
     plan_dir="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-plan"; mkdir -p "$plan_dir"
     # The model judges the areas only when there is something to decide.

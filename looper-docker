@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-docker: the `docker` a child's model sees (looper#41). The parent
+# sizes each child's memory in its plan (repo-looper's LOOPER_CHILD_MEMORY_GB)
+# and gives the child LOOPER_CHILD_MEMORY, a docker size; repo-looper puts this
+# script first on the model's PATH as `docker`, with LOOPER_REAL_DOCKER the
+# docker it stands in front of. Without it one container (cargo kani on a
+# kitchensink's proofs, tacplus#196) took all of the runner VM's memory, and
+# the VM went down with the parent, the lander and every other child.
+#
+#   docker run|create, docker container run|create
+#       gets --memory LOOPER_CHILD_MEMORY and --memory-swap the same (no swap
+#       beyond it), unless it asks for less: --memory (-m) or --memory-swap
+#       above the limit, 0 or -1 (no limit) is refused, exit 125. A container
+#       over its limit is OOM-killed on its own (exit 137); the rest go on.
+#   docker update
+#       the same refusals for --memory and --memory-swap.
+#   anything else, and every command without LOOPER_CHILD_MEMORY
+#       passed through as it is.
+#
+# The limit is per container, not per child: a child running two at once can
+# use twice its share. Nor is it a boundary: the model can run the real docker
+# by its path, `docker compose` and the containers of `docker build` are not
+# limited, and what runs in the job's own container is not (PROPOSALS.md).
+set -euo pipefail
+
+me="$(readlink -f "${BASH_SOURCE[0]}")"
+real="${LOOPER_REAL_DOCKER:-}"
+if [[ -z "$real" ]]; then
+  # The next docker on the PATH that is not this script.
+  while read -r d; do
+    [[ "$(readlink -f "$d")" == "$me" ]] || { real="$d"; break; }
+  done < <(type -aP docker)
+fi
+[[ -n "$real" ]] || { echo "docker: not found (looper-docker stands in front of it)" >&2; exit 127; }
+limit="${LOOPER_CHILD_MEMORY:-}"
+[[ -n "$limit" ]] || exec "$real" "$@"
+
+refuse() { echo "docker (looper): $*" >&2; exit 125; }
+
+# A docker size in bytes (docker's RAMInBytes: 1024 multiples, b k m g t p,
+# an optional i and b), else nothing.
+bytes() {
+  awk -v s="$1" 'BEGIN {
+    s = tolower(s)
+    if (!match(s, /^[0-9]+(\.[0-9]+)? ?[kmgtp]?i?b?$/)) exit 1
+    n = s; sub(/[ kmgtpib]+$/, "", n); u = substr(s, length(n) + 1); gsub(/[ ib]/, "", u)
+    m = 1; if (u == "k") m = 1024; else if (u == "m") m = 1024^2; else if (u == "g") m = 1024^3
+    else if (u == "t") m = 1024^4; else if (u == "p") m = 1024^5
+    printf "%.0f\n", n * m
+  }'
+}
+max="$(bytes "$limit")" || refuse "LOOPER_CHILD_MEMORY=$limit is not a memory size"
+
+# A --memory or --memory-swap value: refused above the limit or unlimited.
+check() { # flag value
+  local b
+  [[ "$2" != -1 ]] || refuse "$1 -1 (unlimited swap) is above this child's limit, $limit: a container is limited to $limit, without swap (looper#41)"
+  b="$(bytes "$2")" || refuse "$1 $2 is not a memory size"
+  (( b > 0 )) || refuse "$1 $2 (no limit) is above this child's limit, $limit (looper#41)"
+  (( b <= max )) || refuse "$1 $2 is above this child's limit, $limit: a container is limited to $limit, without swap; leave a step that needs more (Kani, say) to the land's gates (looper#41)"
+}
+
+# The global options before the command, and those of them that take a value.
+args=("$@"); i=0
+while (( i < ${#args[@]} )); do
+  case "${args[i]}" in
+    --config|-c|--context|-H|--host|-l|--log-level|--tlscacert|--tlscert|--tlskey) i=$(( i + 2 )) ;;
+    -*) i=$(( i + 1 )) ;;
+    *) break ;;
+  esac
+done
+cmd="${args[i]:-}"; at=$(( i + 1 ))
+if [[ "$cmd" == container ]]; then cmd="${args[at]:-}"; at=$(( at + 1 )); fi
+case "$cmd" in run|create|update) ;; *) exec "$real" "$@" ;; esac
+
+# The command's options, up to its first argument (the image, or for update a
+# container): --memory and --memory-swap checked. The options that take no
+# value are listed; every other one takes one (docker run --help).
+bool_long=" --detach --interactive --tty --rm --privileged --init --publish-all --read-only --oom-kill-disable
+  --no-healthcheck --sig-proxy --disable-content-trust --quiet --help --use-api-socket "
+bool_short="ditPq"
+mem="" swap="" j="$at"
+while (( j < ${#args[@]} )); do
+  a="${args[j]}"; j=$(( j + 1 ))
+  case "$a" in
+    --) break ;;
+    --memory=*) mem="${a#*=}"; check --memory "$mem" ;;
+    --memory-swap=*) swap="${a#*=}"; check --memory-swap "$swap" ;;
+    --memory|--memory-swap)
+      v="${args[j]:-}"; j=$(( j + 1 ))
+      if [[ "$a" == --memory ]]; then mem="$v"; else swap="$v"; fi
+      check "$a" "$v" ;;
+    --*=*) ;;
+    --*) [[ "$bool_long" == *" $a "* ]] || j=$(( j + 1 )) ;;
+    -?*)
+      # A cluster of short options: -it, -m1g, -dm 1g.
+      s="${a#-}"
+      while [[ -n "$s" ]]; do
+        c="${s:0:1}"; s="${s:1}"
+        [[ "$bool_short" == *"$c"* ]] && continue
+        if [[ -n "$s" ]]; then v="$s"; s=""; else v="${args[j]:-}"; j=$(( j + 1 )); fi
+        if [[ "$c" == m ]]; then mem="${v#=}"; check -m "$mem"; fi
+      done ;;
+    *) break ;;
+  esac
+done
+
+[[ "$cmd" != update ]] || exec "$real" "$@"
+add=()
+[[ -n "$mem" ]] || { mem="${swap:-$limit}"; add+=(--memory "$mem"); }
+[[ -n "$swap" ]] || add+=(--memory-swap "$mem")
+exec "$real" "${args[@]:0:at}" "${add[@]+"${add[@]}"}" "${args[@]:at}"

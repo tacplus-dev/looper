@@ -4,6 +4,19 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A child's memory as one cgroup** (2026-10-31, #41): `looper-docker` limits each container a child's model
+  starts to the child's memory, so two at once can use twice its share, and `docker compose`, `docker build`'s
+  containers, the real docker by its path and a process the model runs in the job's own container (`cargo kani`
+  without docker) are not limited at all. A cgroup per child (the job's container with a writable cgroup v2
+  subtree, or the runner's `docker` config giving the job container a memory limit and each child a
+  `--cgroup-parent`) would bound the child's whole tree; `looper-docker` could then pass `--cgroup-parent` too.
+- **Room for the land's gates** (2026-10-31, #41): the lander runs a land's gates in the parent, unlimited, while
+  the children go on; the child whose land it is waits meanwhile, so its share is mostly free, but a gate heavier
+  than a child (Kani) can still press the VM. The capacity could keep one child's memory for the lander, or the
+  lander run the gates through `looper-docker` with a land's own limit.
+- **Size a child by its issue, not its repository** (2026-10-31, #41): every child of a repository whose gates run
+  Kani gets 12 GB, even one that changes only docs. The plan's model, which already names each issue's areas,
+  could say which need the heavy steps, and the plan size only those.
 - **Wrapped issue text when the model reads it again** (2026-10-31, #40): the prompt carries the issue's text in
   nonce blocks, but a comment posted during the run, a linked issue or a pull request the model reads itself
   (`gh issue view`) comes unwrapped: there only the prompt's rule (its author's association) stands between it and

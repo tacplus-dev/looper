@@ -1252,6 +1252,27 @@ has "$OUT" "ceiling 1)"
 [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
 pass
 
+# A child's containers get the plan's memory for it (looper#41, tacplus#196):
+# the model's docker is looper-docker, with the child's LOOPER_CHILD_MEMORY,
+# and the prompt says so; a repository whose gates run Kani gets
+# LOOPER_KANI_MEMORY_GB a child, and the plan sizes the children by it.
+scenario child-memory
+echo 'echo "$LOOPER_CHILD_MEMORY $(readlink -f "$(command -v docker)")" > "$FIX/mem"' > "$FIX/claude.sh"
+drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=2
+[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "the child's docker: $(cat "$FIX/mem")"
+has "$OUT" "plan: plan for alpha: capacity "; has "$OUT" " GB at 2 GB a child, ceiling"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "Containers you start (\`docker run\`, \`tacplus\`) are limited to 2048m of memory"
+has "$p" "leave Kani to the land's gates"
+printf 'gates:\n    cargo kani --tests\n' > "$FIX/seed/justfile"
+git -C "$FIX/seed" add justfile && git -C "$FIX/seed" commit -qm kani && git -C "$FIX/seed" push -q origin main
+issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
+drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=2 LOOPER_KANI_MEMORY_GB=3
+[[ "$(cat "$FIX/mem")" == "3072m $ROOT/looper-docker" ]] || fail "the Kani child's docker: $(cat "$FIX/mem")"
+has "$OUT" " GB at 3 GB a child (its gates run Kani), ceiling"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "limited to 3072m of memory"
+pass
+
 # Between conflicting issues the plan ranks (looper#39, tacplus#215): a
 # land-pending issue first, then a bug before a feature, then priority, then
 # age. A land-pending bug and an older, ready feature that conflict: the bug

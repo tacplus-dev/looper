@@ -39,6 +39,6 @@ RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-inst
 RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
-COPY repo-looper looper-port looper-dispatch looper-build looper-identity tacplus looper-smoke /usr/local/bin/
+COPY repo-looper looper-port looper-dispatch looper-build looper-identity tacplus looper-smoke looper-docker /usr/local/bin/
 ENV LOOPER_IMAGE=1 LOOPER_TACPLUS_LINE=${TACPLUS_LINE} LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work
