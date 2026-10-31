@@ -136,7 +136,7 @@ push_fix() { # a claude.sh line: commit and land a fix
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
-      -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL \
+      -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
@@ -601,6 +601,7 @@ scenario roadmap-refused
 templates
 echo 'Jody wrote this.' > "$FIX/seed/ROADMAP.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -q -m roadmap; git -C "$FIX/seed" push -q origin main
 echo 'echo "looper wrote this" >> ROADMAP.md && git commit -qam "roadmap edit"' >> "$FIX/claude.sh"
+step "roadmap edited"   # the commit on the issue's branch on origin does not let it past the guard
 echo "$LAND"' > /dev/null 2> "$FIX/refused" && echo pushed >> "$FIX/refused"' >> "$FIX/claude.sh"
 echo 'git push -q origin HEAD:main 2>> "$FIX/refused" && echo pushed >> "$FIX/refused"' >> "$FIX/claude.sh"
 echo 'git push -q origin HEAD:refs/heads/other 2>> "$FIX/refused" && echo pushed >> "$FIX/refused"' >> "$FIX/claude.sh"
@@ -1375,6 +1376,81 @@ push_fix
 run CI_JOB_TIMEOUT=21600 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 2h"
 lacks "$(cat "$FIX/comments")" "capped"
+pass
+
+# The lander budgets against the job's end (looper#38, tacplus#215): a queued
+# land is started only if the repository's last land (else LOOPER_LAND_MINUTES)
+# fits the job's time left, less LOOPER_LAND_MARGIN. With room for one land,
+# the second is deferred: its issue says so and stays approved, its branch
+# keeps the land, and the next job lands it first, before its model runs.
+scenario land-deferred
+issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+areas "touches 4 a.txt" "touches 5 b.txt"
+cat > "$FIX/claude.sh" <<'EOS'
+echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
+"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "fixed; left: land, comment, close"
+if "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates 'sleep 25' > "$FIX/land-$ISSUE" 2>&1; then
+  jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+fi
+EOS
+# The job's end is 40 seconds past the margin: the first land fits, the second
+# (25 seconds, as the first took) no longer does.
+drain "${ROOM[@]}" CI_JOB_TIMEOUT=3660 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_TIMEOUT=50 LOOPER_LAND_MARGIN=3620 LOOPER_LAND_MINUTES=0
+[[ "$(landed f-4.txt)" == 4 ]] || fail "#4 not landed: $(origin log --oneline main); $OUT"
+[[ -z "$(landed f-5.txt)" ]] || fail "#5 landed past the job's budget: $OUT"
+closed 4
+has "$OUT" "#5: deferred to the next job"; has "$OUT" "#5: land-deferred"
+[[ "$(labels alpha 5)" == approved,bug ]] || fail "labels of #5: $(labels alpha 5)"
+c="$(grep '^alpha#5 ' "$FIX/comments")"
+has "$c" "land deferred to the next job: not enough time left in this one"
+lacks "$c" "looper:stuck"
+has "$(cat "$FIX/land-5")" "deferred to the next job"
+has "$(origin show looper/alpha-5:.looper/land)" "state=deferred"
+# The next job (a fresh runner) lands it first; its model then closes the issue.
+rm -rf "$FIX/work"
+cat > "$FIX/claude.sh" <<'EOS'
+git fetch -q origin && git show origin/main:f-5.txt > "$FIX/saw-5"
+jq ".state = \"CLOSED\"" "$FIX/issues/alpha-5.json" > "$FIX/x-5" && mv "$FIX/x-5" "$FIX/issues/alpha-5.json"
+EOS
+drain "${ROOM[@]}"
+[[ "$(landed f-5.txt)" == 5 ]] || fail "#5 not landed by the next job: $(origin log --oneline main); $OUT"
+[[ "$(cat "$FIX/saw-5")" == 5 ]] || fail "#5 was not landed before its model ran"
+closed 5
+has "$(grep '^alpha#5 ' "$FIX/comments")" "landed it first"
+has "$(history)" "looper issue Issue 5 (#5, "
+pass
+
+# A land cut off anyway (the job killed while its gates run) leaves its branch
+# land-pending: the next job lands it first and says on the issue what came of
+# the land the killed job never reported.
+scenario land-cut-off
+cat > "$FIX/claude.sh" <<'EOS'
+echo 4 > f-4.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "fixed; left: land, comment, close"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates '[ -e "$FIX/cut" ] || sleep 60'
+EOS
+FIX="$FIX" TMP="$TMP" ROOT="$ROOT" setsid bash -c "$(declare -f looper); looper -- --repo alpha" > "$FIX/job1" 2>&1 & job=$!
+for i in $(seq 300); do grep -q "landing #4 (" "$FIX/job1" && break; sleep 0.1; done
+has "$(cat "$FIX/job1")" "landing #4 ("
+sleep 1
+while pkill -KILL -s "$job" 2>/dev/null; do sleep 0.2; done
+wait "$job" 2>/dev/null || true
+touch "$FIX/cut"
+[[ -z "$(landed f-4.txt)" ]] || fail "landed before the kill"
+has "$(origin show looper/alpha-4:.looper/land)" "state=queued"
+# The next job, on a fresh runner, with the label cleared (looper#20).
+rm -rf "$FIX/work"
+jq '.labels |= map(select(.name != "looper:in-progress"))' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+cat > "$FIX/claude.sh" <<'EOS'
+git fetch -q origin && git show origin/main:f-4.txt > "$FIX/saw-4"
+EOS
+close_it
+drain
+[[ "$(landed f-4.txt)" == 4 ]] || fail "not landed by the next job: $(origin log --oneline main); $OUT"
+[[ "$(cat "$FIX/saw-4")" == 4 ]] || fail "not landed before the model ran"
+closed 4
+c="$(cat "$FIX/comments")"
+has "$c" "was cut off"; has "$c" "landed it first"
 pass
 
 # --- the think job (looper#28): no identity, nothing written, the outcome --------

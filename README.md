@@ -184,8 +184,20 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   uncommitted change: broken work never lands. A push to main from a child's worktree any other way is refused
   (the checkout's pre-push hook, which `--no-verify` skips, as the ROADMAP.md guard). The looper's own commits
   (planning files, `HISTORY.md`) take the same lock.
+- **A land starts only if it can finish before the job ends** (looper#38, tacplus#215: a land started with 65
+  minutes left after a 67-minute one was killed with the job, and its issue never heard). In a GitLab job the
+  lander compares the job's time left (`CI_JOB_TIMEOUT` from its start) with what a land takes: the repository's
+  last land that passed its gates (kept with the checkout, `LOOPER_WORK/<repo>/land-seconds`), else
+  `LOOPER_LAND_MINUTES`, else 70 minutes for tacplus and 30 for the others, plus `LOOPER_LAND_MARGIN` (600
+  seconds) for its outcome. A land that does not fit is not started: its issue gets "land deferred to the next
+  job: not enough time left in this one" and stays `approved`, and its branch keeps the land. A land queued and
+  not yet reported marks the branch land-pending (`.looper/land` on its checkpoints: the gates, `queued` or
+  `deferred`), so one cut off anyway is still seen. The next run of the issue lands a land-pending branch first,
+  before its model (what was queued: the commits under the branch's last checkpoint), says on the issue what came
+  of it (and, for one cut off, that it was), then resumes from the branch to finish the issue. Its child's outcome
+  is `land-deferred` when the land was deferred.
 - **The parent supervises:** as each child ends it logs its outcome (`#N: closed`, `blocked`, `needs-decision`,
-  `proposed`, `timeout`, `land-pending`, `landed`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
+  `proposed`, `timeout`, `land-pending`, `land-deferred`, `landed`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
   plans again, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
   as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
   others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.

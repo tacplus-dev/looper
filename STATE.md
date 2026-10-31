@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#37).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#38).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -28,7 +28,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   also from a run that pushed nothing because the issue waits on another, #22; a run that ends with its land
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
   that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one idle after its land
-  landed reports `landed`, with main's range, and stays approved for the next run to close, #37);
+  landed reports `landed`, with main's range, and stays approved for the next run to close, #37; a land starts only if the repository's last land, else a
+  default (70 minutes for tacplus), fits the job's time left: one that does not is deferred, its issue told and its
+  branch left land-pending, and the issue's next run lands it first, as it does a land the job's end cut off, #38);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); the nightly scan; the hourly
   SeaBeam port scan (stratum only, #5), which never ports back a SeaBeam commit

@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A land's time across jobs** (2026-10-31, #38): the lander's estimate is the repository's last land that passed
+  its gates, kept in `LOOPER_WORK/<repo>/land-seconds`, which a fresh runner VM does not have: a job's first land uses
+  `LOOPER_LAND_MINUTES` or the built-in default (70 minutes for tacplus, 30 for the others). Recording each land's
+  time where the next job reads it (a git note on the landed commit, say, or the job's cache) would make it the
+  repository's real last land, and would let `--job-timeout` size a job for its children's lands too.
 - **ROADMAP.md guard that a model cannot skip** (2026-10-27, #13): repo-looper refuses a push touching ROADMAP.md
   with a pre-push hook in its checkout, which `git push --no-verify` skips. Once main is protected (README, Later),
   require Jody's review for ROADMAP.md (CODEOWNERS); until then, repo-looper could also check the run's pushed

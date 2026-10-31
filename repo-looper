@@ -37,7 +37,9 @@
 # (looper#34): --land queues the child's commits with the parent's lander, which
 # takes the repository's landing lock, rebases onto the current main, re-runs
 # the gates and pushes, even after the child has ended; a push to main from a
-# child's worktree any other way is refused.
+# child's worktree any other way is refused. In a GitLab job a land that would
+# not finish before the job ends is not started (looper#38): it is deferred,
+# its branch left land-pending, and the issue's next run lands it first.
 # As each child ends the parent logs its outcome and plans again, so a newly
 # ready issue starts while the others run; a child's time limit is its own.
 #
@@ -130,7 +132,8 @@
 # default 14400), LOOPER_STOP_EARLY (default 600), LOOPER_CHECKPOINT_INTERVAL
 # (seconds, default 3600), LOOPER_IDLE_MINUTES (default 20), LOOPER_DONE_GRACE
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
-# default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_GATES (default `just gates` when the
+# default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_LAND_MINUTES (a land's
+# time before one is recorded), LOOPER_LAND_MARGIN (seconds kept after a land, default 600), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
 # LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_MAX_CHILDREN, LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
@@ -297,11 +300,30 @@ hours() { # seconds, as 6h, 4h37m or 12m (minutes rounded up)
 # its start (CI_JOB_STARTED_AT, else now) and CI_JOB_TIMEOUT, less the hour it
 # keeps for the checkpoints, the outcomes and the lands. Empty outside one.
 JOB_MARGIN=3600
-job_deadline() {
+job_end() {
   local t0
   [[ "${CI_JOB_TIMEOUT:-}" =~ ^[0-9]+$ ]] || return 0
   t0="$(date -d "${CI_JOB_STARTED_AT:-now}" +%s 2>/dev/null || date +%s)"
-  echo $(( t0 + CI_JOB_TIMEOUT - JOB_MARGIN ))
+  echo $(( t0 + CI_JOB_TIMEOUT ))
+}
+job_deadline() {
+  local end; end="$(job_end)"
+  [[ -z "$end" ]] || echo $(( end - JOB_MARGIN ))
+}
+
+# What a land is expected to take (looper#38), in seconds: the repository's
+# last land that passed its gates (LAND_TIME, kept with the checkout), else
+# LOOPER_LAND_MINUTES, else 70 minutes for tacplus (its full gates) and 30 for
+# the others. A land starts only when that, and LAND_MARGIN after it for its
+# outcome, fit in the job's time left.
+LAND_TIME="$WORK/land-seconds"
+LAND_MARGIN="${LOOPER_LAND_MARGIN:-600}"
+land_estimate() {
+  local s; s="$(cat "$LAND_TIME" 2>/dev/null || true)"
+  if [[ "$s" =~ ^[0-9]+$ ]]; then echo "$s"
+  elif [[ "${LOOPER_LAND_MINUTES:-}" =~ ^[0-9]+$ ]]; then echo $(( LOOPER_LAND_MINUTES * 60 ))
+  elif [[ "$REPO" == tacplus ]]; then echo 4200
+  else echo 1800; fi
 }
 
 # The CI job's timeout, sized for the plan, not only its issue (looper#33):
@@ -421,7 +443,8 @@ z=0000000000000000000000000000000000000000
 worktree=""; [[ "$(git rev-parse --absolute-git-dir)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd)" ]] && worktree=1
 while read -r _ lsha rref rsha; do
   [[ "$lsha" == "$z" || "$rref" == refs/heads/looper/* ]] && continue
-  not=(--remotes="$1"); [[ "$rsha" != "$z" ]] && git cat-file -e "$rsha" 2>/dev/null && not+=("$rsha")
+  # Not the issues' branches (looper/*): a checkpoint carries a commit there before it lands (looper#38).
+  not=(--exclude="$1/looper/*" --remotes="$1"); [[ "$rsha" != "$z" ]] && git cat-file -e "$rsha" 2>/dev/null && not+=("$rsha")
   c="$(git rev-list -n 1 "$lsha" --not "${not[@]}" -- ROADMAP.md)"
   if [[ -n "$c" ]]; then
     echo "repo-looper: refused to push $rref: commit $(git rev-parse --short "$c") touches ROADMAP.md, which only Jody changes (through an agent). Propose it in PROPOSALS.md instead." >&2
@@ -498,7 +521,8 @@ land_work() {
         exit 3
       fi
       log "landing $BRANCH: the gates ($gates) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
-      grc=0; bash -c "$gates" > "$out/gates.log" 2>&1 || grc=$?
+      grc=0; t=$SECONDS; bash -c "$gates" > "$out/gates.log" 2>&1 || grc=$?
+      (( grc != 0 )) || echo $(( SECONDS - t )) > "$LAND_TIME"
       if (( grc != 0 )); then
         { log "nothing landed: the gates failed (exit $grc), on your commits rebased on main; their end:"; tail -n 30 "$out/gates.log"; } >&2
         exit 4
@@ -534,13 +558,35 @@ land_work() {
 LANDS="$WORK/lands"
 land_pending() { [[ -n "${LOOPER_LANDER:-}" && ( -e "$LANDS/$1.req" || -e "$LANDS/$1.running" ) ]]; } # issue
 
-# --land from a child: queues the land with the parent and waits for it. When
-# the parent's lander is gone and has not taken the request, lands it here.
+# A land the lander does not start because it would not finish before the job
+# ends (looper#38): it stays queued on the issue's branch for the next job.
+# The run's `land` file (gates=, state=queued or deferred) rides on its
+# checkpoints as .looper/land while the land has no outcome, so a land the
+# job's end cut off is still seen by the next run, which lands it first.
+LAND_DEFERRED=75
+
+# --land from a child: queues the land with the parent, its branch marked
+# land-pending, and waits for it.
 land_request() {
-  local gates n="$ISSUE" rc; gates="$(land_gates)"
+  local gates n="$ISSUE" rc=0; gates="$(land_gates)"
   [[ -n "$gates" ]] || die "no gates to re-run before landing: $REPO has no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
+  if [[ -n "${LOOPER_RUN:-}" && ! -e "$LANDS/$n.rc" ]] && ! land_pending "$n"; then
+    printf 'gates=%s\nstate=queued\n' "$gates" > "$LOOPER_RUN/land"
+    checkpoint "$n" "land queued" "$LOOPER_RUN"
+  fi
+  land_wait "$gates" || rc=$?
+  [[ -z "${LOOPER_RUN:-}" ]] || (( rc == LAND_DEFERRED )) || rm -f "$LOOPER_RUN/land"
+  [[ -z "${LOOPER_RUN:-}" ]] || checkpoint "$n" "land $( (( rc == LAND_DEFERRED )) && echo deferred || echo done)" "$LOOPER_RUN"
+  return "$rc"
+}
+
+# Queues the checkout's land with the parent and waits for it, printing what
+# came of it. When the parent's lander is gone and has not taken the request,
+# lands it here.
+land_wait() { # gates
+  local gates="$1" n="$ISSUE" rc
   if [[ -e "$LANDS/$n.rc" ]]; then log "a land of $BRANCH ended unread; its result:"
   elif land_pending "$n"; then log "a land of $BRANCH is already queued; waiting for it"
   else
@@ -571,23 +617,54 @@ lander() {
     n="$(basename "$f" .req)"
     mv "$f" "$LANDS/$n.running" 2>/dev/null || continue
     run="$(sed -n 's/^run=//p' "$LANDS/$n.running")"; gates="$(sed -n 's/^gates=//p' "$LANDS/$n.running")"
-    log "landing #$n ($(wip_branch "$n"))"
     rc=0
-    ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
-      > "$LANDS/$n.out" 2> "$LANDS/$n.err" || rc=$?
-    if (( rc == 0 )); then log "#$n: $(tail -n 1 "$LANDS/$n.out" | cut -c24-)"; else log "#$n: nothing landed (exit $rc)"; fi
+    if ! land_fits; then
+      log "#$n: deferred to the next job: the job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land takes about $(hours "$(land_estimate)")"
+      land_defer "$n" "$run" > "$LANDS/$n.out" 2> "$LANDS/$n.err"; rc=$LAND_DEFERRED
+    else
+      log "landing #$n ($(wip_branch "$n"))"
+      ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
+        > "$LANDS/$n.out" 2> "$LANDS/$n.err" || rc=$?
+      if (( rc == 0 )); then log "#$n: $(tail -n 1 "$LANDS/$n.out" | cut -c24-)"; else log "#$n: nothing landed (exit $rc)"; fi
+      # It has an outcome now: the branch is no longer land-pending.
+      [[ -z "$run" ]] || rm -f "$run/land"
+    fi
     mv "$LANDS/$n.running" "$LANDS/$n.ran"
     echo "$rc" > "$LANDS/$n.rc.new" && mv "$LANDS/$n.rc.new" "$LANDS/$n.rc"
     if [[ -e "$LANDS/$n.orphan" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
   done
 }
 
+# A land fits when its expected time and LAND_MARGIN fit in the job's time
+# left; outside a GitLab job every land fits.
+land_fits() {
+  local end; end="$(job_end)"
+  [[ -z "$end" ]] || (( $(land_estimate) <= end - $(date +%s) - LAND_MARGIN ))
+}
+
+# A land that does not fit (looper#38): not started. Its branch stays
+# land-pending (state=deferred) for the next job, which lands it first, and the
+# issue says so and stays approved. Prints, for --land, what came of it.
+land_defer() { # issue run-dir
+  local n="$1" run="$2" end est left why
+  end="$(job_end)"; est="$(land_estimate)"; left=$(( end - $(date +%s) )); (( left > 0 )) || left=0
+  why="land deferred to the next job: not enough time left in this one (${CI_JOB_URL:-$CI_JOB_ID}): it ends in $(hours "$left"), and a land of $REPO takes about $(hours "$est"), with $(hours "$LAND_MARGIN") kept after it for its outcome"
+  [[ -z "$run" || ! -f "$run/land" ]] || sed -i 's/^state=.*/state=deferred/' "$run/land"
+  gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "The looper's $why. Its commits stay queued on [\`$(wip_branch "$n")\`]($(wip_url "$n")): the next run lands them first, then finishes the issue. This issue stays $LABEL_APPROVED." >/dev/null || true
+  log "nothing landed: $why. Do not land again in this run: checkpoint and end it; the next run lands it first." >&2
+}
+
 # The result of a land whose child ended first, on its issue: landed (and the
 # branch checkpointed again from the worktree, now on main), or why not. The
-# issue stays approved either way: the next run resumes from the branch.
+# issue stays approved either way: the next run resumes from the branch. A
+# deferred land was told on the issue already.
 orphan_land() { # issue
   local n="$1" rc run b what left="lands it again"
   rc="$(cat "$LANDS/$n.rc")"; run="$(sed -n 's/^run=//p' "$LANDS/$n.ran")"; b="$(wip_branch "$n")"
+  if [[ "$rc" == "$LAND_DEFERRED" ]]; then
+    ( CHECKOUT="$(child_dir "$n")"; checkpoint "$n" "land deferred to the next job" "$run" )
+    rm -rf "$LANDS/$n".{ran,out,err,rc,orphan,claimed}; return 0
+  fi
   ( CHECKOUT="$(child_dir "$n")"; checkpoint "$n" "landed by the looper after the run" "$run" )
   if [[ "$rc" == 0 ]]; then
     what="The looper landed this issue's commits on main after its run ended: they were queued to land when the run stopped."
@@ -602,6 +679,53 @@ $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$LANDS/$n.err" | redact)")"
 
 This issue stays $LABEL_APPROVED: the next run resumes from [\`$b\`]($(wip_url "$n")) and $left.${run:+ Run record: $(run_record "$run").}" >/dev/null || true
   rm -rf "$LANDS/$n".{ran,out,err,rc,orphan,claimed}
+}
+
+# A branch an earlier job left land-pending (looper#38): its land was
+# deferred, or the job's end cut it off with no outcome said. Before the model
+# runs, the run lands what was queued (the parent of the branch's last
+# checkpoint: the commits as they were) and says on the issue what came of it.
+# Deferred again, the branch stays land-pending for the next job, and it
+# returns LAND_DEFERRED; otherwise the checkout is main again, for resume.
+land_prior() { # issue run-dir
+  local n="$1" run="$2" b m gates state rc=0 cut="" what
+  b="$(wip_branch "$n")"
+  wip_on_origin "$n" || return 0
+  fetch "$CHECKOUT" "+refs/heads/$b:refs/remotes/origin/$b"
+  m="$(git -C "$CHECKOUT" show "origin/$b:.looper/land" 2>/dev/null)" || return 0
+  gates="$(sed -n 's/^gates=//p' <<<"$m")"; state="$(sed -n 's/^state=//p' <<<"$m")"
+  [[ "$state" == deferred ]] || cut="The land this issue's run queued in an earlier job was cut off: that job ended while it was queued or running, and nothing here said what came of it. "
+  log "#$n: $b is land-pending (${state:-queued} by an earlier job); landing it first"
+  if ! git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" "origin/$b^" || ! git -C "$CHECKOUT" clean -fdq; then
+    log "#$n: cannot check out what $b queued; the run resumes from it instead"
+    git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" origin/main || true; return 0
+  fi
+  printf '%s\n' "$m" > "$run/land"
+  ( LAND_GATES="$gates"; LOOPER_RUN="$run"
+    if [[ -n "${LOOPER_LANDER:-}" && -d "$LOOPER_LANDER" ]]; then land_wait "$gates"; else land_work; fi ) > "$run/prior-land" 2>&1 || rc=$?
+  if (( rc == LAND_DEFERRED )); then
+    # The branch as it was, but for its land's state.
+    git -C "$CHECKOUT" read-tree -u --reset "origin/$b"
+    checkpoint "$n" "land deferred to the next job" "$run"
+    [[ -z "$cut" ]] || gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "${cut}This job has no time left to land it either: it stays queued for the next." >/dev/null || true
+    return "$LAND_DEFERRED"
+  fi
+  rm -f "$run/land"
+  if (( rc == 0 )); then
+    what="${cut}The looper landed it first, before this run's model:"
+    if [[ -s "$run/landed" ]]; then what+=" main $(tail -n 1 "$run/landed" | awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }')."
+    else what+=" its commits were on main already."; fi
+  else
+    what="${cut}The looper tried it first, before this run's model, and nothing landed (exit $rc):
+
+$(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$run/prior-land" | redact)")
+
+The run goes on from the branch."
+  fi
+  [[ "$state" == deferred && "$rc" == 0 ]] && what="The land deferred from an earlier job: the looper landed it first, before this run's model:${what#*model:}"
+  gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$what" >/dev/null || true
+  git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" origin/main && git -C "$CHECKOUT" clean -fdq
+  return 0
 }
 
 add_planning_files() {
@@ -784,6 +908,12 @@ checkpoint() { # issue why [run-dir]
     idx="$(mktemp)"; trap 'rm -f "$idx"' EXIT
     cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true
     GIT_INDEX_FILE="$idx" git add -A
+    # A land with no outcome yet keeps the branch land-pending (looper#38).
+    if [[ -n "$run" && -f "$run/land" ]]; then
+      GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "100644,$(git hash-object -w "$run/land"),.looper/land"
+    else
+      GIT_INDEX_FILE="$idx" git update-index --force-remove .looper/land
+    fi
     if [[ -n "$run" && -f "$run/prompt.md" ]]; then
       p="$(redact < "$run/prompt.md" | git hash-object -w --stdin)"
       l="$(tail -n "$RECORD_LINES" "$run/claude.log" 2>/dev/null | redact | git hash-object -w --stdin)"
@@ -1011,7 +1141,7 @@ EOF
 }
 
 # A child's outcome, for its parent (looper#32): closed, blocked,
-# needs-decision, proposed, timeout, land-pending, landed or ended (resumes), stuck or
+# needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), stuck or
 # job-gone.
 report() { # issue outcome
   mkdir -p "$WORK/results"; echo "$2" > "$WORK/results/$1"
@@ -1052,6 +1182,12 @@ work_issue() { # issue
       *) hold "$n" "$LABEL_STUCK" "The looper could not read \`$LOOPER_ORG/roadmap:ROADMAP.md\`, so it cannot tell whether this feature is on a roadmap ($ISSUE_FLOW): it is neither built nor proposed. Marked $LABEL_STUCK for a person to look at."
          report "$n" stuck; return 0 ;;
     esac
+  fi
+  # A land an earlier job deferred, or that its end cut off, is landed first.
+  local prior_rc=0; land_prior "$n" "$run" || prior_rc=$?
+  if (( prior_rc == LAND_DEFERRED )); then
+    gh issue edit "$n" --repo "$LOOPER_ORG/$REPO" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
+    report "$n" land-deferred; log "#$n: its land is deferred again; the next run lands it first"; return 0
   fi
   resumed="$(resume "$n" "commit it and land it")"
   if [[ -n "$resumed" ]]; then
@@ -1149,6 +1285,10 @@ PR
   if [[ -n "${LOOPER_LANDER:-}" ]] && { land_pending "$n" || [[ -e "$LANDS/$n.rc" ]]; }; then
     pending=1; touch "$LANDS/$n.orphan"
   fi
+  # A land the lander deferred to the next job (looper#38) keeps the branch
+  # land-pending: the issue resumes, the land first.
+  local deferred=""
+  [[ -z "$pending" && -f "$run/land" ]] && grep -qx state=deferred "$run/land" && deferred=1
   # What the run landed on main (--land records it): its first base and last commit.
   local head_before="" head_after=""
   if [[ -s "$run/landed" ]]; then
@@ -1218,6 +1358,16 @@ $done_left
 This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run record: $(run_record "$run")." >/dev/null || true
     log "#$n ended with its land queued; the parent lands it, and the issue resumes on the next pass"
     if [[ -e "$LANDS/$n.rc" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
+    return 0
+  fi
+  if [[ -n "$deferred" ]]; then
+    report "$n" land-deferred
+    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$ended Its land was deferred to the next job: this one did not have the time left to land it. $where
+
+$done_left
+
+This issue stays $LABEL_APPROVED: the next run lands that branch first, then resumes from it. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n ended with its land deferred; the next run lands it first"
     return 0
   fi
   # A fix landed is progress however the run ended: one that went idle waiting
