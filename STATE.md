@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by looper (#35).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#36).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -43,7 +43,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   (started with inputs `repo`, `sha`, `tag`): the commit's gates in its pinned build image, no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status, and on a release
   a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
-  and with a real buildx (same commit, same digest). The looper identity pilot (#28), built and tested, not yet
+  and with a real buildx (same commit, same digest). Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
+  holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The looper identity pilot (#28), built and tested, not yet
   deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
   `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:
   outcome, patch, tested tree) and `looper-identity commit` (tree check, then `kernel-looper[bot]`: branch, pull
@@ -62,7 +63,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-30 by lo
   repositories in name order until the hub makes it iterate `looper-dispatch ready` (#31, PROPOSALS.md); parallel
   children (#32) are tested against a stub repository but not yet seen end to end on a real repository (they run
   once the image from main is published and a repository has two independent ready issues); the identity pilot's
-  think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); no release line yet
+  think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
+  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); no release line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`

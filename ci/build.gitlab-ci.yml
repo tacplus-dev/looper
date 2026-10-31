@@ -26,6 +26,12 @@
 # never one an agent's job ran on (Jody, 2026-10-29). plan, status and publish
 # run in the looper image, for looper-build; the gates run in the repository's
 # pinned build image, as the child pipeline plan writes.
+#
+# The macOS smoke (looper#36): a web run on main with "smoke": true and no repo
+# or sha is a pipeline of one manual job, macos-smoke, on the Mac runner (tag
+# macos, a fresh Tart VM per job, protected refs only), and none of the build's
+# jobs. It proves that runner before tacplus-dev/tacplus#195's macOS builds use
+# it. A push, and every (repo, sha) run, never creates it.
 spec:
   inputs:
     repo:
@@ -40,11 +46,22 @@ spec:
       description: "A release: the repository's tag vX.Y.Z at that commit (run on this project's tag <repo>/vX.Y.Z)"
       default: ""
       regex: '^(v[0-9]+\.[0-9]+\.[0-9]+)?$'
+    smoke:
+      description: "The macOS smoke: a web run on main whose one manual job checks the Mac runner (no repo, sha or tag)"
+      type: boolean
+      default: false
 ---
 workflow:
-  name: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]]"
+  name: $BUILD_PIPELINE_NAME
   rules:
+    - if: $BUILD_SMOKE == "true" && ($BUILD_REPO || $BUILD_SHA || $BUILD_TAG)
+      when: never
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
+      variables:
+        BUILD_PIPELINE_NAME: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]]"
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME == "main" && $BUILD_SMOKE == "true"
+      variables:
+        BUILD_PIPELINE_NAME: "macos smoke"
 
 stages: [plan, gates, publish, report]
 
@@ -52,6 +69,7 @@ variables:
   BUILD_REPO: "$[[ inputs.repo ]]"
   BUILD_SHA: "$[[ inputs.sha ]]"
   BUILD_TAG: "$[[ inputs.tag ]]"
+  BUILD_SMOKE: "$[[ inputs.smoke ]]"
   GIT_STRATEGY: none
 
 default:
@@ -61,8 +79,14 @@ default:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]
 
+# The build's jobs, never in a smoke pipeline.
+.build-run:
+  rules:
+    - if: $BUILD_SMOKE != "true"
+
 # The commit is marked pending while it builds.
 pending:
+  extends: .build-run
   stage: plan
   needs: []
   allow_failure: true
@@ -72,6 +96,7 @@ pending:
 # Fetch exactly the commit, read its tacplus.lock, write the gates job in the
 # pinned image. No pin, or a bad one, is a fail verdict.
 plan:
+  extends: .build-run
   stage: plan
   needs: []
   script:
@@ -82,6 +107,7 @@ plan:
     paths: [build-gates.yml, build-verdict]
 
 gates:
+  extends: .build-run
   stage: gates
   trigger:
     include:
@@ -94,7 +120,7 @@ gates:
 publish:
   stage: publish
   rules:
-    - if: $CI_COMMIT_TAG && $BUILD_TAG
+    - if: $CI_COMMIT_TAG && $BUILD_TAG && $BUILD_SMOKE != "true"
   environment:
     name: registry
   id_tokens:
@@ -110,12 +136,35 @@ publish:
 # The verdict, on the commit.
 report-pass:
   stage: report
-  when: on_success
+  rules:
+    - if: $BUILD_SMOKE != "true"
+      when: on_success
   script:
     - looper-build status success
 
 report-fail:
   stage: report
-  when: on_failure
+  rules:
+    - if: $BUILD_SMOKE != "true"
+      when: on_failure
   script:
     - looper-build status failure
+
+# The macOS smoke (looper#36): the Mac runner end to end, played by hand. It
+# reads no credential (the project's protected variables are still in its
+# environment on main: GitLab has no per-job opt-out short of environments),
+# has no id_tokens, no environment, no needs, and nothing depends on it.
+macos-smoke:
+  stage: plan
+  rules:
+    - if: $BUILD_SMOKE == "true"
+      when: manual
+  tags: [macos]
+  image: ghcr.io/cirruslabs/macos-tahoe-xcode:27.1
+  timeout: 30m
+  script:
+    - set -eu
+    - test "$(uname -m)" = arm64
+    - sw_vers
+    - xcodebuild -version | tee xcode.txt; grep -Eq '^Xcode 27\.' xcode.txt
+    - swift --version 2>&1 | tee swift.txt; grep -q 'Swift version' swift.txt

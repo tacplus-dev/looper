@@ -374,6 +374,14 @@ jobs run `looper-build`, from this image.
   builds the image to a file, then pushes it, and fails unless both have one digest. A release already in the
   registry under another digest fails rather than being overwritten. The documented exception: a `Dockerfile`
   whose bases are not pinned by digest, or whose steps fetch "latest", builds what its bases are that day.
+- **Smoke** (looper#36): the Mac runner end to end, before tacplus-dev/tacplus#195's `swift:` and darwin/arm64
+  `rust:` builds rely on it. Start the pipeline from the web on `main` with the input `smoke: true` and no `repo`,
+  `sha` or `tag`, then play its one job, **`macos-smoke`** (manual; tag `macos`, image
+  `ghcr.io/cirruslabs/macos-tahoe-xcode:27.1`). It fails unless `uname -m` is `arm64`, `sw_vers` prints the guest
+  macOS, `xcodebuild -version` prints Xcode 27.x and `swift --version` prints a Swift version. That pipeline holds
+  none of the build's jobs (no status, no publish), and the job reads no credential, has no `id_tokens` and needs
+  nothing. A push, an API or trigger run, and any run with `repo`, `sha` or `tag` never create it; `smoke: true`
+  with any of them creates no pipeline at all.
 
 **Credentials.** A build reads GitHub only through the read-only `tacplus-reader` app (looper#12:
 `TACPLUS_READER_APP_ID`, `TACPLUS_READER_INSTALLATION_ID` and the file variable `TACPLUS_READER_APP_KEY`, protected
@@ -440,6 +448,11 @@ Its instance group `runner-arm64-build` (size 0 at rest) uses a template that is
 respect but one: the VM has **no service account and no scopes** (`--no-service-account --no-scopes`), so a build
 that reaches the metadata server gets no Google token. fleet-seatrials' `deploy` runner (tag `deploy`) is the same
 stanza with its own instance group (fleet-seatrials#18).
+
+**The Mac runner** (live since 2026-10-31, for tacplus-dev/tacplus#195): project runner 58154450 of tacplus-dev/build,
+"jody-desktop macOS (Tart)", tag `macos`, protected refs only, untagged jobs off, at most 2 VMs at once. Its Tart
+custom executor runs each job in a fresh macOS VM cloned from the job's `image:` and deleted after it. Only
+`macos-smoke` uses it so far. Its setup and record are `mac-runner/` in gitlab.com/tacplus-dev/build.
 
 **One-time setup of tacplus-dev/build** (done 2026-10-29 unless marked): the reader app's variables (looper#12);
 pipeline variables forbidden; job tokens cannot push to the project; group runners off, so only the build runner
