@@ -25,7 +25,11 @@
 # It takes the ready issues in priority order and plans which can run together:
 # not two that touch the same paths, generated outputs or contracts, or that
 # the model, asked for each issue's areas, names as a conflict (an issue whose
-# areas it cannot tell runs alone); as many as the runner's CPU and memory hold
+# areas it cannot tell runs alone). Between two that conflict the rank decides
+# (looper#39), not the order taken: a land-pending issue first (finished work
+# whose land waits; land-pending issues are also taken first), then a bug before
+# a feature, then priority, then age; the other waits, even for one that waits
+# too, and a running issue is never pre-empted. As many as the runner's CPU and memory hold
 # (LOOPER_CHILD_CPUS, default 2, and LOOPER_CHILD_MEMORY_GB, default 4, per
 # child), never more than LOOPER_MAX_CHILDREN (default 6, a safety ceiling), and
 # in a GitLab job none whose limit outlasts the job (CI_JOB_TIMEOUT from the
@@ -1715,6 +1719,39 @@ candidates() { # first started
   echo "${out[@]}"
 }
 
+# The issues among those given whose branch is land-pending (looper#38): its
+# last checkpoint carries a land with no outcome, deferred or cut off by a job's
+# end, which the issue's next run lands first.
+pending_lands() { # issue...
+  local refs n b
+  refs="$(git -C "$MAIN_CHECKOUT" ls-remote origin "refs/heads/$(wip_branch '*')" 2>/dev/null)" || return 0
+  for n in "$@"; do
+    b="$(wip_branch "$n")"
+    grep -qE "[[:space:]]refs/heads/$b\$" <<<"$refs" || continue
+    fetch "$MAIN_CHECKOUT" "+refs/heads/$b:refs/remotes/origin/$b" || continue
+    if git -C "$MAIN_CHECKOUT" cat-file -e "origin/$b:.looper/land" 2>/dev/null; then echo "$n"; fi
+  done
+}
+
+# An issue's rank between conflicting issues (looper#39), lowest first, as
+# "<pending> <kind> <priority> <created>": land-pending first (finished work, its
+# land queued), then a bug, an issue labelled neither, a feature, then ISSUE_ORDER.
+plan_rank() { # issue pending(0/1)
+  gh issue view "$1" --repo "$LOOPER_ORG/$REPO" --json labels,createdAt --jq "
+    [.labels[].name] as \$l | \"$(( 1 - $2 )) \" +
+    (if any(\$l[]; . == \"$LABEL_BUG\") then \"0\" elif any(\$l[]; . == \"$LABEL_FEATURE\") then \"2\" else \"1\" end) + \" \" +
+    (if any(\$l[]; . == \"$LABEL_PRIORITY_HIGH\") then \"0\" elif any(\$l[]; . == \"$LABEL_PRIORITY_LOW\") then \"2\" else \"1\" end) + \" \" +
+    .createdAt" 2>/dev/null || echo "$(( 1 - $2 )) 1 1 ?"
+}
+
+# Why an issue of rank a goes before a conflicting one of rank b, when it is not
+# just the issues' order: land-pending, or a bug.
+goes_first() { # rank-a rank-b
+  local a b; read -r -a a <<<"$1"; read -r -a b <<<"$2"
+  if [[ "${a[0]}" != "${b[0]}" ]]; then echo "land-pending"
+  elif [[ "${a[1]}" == 0 && "${b[1]}" != 0 ]]; then echo "a bug"; fi
+}
+
 # Issues as "#3 #5", or "none".
 issue_list() { if (( $# )); then printf '#%s ' "$@" | sed 's/ $//'; else echo none; fi; }
 
@@ -1742,7 +1779,8 @@ parent() { # [issue first]
 
   # One plan: which candidates start now, and why the others wait.
   plan() {
-    local cands cap why free plan_dir chosen=() c o r limit reasons=() others beside=()
+    local cands cap why free plan_dir chosen=() c o r limit reasons=() others beside=() pending ranked st fw
+    local -A rank=() held=() by=() conflicted=()
     read -r -a cands <<<"$(candidates "$first" "$started")"
     if (( ${#cands[@]} == 0 )); then
       if [[ "$started" == " " ]]; then
@@ -1758,26 +1796,50 @@ parent() { # [issue first]
     # The model judges the areas only when there is something to decide.
     if (( free > 0 && ${#pids[@]} + ${#cands[@]} > 1 )); then
       plan_areas "$plan_dir" "${pids[@]}" "${cands[@]}"
+      # Between conflicting issues the rank decides (looper#39), never the
+      # order taken: an issue waits for each conflicting one that runs, and
+      # for each that ranks before it (land-pending, then a bug, then
+      # ISSUE_ORDER), even one that waits too. Land-pending issues are also
+      # taken first.
+      pending=" $(pending_lands "${cands[@]}" | paste -sd' ' -) "
+      for c in "${cands[@]}"; do rank[$c]="$(plan_rank "$c" "$( [[ "$pending" == *" $c "* ]] && echo 1 || echo 0)")"; done
+      ranked=()
+      while read -r c; do ranked+=("$c"); done < <(for c in "${cands[@]}"; do echo "${rank[$c]} $c"; done | sort -s -k1,4 | awk '{ print $NF }')
+      mapfile -t cands < <(for c in "${cands[@]}"; do [[ "$pending" == *" $c "* ]] && echo "$c"; done
+                           for c in "${cands[@]}"; do [[ "$pending" == *" $c "* ]] || echo "$c"; done)
+      for c in "${ranked[@]}"; do
+        for o in "${pids[@]}"; do
+          if r="$(conflict_reason "$plan_dir/areas" "$c" "$o")"; then held[$c]="$r"; by[$c]="$o"; break; fi
+        done
+        [[ -z "${held[$c]:-}" ]] || continue
+        for o in "${ranked[@]}"; do
+          [[ "$o" != "$c" ]] || break
+          # One that cannot start in this job anyway holds nothing back.
+          if [[ -n "$deadline" && "$started" != " " ]] && limit="$(run_limit "$o")" && (( $(date +%s) + limit > deadline )); then continue; fi
+          if r="$(conflict_reason "$plan_dir/areas" "$c" "$o")"; then held[$c]="$r"; by[$c]="$o"; break; fi
+        done
+      done
     fi
     for c in "${cands[@]}"; do
       r=""
       if (( ${#chosen[@]} >= free )); then r="no free slot (capacity $cap: $why)"
       elif [[ -n "$deadline" && "$started${chosen[*]}" != " " ]] && limit="$(run_limit "$c")" && (( $(date +%s) + limit > deadline )); then
         r="its limit ($(hours "$limit")) would outlast this job"
-      else
-        for o in "${pids[@]}"; do
-          if r="$(conflict_reason "$plan_dir/areas" "$c" "$o")"; then r="$r (#$o, running)"; break; fi
-          r=""
-        done
-        if [[ -z "$r" ]]; then
-          for o in "${chosen[@]}"; do
-            if r="$(conflict_reason "$plan_dir/areas" "$c" "$o")"; then r="$r (#$o, starting)"; break; fi
-            r=""
-          done
-        fi
+      elif [[ -n "${held[$c]:-}" ]]; then r="${held[$c]}"; conflicted[$c]=1
       fi
       if [[ -z "$r" ]]; then chosen+=("$c"); reasons+=("#$c starts")
       else reasons+=("#$c waits: $r"); fi
+    done
+    # Whom an issue that conflicts waits for, and why that one goes first.
+    for r in "${!reasons[@]}"; do
+      c="${reasons[$r]%% *}"; c="${c#\#}"; o="${by[$c]:-}"; fw=""
+      [[ -n "${conflicted[$c]:-}" ]] || continue
+      if [[ " ${pids[*]} " == *" $o "* ]]; then st="running"
+      else
+        if [[ " ${chosen[*]} " == *" $o "* ]]; then st="starting"; else st="waiting too"; fi
+        fw="$(goes_first "${rank[$o]}" "${rank[$c]}")"
+      fi
+      reasons[$r]+=" (#$o, $st${fw:+; it goes first: $fw})"
     done
     { echo "plan for $REPO: capacity $cap ($why); running: $(issue_list "${pids[@]}")"
       printf '%s\n' "${reasons[@]}"; } > "$plan_dir/plan.md"

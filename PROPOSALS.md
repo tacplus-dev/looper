@@ -202,6 +202,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   rather than free text). Also open: an idle run that only checkpointed a new step, nothing landed or queued, is
   still `looper:stuck` (#34's rule); if headless sessions going quiet is the harness, not the model, it could
   resume instead.
+- **Release a conflicting issue once the land-pending one has landed** (2026-10-31, #39): the plan now ranks a
+  land-pending issue first between conflicting issues, and a conflicting issue waits until that child ends,
+  which is after its land and its model's comment, any patch release and backports. Its land is what the
+  conflict is about: the parent could plan again when the child's prior land lands (`land_prior`'s outcome) and
+  start the conflicting issue then, from the new main. It needs the child to tell the parent (a file in the
+  lands queue, say) and a rule for a land-pending issue whose model then changes more code.
 
 ## Promoted / declined
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`

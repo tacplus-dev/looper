@@ -1167,6 +1167,56 @@ has "$OUT" "ceiling 1)"
 [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
 pass
 
+# Between conflicting issues the plan ranks (looper#39, tacplus#215): a
+# land-pending issue first, then a bug before a feature, then priority, then
+# age. A land-pending bug and an older, ready feature that conflict: the bug
+# starts and lands first, and the feature starts after it, from the bug's main.
+scenario parallel-rank-land-pending
+issue alpha 4 OPEN approved,feature,priority:high "Add a thing."
+issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+platform "- A thing (tacplus-dev/alpha#4)"
+git -C "$FIX/seed" checkout -q -b looper/alpha-5
+echo 5 > "$FIX/seed/shared.txt" && git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "fix 5"
+mkdir "$FIX/seed/.looper" && printf 'gates=true\nstate=deferred\n' > "$FIX/seed/.looper/land"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "looper: work in progress on #5 (land deferred to the next job)"
+git -C "$FIX/seed" push -q origin looper/alpha-5
+areas "touches 4 shared.txt" "touches 5 shared.txt"
+cat > "$FIX/claude.sh" <<'EOS'
+ls "$FIX"/running-* >/dev/null 2>&1 && echo "overlap at #$ISSUE" >> "$FIX/overlap"
+touch "$FIX/running-$ISSUE"
+if [[ "$ISSUE" == 4 ]]; then
+  cat shared.txt > "$FIX/saw-4"; echo 4 >> shared.txt && git add -A && git commit -qm "add 4" && "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
+fi
+rm -f "$FIX/running-$ISSUE"
+jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+EOS
+drain "${ROOM[@]}"
+[[ ! -e "$FIX/overlap" ]] || fail "$(cat "$FIX/overlap")"
+has "$OUT" "plan: #5 starts"; has "$OUT" "plan: #4 waits: both touch shared.txt (#5, starting; it goes first: land-pending)"
+[[ "$(cat "$FIX/saw-4")" == 5 ]] || fail "#4 started before #5 landed: it saw $(cat "$FIX/saw-4" 2>/dev/null)"
+[[ "$(landed shared.txt)" == $'5\n4' ]] || fail "shared.txt: $(landed shared.txt)"
+closed 4; closed 5
+has "$(grep '^alpha#4 ' "$FIX/comments")" "holds this issue back for now: both touch shared.txt (#5, starting; it goes first: land-pending)"
+pass
+
+# A bug before a conflicting feature, even an older priority:high one; a
+# priority:high issue still before an unlabelled one that conflicts with it.
+scenario parallel-rank-bug
+issue alpha 4 OPEN approved,feature,priority:high "Add a thing."
+issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+issue alpha 6 OPEN approved,bug,priority:high "Fix the other."; created alpha 6 2026-10-27T00:00:02Z
+platform "- A thing (tacplus-dev/alpha#4)"
+areas "touches 4 a.txt" "touches 5 a.txt b.txt" "touches 6 b.txt"
+echo 'echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true' > "$FIX/claude.sh"
+close_all() { echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"' >> "$FIX/claude.sh"; }
+close_all
+drain "${ROOM[@]}"
+has "$OUT" "plan: #6 starts"; has "$OUT" "plan: #5 waits: both touch b.txt (#6, starting)"
+has "$OUT" "plan: #4 waits: both touch a.txt (#5, waiting too; it goes first: a bug)"
+[[ "$(origin log --reverse --format=%s main | grep '^fix')" == $'fix 6\nfix 5\nfix 4' ]] || fail "landed: $(origin log --oneline main)"
+closed 4; closed 5; closed 6
+pass
+
 # A landing that conflicts with what another child landed meanwhile lands
 # nothing and names the paths; the child rebases, resolves and lands again.
 scenario landing-conflict

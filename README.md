@@ -103,7 +103,7 @@ unlabelled, then `priority:low`, oldest first within each (`approved_issues` in 
 looper creates both labels with `bug` and `feature`. Across repositories, the kicker and the plan take a repository
 whose next ready issue is `priority:high` before the others, so it gets a runner first when they are short
 (`looper-dispatch ready`). Priority only decides what starts next: a running issue is never pre-empted, and a blocked
-issue waits whatever its priority. To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
+issue waits whatever its priority. Between two issues that conflict, a land-pending one and then a bug go before priority (see the parent's plan below). To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
 real dependency, not for ordering.
 
 ### Bug or feature
@@ -156,6 +156,12 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
     (`conflict A B <why>`). Two issues that touch the same path (or one under the other) or the same contract, or
     that it names, never run at the same time; an issue whose areas it does not tell runs alone. `STATE.md`,
     `PROPOSALS.md` and `HISTORY.md` do not count: every issue may touch them, and a landing rebases over them;
+  - **the rank, between issues that conflict** (looper#39): not the order taken, but a **land-pending** issue first
+    (finished work whose land was deferred or cut off, looper#38; its run lands it before its model, so it lands
+    before any conflicting issue starts; land-pending issues are also taken first), then a `bug` before a
+    `feature`, then priority, then age. The other waits for it, even when it waits too (for a running issue, a
+    slot), so a conflicting feature waits for the bug, never the other way round; a running issue is never
+    pre-empted;
   - **the runner's CPU and memory:** as many children as the VM holds at `LOOPER_CHILD_CPUS` (2) and
     `LOOPER_CHILD_MEMORY_GB` (4) a child (a t2a-standard-8 worker: 4), never more than `LOOPER_MAX_CHILDREN`
     (6), a safety ceiling only;
@@ -256,7 +262,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | ended any other way (no progress) | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
 
 ```sh
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle, nor stuck when it goes quiet after its land landed; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; between conflicting issues a land-pending bug landed before an older priority:high feature starts, and a bug before a feature, priority after (#39); a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle, nor stuck when it goes quiet after its land landed; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
