@@ -21,3 +21,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-30 looper issue A child's limit can outlast its job: an issue's Timeout read at start is not capped by the job's own timeout (#35, 95430d0)
 - 2026-10-31 looper issue Build pipeline: a manual macOS smoke job on the Mac runner (tag macos, Tart VM): arm64, sw_vers, Xcode, Swift (#36)
 - 2026-10-31 looper issue A run that goes idle after its land has landed is marked looper:stuck (seen on #36) (#37, a7c0d33)
+- 2026-10-31 looper issue The lander starts a land that can't finish before the job's end, so the land is killed with no outcome (tacplus#215, job 17627041708) (#38, 6ccf57e)
