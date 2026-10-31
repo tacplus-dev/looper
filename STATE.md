@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#41).
+Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#42).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -61,8 +61,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
   `LOOPER_TRIGGER_TOKEN` and the port scan reads SeaBeam with `SEABEAM_READ_TOKEN` when they are set (#25)
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
-  *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`
-- **Known gaps:** until Jody and the hub apply README's Credentials (#25), the jobs' `GITLAB_TOKEN` is still
+  *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
+  (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr`
+- **Known gaps:** until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
+  outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
+  once it no longer answers SSH (tacplus, 2026-10-31); until Jody and the hub apply README's Credentials (#25), the jobs' `GITLAB_TOKEN` is still
   Jody's `looper-runtime` (`api`, Owner of the group: it reads fleet-seatrials' protected variables) and the workers
   still run as `build-box` (Artifact Registry uploads, every bucket's objects); its job keeps a runner worker up around the clock (see PROPOSALS.md);
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green

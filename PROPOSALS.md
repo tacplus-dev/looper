@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Stop a job's containers when it ends** (2026-10-31, #42): a worker per job (`max_use_count = 1`) deletes a
+  failed job's containers with its VM, but nothing in the job stops them itself: a VM the manager fails to delete,
+  or any later return to reused workers, brings orphans back. `looper-docker` could label each container
+  `looper.job=<CI_JOB_ID>`, and `repo-looper` remove its own on exit and, at a job's start, every one whose job
+  GitLab no longer runs. That costs the job API reads, and the label holds only for the model's `docker`.
 - **A child's memory as one cgroup** (2026-10-31, #41): `looper-docker` limits each container a child's model
   starts to the child's memory, so two at once can use twice its share, and `docker compose`, `docker build`'s
   containers, the real docker by its path and a process the model runs in the job's own container (`cargo kani`

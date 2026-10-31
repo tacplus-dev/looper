@@ -35,7 +35,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   whose jobs GitLab cannot tell, is never taken twice.
 - **A run whose job GitLab no longer runs** (looper#21): GitLab can mark a job failed
   (`runner_system_failure`, the manager's tunnel to the VM lost) while its container keeps working on the
-  VM, and retry it. So every few minutes (`LOOPER_JOB_POLL`, default 300 seconds) a run asks GitLab for its
+  VM until the manager deletes the VM ([Infrastructure](#infrastructure): a worker per job, looper#42), and retry it. So every few minutes (`LOOPER_JOB_POLL`, default 300 seconds) a run asks GitLab for its
   own job (`CI_JOB_ID`; with `GITLAB_TOKEN`, else the job's token, which GitLab refuses once the job has
   stopped). Once GitLab reports it anything but `running`, the run checkpoints and stops: nothing more
   pushed to main, no comment, `looper:in-progress` left to the retry, which resumes from that checkpoint.
@@ -784,6 +784,55 @@ plugin, driving its own managed instance group `runner-arm64-tacplus` (template
   there is no other work (looper#24).
 - Changing `max_instances` needs a gitlab-runner restart, and a restart kills running jobs.
 - The project's maximum job timeout is 11h (a run's 10h at most, plus the job's hour).
+- **A fresh VM for every job** (looper#42), as the [build runner](#build-pipeline) has: `capacity_per_instance = 1`
+  and `max_use_count = 1`, so a worker takes one job and is deleted after it, however the job ended.
+
+**The loopers' workers are never reused** (looper#42). On 2026-10-31 three tacplus jobs in a row failed with
+`runner_system_failure` (the docker tunnel lost, then twice `dial ssh: handshake failed`). Their worker,
+`runner-arm64-tacplus-df337f645dffcc64`, was thrashing: its serial log showed `systemd-resolved: Under memory
+pressure` from 14:47Z, the metadata server unreachable, and a DHCP timeout. A failed job's containers (an
+unlimited `cargo kani`, tacplus#196) had kept running on it, and the autoscaler kept sending the next jobs there:
+nothing stopped those containers, and nothing took a worker that could not answer SSH out of service. A worker that
+takes one job and is then deleted fixes both problems. A failed job's orphaned containers go with its VM, and a VM that
+failed a job, at SSH or anywhere else, never gets another. The loopers' entry on `gitlab-runner-mgr`
+(`/etc/gitlab-runner/config.toml`, the `[[runners]]` of runner 57939705) gets these keys in `[runners.autoscaler]`, the
+rest unchanged:
+
+```toml
+  [runners.autoscaler]
+    capacity_per_instance = 1   # one job on a worker at a time: a job's children share its VM, never another job's
+    max_use_count = 1           # then the worker is deleted: a failed job's containers go with it
+    max_instances = 5           # as before
+```
+
+The hub applies it while no looper job runs, the kicker's included. Its job runs from the start of each hour for
+57 minutes, so the last minutes of an hour, after `looper-dispatch status` shows no looper job
+running:
+
+```sh
+sudo gitlab-runner stop                                     # on gitlab-runner-mgr; kills nothing once no job runs
+gcloud compute instance-groups managed resize runner-arm64-tacplus --project=jody1-328023 --zone=us-central1-b --size=0
+sudo editor /etc/gitlab-runner/config.toml                  # the keys above, in the loopers' entry
+sudo gitlab-runner start
+```
+
+Resizing to 0 deletes the workers that took jobs before the change. A restarted manager does not know their use
+counts and could send them more. Checked on the next two looper jobs: each job's log names a different instance
+(`runner-arm64-tacplus-<id>`), and `gcloud compute instance-groups managed list-instances runner-arm64-tacplus
+--project=jody1-328023 --zone=us-central1-b` lists no worker a finished job had.
+
+What it changes for the loopers:
+
+- Every job waits for a new worker to boot, then pulls its image again: about two minutes more per job. The kicker's
+  hourly job gets a worker of its own, as it effectively had before. A repository's parent and its children
+  still share their job's VM (looper#32).
+- A job GitLab marks failed (looper#21: `runner_system_failure`) no longer goes on as an orphan: the manager
+  deletes its VM, its containers with it. The run's work since its last checkpoint is lost (its hourly
+  checkpoint and the model's step checkpoints remain; [A run's work is never lost](#a-runs-work-is-never-lost)),
+  and the job's retry resumes from the branch on a fresh worker. The run's own poll (looper#21) stays as the guard
+  for a VM the manager fails to delete.
+- `looper-docker`'s per-container memory limit (looper#41) still protects the job itself. One container over its
+  limit is killed alone, and the parent and the other children go on.
 
 ## Later
 
