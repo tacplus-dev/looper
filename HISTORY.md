@@ -23,3 +23,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-31 looper issue A run that goes idle after its land has landed is marked looper:stuck (seen on #36) (#37, a7c0d33)
 - 2026-10-31 looper issue The lander starts a land that can't finish before the job's end, so the land is killed with no outcome (tacplus#215, job 17627041708) (#38, 6ccf57e)
 - 2026-10-31 looper issue The plan holds back a land-pending bug fix (tacplus#215) to start a conflicting feature (#196) (#39, b1ab4ba)
+- 2026-10-31 looper issue Prompt provenance: wrap issue and PR text in per-run nonce blocks; only members' text directs a run (prompt-injection hardening) (#40, 51c0c48)
