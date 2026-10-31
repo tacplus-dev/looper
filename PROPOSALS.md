@@ -247,6 +247,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   conflict is about: the parent could plan again when the child's prior land lands (`land_prior`'s outcome) and
   start the conflicting issue then, from the new main. It needs the child to tell the parent (a file in the
   lands queue, say) and a rule for a land-pending issue whose model then changes more code.
+- **Find how tacplus#200's land left the parent's queue** (2026-10-31, #44): the watchdog counts a queued or
+  running land as activity, so #200 could only go idle at 20:05Z with its request no longer `N.req` or
+  `N.running`. The one path in the code that takes it without an outcome is `land_wait` landing it itself when
+  `kill -0 $LOOPER_LANDER_PID` fails (`N.taken`), which a model whose processes cannot see the parent's (a PID
+  namespace) would always take. #44 makes any end with the run's `land` still `state=queued` land-pending; open:
+  read job 17633047780's log (`[lander]`, "landing here") to confirm, then have `--land` find the lander by a
+  file it refreshes rather than by its pid, count `N.taken` as a running land in the watchdog, and have a land
+  the model's process ran report on the issue like an orphaned one.
 
 ## Promoted / declined
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`

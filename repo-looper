@@ -102,7 +102,8 @@
 # to its outcome file, whether it pushed a fix whose gates wait or rightly
 # pushed nothing, looper#22) gets those lines in its body and stays approved,
 # so it is worked again once they close. A run that reached its limit, that
-# ended with its land queued (the parent lands it), or that ended early having
+# ended with its land queued or running and no outcome yet (the parent lands
+# it, or the next run does first: looper#44), or that ended early having
 # made progress (a fix landed, a new step checkpointed; looper#34), or that went
 # idle after its fix landed (looper#37) says what is done and what is left and
 # stays approved: the next run resumes from its branch. Anything else (idle
@@ -1433,6 +1434,12 @@ PR
   # land-pending: the issue resumes, the land first.
   local deferred=""
   [[ -z "$pending" && -f "$run/land" ]] && grep -qx state=deferred "$run/land" && deferred=1
+  # A land queued with no outcome that the parent's queue no longer holds (its
+  # request taken by a --land that lands it itself, looper#44) is land-pending
+  # too, however the run ended: the branch's .looper/land says queued, and the
+  # next run lands it first.
+  local unsettled=""
+  [[ -z "$pending" && -f "$run/land" ]] && grep -qx state=queued "$run/land" && unsettled=1
   # What the run landed on main (--land records it): its first base and last commit.
   local head_before="" head_after=""
   if [[ -s "$run/landed" ]]; then
@@ -1502,6 +1509,16 @@ $done_left
 This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run record: $(run_record "$run")." >/dev/null || true
     log "#$n ended with its land queued; the parent lands it, and the issue resumes on the next pass"
     if [[ -e "$LANDS/$n.rc" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
+    return 0
+  fi
+  if [[ -n "$unsettled" ]]; then
+    report "$n" land-pending
+    gh issue comment "$n" --repo "$LOOPER_ORG/$REPO" --body "$ended Its commits were queued to land on main, and nothing has said yet what came of it: the next run lands them first, then resumes. $where
+
+$done_left
+
+This issue stays $LABEL_APPROVED. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n ended with its land queued and no outcome; the next run lands it first"
     return 0
   fi
   if [[ -n "$deferred" ]]; then

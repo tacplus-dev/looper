@@ -1475,6 +1475,32 @@ closed 4
 has "$(history)" "looper issue Issue 4 (#4)"
 pass
 
+# A model that queues its land and goes quiet while the land has no outcome
+# yet (looper#44, seen on tacplus#200) is land-pending, not stuck, however the
+# request left the parent's queue: here its --land does not see the lander and
+# lands it from the model's own process, its gates still running at the idle stop.
+scenario idle-land-queued
+cat > "$FIX/claude.sh" <<'EOS'
+echo 4 > f-4.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "fixed; left: land, comment, close"
+LOOPER_LANDER_PID=999999999 nohup "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates '[ -e "$FIX/go" ] || sleep 60' > "$FIX/land-4" 2>&1 &
+echo "The land is queued; waiting on it."
+until grep -q "queued" "$FIX/land-4"; do sleep 0.2; done
+sleep 60; touch "$FIX/outlived"
+EOS
+start=$SECONDS
+drain "${ROOM[@]}" LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 30 )) || fail "the idle model was not stopped"
+touch "$FIX/go"
+has "$OUT" "#4: land-pending"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+c="$(cat "$FIX/comments")"
+has "$c" "went idle"; has "$c" "queued to land"; has "$c" "the next run lands them first"
+lacks "$c" "looper:stuck"
+has "$(origin show looper/alpha-4:.looper/land)" "state=queued"
+for i in $(seq 100); do [[ -n "$(landed f-4.txt)" ]] && break; sleep 0.2; done
+pass
+
 # In a GitLab job no other child starts that would outlast the job, less the
 # hour it keeps for itself, counted from the job's start: its own issue always
 # does (the job was sized for it). With the default limits, the job the plan
