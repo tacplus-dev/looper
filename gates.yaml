@@ -19,7 +19,7 @@ planning-files:
 build:
   run: tests/looper-build.test.sh
   minutes: 5
-  paths: [/looper-build, tests/looper-build.test.sh, ci/build.gitlab-ci.yml]
+  paths: [/looper-build, /looper-scan, tests/looper-build.test.sh, ci/build.gitlab-ci.yml]
 port:
   run: tests/looper-port.test.sh
   minutes: 2

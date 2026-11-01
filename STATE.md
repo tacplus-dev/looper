@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#48).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#49).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -58,7 +58,15 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   (started with inputs `repo`, `sha`, `tag`): the commit's gates in its pinned build image, no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status, and on a release
   a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
-  and with a real buildx (same commit, same digest). Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
+  and with a real buildx (same commit, same digest); its deterministic security checks (#49, `looper-scan`, README:
+  Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
+  clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it and on the
+  code a `generated` recipe writes, a nightly (input `nightly: true`, main's head, no commit status) and a release add
+  CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
+  an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
+  previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
+  release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
+  and run by hand (`looper-scan local`) on tacplus and kernel. Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
   holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The looper identity pilot (#28), built and tested, not yet
   deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
   `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:
@@ -106,7 +114,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a child's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the land's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); tacplus has no `gates.yaml`
   yet, so its lands still run the full gates (#48 waits on it), and the think job (#28) and the build pipeline always
-  run the full gates (PROPOSALS.md); no release line yet
+  run the full gates (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
+  tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
+  `nightly` input; a schedule per repository), and on the day they start tacplus's build fails them (gosec's HIGH
+  findings, six OSV advisories with fixes) as kernel's does (gitleaks: PEM markers in its Java) until each is fixed
+  or accepted in a `security-exceptions.yaml` (PROPOSALS.md), and tacplus has no `generated` recipe yet, so its
+  cross-test models are not scanned; no release line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`

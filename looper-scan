@@ -1,0 +1,667 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-scan: the build pipeline's deterministic security checks (looper#49;
+# README: Security checks). A floor under the nightly agent scan: the same
+# commit, the same tools (pinned in the looper image), the vulnerability
+# databases of the day (their snapshot recorded), the same policy.
+#
+#   run      the security job (security-<repo>, in the child pipeline
+#            looper-build plan writes): every tool of the run's kind on the
+#            commit's checkout and on the code its gates generated
+#            (generated/, the gates job's artifact), the policy and the
+#            security-exceptions.yaml of the commit; the reports in security/
+#   report   the security-report job: the run's findings as the repository's
+#            latest (the build project's generic package security-<repo>),
+#            what the next run compares with and the nightly agent scan reads
+#   local    the same checks on a checkout, by hand: no credential, no baseline
+#   sbom     an SBOM, CycloneDX and SPDX, of a source (publish: the release image)
+#
+# The kinds (BUILD_SCAN_KIND): build (every build): OSV-Scanner, govulncheck,
+# cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
+# FindSecBugs, and a Syft SBOM; nightly and release add CodeQL and Trivy
+# (filesystem, Kubernetes manifests, the Dockerfiles' base images).
+#
+# The policy: a secret fails, and so does a HIGH or CRITICAL finding with a
+# fix (a fixed version, or our own code: a SAST finding), unless an unexpired
+# exception names it; an exception that has expired, or says less than an id,
+# a reason, who decided and an expiry date, fails too. A tool that cannot run
+# fails the run. It runs in the looper image (jq, the scanners), never in the
+# repository's build image; it sources looper-build for the build's
+# credentials (the tacplus-reader app, read-only) and checkout.
+set -euo pipefail
+
+SCAN_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=looper-build
+source "${LOOPER_BUILD:-$SCAN_SELF_DIR/looper-build}"
+
+SCAN_KIND="${BUILD_SCAN_KIND:-build}"
+SCAN_OUT="$BUILD_OUT/security"
+# Semgrep CE's community rules (the Semgrep Rules License v1.0: free to use on
+# our own code, README), fetched from the registry each run.
+SEMGREP_CONFIG="${BUILD_SEMGREP_CONFIG:-p/default}"
+# clippy's security lints: denied, every other lint allowed.
+CLIPPY_LINTS="${BUILD_CLIPPY_LINTS:--A clippy::all -D clippy::correctness -D clippy::suspicious}"
+FINDSECBUGS="${BUILD_FINDSECBUGS:-/opt/scanners/findsecbugs-plugin.jar}"
+# CodeQL (nightly and release): the bundle is fetched when a run needs it,
+# checked against its pinned checksum (it is 680 MB: not in the image).
+CODEQL_VERSION="${BUILD_CODEQL_VERSION:-2.27.3}"
+CODEQL_URL="${BUILD_CODEQL_URL:-https://github.com/github/codeql-action/releases/download/codeql-bundle-v$CODEQL_VERSION/codeql-bundle-linux-arm64.tar.gz}"
+CODEQL_SHA256="${BUILD_CODEQL_SHA256:-0c9e32e9fcf65be4ab8df0cf0a7bb83e64aff4099fffc5f4930e84c12a454c8b}"
+CODEQL_DIR="${BUILD_CODEQL_DIR:-${HOME:-/tmp}/.cache/looper-codeql/$CODEQL_VERSION}"
+# The exceptions a repository accepts, at its root.
+EXCEPTIONS_FILE=security-exceptions.yaml
+
+scan_usage() {
+  cat <<'EOF'
+usage: looper-scan run               the security checks of BUILD_REPO at BUILD_SHA (BUILD_SCAN_KIND build|nightly|release)
+       looper-scan local DIR         the same checks on a checkout (and DIR's generated/ under BUILD_OUT), nothing published
+       looper-scan report            the run's findings, published as the repository's latest (the next run's baseline)
+       looper-scan sbom SOURCE DIR   a CycloneDX and an SPDX SBOM of SOURCE (dir:..., oci-archive:...) in DIR
+Reports go to BUILD_OUT/security (default: ./security).
+EOF
+}
+
+# The run's verdict, security/verdict: "pass" or "fail: <why>"; fail ends the job.
+scan_verdict() { # pass | fail <why>
+  if [[ "$1" == pass ]]; then
+    echo pass > "$SCAN_OUT/verdict"; log "security verdict: pass"
+  else
+    shift; echo "fail: $*" > "$SCAN_OUT/verdict"; log "security verdict: FAIL: $*"; exit 1
+  fi
+}
+
+# A tool that could not run: at a tree's root it fails the run; in a project
+# nested in the tree (a fixture, an example) it is listed as not analyzed.
+problems=()
+notes=()
+tool_error() { # tool tree dir what
+  if [[ "$3" == "$2" ]]; then problems+=("$1: $4"); else notes+=("$1: ${3#"$2"/}: not analyzed ($4)"); fi
+  log "$1: $4 ($3)"
+}
+
+need() { # tool
+  command -v "$1" >/dev/null || { problems+=("$1: not in this image"); return 1; }
+}
+
+# The projects of a tree: the directories holding a file name, outside
+# dependency, build output and test-data directories, sorted.
+projects() { # tree file
+  find "$1" \( -name .git -o -name node_modules -o -name vendor -o -name target -o -name testdata -o -name .venv \) -prune \
+    -o -name "$2" -type f -print | xargs -r -n1 dirname | LC_ALL=C sort -u
+}
+has_files() { # tree glob
+  [[ -n "$(find "$1" \( -name .git -o -name node_modules -o -name target -o -name .venv \) -prune -o -name "$2" -type f -print -quit)" ]]
+}
+
+# --- the tools ----------------------------------------------------------------
+# Each writes its native report(s) to security/raw/<tool>-<label>*.json and
+# its findings, normalized, to security/norm/<tool>-<label>*.json: an array of
+# {tool, kind (sca|sast|secret|policy|config), id, aliases, severity, fix,
+# where, title}. where is a path in the tree, prefixed with generated/ for
+# the generated code; the tree's label is source or generated.
+
+# A CVSS score (or v3 vector) as a severity.
+JQ_LIB='
+def bucket: if . == null then "UNKNOWN" elif . >= 9 then "CRITICAL" elif . >= 7 then "HIGH"
+  elif . >= 4 then "MEDIUM" elif . > 0 then "LOW" else "UNKNOWN" end;
+def roundup: (. * 10 | ceil) / 10;
+# A finding the tool itself has LOW confidence in counts one severity lower.
+def unsure($confidence): if $confidence == "LOW" then {"CRITICAL": "HIGH", "HIGH": "MEDIUM", "MEDIUM": "LOW"}[.] // . else . end;
+def cvss3: (if type == "string" and test("^CVSS:3") then
+    (split("/")[1:] | map(split(":") | {(.[0]): .[1]}) | add) as $m
+    | ({"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}[$m.AV]) as $av
+    | ({"L": 0.77, "H": 0.44}[$m.AC]) as $ac
+    | (if $m.S == "C" then {"N": 0.85, "L": 0.68, "H": 0.5} else {"N": 0.85, "L": 0.62, "H": 0.27} end)[$m.PR] as $pr
+    | ({"N": 0.85, "R": 0.62}[$m.UI]) as $ui
+    | ({"H": 0.56, "L": 0.22, "N": 0}) as $cia
+    | (1 - (1 - $cia[$m.C]) * (1 - $cia[$m.I]) * (1 - $cia[$m.A])) as $iss
+    | (if $m.S == "C" then 7.52 * ($iss - 0.029) - 3.25 * pow($iss - 0.02; 15) else 6.42 * $iss end) as $imp
+    | (8.22 * $av * $ac * $pr * $ui) as $exp
+    | if $imp <= 0 then 0 elif $m.S == "C" then ([1.08 * ($imp + $exp), 10] | min | roundup)
+      else ([$imp + $exp, 10] | min | roundup) end
+  else null end);
+def finding($tool; $kind; $id; $aliases; $sev; $fix; $where; $title):
+  {tool: $tool, kind: $kind, id: $id, aliases: ($aliases // [] | map(select(. != $id)) | unique),
+   severity: $sev, fix: $fix, where: $where, title: ($title // "" | tostring | .[0:300])};
+def rel($root; $prefix): ltrimstr($root + "/") | ltrimstr("./") | $prefix + .;
+'
+
+norm() { # out jq-program raw [jq args...]
+  local out="$1" prog="$2" raw="$3"; shift 3
+  jq -s "$@" "$JQ_LIB $prog" "$raw" > "$out.tmp" && mv "$out.tmp" "$out"
+}
+
+tool_osv() { # tree label prefix
+  need osv-scanner || return 0
+  local raw="$SCAN_OUT/raw/osv-scanner-$2.json" rc=0
+  osv-scanner scan source -r --format json --output "$raw" "$1" >/dev/null 2>"$SCAN_OUT/raw/osv-scanner-$2.log" || rc=$?
+  if ((rc > 1 && rc != 128)) && grep -q '^failed resolution for ' "$SCAN_OUT/raw/osv-scanner-$2.log"; then
+    # A manifest whose transitive dependencies it cannot resolve (a Maven
+    # module's sibling SNAPSHOT): its declared dependencies only, and said so.
+    notes+=("osv-scanner: $2: transitive dependencies not resolved: $(grep -m1 '^failed resolution for ' "$SCAN_OUT/raw/osv-scanner-$2.log" | cut -c1-200)")
+    rc=0; osv-scanner scan source -r --no-resolve --format json --output "$raw" "$1" >/dev/null 2>>"$SCAN_OUT/raw/osv-scanner-$2.log" || rc=$?
+  fi
+  case "$rc" in 0|1) ;; 128) echo '{"results": []}' > "$raw" ;; *) tool_error osv-scanner "$1" "$1" "exited $rc: $(grep -m1 -i error "$SCAN_OUT/raw/osv-scanner-$2.log")"; return 0 ;; esac
+  norm "$SCAN_OUT/norm/osv-scanner-$2.json" '
+    [.[0].results[]? | (.source.path | rel($root; $prefix)) as $where | .packages[]? | .package as $p | (.vulnerabilities // []) as $vs
+     | .groups[]? | . as $g
+     | ([$vs[] | select(.id as $i | $g.ids | index($i)) | .affected[]?.ranges[]?.events[]? | .fixed // empty] | length > 0) as $fix
+     | finding("osv-scanner"; "sca"; $g.ids[0]; ($g.aliases + $g.ids); ($g.max_severity | if . == null or . == "" then null else tonumber end | bucket);
+               $fix; ($p.name + "@" + ($p.version // "") + " (" + $where + ")");
+               ([$vs[] | select(.id == $g.ids[0]) | .summary // empty][0]))]' \
+    "$raw" --arg root "$1" --arg prefix "$3"
+}
+
+tool_govulncheck() { # tree label prefix
+  local d i=0 raw
+  [[ -n "$(projects "$1" go.mod)" ]] || return 0
+  need govulncheck || return 0
+  while read -r d; do
+    i=$((i + 1)); raw="$SCAN_OUT/raw/govulncheck-$2-$i.json"
+    if ! (cd "$d" && govulncheck -format json ./... > "$raw" 2>"$raw.log"); then
+      tool_error govulncheck "$1" "$d" "$(grep -m1 . "$raw.log")"; continue
+    fi
+    # Reachable only: a finding whose trace reaches a vulnerable function.
+    norm "$SCAN_OUT/norm/govulncheck-$2-$i.json" '
+      ([.[] | .osv // empty | {(.id): .}] | add // {}) as $osv
+      | [.[] | .finding // empty | select(.trace[0].function != null)]
+      | unique_by(.osv) | map(.trace[0] as $t
+        | finding("govulncheck"; "sca"; .osv; ($osv[.osv].aliases // []); "HIGH"; ((.fixed_version // "") != "");
+                  ($t.module + "@" + ($t.version // "") + " (" + $where + ", called: " + ($t.package // "") + "." + ($t.function // "") + ")");
+                  $osv[.osv].summary))' \
+      "$raw" --arg where "$(rel_dir "$1" "$d" "$3")go.mod"
+  done < <(projects "$1" go.mod)
+}
+
+# A project's directory in its tree, as a path prefix: "" at the root, else "sub/".
+rel_dir() { # tree dir prefix
+  local r="${2#"$1"}"; r="${r#/}"; echo "$3${r:+$r/}"
+}
+
+# The policy cargo-deny applies where a repository has no deny.toml of its own:
+# the RustSec advisories, licenses an Apache-2.0 project may ship, crates.io only.
+default_deny_toml() {
+  cat <<'EOF'
+# looper-scan's default (looper#49): a repository's own deny.toml replaces it.
+[advisories]
+version = 2
+yanked = "deny"
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "MIT-0", "BSD-2-Clause", "BSD-3-Clause", "ISC",
+         "Zlib", "0BSD", "CC0-1.0", "Unicode-3.0", "Unicode-DFS-2016", "BSL-1.0", "MPL-2.0", "Unlicense", "CDLA-Permissive-2.0"]
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+EOF
+}
+
+tool_cargo_deny() { # tree label prefix
+  local d i=0 raw cfg rc
+  [[ -n "$(projects "$1" Cargo.lock)" ]] || return 0
+  need cargo-deny || return 0
+  default_deny_toml > "$SCAN_WORK/deny.toml"
+  while read -r d; do
+    [[ -f "$d/Cargo.toml" ]] || continue
+    i=$((i + 1)); raw="$SCAN_OUT/raw/cargo-deny-$2-$i.json"; rc=0
+    cfg="$SCAN_WORK/deny.toml"; [[ -f "$1/deny.toml" ]] && cfg="$1/deny.toml"; [[ -f "$d/deny.toml" ]] && cfg="$d/deny.toml"
+    cargo-deny --format json --manifest-path "$d/Cargo.toml" --config "$cfg" check advisories licenses sources bans \
+      2> "$raw" >/dev/null || rc=$?
+    if ! jq -e 'select(.type == "summary")' "$raw" >/dev/null 2>&1; then
+      tool_error cargo-deny "$1" "$d" "exited $rc: $(grep -v '^{' "$raw" | tail -1)"; continue
+    fi
+    norm "$SCAN_OUT/norm/cargo-deny-$2-$i.json" '
+      [.[] | select(.type == "diagnostic" and .fields.severity == "error") | .fields
+       | ((.graphs[0].Krate // {}) | (.name // "") + "@" + (.version // "")) as $krate
+       | if .advisory then
+           finding("cargo-deny"; "sca"; .advisory.id; .advisory.aliases; (.advisory.cvss | cvss3 | bucket);
+                   ([.notes[]? | select(startswith("Solution: Upgrade"))] | length > 0);
+                   ($krate + " (" + $where + ")"); .advisory.title)
+         else
+           finding("cargo-deny"; "policy"; ("cargo-deny:" + .code + ":" + $krate); []; "HIGH"; true;
+                   ($krate + " (" + $where + ")"); .message)
+         end]' \
+      "$raw" --arg where "$(rel_dir "$1" "$d" "$3")Cargo.lock"
+  done < <(projects "$1" Cargo.lock)
+}
+
+tool_semgrep() { # tree label prefix
+  need semgrep || return 0
+  local raw="$SCAN_OUT/raw/semgrep-$2.json" rc=0
+  semgrep scan --config "$SEMGREP_CONFIG" --metrics=off --disable-version-check --json -o "$raw" -q "$1" \
+    >/dev/null 2>"$SCAN_OUT/raw/semgrep-$2.log" || rc=$?
+  ((rc == 0)) || { tool_error semgrep "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/semgrep-$2.log")"; return 0; }
+  norm "$SCAN_OUT/norm/semgrep-$2.json" '
+    [.[0].results[]? | finding("semgrep"; "sast"; .check_id; [];
+       (.extra.metadata.confidence as $c | {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}[.extra.severity] // "UNKNOWN" | unsure($c));
+       true; ((.path | rel($root; $prefix)) + ":" + (.start.line | tostring)); .extra.message)]' \
+    "$raw" --arg root "$1" --arg prefix "$3"
+}
+
+tool_gitleaks() { # tree label prefix
+  need gitleaks || return 0
+  local raw="$SCAN_OUT/raw/gitleaks-$2.json" rc=0
+  # The tree, not .git: the commit's files are what it ships.
+  gitleaks dir --no-banner --redact --exit-code 0 -f json -r "$raw" "$1" >/dev/null 2>"$SCAN_OUT/raw/gitleaks-$2.log" || rc=$?
+  ((rc == 0)) || { tool_error gitleaks "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/gitleaks-$2.log")"; return 0; }
+  norm "$SCAN_OUT/norm/gitleaks-$2.json" '
+    [.[0][]? | select(.File | ltrimstr($root + "/") | startswith(".git/") | not)
+     | (.File | rel($root; $prefix)) as $f
+     | finding("gitleaks"; "secret"; ($f + ":" + .RuleID + ":" + (.StartLine | tostring)); [.RuleID]; "CRITICAL"; true;
+               ($f + ":" + (.StartLine | tostring)); .Description)]' \
+    "$raw" --arg root "$1" --arg prefix "$3"
+}
+
+tool_gosec() { # tree label prefix
+  local d i=0 raw
+  [[ -n "$(projects "$1" go.mod)" ]] || return 0
+  need gosec || return 0
+  while read -r d; do
+    i=$((i + 1)); raw="$SCAN_OUT/raw/gosec-$2-$i.json"
+    if ! (cd "$d" && gosec -no-fail -fmt json -out "$raw" ./... >/dev/null 2>"$raw.log") || [[ ! -s "$raw" ]]; then
+      tool_error gosec "$1" "$d" "$(grep -m1 -i 'error' "$raw.log" || tail -1 "$raw.log")"; continue
+    fi
+    norm "$SCAN_OUT/norm/gosec-$2-$i.json" '
+      [.[0].Issues[]? | finding("gosec"; "sast"; .rule_id; ["CWE-" + (.cwe.id // "")]; (.confidence as $c | .severity | unsure($c)); true;
+         ((.file | rel($root; $prefix)) + ":" + .line); .details)]' \
+      "$raw" --arg root "$1" --arg prefix "$3"
+  done < <(projects "$1" go.mod)
+}
+
+tool_bandit() { # tree label prefix
+  has_files "$1" '*.py' || return 0
+  need bandit || return 0
+  local raw="$SCAN_OUT/raw/bandit-$2.json" rc=0
+  bandit -q -r -f json -o "$raw" --exit-zero -x '*/.git/*,*/node_modules/*,*/.venv/*,*/target/*' "$1" \
+    >/dev/null 2>"$SCAN_OUT/raw/bandit-$2.log" || rc=$?
+  ((rc == 0)) || { tool_error bandit "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/bandit-$2.log")"; return 0; }
+  norm "$SCAN_OUT/norm/bandit-$2.json" '
+    [.[0].results[]? | finding("bandit"; "sast"; .test_id; ["CWE-" + (.issue_cwe.id // "" | tostring)];
+       (.issue_confidence as $c | {"HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}[.issue_severity] // "UNKNOWN" | unsure($c)); true;
+       ((.filename | rel($root; $prefix)) + ":" + (.line_number | tostring)); .issue_text)]' \
+    "$raw" --arg root "$1" --arg prefix "$3"
+}
+
+tool_clippy() { # tree label prefix
+  local d i=0 raw rc
+  [[ -n "$(projects "$1" Cargo.lock)" ]] || return 0
+  command -v cargo >/dev/null && cargo clippy --version >/dev/null 2>&1 || { problems+=("clippy: not in this image"); return 0; }
+  while read -r d; do
+    [[ -f "$d/Cargo.toml" ]] || continue
+    i=$((i + 1)); raw="$SCAN_OUT/raw/clippy-$2-$i.json"; rc=0
+    # shellcheck disable=SC2086  # the lints are words
+    CARGO_TARGET_DIR="$SCAN_WORK/clippy-target" cargo clippy --manifest-path "$d/Cargo.toml" --all-targets --locked \
+      --message-format=json -q -- $CLIPPY_LINTS > "$raw" 2>"$raw.log" || rc=$?
+    norm "$SCAN_OUT/norm/clippy-$2-$i.json" '
+      [.[] | select(.reason == "compiler-message" and .message.level == "error" and ((.message.code.code // "") | startswith("clippy::")))
+       | .message as $m | ($m.spans[] | select(.is_primary)) as $s
+       | finding("clippy"; "sast"; $m.code.code; []; "HIGH"; true; ($dir + $s.file_name + ":" + ($s.line_start | tostring)); $m.message)]
+      | unique_by(.where + .id)' \
+      "$raw" --arg dir "$(rel_dir "$1" "$d" "$3")"
+    if ((rc != 0)) && [[ "$(jq length "$SCAN_OUT/norm/clippy-$2-$i.json")" == 0 ]]; then
+      tool_error clippy "$1" "$d" "exited $rc: $(grep -m1 '^error' "$raw.log" || tail -1 "$raw.log")"
+    fi
+  done < <(projects "$1" Cargo.lock)
+}
+
+# A SARIF report's results: the rule's security-severity, else the level.
+JQ_SARIF='
+[.[0].runs[]? | (.tool.driver.rules // [] | map({(.id): .}) | add // {}) as $rules | .results[]?
+ | (.locations[0].physicalLocation // {}) as $loc
+ | finding($tool; "sast"; .ruleId; [];
+     (($rules[.ruleId].properties["security-severity"] // null) as $ss
+      | if $ss then ($ss | tonumber | bucket) else ({"error": "HIGH", "warning": "MEDIUM", "note": "LOW"}[.level // "warning"] // "UNKNOWN") end);
+     true; (($loc.artifactLocation.uri // "" | ltrimstr("file://") | rel($root; $prefix)) + ":" + ($loc.region.startLine // 0 | tostring));
+     .message.text)]'
+
+# The bytecode SpotBugs reads: every target/classes of the tree, which the
+# gates compiled (built/); this job compiles nothing (a build may run tacplus).
+tool_spotbugs() { # tree label prefix
+  has_files "$1" '*.java' || return 0
+  need spotbugs || return 0
+  local raw="$SCAN_OUT/raw/spotbugs-$2.sarif" classes=()
+  mapfile -t classes < <(find "$1" -path '*/target/classes' -type d -not -path '*/node_modules/*' | LC_ALL=C sort)
+  if ((${#classes[@]} == 0)); then notes+=("spotbugs: $2: Java sources, but the gates compiled no target/classes"); return 0; fi
+  [[ -f "$FINDSECBUGS" ]] || { problems+=("spotbugs: FindSecBugs is not at $FINDSECBUGS"); return 0; }
+  spotbugs -textui -quiet -effort:max -pluginList "$FINDSECBUGS" -sarif="$raw" "${classes[@]}" \
+    >/dev/null 2>"$SCAN_OUT/raw/spotbugs-$2.log" || { tool_error spotbugs "$1" "$1" "$(tail -1 "$SCAN_OUT/raw/spotbugs-$2.log")"; return 0; }
+  norm "$SCAN_OUT/norm/spotbugs-$2.json" "$JQ_SARIF" "$raw" --arg tool spotbugs --arg root "$1" --arg prefix "$3"
+}
+
+tool_trivy() { # tree label prefix
+  need trivy || return 0
+  local raw="$SCAN_OUT/raw/trivy-$2.json" rc=0 ref i=0
+  trivy fs -q --scanners vuln,misconfig --format json -o "$raw" "$1" 2>"$SCAN_OUT/raw/trivy-$2.log" || rc=$?
+  if ((rc != 0)); then tool_error trivy "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/trivy-$2.log")"
+  else norm "$SCAN_OUT/norm/trivy-$2.json" "$JQ_TRIVY" "$raw" --arg where "$3"; fi
+  # The Dockerfiles' base images (by name: a private one it cannot read is not analyzed).
+  while read -r ref; do
+    i=$((i + 1)); raw="$SCAN_OUT/raw/trivy-$2-image-$i.json"; rc=0
+    trivy image -q --scanners vuln --format json -o "$raw" "$ref" 2>"$raw.log" || rc=$?
+    if ((rc != 0)); then notes+=("trivy: image $ref: not analyzed ($(tail -1 "$raw.log"))"); continue; fi
+    norm "$SCAN_OUT/norm/trivy-$2-image-$i.json" "$JQ_TRIVY" "$raw" --arg where "image $ref: "
+  done < <(base_images "$1")
+}
+JQ_TRIVY='
+[.[0].Results[]? | .Target as $t
+ | ((.Vulnerabilities // [])[] | finding("trivy"; "sca"; .VulnerabilityID; []; (.Severity // "UNKNOWN"); ((.FixedVersion // "") != "");
+     (.PkgName + "@" + (.InstalledVersion // "") + " (" + $where + $t + ")"); .Title)),
+   ((.Misconfigurations // [])[] | select(.Status != "PASS") | finding("trivy"; "config"; .ID; []; (.Severity // "UNKNOWN"); true;
+     ($where + $t); .Title))]'
+
+# The images a tree's Dockerfiles build FROM: by name, not a stage, not scratch.
+base_images() { # tree
+  local f
+  while read -r f; do
+    awk 'toupper($1) == "FROM" { r = ""; for (i = 2; i <= NF; i++) if ($i !~ /^--/) { r = $i; break }
+           for (j = i + 1; j < NF; j++) if (toupper($j) == "AS") stage[tolower($(j + 1))] = 1
+           if (r != "" && r != "scratch" && r !~ /\$/ && !(tolower(r) in stage)) print r }' "$f"
+  done < <(find "$1" \( -name .git -o -name node_modules -o -name target \) -prune -o -type f \( -name Dockerfile -o -name '*.Dockerfile' -o -name 'Dockerfile.*' \) -print) | LC_ALL=C sort -u
+}
+
+codeql_bundle() {
+  [[ -x "$CODEQL_DIR/codeql/codeql" ]] && return 0
+  local tmp; tmp="$(mktemp -d)"
+  curl -fsSL -o "$tmp/codeql.tar.gz" "$CODEQL_URL" || { rm -rf "$tmp"; return 1; }
+  echo "$CODEQL_SHA256  $tmp/codeql.tar.gz" | sha256sum -c - >/dev/null || { log "codeql: the bundle's checksum is not $CODEQL_SHA256"; rm -rf "$tmp"; return 1; }
+  mkdir -p "$CODEQL_DIR"; tar -xzf "$tmp/codeql.tar.gz" -C "$CODEQL_DIR"; rm -rf "$tmp"
+}
+
+tool_codeql() { # tree label prefix
+  local langs=() lang db raw mode
+  [[ -f "$1/go.mod" ]] && langs+=(go)
+  has_files "$1" '*.py' && langs+=(python)
+  has_files "$1" '*.java' && langs+=(java)
+  { has_files "$1" '*.ts' || has_files "$1" '*.js'; } && langs+=(javascript)
+  [[ -f "$1/Cargo.toml" ]] && langs+=(rust)
+  ((${#langs[@]})) || return 0
+  if [[ "${SCAN_PUBLIC:-unknown}" != true ]]; then
+    notes+=("codeql: not run: $BUILD_REPO is not known to be public (CodeQL's free terms cover open-source code only)"); return 0
+  fi
+  if ! command -v codeql >/dev/null; then
+    codeql_bundle || { problems+=("codeql: the pinned bundle $CODEQL_VERSION could not be fetched"); return 0; }
+    PATH="$CODEQL_DIR/codeql:$PATH"
+  fi
+  for lang in "${langs[@]}"; do
+    db="$SCAN_WORK/codeql-$2-$lang"; raw="$SCAN_OUT/raw/codeql-$2-$lang.sarif"
+    mode=none; [[ "$lang" == go ]] && mode=autobuild
+    if ! codeql database create "$db" --language="$lang" --build-mode="$mode" --source-root="$1" --overwrite -q \
+           > "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1 ||
+       ! codeql database analyze "$db" "codeql/$lang-queries" --format=sarif-latest --output="$raw" -q \
+           >> "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1; then
+      tool_error codeql "$1" "$1" "$lang: $(tail -1 "$SCAN_OUT/raw/codeql-$2-$lang.log")"; continue
+    fi
+    norm "$SCAN_OUT/norm/codeql-$2-$lang.json" "$JQ_SARIF" "$raw" --arg tool codeql --arg root "$1" --arg prefix "$3"
+  done
+}
+
+# --- versions and databases -----------------------------------------------------
+
+tool_versions() {
+  local t v
+  for t in osv-scanner govulncheck cargo-deny semgrep gitleaks gosec bandit spotbugs trivy syft codeql cargo-clippy; do
+    command -v "$t" >/dev/null || { [[ "$t" == codeql && -x "$CODEQL_DIR/codeql/codeql" ]] || continue; }
+    v="$(case "$t" in
+      govulncheck) go version -m "$(command -v govulncheck)" | awk '$1 == "mod" { print $3 }' ;;
+      gitleaks|trivy) "$t" version | head -1 ;;
+      gosec) gosec -version | sed -n 's/^Version: //p' ;;
+      spotbugs) spotbugs -version | tail -1 ;;
+      codeql) echo "$CODEQL_VERSION" ;;
+      cargo-clippy) cargo clippy --version ;;
+      *) "$t" --version | head -1 ;;
+    esac 2>/dev/null)" || true
+    jq -cn --arg t "$t" --arg v "$v" '{($t): $v}'
+  done | jq -s 'add // {}'
+}
+
+# What each finding was checked against: the databases' snapshot times.
+databases() { # started
+  local trivy="{}" deny="{}" gv="{}" d f=()
+  if ls "$SCAN_OUT"/raw/trivy-* >/dev/null 2>&1; then
+    trivy="$(trivy version -f json 2>/dev/null | jq -c '{trivy: {updated_at: .VulnerabilityDB.UpdatedAt, downloaded_at: .VulnerabilityDB.DownloadedAt, checks: .CheckBundle.Digest}}' 2>/dev/null)" || trivy="{}"
+  fi
+  if ls "$SCAN_OUT"/raw/cargo-deny-* >/dev/null 2>&1; then
+    for d in "${CARGO_HOME:-$HOME/.cargo}"/advisory-dbs/*/; do
+      [[ -d "$d/.git" ]] || continue
+      deny="$(jq -cn --arg c "$(git -C "$d" log -1 --format=%H)" --arg t "$(git -C "$d" log -1 --format=%cI)" \
+                '{"cargo-deny": {advisory_db_commit: $c, advisory_db_time: $t}}')"
+    done
+  fi
+  mapfile -t f < <(find "$SCAN_OUT/raw" -name 'govulncheck-*.json' | LC_ALL=C sort)
+  if ((${#f[@]})); then
+    gv="$(cat "${f[@]}" | jq -cs '[.[] | .config // empty][0] // null
+           | if . then {govulncheck: {db: .db, db_last_modified: .db_last_modified}} else {} end' 2>/dev/null)" || gv="{}"
+  fi
+  [[ -n "$trivy" ]] || trivy="{}"; [[ -n "$gv" ]] || gv="{}"
+  jq -n --arg at "$1" --argjson trivy "$trivy" --argjson deny "$deny" --argjson gv "$gv" --arg sg "$SEMGREP_CONFIG" '
+    {"osv-scanner": {db: "api.osv.dev", queried_at: $at}, semgrep: {rules: $sg, fetched_at: $at}} + $gv + $deny + $trivy'
+}
+
+# --- the exceptions ---------------------------------------------------------------
+
+# security-exceptions.yaml, read as a strict subset of YAML (no YAML library
+# in the image's shell): a list "exceptions:" of entries with exactly id,
+# reason, decided_by and expires (YYYY-MM-DD). Prints a JSON array; a file it
+# cannot read that way is a problem, never an empty list.
+read_exceptions() { # file
+  [[ -f "$1" ]] || { echo '[]'; return 0; }
+  awk '
+    function flush() { if (n) printf "%s}", (out++ ? "," : "") cur; cur = ""; n = 0 }
+    function str(v) { gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+      gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return "\"" v "\"" }
+    function field(s, k, v) { k = s; sub(/:.*/, "", k); v = s; sub(/^[^:]*:/, "", v)
+      if (k !~ /^(id|reason|decided_by|expires)$/) { print "line " NR ": unknown key \"" k "\"" > "/dev/stderr"; bad = 1 }
+      cur = cur (n++ ? "," : "{") "\"" k "\":" str(v) }
+    BEGIN { printf "[" }
+    /^[ \t]*(#|$)/ { next }
+    /^exceptions:[ \t]*(\[\])?[ \t]*$/ { seen = 1; next }
+    seen && /^  - [a-z_]+:/ { flush(); s = $0; sub(/^  - /, "", s); field(s); next }
+    seen && n && /^    [a-z_]+:/ { s = $0; sub(/^    /, "", s); field(s); next }
+    { print "line " NR ": not an exception entry: " $0 > "/dev/stderr"; bad = 1 }
+    END { flush(); printf "]\n"; if (!seen && NR) { print "no exceptions: list" > "/dev/stderr"; bad = 1 }; exit bad }
+  ' "$1"
+}
+
+# --- run ----------------------------------------------------------------------------
+
+# A step of looper-build's, whose fail verdict is this run's.
+build_step() { # function args...
+  ( BUILD_OUT="$SCAN_OUT"; "$@" ) && return 0
+  scan_verdict fail "$(sed -n '1s/^fail: //p' "$SCAN_OUT/build-verdict" 2>/dev/null || true)"
+}
+
+cmd_run() {
+  case "$SCAN_KIND" in build|nightly|release) ;; *) echo "BUILD_SCAN_KIND '$SCAN_KIND' is not build, nightly or release" >&2; exit 2 ;; esac
+  rm -rf "$SCAN_OUT"; mkdir -p "$SCAN_OUT/raw" "$SCAN_OUT/norm"
+  build_step refuse_write_credentials
+  build_step check_inputs
+  SCAN_WORK="$(mktemp -d)"
+  # shellcheck disable=SC2064  # this run's directory
+  trap "rm -rf '$SCAN_WORK'" EXIT
+  local started; started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # The previous run's findings, while the job's token is still here.
+  local previous="$SCAN_WORK/previous.json"
+  if [[ -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] &&
+     curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$previous" "$(latest_url findings.json)" 2>/dev/null &&
+     jq -e 'type == "array"' "$previous" >/dev/null 2>&1; then
+    log "compared with the previous run of $BUILD_REPO"
+  else
+    rm -f "$previous"; log "no previous run of $BUILD_REPO to compare with: every finding is new"
+  fi
+
+  local key="${TACPLUS_READER_APP_KEY:-}"
+  BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"')" ||
+    scan_verdict fail "no read-only GitHub token (the tacplus-reader app)"
+  # CodeQL's free terms cover open-source code: it runs on a public repository only.
+  SCAN_PUBLIC="$(curl -fsS -H "Authorization: Bearer $BUILD_GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' \
+                   "$BUILD_GITHUB_API/repos/$BUILD_ORG/$BUILD_REPO" 2>/dev/null | jq -r 'if .private == false then "true" else "false" end')" ||
+    SCAN_PUBLIC=unknown
+  [[ -n "$key" ]] && rm -f "$key"
+  unset TACPLUS_READER_APP_KEY TACPLUS_READER_APP_ID TACPLUS_READER_INSTALLATION_ID
+  drop_job_credentials
+  export BUILD_GITHUB_TOKEN; git_credentials
+  export GOPRIVATE="${GOPRIVATE:-github.com/$BUILD_ORG/*}" GOFLAGS="${GOFLAGS:--mod=mod}"
+  local src="$SCAN_WORK/src"
+  build_step fetch_commit "$src"
+  build_step refuse_push_credential "$src"
+  # The tree as the gates built it: their untracked sources and bytecode (built/).
+  if [[ -d "$BUILD_OUT/built" ]]; then
+    cp -a "$BUILD_OUT/built/." "$src/"
+    [[ -z "$(git -C "$src" status --porcelain --untracked-files=no)" ]] || scan_verdict fail "the gates' built files change tracked files"
+    log "with what the gates built ($(find "$BUILD_OUT/built" -type f | wc -l) files)"
+  fi
+  scan_tree "$src" "$previous" "$started"
+}
+
+# The checks, the policy and the reports of a checkout (and of the code its
+# gates generated, in $BUILD_OUT/generated); the verdict ends the run.
+scan_tree() { # src previous-findings started
+  local src="$1" previous="$2" started="$3"
+  log "security ($SCAN_KIND): $BUILD_REPO $BUILD_SHA"
+
+  # The trees: the commit, and the code its gates generated.
+  local trees=("$src|source|") t tree label prefix tool
+  [[ -n "$(ls -A "$BUILD_OUT/generated" 2>/dev/null)" ]] && trees+=("$BUILD_OUT/generated|generated|generated/")
+  local tools=(osv govulncheck cargo_deny semgrep gitleaks gosec clippy bandit spotbugs)
+  [[ "$SCAN_KIND" == build ]] || tools+=(codeql trivy)
+  for t in "${trees[@]}"; do
+    IFS='|' read -r tree label prefix <<<"$t"
+    for tool in "${tools[@]}"; do log "$tool: $label"; "tool_$tool" "$tree" "$label" "$prefix"; done
+  done
+  if need syft; then
+    syft scan -q "dir:$src" -o "cyclonedx-json=$SCAN_OUT/sbom.cdx.json" -o "spdx-json=$SCAN_OUT/sbom.spdx.json" 2>"$SCAN_OUT/raw/syft.log" ||
+      problems+=("syft: $(tail -1 "$SCAN_OUT/raw/syft.log")")
+  fi
+
+  # The exceptions, the policy, the comparison.
+  local exceptions errs today
+  today="$(date -u +%Y-%m-%d)"
+  if ! exceptions="$(read_exceptions "$src/$EXCEPTIONS_FILE" 2>"$SCAN_WORK/exc.err")"; then
+    problems+=("$EXCEPTIONS_FILE: $(head -1 "$SCAN_WORK/exc.err")"); exceptions='[]'
+  fi
+  errs="$(jq -r --arg today "$today" '.[] |
+      if (.id // "") == "" then "an exception without an id"
+      elif ((.reason // "") == "" or (.decided_by // "") == "") then "exception \(.id): it needs a reason and who decided (decided_by)"
+      elif ((.expires // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not) then "exception \(.id): expires \(.expires // "" | @json) is not a date YYYY-MM-DD"
+      elif .expires < $today then "exception \(.id) expired on \(.expires) (\(.decided_by): \(.reason))"
+      else empty end' <<<"$exceptions")"
+  [[ -z "$errs" ]] || while IFS= read -r t; do problems+=("$t"); done <<<"$errs"
+
+  local norms=()
+  mapfile -t norms < <(find "$SCAN_OUT/norm" -name '*.json' | LC_ALL=C sort)
+  ((${#norms[@]})) || norms=(/dev/null)
+  jq -s --argjson exc "$exceptions" --arg today "$today" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') '
+    ($prev[0] // [] | map(.tool + "|" + .id + "|" + .where) | map({(.): true}) | add // {}) as $old
+    | [.[][]] | unique_by([.tool, .id, .where]) | map(
+        . as $f
+        | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x)))][0]) as $e
+        | . + {excepted: ($e.id // null),
+               blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix))),
+               new: ($old[.tool + "|" + .id + "|" + .where] | not)})
+    | sort_by(if .blocking then 0 else 1 end, {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}[.severity] // 4, .tool, .id, .where)' \
+    "${norms[@]}" > "$SCAN_OUT/findings.json" || scan_verdict fail "the findings could not be read together (a tool's report)"
+
+  tool_versions > "$SCAN_OUT/tools.json"
+  databases "$started" > "$SCAN_OUT/databases.json"
+  write_sarif > "$SCAN_OUT/findings.sarif"
+  local blocking
+  blocking="$(jq '[.[] | select(.blocking)] | length' "$SCAN_OUT/findings.json")"
+  write_summary "$blocking" > "$SCAN_OUT/summary.md"
+  cat "$SCAN_OUT/summary.md" >&2
+
+  if ((${#problems[@]})); then scan_verdict fail "${problems[0]}$( ((${#problems[@]} > 1)) && echo " (and $((${#problems[@]} - 1)) more: security/summary.md)")"; fi
+  if ((blocking)); then
+    scan_verdict fail "$blocking security finding(s) the policy fails: $(jq -r '[.[] | select(.blocking) | .id][0:3] | join(", ")' "$SCAN_OUT/findings.json") (security/summary.md)"
+  fi
+  scan_verdict pass
+}
+
+# The same checks on a directory, as a build would run them on its commit:
+# no credential, no previous run (every finding is new), nothing published.
+cmd_local() { # dir
+  [[ -d "${1:-}" ]] || { scan_usage >&2; exit 2; }
+  local dir; dir="$(cd "$1" && pwd)"
+  BUILD_REPO="${BUILD_REPO:-$(basename "$dir")}"
+  BUILD_SHA="${BUILD_SHA:-$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo local)}"
+  SCAN_PUBLIC="${BUILD_SCAN_PUBLIC:-unknown}"   # true: CodeQL may run (an open-source repository)
+  rm -rf "$SCAN_OUT"; mkdir -p "$SCAN_OUT/raw" "$SCAN_OUT/norm"
+  SCAN_WORK="$(mktemp -d)"
+  # shellcheck disable=SC2064  # this run's directory
+  trap "rm -rf '$SCAN_WORK'" EXIT
+  scan_tree "$dir" /nonexistent "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+# The repository's latest findings: a generic package of the build project
+# (its package registry, which a job's token may read and write).
+latest_url() { # file
+  echo "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/security-$BUILD_REPO/latest/$1"
+}
+
+# One SARIF log, a run per tool, of every finding (the native SARIF of
+# Semgrep, SpotBugs and CodeQL is in raw/ too).
+write_sarif() {
+  jq '{"$schema": "https://json.schemastore.org/sarif-2.1.0.json", version: "2.1.0",
+       runs: (group_by(.tool) | map({tool: {driver: {name: .[0].tool, informationUri: "https://github.com/tacplus-dev/looper#security-checks",
+         rules: (map({id: .id, properties: {severity: .severity}}) | unique_by(.id))}},
+         results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted then "note" else "warning" end),
+           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" else "" end))},
+           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, aliases: .aliases},
+           locations: [{physicalLocation: {artifactLocation: {uri: (.where | sub(":[0-9]+$"; ""))},
+             region: {startLine: ((.where | capture(":(?<l>[0-9]+)$").l // "1") | tonumber)}}}]})}))}' \
+    "$SCAN_OUT/findings.json"
+}
+
+write_summary() { # blocking
+  local f="$SCAN_OUT/findings.json" p
+  echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
+  echo
+  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.excepted)] | length) accepted by an exception."' "$f"
+  if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
+  if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
+  if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
+  if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
+  if ((${#notes[@]})); then echo; echo "### Not analyzed"; for p in "${notes[@]}"; do echo "- $p"; done; fi
+  echo; echo "### Checked against"; jq -r 'to_entries[] | "- \(.key): \(.value | to_entries | map("\(.key) \(.value)") | join(", "))"' "$SCAN_OUT/databases.json"
+  echo; echo "### Tools"; jq -r 'to_entries[] | "- \(.key) \(.value)"' "$SCAN_OUT/tools.json"
+}
+
+# --- report -------------------------------------------------------------------------
+
+cmd_report() {
+  check_inputs
+  [[ -f "$SCAN_OUT/summary.md" ]] && cat "$SCAN_OUT/summary.md"
+  [[ -f "$SCAN_OUT/findings.json" ]] || { log "the security job left no findings: nothing to publish"; return 0; }
+  : "${CI_JOB_TOKEN:?no job token: the report publishes with it}" "${CI_API_V4_URL:?}" "${CI_PROJECT_ID:?}"
+  local f
+  for f in findings.json summary.md; do
+    [[ -f "$SCAN_OUT/$f" ]] || continue
+    curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$SCAN_OUT/$f" "$(latest_url "$f")" ||
+      { log "the package registry refused $f"; exit 1; }
+  done
+  log "published as security-$BUILD_REPO/latest: the next run's baseline"
+}
+
+# --- sbom ---------------------------------------------------------------------------
+
+cmd_sbom() { # source dir
+  [[ $# -eq 2 ]] || { scan_usage >&2; exit 2; }
+  mkdir -p "$2"
+  syft scan -q "$1" -o "cyclonedx-json=$2/sbom.cdx.json" -o "spdx-json=$2/sbom.spdx.json"
+}
+
+case "${1:-}" in
+  run) cmd_run ;;
+  local) shift; cmd_local "$@" ;;
+  report) cmd_report ;;
+  sbom) shift; cmd_sbom "$@" ;;
+  -h|--help) scan_usage ;;
+  *) scan_usage >&2; exit 2 ;;
+esac

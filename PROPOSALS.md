@@ -4,6 +4,30 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Ready the repositories before the security checks start** (2026-11-01, #49): run by hand on 2026-11-01
+  (`looper-scan local`), tacplus fails the policy on 136 findings (gosec: 55 G122, 49 G703, 11 G115, ...; six OSV
+  advisories with fixes) and kernel on 8 gitleaks findings (PEM markers in its Java sources and tests). The checks start
+  with the next looper image, so the first build of each fails. Before the hub copies `ci/build.gitlab-ci.yml`, a
+  nightly agent scan per repository (or a looper issue each) could fix the real ones and propose each other as a
+  `security-exceptions.yaml` entry (or a `.gitleaksignore` line) for Jody to decide.
+- **tacplus's `generated` recipe** (2026-11-01, #49): tacplus's cross-test models (what consumers ship) are generated
+  out of the tree during its gates, so the security checks see them only once tacplus's justfile has
+  `generated <dir>` writing them there (README, Security checks). A tacplus issue, as part of #49's roadmap entry.
+- **Pin Semgrep's rules** (2026-11-01, #49): `p/default` is fetched from the registry each run, so the same commit
+  can get other SAST findings another day; the run records the fetch time only. A pinned semgrep-rules commit,
+  fetched at run time (the license forbids redistributing the rules, not fetching them), would make Semgrep as
+  reproducible as the tools.
+- **The baseline per branch** (2026-11-01, #49): "the previous run" is the repository's latest published findings,
+  whatever commit or branch built them (a land's branch build updates it too). A version per branch
+  (`security-<repo>/<branch>`) would compare main with main.
+- **Prune the findings packages** (2026-11-01, #49): each run uploads `security-<repo>/latest` again; the package
+  registry keeps every duplicate file. tacplus-dev/build's duplicate-package settings, or a cleanup policy, should
+  keep the last few.
+- **Base images the scan cannot read** (2026-11-01, #49): Trivy scans the Dockerfiles' base images by name, and a
+  private one (Artifact Registry's tacplus build images) is listed as not analyzed: the security job has no registry
+  identity. A read-only WIF binding for it would cover them.
+- **Cache CodeQL's bundle** (2026-11-01, #49): 680 MB fetched by every nightly and release of every repository (fresh
+  VMs); a scanner image with it, or a cache bucket, would save the transfer.
 - **Check who approved, on GitLab** (2026-11-01, #29): on GitHub only write access sets a label, so `approved` is
   the gate. On GitLab a Reporter or a Planner may set one too, so an instance's gate is only as strong as its group's
   roles (README, Forges). The looper could read the issue's label events

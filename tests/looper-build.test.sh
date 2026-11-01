@@ -10,7 +10,10 @@
 # statuses); stub docker and gcloud stand for buildx and Workload Identity
 # Federation. The same commit gives the same verdict twice; a gate that
 # changes a tracked file or pushes fails; a write credential, a credential
-# that can push, a missing or bad pin are refused.
+# that can push, a missing or bad pin are refused. The security checks
+# (looper-scan, looper#49): a planted vulnerable pin and a planted secret
+# fail, an unexpired exception passes and an expired one fails, with stub
+# scanners shaped as the real ones' output, or the real ones when installed.
 # Run: tests/looper-build.test.sh
 set -euo pipefail
 command -v just >/dev/null || { echo "FAIL: these tests run the gates with just, and there is none here" >&2; exit 1; }
@@ -61,6 +64,70 @@ printf 'FROM scratch\nCOPY data.txt /\n' > "$work/Dockerfile"
 git -C "$work" checkout -q pass; printf 'FROM scratch\nCOPY data.txt /\n' > "$work/Dockerfile"
 git -C "$work" add Dockerfile; git -C "$work" commit -qm "a Dockerfile"; SHA[release]="$(git -C "$work" rev-parse HEAD)"
 git -C "$work" tag -a v1.2.3 -m v1.2.3
+case_commit generated "$PASS_GATES
+    mkdir -p gen target/classes/x target/debug node_modules && echo 'package gen' > gen/spec.go
+    echo class > target/classes/x/A.class && echo 'fn x() {}' > target/debug/x.rs && echo x > node_modules/a.js
+    mkdir -p target/generated-sources/m && echo '[package]' > target/generated-sources/m/Cargo.toml
+generated out:
+    mkdir -p {{out}}/model && printf 'package model\n' > {{out}}/model/model.go" "$LOCK"
+
+# The security checks' cases (looper-scan, looper#49): a Go module, clean or
+# with a planted vulnerable pin (golang.org/x/text v0.3.0, its vulnerable
+# Parse called), a planted secret (made here, never in this file), and the
+# exceptions a repository accepts.
+AKIA="AKIA""QYLPMN5HHHFPZAM2"
+scan_commit() { # name [path content]...
+  local name="$1"; shift
+  git -C "$work" checkout -q --orphan "$name"
+  git -C "$work" rm -rqf --ignore-unmatch . >/dev/null
+  printf '%s\n' "$PASS_GATES" > "$work/justfile"; printf '%s\n' "$LOCK" > "$work/tacplus.lock"; printf 'tracked\n' > "$work/data.txt"
+  printf 'module example.com/demo\n\ngo 1.22\n' > "$work/go.mod"
+  printf 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("demo") }\n' > "$work/main.go"
+  while (($#)); do mkdir -p "$(dirname "$work/$1")"; printf '%s\n' "$2" > "$work/$1"; shift 2; done
+  git -C "$work" add -A; git -C "$work" commit -qm "$name"
+  SHA[$name]="$(git -C "$work" rev-parse HEAD)"
+}
+VULN=(go.mod 'module example.com/demo
+
+go 1.22
+
+require golang.org/x/text v0.3.0'
+  go.sum 'golang.org/x/text v0.3.0 h1:g61tztE5qeGQ89tm6NTjjM9VPIm088od1l6aSorWRWg=
+golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ='
+  main.go 'package main
+
+import (
+	"fmt"
+
+	"golang.org/x/text/language"
+)
+
+func main() {
+	t, _ := language.Parse("en-US")
+	fmt.Println(t)
+}')
+exceptions() { # expires [decided_by]
+  printf '# Accepted findings.\nexceptions:\n'
+  printf '  - id: %s\n    reason: "the planted pin of the tests"\n    decided_by: %s\n    expires: %s\n' \
+    GO-2021-0113 "${2:-jodydadescott}" "$1" CVE-2021-38561 "${2:-jodydadescott}" "$1"
+}
+scan_commit scanclean
+scan_commit scanvuln "${VULN[@]}"
+scan_commit scansecret deploy/env.txt "aws_access_key_id = $AKIA"
+scan_commit scanexcepted "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31)"
+scan_commit scanexpired "${VULN[@]}" security-exceptions.yaml "$(exceptions 2020-01-31)"
+scan_commit scanbadexc "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 '""')"
+scan_commit scanpod k8s/pod.yaml 'apiVersion: v1
+kind: Pod
+metadata:
+  name: p
+spec:
+  containers:
+    - name: c
+      image: nginx
+      securityContext:
+        privileged: true'
+git -C "$work" branch -q main scanclean
 git clone -q --bare "$work" "$SRV/repos/github.com/tacplus-dev/demo.git"
 git -C "$SRV/repos/github.com/tacplus-dev/demo.git" config uploadpack.allowAnySHA1InWant true
 : > "$SRV/log"
@@ -68,6 +135,9 @@ python3 -I "$ROOT/tests/git-server.py" "$SRV/repos" "$SRV/cert.pem" "$SRV/key.pe
 pid=$!
 for _ in $(seq 50); do [[ -s "$SRV/port" ]] && break; sleep 0.1; done
 PORT="$(cat "$SRV/port")"; [[ -n "$PORT" ]] || { echo "FAIL: stub git server did not start" >&2; exit 1; }
+# Git reaches github.com through the stub by its own config too: the real
+# scanners (below) reach the internet, not through HTTPS_PROXY.
+mkdir -p "$TMP/home"; git config --file "$TMP/home/.gitconfig" http.https://github.com/.proxy "http://127.0.0.1:$PORT"
 
 # --- the tacplus-reader app and GitHub's API ---------------------------------
 openssl genrsa -out "$TMP/app.pem" 2048 2>/dev/null
@@ -80,7 +150,8 @@ method=GET data="" auth="" url="" out=""
 while ((\$#)); do
   case "\$1" in
     -X) method="\$2"; shift 2 ;;
-    -H) [[ "\$2" == Authorization:* ]] && auth="\${2#Authorization: }"; shift 2 ;;
+    -H) [[ "\$2" == Authorization:* ]] && auth="\${2#Authorization: }"; [[ "\$2" == JOB-TOKEN:* ]] && auth="\$2"; shift 2 ;;
+    --upload-file) method=PUT; up="\$2"; shift 2 ;;
     -d) data="\$2"; shift 2 ;;
     -o) out="\$2"; shift 2 ;;
     -*) shift ;;
@@ -99,6 +170,15 @@ case "\$method \$url" in
     printf '{\n  "token": "%s",\n  "expires_at": "2026-10-29T20:00:00Z"\n}\n' "\$(cat "$TMP/token")" ;;
   "POST https://api.github.com/repos/tacplus-dev/demo/statuses/"*)
     echo "status \$auth \${url##*/} \$data" >> "$TMP/api.log" ;;
+  "GET https://api.github.com/repos/tacplus-dev/demo")   # its visibility: CodeQL's terms (looper#49)
+    echo "repo \$auth" >> "$TMP/api.log"; [[ -f "$TMP/private" ]] && echo '{"private": true}' || echo '{"private": false}' ;;
+  # The build project's package registry (looper#49): the latest findings, the SBOMs.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/latest/findings.json")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/previous.json" ]] || exit 22
+    cp "$TMP/previous.json" "\$out" ;;
+  "PUT https://gitlab.example/api/v4/projects/42/packages/generic/"*)
+    echo "package-put \$auth \${url#*/generic/} \$(sha256sum < "\$up" | cut -c1-12)" >> "$TMP/api.log" ;;
   *) echo "curl stub: \$method \$url" >&2; exit 22 ;;
 esac
 EOF
@@ -140,7 +220,88 @@ case "\$*" in
   "auth print-access-token") echo ya29.stub ;;
 esac
 EOF
+# syft, for publish's SBOM: it writes each -o format=file it is given.
+cat > "$TMP/bin/syft" <<EOF
+#!/usr/bin/env bash
+echo "syft \$*" >> "$TMP/syft.log"
+while ((\$#)); do
+  [[ "\$1" == -o ]] && { printf '{"stub": "%s"}\n' "\${2%%=*}" > "\${2#*=}"; shift; }
+  shift
+done
+EOF
 chmod +x "$TMP/bin/"*
+
+# --- the scanners (looper-scan) --------------------------------------------------
+# With every scanner installed (the looper image), the security checks run
+# for real (the vulnerability databases of the day: the network); else these
+# stubs stand for them, each writing what the real tool writes (its JSON, as
+# captured from the pinned versions) for the planted pin and secret.
+REAL_SCAN=1
+for t in osv-scanner govulncheck semgrep gitleaks gosec syft; do command -v "$t" >/dev/null || REAL_SCAN=0; done
+SB="$TMP/scanbin"; mkdir -p "$SB"
+opt() { echo 'out=""; tree="${@: -1}"; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do case "${a[i]}" in '"$1"') out="${a[i+1]}" ;; '"$1"'=*) out="${a[i]#*=}" ;; esac; done'; }
+cat > "$SB/osv-scanner" <<EOF
+#!/usr/bin/env bash
+$(opt --output)
+echo "osv-scanner job-token=\${CI_JOB_TOKEN:-none} key=\${TACPLUS_READER_APP_KEY:-none}" >> "$TMP/scan-env"
+if grep -qs 'golang.org/x/text v0.3.0' "\$tree/go.mod"; then
+  cat > "\$out" <<J
+{"results":[{"source":{"path":"\$tree/go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/text","version":"0.3.0","ecosystem":"Go"},
+ "vulnerabilities":[{"id":"GO-2021-0113","summary":"Out-of-bounds read in golang.org/x/text/language","aliases":["CVE-2021-38561","GHSA-ppp9-7jff-5vj2"],"affected":[{"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"0.3.7"}]}]}]},
+  {"id":"GO-2026-5970","aliases":["CVE-2026-56852"],"affected":[{"ranges":[{"type":"SEMVER","events":[{"introduced":"0"}]}]}]}],
+ "groups":[{"ids":["GO-2021-0113","GHSA-ppp9-7jff-5vj2"],"aliases":["CVE-2021-38561","GHSA-ppp9-7jff-5vj2","GO-2021-0113"],"max_severity":"7.5"},
+  {"ids":["GO-2026-5970"],"aliases":["CVE-2026-56852","GO-2026-5970"],"max_severity":""}]}]}]}
+J
+  exit 1
+fi
+echo '{"results": []}' > "\$out"
+EOF
+cat > "$SB/govulncheck" <<'EOF'
+#!/usr/bin/env bash
+echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.1.4","db":"https://vuln.go.dev","db_last_modified":"2026-10-27T21:16:18Z"}}'
+grep -qs 'golang.org/x/text v0.3.0' go.mod || exit 0
+echo '{"osv":{"id":"GO-2021-0113","aliases":["CVE-2021-38561","GHSA-ppp9-7jff-5vj2"],"summary":"Out-of-bounds read in golang.org/x/text/language"}}'
+echo '{"finding":{"osv":"GO-2021-0113","fixed_version":"v0.3.7","trace":[{"module":"golang.org/x/text","version":"v0.3.0","package":"golang.org/x/text/language","function":"Parse"},{"module":"example.com/demo","package":"example.com/demo","function":"main"}]}}'
+echo '{"finding":{"osv":"GO-2021-0113","fixed_version":"v0.3.7","trace":[{"module":"golang.org/x/text","version":"v0.3.0"}]}}'
+EOF
+cat > "$SB/gitleaks" <<EOF
+#!/usr/bin/env bash
+$(opt -r)
+{ echo '['; grep -rl --exclude-dir=.git AKIA "\$tree" | awk '{ printf "%s{\"RuleID\":\"aws-access-token\",\"Description\":\"AWS credentials\",\"StartLine\":1,\"File\":\"%s\",\"Secret\":\"REDACTED\",\"Fingerprint\":\"%s:aws-access-token:1\"}", (NR > 1 ? "," : ""), \$0, \$0 }'; echo ']'; } > "\$out"
+EOF
+cat > "$SB/semgrep" <<EOF
+#!/usr/bin/env bash
+$(opt -o)
+echo '{"version":"1.183.0","results":[],"errors":[]}' > "\$out"
+EOF
+cat > "$SB/gosec" <<EOF
+#!/usr/bin/env bash
+$(opt -out)
+[[ "\$1" == -version ]] && { echo "Version: 2.30.0"; exit; }
+echo '{"Issues":[],"Stats":{"files":1}}' > "\$out"
+EOF
+cat > "$SB/trivy" <<EOF
+#!/usr/bin/env bash
+$(opt -o)
+case "\$1" in
+  version) echo '{"Version":"0.76.1","VulnerabilityDB":{"UpdatedAt":"2026-11-01T19:08:08Z","DownloadedAt":"2026-11-01T21:04:18Z"}}'; exit ;;
+  fs) if [[ -f "\$tree/k8s/pod.yaml" ]]; then
+        echo '{"Results":[{"Target":"k8s/pod.yaml","Class":"config","Type":"kubernetes","Misconfigurations":[{"ID":"KSV-0017","Severity":"HIGH","Status":"FAIL","Title":"Privileged container"}]}]}' > "\$out"
+      else echo '{"Results":[]}' > "\$out"; fi ;;
+  *) echo "trivy stub: \$*" >&2; exit 1 ;;
+esac
+EOF
+cat > "$SB/codeql" <<EOF
+#!/usr/bin/env bash
+$(opt --output)
+echo "codeql \$*" >> "$TMP/codeql.log"
+case "\$1 \$2" in
+  "database create") mkdir -p "\$3" ;;
+  "database analyze") echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[{"id":"go/log-injection","properties":{"security-severity":"3.1"}}]}},"results":[{"ruleId":"go/log-injection","level":"error","message":{"text":"log entry from user input"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"main.go"},"region":{"startLine":5}}}]}]}]}' > "\$out" ;;
+esac
+EOF
+cp "$TMP/bin/syft" "$SB/syft"
+chmod +x "$SB/"*
 
 NAME=""
 fail() { echo "FAIL $NAME: $*" >&2; for f in "$TMP/err" "$TMP/api.log" "$TMP/docker.log"; do [[ -f "$f" ]] && cat "$f" >&2; done; exit 1; }
@@ -152,13 +313,13 @@ build() { # [VAR=value...] -- args
   local e=(); while [[ "$1" != -- ]]; do e+=("$1"); shift; done; shift
   n=$((n + 1)); OUT="$TMP/out-$n"; KEY="$TMP/key-$n.pem"; mkdir -p "$OUT" "$TMP/home"
   cp "$TMP/app.pem" "$KEY"
-  : > "$TMP/api.log"; : > "$TMP/docker.log"; : > "$TMP/gcloud.log"; : > "$SRV/log"
+  : > "$TMP/api.log"; : > "$TMP/docker.log"; : > "$TMP/gcloud.log"; : > "$TMP/syft.log"; : > "$SRV/log"
   env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TMPDIR="$TMP" \
     HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem" \
     GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
     TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" TACPLUS_READER_APP_KEY="$KEY" \
     CI_JOB_TOKEN=glcbt-stub CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1 \
-    BUILD_REPO=demo BUILD_OUT="$OUT" "${e[@]}" "$ROOT/looper-build" "$@"
+    BUILD_REPO=demo BUILD_OUT="$OUT" "${e[@]}" "${CMD:-$ROOT/looper-build}" "$@"
 }
 verdict_is() { # expected (a prefix)
   [[ -f "$OUT/build-verdict" ]] || fail "no build-verdict"
@@ -305,7 +466,8 @@ pass
 # --- publish --------------------------------------------------------------------
 echo "sha256:$(printf 'b%.0s' {1..64})" > "$TMP/digest"
 REL=(BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 CI_COMMIT_REF_NAME=demo/v1.2.3
-     GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g)
+     GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g
+     CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42)
 
 NAME="publish: the image, reproducible, pushed with a federated token, its digest recorded"
 build "${REL[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
@@ -320,6 +482,16 @@ grep -q -- "--output type=image,name=us-docker.pkg.dev/jody1-328023/tacplus/demo
 grep -q -- "--driver-opt image=moby/buildkit:v[0-9.]*@sha256:" "$TMP/docker.log" || fail "the builder is not pinned"
 grep -qxF "login https://us-docker.pkg.dev ya29.stub" "$TMP/docker.log" || fail "no login with the federated token"
 grep -qxF "id-token eyJ.stub.id" "$TMP/gcloud.log" || fail "the id token was not exchanged"
+pass
+
+NAME="publish: the release's SBOM, of the image, CycloneDX and SPDX, kept and published"
+jq -e '.stub == "cyclonedx-json"' "$OUT/sbom.cdx.json" >/dev/null && jq -e '.stub == "spdx-json"' "$OUT/sbom.spdx.json" >/dev/null ||
+  fail "no SBOM: $(ls "$OUT")"
+grep -q "^syft scan -q oci-archive:.*/image.tar " "$TMP/syft.log" || fail "not of the image: $(cat "$TMP/syft.log")"
+for f in sbom.cdx.json sbom.spdx.json; do
+  grep -qxF "package-put JOB-TOKEN: glcbt-stub sbom-demo/1.2.3/$f $(sha256sum < "$OUT/$f" | cut -c1-12)" "$TMP/api.log" ||
+    fail "$f not published: $(cat "$TMP/api.log")"
+done
 pass
 
 NAME="publish: the emulators are installed once, when the builder lacks a platform"
@@ -369,6 +541,206 @@ if build "${REL[@]}" GH_TOKEN=ghp_x -- publish 2>"$TMP/err"; then fail "publishe
 verdict_is "fail: this job holds a write credential (GH_TOKEN)"
 pass
 
+# --- the security checks (looper-scan, looper#49) ------------------------------------
+NAME="plan: the child pipeline runs the security checks in the looper image, after the gates, of the run's kind"
+build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed"
+y="$OUT/build-gates.yml"
+sed -n '/^security-demo:$/,/^security-report:$/p' "$y" > "$TMP/sec.yml"
+grep -qxF '  image: "ghcr.io/tacplus-dev/looper:main"' "$TMP/sec.yml" || fail "not in the looper image: $(cat "$TMP/sec.yml")"
+grep -qxF '  needs: [{job: gates, artifacts: true}]' "$TMP/sec.yml" || fail "not after the gates, with their generated code"
+grep -qxF '  when: always' "$TMP/sec.yml" || fail "not run when the gates fail"
+grep -qxF '    BUILD_SCAN_KIND: "build"' "$TMP/sec.yml" || fail "not a build's checks"
+grep -qxF '    - looper-scan run' "$TMP/sec.yml" || fail "does not run looper-scan"
+grep -qxF '    paths: [gates.log, build-verdict, built/, generated/]' "$y" || fail "the gates keep no generated code"
+sed -n '/^security-report:$/,$p' "$y" | grep -qxF '    - looper-scan report' || fail "no report job"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 -- plan 2>"$TMP/err" || fail "release plan failed"
+grep -qxF '    BUILD_SCAN_KIND: "release"' "$OUT/build-gates.yml" || fail "not a release's checks"
+pass
+
+NAME="plan: a nightly scans the main branch as it is, and is no release"
+build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+main_sha="$(git -C "$work" rev-parse main)"
+grep -qxF "    BUILD_SHA: \"$main_sha\"" "$OUT/build-gates.yml" || fail "not main's head $main_sha"
+grep -qxF '    BUILD_SCAN_KIND: "nightly"' "$OUT/build-gates.yml" || fail "not a nightly's checks"
+if build BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned without a commit"; fi
+verdict_is "fail: BUILD_SHA ''"
+if build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true BUILD_TAG=v1.2.3 -- plan 2>"$TMP/err"; then fail "a nightly release"; fi
+verdict_is "fail: a nightly build is not a release"
+pass
+
+NAME="gates: the code a generated recipe writes is the gates' artifact, for the security checks"
+build BUILD_SHA="${SHA[generated]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+[[ "$(cat "$OUT/generated/model/model.go")" == "package model" ]] || fail "no generated code: $(ls -R "$OUT")"
+[[ "$(cd "$OUT/built" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" == "./gen/spec.go ./target/classes/x/A.class ./target/generated-sources/m/Cargo.toml " ]] ||
+  fail "built: $(cd "$OUT/built" && find . -type f)"
+build BUILD_SHA="${SHA[pass]}" -- gates 2>"$TMP/err" || fail "gates failed"
+[[ ! -e "$OUT/generated" ]] || fail "generated code without a recipe"
+pass
+
+# looper-scan, as the security job runs it: the stub scanners unless the real
+# ones are here, the build project's API (its package registry) at gitlab.example.
+SCAN_API=(CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42)
+scan() { # [VAR=value...] -- args
+  local e=(); while [[ "$1" != -- ]]; do e+=("$1"); shift; done; shift
+  local p=(PATH="$TMP/bin:$SB:$PATH")
+  ((REAL_SCAN)) && p=(PATH="$TMP/bin:$PATH" HTTPS_PROXY=)
+  : > "$TMP/scan-env"; : > "$TMP/codeql.log"
+  CMD="$ROOT/looper-scan" build "${p[@]}" "${SCAN_API[@]}" "${e[@]}" -- "$@"
+}
+scan_verdict_is() { # expected (a prefix)
+  [[ -f "$OUT/security/verdict" ]] || fail "no security/verdict: $(tail -5 "$TMP/err")"
+  [[ "$(cat "$OUT/security/verdict")" == "$1"* ]] || fail "verdict '$(cat "$OUT/security/verdict")', expected '$1...'"
+}
+blocking() { jq -r '[.[] | select(.blocking) | .tool + " " + .id + " " + .where] | join("\n")' "$OUT/security/findings.json"; }
+echo "(security checks with $( ((REAL_SCAN)) && echo "the real scanners" || echo "stub scanners"))"
+
+NAME="security: a clean commit passes, with its reports, SBOM and what it was checked against"
+scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err" || fail "the clean commit failed: $(tail -20 "$TMP/err")"
+scan_verdict_is pass
+s="$OUT/security"
+jq -e 'type == "array" and length == 0' "$s/findings.json" >/dev/null || fail "findings: $(cat "$s/findings.json")"
+jq -e '.version == "2.1.0" and (.runs | type == "array")' "$s/findings.sarif" >/dev/null || fail "no SARIF"
+[[ -s "$s/sbom.cdx.json" && -s "$s/sbom.spdx.json" ]] || fail "no SBOM"
+jq -e '."osv-scanner".queried_at and .govulncheck.db_last_modified and .semgrep.rules' "$s/databases.json" >/dev/null ||
+  fail "databases: $(cat "$s/databases.json")"
+grep -q '^### Checked against' "$s/summary.md" || fail "summary: $(cat "$s/summary.md")"
+ls "$s/raw" | grep -q '^osv-scanner-source.json$' || fail "no raw report: $(ls "$s/raw")"
+! ls "$s/raw" | grep -q '^trivy\|^codeql' || fail "a build ran the nightly's tools: $(ls "$s/raw")"
+grep -qxF "package-get JOB-TOKEN: glcbt-stub security-demo/latest/findings.json" "$TMP/api.log" ||
+  fail "the previous run was not asked for with the job token: $(cat "$TMP/api.log")"
+[[ ! -e "$KEY" ]] || fail "the app's key file is still there"
+((REAL_SCAN)) || grep -qxF "osv-scanner job-token=none key=none" "$TMP/scan-env" || fail "a scanner saw: $(cat "$TMP/scan-env")"
+pass
+
+NAME="security: a planted vulnerable pin fails the build"
+if scan BUILD_SHA="${SHA[scanvuln]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: "
+grep -q "security finding(s) the policy fails" "$OUT/security/verdict" || fail "$(cat "$OUT/security/verdict")"
+blocking | grep -q '^osv-scanner GO-[0-9-]* golang.org/x/text@0.3.0 (go.mod)$' || fail "no blocking OSV finding: $(blocking)"
+if ((REAL_SCAN)); then
+  blocking | grep -q '^govulncheck GO-2021-0113 golang.org/x/text@v0.3.0 (go.mod, called: golang.org/x/text/language.Parse)$' || fail "$(blocking)"
+else
+  [[ "$(blocking)" == "govulncheck GO-2021-0113 golang.org/x/text@v0.3.0 (go.mod, called: golang.org/x/text/language.Parse)
+osv-scanner GO-2021-0113 golang.org/x/text@0.3.0 (go.mod)" ]] || fail "blocking: $(blocking)"
+  # Without a score, or a fix, a finding is reported and does not fail.
+  jq -e '.[] | select(.id == "GO-2026-5970") | .severity == "UNKNOWN" and .fix == false and .blocking == false' \
+    "$OUT/security/findings.json" >/dev/null || fail "$(cat "$OUT/security/findings.json")"
+  jq -e '.[] | select(.tool == "osv-scanner" and .id == "GO-2021-0113") | .aliases == ["CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"] and .new' \
+    "$OUT/security/findings.json" >/dev/null || fail "aliases: $(cat "$OUT/security/findings.json")"
+fi
+jq -e '[.runs[].results[] | select(.level == "error")] | length >= 2' "$OUT/security/findings.sarif" >/dev/null || fail "SARIF"
+grep -q '^### Failing the policy' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+cp "$OUT/security/findings.json" "$TMP/vuln-findings.json"
+pass
+
+NAME="security: a planted secret fails the build, and no report holds it"
+if scan BUILD_SHA="${SHA[scansecret]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: "
+blocking | grep -q '^gitleaks deploy/env.txt:aws-access-token:1 deploy/env.txt:1$' || fail "no blocking secret: $(blocking)"
+! grep -qF "$AKIA" "$OUT/security/findings.json" "$OUT/security/findings.sarif" "$OUT/security/summary.md" "$OUT/security"/raw/gitleaks-* ||
+  fail "a report holds the secret"
+pass
+
+NAME="security: code the gates generated is scanned too"
+mkdir -p "$TMP/out-$((n + 1))/generated/model"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/model/keys.txt"
+if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+blocking | grep -q '^gitleaks generated/model/keys.txt:aws-access-token:1 generated/model/keys.txt:1$' || fail "$(blocking)"
+pass
+
+NAME="security: the checkout is scanned as the gates built it (built/ laid over it)"
+mkdir -p "$TMP/out-$((n + 1))/built/gen"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/built/gen/keys.txt"
+if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+blocking | grep -q '^gitleaks gen/keys.txt:aws-access-token:1 gen/keys.txt:1$' || fail "$(blocking)"
+mkdir -p "$TMP/out-$((n + 1))/built"; printf 'changed\n' > "$TMP/out-$((n + 1))/built/main.go"
+if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: the gates' built files change tracked files"
+pass
+
+NAME="security: an unexpired exception passes; an expired one, or one that does not say who decided, fails"
+if ((REAL_SCAN)); then
+  # The real databases name more than the planted findings: an exception for
+  # each the planted pin's run failed on, in a commit pushed to the origin now.
+  git -C "$work" checkout -q scanvuln && git -C "$work" checkout -q -b scanreal
+  { printf 'exceptions:\n'
+    jq -r '[.[] | select(.blocking) | .id] | unique[] | "  - id: \(.)\n    reason: \"the planted pin of the tests\"\n    decided_by: jodydadescott\n    expires: 2099-12-31"' \
+      "$TMP/vuln-findings.json"; } > "$work/security-exceptions.yaml"
+  git -C "$work" add -A; git -C "$work" commit -qm scanreal
+  git -C "$work" push -q "$SRV/repos/github.com/tacplus-dev/demo.git" HEAD:refs/heads/scanreal
+  scan BUILD_SHA="$(git -C "$work" rev-parse HEAD)" -- run 2>"$TMP/err" || fail "the excepted commit failed: $(cat "$OUT/security/verdict")"
+  scan_verdict_is pass
+  jq -e '[.[] | select(.excepted)] | length > 0' "$OUT/security/findings.json" >/dev/null || fail "nothing accepted"
+else
+  scan BUILD_SHA="${SHA[scanexcepted]}" -- run 2>"$TMP/err" || fail "the excepted commit failed: $(cat "$OUT/security/verdict")"
+  scan_verdict_is pass
+  [[ "$(jq -r '[.[] | select(.excepted) | .tool + ":" + .excepted] | join(" ")' "$OUT/security/findings.json")" == \
+     "govulncheck:GO-2021-0113 osv-scanner:GO-2021-0113" ]] || fail "$(cat "$OUT/security/findings.json")"
+  grep -q '^### Accepted (security-exceptions.yaml)' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+fi
+if scan BUILD_SHA="${SHA[scanexpired]}" -- run 2>"$TMP/err"; then fail "an expired exception passed"; fi
+scan_verdict_is "fail: exception GO-2021-0113 expired on 2020-01-31 (jodydadescott: the planted pin of the tests)"
+blocking | grep -q '^osv-scanner GO-2021-0113' || fail "an expired exception still accepts: $(blocking)"
+if scan BUILD_SHA="${SHA[scanbadexc]}" -- run 2>"$TMP/err"; then fail "an exception without decided_by passed"; fi
+scan_verdict_is "fail: exception GO-2021-0113: it needs a reason and who decided (decided_by)"
+pass
+
+NAME="security: findings are compared with the previous run's: the new ones are listed"
+if ((REAL_SCAN)); then
+  jq '[.[] | select(.tool != "govulncheck")]' "$TMP/vuln-findings.json" > "$TMP/previous.json"
+else
+  jq '[.[] | select(.tool == "osv-scanner")]' "$TMP/vuln-findings.json" > "$TMP/previous.json"
+fi
+if scan BUILD_SHA="${SHA[scanvuln]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+rm "$TMP/previous.json"
+[[ "$(jq -r '[.[] | select(.new) | .tool] | unique | join(" ")' "$OUT/security/findings.json")" == govulncheck ]] ||
+  fail "new: $(jq -c '[.[] | select(.new)]' "$OUT/security/findings.json")"
+sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH govulncheck GO-2021-0113' ||
+  fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: the report publishes the run's findings as the repository's latest, with the job token"
+v="$OUT"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_OUT="$v" -- report 2>"$TMP/err" > "$TMP/report.out" || fail "report failed: $(cat "$TMP/err")"
+grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/latest/findings.json $(sha256sum < "$v/security/findings.json" | cut -c1-12)" "$TMP/api.log" ||
+  fail "$(cat "$TMP/api.log")"
+grep -q "^package-put JOB-TOKEN: glcbt-stub security-demo/latest/summary.md " "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+grep -q '^## Security checks: demo ' "$TMP/report.out" || fail "the summary is not in the job's log"
+pass
+
+NAME="security: a scanner the image lacks fails the run"
+if ((REAL_SCAN)); then
+  echo "skip $NAME: the real scanners are here"
+else
+  mkdir -p "$TMP/scanbin-less"; cp "$SB"/* "$TMP/scanbin-less/"; rm "$TMP/scanbin-less/gosec"
+  if CMD="$ROOT/looper-scan" build PATH="$TMP/bin:$TMP/scanbin-less:$PATH" "${SCAN_API[@]}" BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then
+    fail "passed without gosec"
+  fi
+  scan_verdict_is "fail: gosec: not in this image"
+  pass
+fi
+
+NAME="security: a nightly adds CodeQL and Trivy (Kubernetes manifests): a privileged pod fails it, not a build"
+mkdir -p "$TMP/scanbin-nightly"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
+SCAN_API+=(PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err"; then fail "passed"; fi
+blocking | grep -qxF 'trivy KSV-0017 k8s/pod.yaml' || fail "$(blocking)"
+grep -q "^codeql database create .* --language=go --build-mode=autobuild " "$TMP/codeql.log" || fail "no CodeQL: $(cat "$TMP/codeql.log")"
+jq -e '.[] | select(.tool == "codeql") | .id == "go/log-injection" and .severity == "LOW" and .where == "main.go:5"' \
+  "$OUT/security/findings.json" >/dev/null || fail "$(cat "$OUT/security/findings.json")"
+jq -e '.trivy.updated_at' "$OUT/security/databases.json" >/dev/null || fail "no Trivy database time"
+scan BUILD_SHA="${SHA[scanpod]}" -- run 2>"$TMP/err" || fail "a build ran Trivy: $(cat "$OUT/security/verdict")"
+touch "$TMP/private"
+if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err"; then fail "passed"; fi
+rm "$TMP/private"
+[[ ! -s "$TMP/codeql.log" ]] || fail "CodeQL ran on a private repository"
+grep -q "^- codeql: not run: demo is not known to be public" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+unset 'SCAN_API[-1]'
+pass
+
+NAME="security: a write credential is refused"
+if scan BUILD_SHA="${SHA[scanclean]}" GH_TOKEN=ghp_x -- run 2>"$TMP/err"; then fail "ran with GH_TOKEN"; fi
+scan_verdict_is "fail: this job holds a write credential (GH_TOKEN)"
+pass
+
 # --- the real thing ---------------------------------------------------------------
 # With a docker that runs buildx (a runner, this repository's image), the same
 # commit, checked out afresh twice (other file times), gives the same digest.
@@ -376,6 +748,7 @@ NAME="publish --dry-run, real buildx: the same commit twice gives the same diges
 real_docker="$(command -v docker || true)"
 if [[ -n "$real_docker" ]] && docker buildx version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   mkdir -p "$TMP/bin-real"; ln -s "$TMP/bin/curl" "$TMP/bin-real/curl"
+  command -v syft >/dev/null || ln -s "$TMP/bin/syft" "$TMP/bin-real/syft"   # the SBOM, real where syft is
   digests=()
   for _ in 1 2; do
     build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 \
@@ -383,6 +756,7 @@ if [[ -n "$real_docker" ]] && docker buildx version >/dev/null 2>&1 && docker in
     digests+=("$(cat "$OUT/image")")
   done
   [[ "${digests[0]}" == "${digests[1]}" && "${digests[0]}" == *@sha256:* ]] || fail "${digests[*]}"
+  [[ -s "$OUT/sbom.cdx.json" && -s "$OUT/sbom.spdx.json" ]] || fail "no SBOM of the image"
   echo "ok $NAME: ${digests[0]##*@}"
 else
   echo "skip $NAME: no docker with buildx here"

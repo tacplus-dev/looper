@@ -470,10 +470,12 @@ jobs run `looper-build`, from this image.
   ```
 - **`plan`** fetches exactly that commit and reads its `tacplus.lock` (as tacplus validates it: an exact release,
   the build image by digest, of the same line). No pin, or a bad one, is a **fail** verdict, never a guess. It
-  writes the child pipeline: one `gates` job whose `image:` is the pinned digest.
+  writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' jobs.
 - **`gates`**, in the pinned build image: `just gates` on the commit. It fails if the commit has no `gates` recipe,
   if a gate fails, or if the build changed a tracked file (`git status --porcelain --untracked-files=no`) or moved
   HEAD. Its log is the artifact `gates.log`, and the job's log.
+- **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the
+  code its gates generated, which fail the build as a gate does ([Security checks](#security-checks), looper#49).
 - **`pending`, `report-pass`, `report-fail`** set the GitHub commit status, context `tacplus-dev/build`, linking
   the pipeline, with the failure's reason as its description. This is the only thing a build writes to GitHub.
 - **`publish`**, on a release (below), once the gates passed: `docker buildx build` of the repository's
@@ -570,6 +572,114 @@ custom executor runs each job in a fresh macOS VM cloned from the job's `image:`
 pipeline variables forbidden; job tokens cannot push to the project; group runners off, so only the build runner
 takes its jobs; release tags `*/v*` protected (Maintainers create them); `.gitlab-ci.yml` from `ci/build.gitlab-ci.yml`.
 Left to the hub: the build runner above, and `GCP_WIF_PROVIDER` with its binding (tacplus-dev/tacplus#223).
+
+### Security checks
+
+Deterministic security checks run in the build pipeline (looper#49; Jody, 2026-11-01): a guaranteed floor under the
+nightly agent scan, which stays for judgment and drift. They are `looper-scan`, in the looper image (the scanners),
+run by two jobs of the child pipeline `plan` writes, beside `gates`:
+
+- **`security-<repo>`** (`looper-scan run`, after `gates`, also when the gates fail) fetches the commit as `gates` does
+  (the reader app's read-only token, the key deleted and GitLab's job token dropped before any tool runs) and scans
+  it, and the code its gates generated (below). Its verdict fails the pipeline, so the commit status, like a gate.
+- **`security-report`** (`looper-scan report`) prints the run's summary and publishes its findings as the
+  repository's latest: the generic package `security-<repo>`, version `latest`, of tacplus-dev/build (its package
+  registry, with the job's token). The next run compares with it, and the nightly agent scan reads it.
+
+**When.** Every build: OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
+FindSecBugs, and a Syft SBOM of the source. A **nightly** and every **release** tag add CodeQL and Trivy. A nightly is
+a pipeline of tacplus-dev/build started with the inputs `repo` and `"nightly": true` and no `sha` (a pipeline schedule
+per repository, on `main`; the plan scans `main`'s head then); it runs the gates and the checks and sets no commit
+status. A release's `publish` makes the SBOM of the image it pushed.
+
+| Tool | Version | Pinned by | Runs on |
+|---|---|---|---|
+| [OSV-Scanner](https://github.com/google/osv-scanner) | 2.7.0 | release sha256 (Dockerfile) | every lockfile: go.mod, Cargo.lock, Maven, pip, npm, NuGet |
+| [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | 1.1.4 | module checksum (`go install`, sum.golang.org) | each Go module: the vulnerable code it calls |
+| [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | 0.20.2 | release sha256 | each Cargo workspace: advisories, licenses, sources, bans |
+| [Semgrep CE](https://github.com/semgrep/semgrep) | 1.183.0 | every wheel's hash (`scanners/requirements.txt`) | the tree, rules `p/default` |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | 8.30.1 | release sha256 | the tree's files (its `.gitleaks.toml`, `.gitleaksignore`) |
+| [gosec](https://github.com/securego/gosec) | 2.30.0 | release sha256 | each Go module |
+| clippy | the image's Rust | the build image | each Cargo workspace: `-A clippy::all -D clippy::correctness -D clippy::suspicious` |
+| [Bandit](https://github.com/PyCQA/bandit) | 1.9.4 | wheel hashes (`scanners/requirements.txt`) | Python files |
+| [SpotBugs](https://github.com/spotbugs/spotbugs) + [FindSecBugs](https://github.com/find-sec-bugs/find-sec-bugs) | 4.10.5 + 1.14.0 | release sha256, Maven Central sha256 | the bytecode the gates compiled (`target/classes`) |
+| [CodeQL](https://github.com/github/codeql-action) (nightly, release) | 2.27.3 | the bundle's sha256, fetched when a run needs it (680 MB, not in the image) | Go, Python, Java, JavaScript/TypeScript, Rust; public repositories only |
+| [Trivy](https://github.com/aquasecurity/trivy) (nightly, release) | 0.76.1 | release sha256 | the tree (vulnerabilities, Kubernetes manifests and other configs), the Dockerfiles' base images |
+| [Syft](https://github.com/anchore/syft) | 1.55.0 | release sha256 | the SBOM, CycloneDX and SPDX: the source every run, the image on a release |
+
+The vulnerability databases are fetched each run, and `security/databases.json` records what each result was checked
+against: OSV's API and the query time, govulncheck's `db_last_modified`, cargo-deny's advisory-db commit and time,
+Trivy's database `UpdatedAt`/`DownloadedAt` and check bundle, the Semgrep rules and the fetch time. The tools'
+versions as run are `security/tools.json`. To move a tool, change its version and checksum in the `Dockerfile` (the
+Python ones: regenerate `scanners/requirements.txt` as its header says; CodeQL: `CODEQL_VERSION`/`CODEQL_SHA256` in
+`looper-scan`).
+
+**Licenses.** Every tool is free and open source. Semgrep's community rules are under the [Semgrep Rules License
+v1.0](https://semgrep.dev/legal/rules-license): use "only for your own internal business purposes", no
+distribution, not "available to others as a service". Scanning our own repositories in our own pipeline is that
+use; the rules are fetched from the registry each run and never copied into this repository or the published image.
+CodeQL is free for open-source codebases (the [GitHub CodeQL terms](https://github.com/github/codeql-cli-binaries/blob/main/LICENSE.md)):
+tacplus-dev's repositories are OSI-licensed (Apache-2.0), and `looper-scan` runs CodeQL only on a repository GitHub
+says is public (fleet-dev and fleet-seatrials are private: no CodeQL there, and the summary says so).
+
+**The tree as the gates built it.** The security job scans its own checkout of the commit, with what the gates
+built laid over it: the gates job keeps as its artifact `built/` the untracked files its gates left in the checkout
+that are source (code generated in place: tacplus's Go does not build without its `go generate`) or bytecode
+(`target/classes`, which SpotBugs reads; the security job compiles nothing, as a build may run tacplus), never
+dependencies (`node_modules/`, `vendor/`) or other output. A laid-over file that would change a tracked one fails the run.
+
+**Generated code is scanned too.** What tacplus emits is what consumers ship. A repository that commits its generated
+code (the service repositories: kernel's `codegen/`, ...) has it scanned with the checkout. One whose gates generate
+it out of the tree (tacplus's cross-test models) gives it with a `generated` recipe: after `just gates` passes, the gates job runs
+`just generated <dir>` and keeps `<dir>` as its artifact `generated/`, and the security job scans it as a second tree
+(its findings' `where` start with `generated/`). The recipe may not change a tracked file.
+
+**Policy.** A run fails on:
+
+- any **secret** (gitleaks);
+- a **HIGH or CRITICAL** finding **with a fix**: a fixed version (OSV-Scanner, govulncheck, cargo-deny, Trivy), or our
+  own code (a SAST finding, a Kubernetes misconfiguration, a cargo-deny license, source or ban error). Severity is
+  the tool's: OSV-Scanner's and cargo-deny's from the CVSS score (≥ 9 CRITICAL, ≥ 7 HIGH), govulncheck's reachable
+  findings are HIGH (it gives no severity; a vulnerability the code calls), Semgrep's ERROR is HIGH, gosec's and
+  Bandit's their own, one level lower when the tool's confidence is LOW, CodeQL's and SpotBugs' from the rule's
+  `security-severity`, else the SARIF level; a finding with no score is UNKNOWN and reported, not failed;
+- a tool that cannot run on the tree's root project (a nested fixture or example that does not load is listed as
+  not analyzed instead), and a scanner missing from the image;
+- an exception that has expired or is malformed.
+
+**Accepted exceptions** are the commit's `security-exceptions.yaml`, at its root, in exactly this form:
+
+```yaml
+exceptions:
+  - id: GHSA-ppp9-7jff-5vj2          # the finding's id or one of its aliases (CVE, GHSA, GO-, RUSTSEC-, a rule id;
+    reason: "only parses our own tags"   # a secret's: <path>:<rule>:<line>)
+    decided_by: jodydadescott
+    expires: 2026-12-31              # YYYY-MM-DD; from the day after, the build fails until it is renewed or fixed
+```
+
+Every entry needs all four keys and no other. An accepted finding is still reported (`excepted`), never failed.
+
+**Reports**, the security job's artifact `security/` (90 days): `findings.json` (every finding, normalized: tool,
+kind, id, aliases, severity, fix, where, title, `excepted`, `blocking`, `new`), `findings.sarif` (one SARIF 2.1.0 log,
+a run per tool), `summary.md` (the counts, what fails, what is **new since the previous run**, what is accepted, what
+was not analyzed, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
+`sbom.spdx.json`, and `raw/`, each tool's own report (JSON or SARIF) and log.
+
+**A release's SBOM**: `publish` runs Syft on the image it built (the OCI archive whose digest it pushed): the job's
+artifacts `sbom.cdx.json` and `sbom.spdx.json`, beside `image`, and the generic package `sbom-<repo>`, version
+`X.Y.Z`, of tacplus-dev/build.
+
+**The nightly agent scan** (`repo-looper --scan`) reads the repository's latest findings (with `GITLAB_TOKEN`) into its
+run directory, and its prompt's first item files each new, unaccepted finding that fails the policy or is HIGH or
+CRITICAL as a `bug` (the unchanged issue flow), and the other new ones as one issue.
+
+```sh
+looper-scan run | report | local DIR | sbom SOURCE DIR   # the jobs; local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them)
+tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM
+```
+
+Left to the hub: a pipeline schedule per repository on tacplus-dev/build (inputs `repo`, `nightly: true`), and the
+package registry left on (the default). `ci/build.gitlab-ci.yml` is copied there as is.
 
 ## Looper identity
 

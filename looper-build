@@ -11,10 +11,13 @@
 #   plan     fetch exactly the commit, read its tacplus.lock, and write the
 #            child pipeline whose gates job runs in the pinned build image
 #   gates    in that image, with no agent: `just gates` on the commit; a
-#            change to a tracked file fails it
+#            change to a tracked file fails it; then the code it generates
+#            (a `generated` recipe), for the security checks
+#   (the security checks, looper#49, are looper-scan's: the child pipeline's
+#            security-<repo> and security-report jobs, in the looper image)
 #   status   the GitHub commit status (context tacplus-dev/build)
 #   publish  on a release tag: the image, pushed to Artifact Registry through
-#            Workload Identity Federation, and its digest
+#            Workload Identity Federation, its digest and its SBOM
 #
 # Self-contained (no looper-lib.sh, no jq on the gates path): the plan embeds
 # this very file in the gates job, which runs in the repository's pinned build
@@ -36,6 +39,9 @@ BUILD_RUNNER_TAGS="${BUILD_RUNNER_TAGS:-arm64, build}"
 BUILD_REGISTRY="${BUILD_REGISTRY:-us-docker.pkg.dev/jody1-328023/tacplus}"
 BUILD_PLATFORMS="${BUILD_PLATFORMS:-linux/amd64,linux/arm64}"
 BUILD_STATUS_CONTEXT="${BUILD_STATUS_CONTEXT:-tacplus-dev/build}"
+# The image the security checks run in (the looper image: the scanners), by
+# default the one the plan runs in.
+BUILD_SCAN_IMAGE="${BUILD_SCAN_IMAGE:-${CI_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}}"
 # The builder publish runs in, and the emulators for a foreign platform, by digest.
 BUILD_BUILDKIT_IMAGE="${BUILD_BUILDKIT_IMAGE:-moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea}"
 BUILD_BINFMT_IMAGE="${BUILD_BINFMT_IMAGE:-tonistiigi/binfmt:qemu-v10.0.4@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541}"
@@ -48,7 +54,8 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build gates                 just gates on the commit, in this directory's checkout
        looper-build status STATE [TEXT]   the commit status: pending, success or failure
        looper-build publish [--dry-run]   the release image and its digest (--dry-run: build only)
-Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), the tacplus-reader
+Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
+nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
 EOF
@@ -71,9 +78,16 @@ verdict() { # pass | fail <why>
 check_inputs() {
   [[ "${BUILD_REPO:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$BUILD_REPO" != *..* ]] ||
     verdict fail "BUILD_REPO '${BUILD_REPO:-}' is not a repository name"
-  [[ "${BUILD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_SHA '${BUILD_SHA:-}' is not a full commit hash"
+  [[ "${BUILD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || [[ "${1:-}" == plan && -z "${BUILD_SHA:-}" && "${BUILD_NIGHTLY:-}" == true ]] ||
+    verdict fail "BUILD_SHA '${BUILD_SHA:-}' is not a full commit hash"
   [[ -z "${BUILD_TAG:-}" || "$BUILD_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     verdict fail "BUILD_TAG '$BUILD_TAG' is not a release tag vX.Y.Z"
+  [[ "${BUILD_NIGHTLY:-}" != true || -z "${BUILD_TAG:-}" ]] || verdict fail "a nightly build is not a release (BUILD_TAG $BUILD_TAG)"
+}
+
+# The kind of the security checks (looper-scan): release, nightly or build.
+scan_kind() {
+  if [[ -n "${BUILD_TAG:-}" ]]; then echo release; elif [[ "${BUILD_NIGHTLY:-}" == true ]]; then echo nightly; else echo build; fi
 }
 
 # A build holds no credential that can change a repository: refuse to run
@@ -194,24 +208,32 @@ check_release() { # dir
 
 cmd_plan() {
   refuse_write_credentials
-  check_inputs
+  check_inputs plan
   mkdir -p "$BUILD_OUT"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"' "$BUILD_REPO")" ||
     verdict fail "no read-only GitHub token (the tacplus-reader app)"
   export BUILD_GITHUB_TOKEN; git_credentials
+  if [[ -z "${BUILD_SHA:-}" ]]; then   # a nightly: the main branch as it is now
+    BUILD_SHA="$(git ls-remote "$(repo_url)" refs/heads/main 2>/dev/null | cut -f1)"
+    [[ "$BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || verdict fail "$BUILD_ORG/$BUILD_REPO has no main branch to scan"
+    log "nightly: $BUILD_REPO main is $BUILD_SHA"
+  fi
   local src="$BUILD_OUT/plan-src" image
   fetch_commit "$src"
   check_release "$src"
   image="$(read_pin "$src")"
   rm -rf "$src"
   write_gates_pipeline "$image" > "$BUILD_OUT/build-gates.yml"
-  log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image"
+  log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE"
 }
 
-# The child pipeline: one job, in the pinned image, running this script.
+# The child pipeline: the gates job, in the pinned image, running this
+# script; the security checks (looper-scan, looper#49) in the looper image,
+# on the commit and on the code the gates generated.
 write_gates_pipeline() { # image
   cat <<EOF
-# Written by looper-build plan: the gates of $BUILD_REPO at $BUILD_SHA, in its pinned build image.
+# Written by looper-build plan: the gates of $BUILD_REPO at $BUILD_SHA, in its pinned build image,
+# and its security checks.
 gates:
   image: "$1"
   tags: [$BUILD_RUNNER_TAGS]
@@ -232,7 +254,41 @@ EOF
   artifacts:
     when: always
     expire_in: 30 days
-    paths: [gates.log, build-verdict]
+    paths: [gates.log, build-verdict, built/, generated/]
+EOF
+  cat <<EOF
+security-$BUILD_REPO:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: gates, artifacts: true}]
+  when: always
+  timeout: 3h
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_TAG: "${BUILD_TAG:-}"
+    BUILD_ORG: "$BUILD_ORG"
+    BUILD_SCAN_KIND: "$(scan_kind)"
+  script:
+    - looper-scan run
+  artifacts:
+    when: always
+    expire_in: 90 days
+    paths: [security/]
+security-report:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: "security-$BUILD_REPO", artifacts: true}]
+  when: always
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_SCAN_KIND: "$(scan_kind)"
+  script:
+    - looper-scan report
 EOF
 }
 
@@ -274,7 +330,40 @@ cmd_gates() {
   [[ -z "$changed" ]] || verdict fail "the build changed tracked files: $(echo "$changed" | head -20 | tr '\n' ' ')"
   [[ "$(git -C "$src" rev-parse HEAD)" == "$BUILD_SHA" ]] || verdict fail "the build moved HEAD off $BUILD_SHA"
   ((rc == 0)) || verdict fail "just gates exited $rc (gates.log)"
+  built "$src"
+  generated "$src"
   verdict pass
+}
+
+# What the gates built that the security checks need (looper#49), the gates
+# job's artifact built/: the untracked files of the checkout that are source
+# or a manifest (code generated in place, which a Go module or a Cargo
+# workspace may not build without) or bytecode (target/classes, for
+# SpotBugs), never dependencies or other output.
+# The security job lays it over its own checkout of the commit.
+built() { # src
+  local out="$BUILD_OUT/built"
+  rm -rf "$out"; mkdir -p "$out"
+  git -C "$1" ls-files -z --others |
+    { grep -zE '(^|/)target/classes/|\.(go|rs|py|java|kt|scala|ts|tsx|js|mjs|cs|swift)$|(^|/)(go\.(mod|sum)|Cargo\.(toml|lock)|pom\.xml|package(-lock)?\.json|pyproject\.toml|requirements[^/]*\.txt)$' || true; } |
+    { grep -zvE '(^|/)(node_modules|vendor|\.venv|venv|\.git)/|(^|/)target/(.*/)?(debug|release|deps|build)/' || true; } |
+    (cd "$1" && tar --null -T - -cf -) | tar -xf - -C "$out" || verdict fail "the gates' built files could not be kept"
+  [[ -n "$(ls -A "$out")" ]] || rmdir "$out"
+}
+
+# The code the commit generates, for the security checks (looper#49): what
+# the repository's `generated` recipe, when it has one, writes into the
+# directory it is given ($BUILD_OUT/generated, the gates job's artifact). A
+# repository that commits its generated code needs none: the checkout is scanned.
+generated() { # src
+  local out="$BUILD_OUT/generated" rc=0
+  rm -rf "$out"
+  (cd "$1" && just --summary 2>/dev/null | tr ' ' '\n' | grep -qx generated) || return 0
+  mkdir -p "$out"
+  log "gates: $BUILD_REPO: just generated (for the security checks)"
+  (cd "$1" && just generated "$out") 2>&1 | tee -a "$BUILD_OUT/gates.log" >&2 || rc="${PIPESTATUS[0]}"
+  ((rc == 0)) || verdict fail "just generated exited $rc (gates.log)"
+  [[ -z "$(git -C "$1" status --porcelain --untracked-files=no)" ]] || verdict fail "just generated changed tracked files"
 }
 
 # --- status -----------------------------------------------------------------
@@ -397,6 +486,7 @@ cmd_publish() {
   log "built $name@$built"
   if ((dry)); then
     echo "$name@$built" > "$BUILD_OUT/image"
+    BUILD_SBOM_UPLOAD=0 release_sbom "$tmp/image.tar"
     log "dry run: nothing pushed"; return 0
   fi
   registry_login "$tmp"
@@ -412,7 +502,29 @@ cmd_publish() {
   fi
   echo "$name@$built" > "$BUILD_OUT/image"
   log "published $name@$built"
+  release_sbom "$tmp/image.tar"
 }
+
+# The release's SBOM (looper#49), of the image published, CycloneDX and SPDX:
+# the publish job's artifacts sbom.cdx.json and sbom.spdx.json (kept), and the
+# build project's generic package sbom-<repo>, version X.Y.Z.
+release_sbom() { # oci-archive
+  local scan; scan="$(dirname "$SELF")/looper-scan"
+  [[ -x "$scan" ]] || verdict fail "no looper-scan beside looper-build: the release's SBOM cannot be made"
+  "$scan" sbom "oci-archive:$1" "$BUILD_OUT" || verdict fail "the SBOM of $BUILD_REPO $BUILD_TAG could not be made"
+  local f
+  if [[ "${BUILD_SBOM_UPLOAD:-1}" == 1 && -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]]; then
+    for f in sbom.cdx.json sbom.spdx.json; do
+      curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$BUILD_OUT/$f" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/sbom-$BUILD_REPO/${BUILD_TAG#v}/$f" ||
+        verdict fail "the package registry refused the SBOM $f"
+    done
+    log "SBOM published: sbom-$BUILD_REPO ${BUILD_TAG#v}"
+  fi
+}
+
+# Sourced (looper-scan, looper#49): its functions, and nothing run.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
 case "${1:-}" in
   plan) cmd_plan ;;

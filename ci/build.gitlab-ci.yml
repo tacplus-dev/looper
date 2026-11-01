@@ -33,6 +33,13 @@
 # jobs. It proves that runner before tacplus-dev/tacplus#195's macOS builds use
 # it. A push, and every (repo, sha) run, never creates it.
 #
+# The security checks (looper#49): the child pipeline plan writes runs them
+# beside the gates (looper-scan, in the looper image: the scanners), on every
+# build; a nightly adds CodeQL and Trivy, and so does a release, whose publish
+# makes the image's SBOM. A nightly is a scheduled (or API) run with inputs
+# repo and "nightly": true, and no sha: the plan scans main as it is then. It
+# sets no commit status: it is no commit's verdict. README: Security checks.
+#
 # The runner image (looper#43): a web or scheduled run on main with
 # "runner_image": true is a pipeline of one job, runner-image, which bakes the
 # runner VMs' image (family runner-arm64-docker: Docker installed, nothing
@@ -62,6 +69,10 @@ spec:
       description: "The runner VMs' image: a web or scheduled run on main whose one job bakes and publishes it (no repo, sha, tag or smoke)"
       type: boolean
       default: false
+    nightly:
+      description: "The nightly security checks of repo's main branch (no tag; sha empty: main's head now)"
+      type: boolean
+      default: false
 ---
 workflow:
   name: $BUILD_PIPELINE_NAME
@@ -70,6 +81,11 @@ workflow:
       when: never
     - if: $BUILD_RUNNER_IMAGE == "true" && ($BUILD_REPO || $BUILD_SHA || $BUILD_TAG || $BUILD_SMOKE == "true")
       when: never
+    - if: $BUILD_NIGHTLY == "true" && ($BUILD_TAG || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
+      when: never
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_NIGHTLY == "true"
+      variables:
+        BUILD_PIPELINE_NAME: "nightly $[[ inputs.repo ]] $[[ inputs.sha ]]"
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
       variables:
         BUILD_PIPELINE_NAME: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]]"
@@ -88,6 +104,7 @@ variables:
   BUILD_TAG: "$[[ inputs.tag ]]"
   BUILD_SMOKE: "$[[ inputs.smoke ]]"
   BUILD_RUNNER_IMAGE: "$[[ inputs.runner_image ]]"
+  BUILD_NIGHTLY: "$[[ inputs.nightly ]]"
   GIT_STRATEGY: none
 
 default:
@@ -102,17 +119,23 @@ default:
   rules:
     - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
 
+# The commit status: a build's verdict, never a nightly's.
+.status-run:
+  rules:
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true"
+
 # The commit is marked pending while it builds.
 pending:
-  extends: .build-run
+  extends: .status-run
   stage: plan
   needs: []
   allow_failure: true
   script:
     - looper-build status pending
 
-# Fetch exactly the commit, read its tacplus.lock, write the gates job in the
-# pinned image. No pin, or a bad one, is a fail verdict.
+# Fetch exactly the commit (a nightly: main's head), read its tacplus.lock,
+# write the gates job in the pinned image and the security checks' jobs. No
+# pin, or a bad one, is a fail verdict.
 plan:
   extends: .build-run
   stage: plan
@@ -133,8 +156,10 @@ gates:
         job: plan
     strategy: depend
 
-# A release, once the gates passed: the image, pushed through Workload
-# Identity Federation (GCP_WIF_PROVIDER, a project variable; no key, no token).
+# A release, once the gates and the security checks passed: the image, pushed
+# through Workload Identity Federation (GCP_WIF_PROVIDER, a project variable;
+# no key, no token), and its SBOM (the artifacts, and the generic package
+# sbom-<repo> X.Y.Z, with the job's token).
 publish:
   stage: publish
   rules:
@@ -149,13 +174,13 @@ publish:
     - looper-build publish
   artifacts:
     expire_in: 1 year
-    paths: [image]
+    paths: [image, sbom.cdx.json, sbom.spdx.json]
 
 # The verdict, on the commit.
 report-pass:
   stage: report
   rules:
-    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true"
       when: on_success
   script:
     - looper-build status success
@@ -163,7 +188,7 @@ report-pass:
 report-fail:
   stage: report
   rules:
-    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true"
       when: on_failure
   script:
     - looper-build status failure

@@ -8,7 +8,8 @@
 # host's docker socket and LOOPER_WORK mounted at the same path (the wrapper runs
 # the build image as a sibling container), and the network (the release).
 set -euo pipefail
-for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-port looper-dispatch looper-build looper-identity tacplus looper-docker runner-image; do
+for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-port looper-dispatch looper-build looper-scan looper-identity tacplus looper-docker runner-image \
+         osv-scanner govulncheck cargo-deny trivy syft gitleaks gosec spotbugs semgrep bandit cargo-clippy; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
 done
 head -c 2 "$(command -v tacplus)" | grep -q '#!' || { echo "tacplus must be the wrapper script, not a binary" >&2; exit 1; }
@@ -19,6 +20,9 @@ repo-looper --help >/dev/null
 looper-port --help >/dev/null
 looper-dispatch --help >/dev/null
 looper-build --help >/dev/null
+looper-scan --help >/dev/null
+[[ -f /opt/scanners/findsecbugs-plugin.jar ]] || { echo "missing: FindSecBugs (/opt/scanners/findsecbugs-plugin.jar)" >&2; exit 1; }
+semgrep --version >/dev/null && bandit --version >/dev/null && osv-scanner --version >/dev/null && cargo clippy --version >/dev/null
 looper-identity --help >/dev/null
 runner-image --help >/dev/null
 [[ -f "$(dirname "$LOOPER_LIB")/runner/startup.sh" && -f "$(dirname "$LOOPER_LIB")/runner/bake.sh" ]] || { echo "missing: runner/ next to $LOOPER_LIB" >&2; exit 1; }
