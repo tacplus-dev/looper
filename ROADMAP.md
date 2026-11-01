@@ -7,6 +7,7 @@ The per-repository loopers of tacplus-dev: `looper-dispatch` on the Mac starts t
 Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 
 ## Next
+- Gates scaled to the diff: a per-repo gate map picks what a land runs; unmapped paths, gate-map changes, nightly and releases run everything (#48) (Jody, 2026-11-01)
 - Parent looper runs child loopers in parallel; the parent decides concurrency (#32)
 - Priority labels order the ready queue (#31)
 - GitLab forge backend; a SeaBeam instance (kicker, runner, credentials) in the seabeam group (#29)
