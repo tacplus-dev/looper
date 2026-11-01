@@ -359,6 +359,16 @@ grep -q '^comment .*ended without finishing' "$TMP/api.log" || fail "no comment"
 has "$TMP/api.log" 'label kernel-looper {"labels":["looper:stuck"]}'
 pass
 
+NAME="commit: a think job whose blockers were all closed keeps its work on the branch, approved (#46)"
+git -C "$SRV/repos/github.com/tacplus-dev/kernel.git" update-ref -d refs/heads/looper/kernel-7
+think_dir "$TMP/think-r" 'type: resume' src.txt "half"
+job LOOPER_ISSUE=7 LOOPER_THINK_DIR="$TMP/think-r" -- commit 2>"$TMP/err" || fail "commit failed"
+git -C "$SRV/repos/github.com/tacplus-dev/kernel.git" rev-parse -q --verify refs/heads/looper/kernel-7 >/dev/null || fail "no branch"
+grep -q '^comment .*ended before finishing.*looper/kernel-7.*the next run resumes' "$TMP/api.log" || fail "no comment"
+lacks "$TMP/api.log" "time limit"
+lacks "$TMP/api.log" "label "
+pass
+
 NAME="commit: no issue taken, nothing done; the model's credential beside it is refused"
 git -C "$SRV/repos/github.com/tacplus-dev/kernel.git" update-ref -d refs/heads/looper/kernel-7
 job -- commit 2>"$TMP/err" || fail "commit failed"

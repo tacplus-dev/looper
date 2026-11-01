@@ -1048,10 +1048,13 @@ resume() { # issue then
 # The issue waits on other open issues: the run's outcome file names them as
 # `Blocked-by:` lines, whether it pushed a fix whose gates wait or rightly
 # pushed nothing (looper#22). Adds the lines its body lacks and prints them
-# all; fails, adding none, when the outcome names none, or any it names is
-# closed, does not exist or is the issue itself.
+# all. One it names that is closed by now is dropped (looper#46), and listed
+# in run-dir/blockers-closed. Fails, adding none, when the outcome names none,
+# or any it names does not exist or is the issue itself: 2 when every one it
+# names is closed (nothing waits: the issue resumes), else 1.
 outcome_blocked() { # issue run-dir
-  local n="$1" refs r b state body add="" lines=()
+  local n="$1" refs r b ref state body add="" lines=() closed=()
+  rm -f "$2/blockers-closed"
   [[ -f "$2/outcome" ]] || return 1
   refs="$(parse_blockers "$REPO" < "$2/outcome" | awk '!seen[$0]++')"
   [[ -n "$refs" ]] || return 1
@@ -1059,10 +1062,14 @@ outcome_blocked() { # issue run-dir
   while read -r r b; do
     [[ "$r $b" != "$REPO $n" ]] || return 1
     state="$(issue_state "$r" "$b")" || return 1
+    if [[ "$r" == "$REPO" ]]; then ref="#$b"; else ref="$LOOPER_ORG/$r#$b"; fi
+    if [[ "$state" == CLOSED ]]; then closed+=("$ref"); continue; fi
     [[ "$state" == OPEN ]] || return 1
-    if [[ "$r" == "$REPO" ]]; then lines+=("Blocked-by: #$b"); else lines+=("Blocked-by: $LOOPER_ORG/$r#$b"); fi
+    lines+=("Blocked-by: $ref")
     parse_blockers "$REPO" <<<"$body" | grep -qx "$r $b" || add+="${lines[-1]}"$'\n'
   done <<<"$refs"
+  (( ${#closed[@]} == 0 )) || printf '%s\n' "${closed[@]}" > "$2/blockers-closed"
+  (( ${#lines[@]} )) || return 2
   if [[ -n "$add" ]]; then
     forge_issue_edit "$REPO" "$n" --body "$body
 
@@ -1482,8 +1489,10 @@ PR
     land "HISTORY.md: #$n (looper)" append_history "- $(date -u +%F) looper issue $title (#$n$t)"
     drop_wip "$n"; report "$n" closed; log "#$n done${head_after:+ (main $head_before..$head_after)}"; return 0
   fi
-  local blocked what by those="that issue is"
-  if blocked="$(outcome_blocked "$n" "$run")"; then
+  local blocked what by those="that issue is" brc=0 dropped="" also=""
+  blocked="$(outcome_blocked "$n" "$run")" || brc=$?
+  [[ -s "$run/blockers-closed" ]] && dropped="$(sed 's/.*/`&`/' "$run/blockers-closed" | paste -sd, - | sed 's/,/, /g')"
+  if (( brc == 0 )); then
     report "$n" blocked
     if [[ -n "$head_after" ]]; then
       drop_wip "$n"
@@ -1495,8 +1504,12 @@ PR
     fi
     by="$(sed 's/.*/`&`/' <<<"$blocked" | paste -sd, - | sed 's/,/, /g')"
     [[ "$blocked" == *$'\n'* ]] && those="those issues are"
+    if [[ -n "$dropped" ]]; then
+      also=" Its outcome named $dropped too, closed by now, so it is not added."
+      [[ "$dropped" == *,* ]] && also=" Its outcome named $dropped too, closed by now, so they are not added."
+    fi
     forge_issue_comment "$REPO" "$n" \
-      "$what, so this issue is now $by and stays $LABEL_APPROVED: it is worked again once $those closed. Run record: $(run_record "$run")." >/dev/null || true
+      "$what, so this issue is now $by and stays $LABEL_APPROVED: it is worked again once $those closed.$also Run record: $(run_record "$run")." >/dev/null || true
     log "#$n blocked ($(paste -sd, - <<<"$blocked"))${head_after:+, main $head_before..$head_after}"; return 0
   fi
   # Not landed: whatever the run leaves is kept on the issue's branch.
@@ -1517,7 +1530,9 @@ PR
 $(sed 's/^/> /' "$run/step")"
   else done_left="It checkpointed no step, so what is done is only what the branch holds."; fi
   if [[ -n "$head_after" ]] || { [[ -s "$run/step" ]] && [[ "$(cat "$run/step")" != "$(cat "$run/resumed-step" 2>/dev/null)" ]]; }; then progress=1; fi
-  # An outcome it wrote that was not taken (a Blocked-by naming a closed issue, or this one) is for a person.
+  # An outcome it wrote that was not taken (a Blocked-by naming this issue, or
+  # one that cannot be read) is for a person; one naming only issues closed by
+  # now resumes: nothing waits (looper#46).
   [[ ! -s "$run/outcome" ]] || progress=""
   if [[ -n "$timed_out" ]]; then ended="The run reached its time limit ($(hours "$limit")) before finishing."
   elif [[ "$stopped" == idle && -n "$head_after" && -n "$progress" ]]; then
@@ -1555,6 +1570,15 @@ This issue stays $LABEL_APPROVED: the next run lands that branch first, then res
     log "#$n ended with its land deferred; the next run lands it first"
     return 0
   fi
+  if (( brc == 2 )); then
+    report "$n" ended
+    forge_issue_comment "$REPO" "$n" "The run's outcome names only issues closed by now ($dropped), so it was not taken: nothing waits on them.${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after").} $where
+
+$done_left
+
+This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n: its outcome names only closed issues ($(paste -sd, - "$run/blockers-closed")); it resumes on the next pass"; return 0
+  fi
   # A fix landed is progress however the run ended: one that went idle waiting
   # on its land after the land was done is not stuck (looper#37).
   if [[ -n "$timed_out" ]] || [[ -n "$progress" && ( "$stopped" != idle || -n "$head_after" ) ]]; then
@@ -1571,7 +1595,7 @@ This issue stays $LABEL_APPROVED: the next run resumes from that branch.$more Ru
   fi
   report "$n" stuck
   tail -n 40 "$run/claude.log" || true
-  if [[ -s "$run/outcome" ]]; then ended="The run's outcome names no open issue it waits on (a closed one, or this one), so it was not taken."
+  if [[ -s "$run/outcome" ]]; then ended="The run's outcome names no open issue it waits on (it names this one, or one that cannot be read), so it was not taken."
   elif [[ "$stopped" != idle ]]; then ended="The looper ended without finishing this issue, and with no progress: nothing landed, and no step checkpointed${resumed:+ beyond the one it resumed from}."; fi
   forge_issue_comment "$REPO" "$n" \
     "$ended ${wip:+Its work in progress is on $wip. }Run record: $(run_record "$run"). Marked $LABEL_STUCK for a person to look at.
@@ -1586,7 +1610,8 @@ $(log_tail "$run" 40)" >/dev/null || true
 # The think job's run of an issue (looper#28): the model works it in the
 # checkout with a read-only token, and writes nothing to GitHub. Its outcome,
 # data for the commit job, is DIR/outcome: `type: pr` (with `title:`),
-# `question`, `blocked` (with its `Blocked-by:` lines), `timeout` or `stuck`;
+# `question`, `blocked` (with its `Blocked-by:` lines), `timeout`, `resume` (a
+# blocked outcome naming only closed issues, looper#46) or `stuck`;
 # DIR/comment.md is the model's text. On a pull request the looper appends the
 # issue's HISTORY.md line and runs the gates on the change: they must pass. The
 # change is DIR/patch from DIR/base (origin/main), and DIR/tree is the tree the
@@ -1733,15 +1758,26 @@ PR
       fi ;;
     question) think_outcome question ;;
     blocked)
-      local refs r b lines=() bad=""
+      # A blocker closed by now is dropped, and said so; one naming only
+      # closed issues resumes, nothing waiting (looper#46).
+      local refs r b ref state lines=() closed=() bad="" dropped
       refs="$(parse_blockers "$REPO" < "$out/outcome" | awk '!seen[$0]++')"
       while read -r r b; do
         [[ -n "$r" ]] || continue
-        if [[ "$r $b" == "$REPO $n" || "$(issue_state "$r" "$b" 2>/dev/null)" != OPEN ]]; then bad=1; continue; fi
-        if [[ "$r" == "$REPO" ]]; then lines+=("Blocked-by: #$b"); else lines+=("Blocked-by: $LOOPER_ORG/$r#$b"); fi
+        if [[ "$r $b" == "$REPO $n" ]] || ! state="$(issue_state "$r" "$b" 2>/dev/null)"; then bad=1; continue; fi
+        if [[ "$r" == "$REPO" ]]; then ref="#$b"; else ref="$LOOPER_ORG/$r#$b"; fi
+        case "$state" in OPEN) lines+=("Blocked-by: $ref") ;; CLOSED) closed+=("\`$ref\`") ;; *) bad=1 ;; esac
       done <<<"$refs"
-      if [[ -z "$bad" ]] && (( ${#lines[@]} )); then think_outcome blocked "${lines[@]}"
-      else think_say "The run's outcome was blocked, but named no open issue, or this one."; think_outcome stuck; fi ;;
+      dropped="$(IFS=,; echo "${closed[*]}" | sed 's/,/, /g')"
+      if [[ -n "$bad" ]] || (( ${#lines[@]} + ${#closed[@]} == 0 )); then
+        think_say "The run's outcome was blocked, but named no open issue, or this one."; think_outcome stuck
+      elif (( ${#lines[@]} )); then
+        [[ -z "$dropped" ]] || think_say "The run's outcome named $dropped too, closed by now, so it is not added."
+        think_outcome blocked "${lines[@]}"
+      else
+        think_say "The run's outcome names only issues closed by now ($dropped), so it was not taken: nothing waits on them."
+        think_outcome resume
+      fi ;;
     *)
       if [[ "$rc" == 124 || "$rc" == 137 ]]; then
         think_say "Its last step (what is done, what is left): ${step:-none recorded}"; think_outcome timeout

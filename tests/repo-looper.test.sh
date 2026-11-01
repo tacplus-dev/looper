@@ -234,12 +234,19 @@ has "$(cat "$FIX/comments")" "Blocked-by: #3"
 has "$(cat "$FIX/comments")" "Blocked-by: tacplus-dev/tacplus#9"
 pass
 
+# An outcome whose blockers are all closed by now is not taken, but the
+# issue is not stuck: nothing waits, so it resumes with its work kept (#46).
 scenario blocked-nothing-pushed-by-closed-issue
-echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
+echo 'echo x > a.txt; echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue tacplus 9 CLOSED "" "A compiler floor."
 run
-[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+main_unchanged
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 lacks "$(body alpha 4)" "Blocked-by"
+has "$(cat "$FIX/comments")" "names only issues closed by now (\`tacplus-dev/tacplus#9\`)"
+has "$(cat "$FIX/comments")" "the next run resumes"
+lacks "$(cat "$FIX/comments")" "looper:stuck"
+origin ls-tree -r --name-only looper/alpha-4 | grep -qx a.txt || fail "work not kept: $(origin ls-tree -r --name-only looper/alpha-4)"
 pass
 
 scenario blocked-nothing-pushed-by-itself
@@ -256,11 +263,29 @@ run
 lacks "$(body alpha 4)" "Blocked-by"
 pass
 
-# One bad blocker among good ones rejects the outcome: none of it is added.
-scenario blocked-one-closed-of-two
-printf '%s\n' 'printf "Blocked-by: #3\nBlocked-by: tacplus-dev/tacplus#9\n" > "$OUTCOME"' >> "$FIX/claude.sh"
+# A closed blocker among open ones is dropped, and said so; the open ones
+# are taken (#46).
+scenario blocked-one-closed-of-three
+printf '%s\n' 'printf "Blocked-by: #3\nBlocked-by: tacplus-dev/tacplus#9\nBlocked-by: tacplus-dev/beta#2\n" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue alpha 3 OPEN "" "Part 1."
 issue tacplus 9 CLOSED "" "Part 2."
+issue beta 2 OPEN "" "Part 3."
+run
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Blocked-by: #3"
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#2"
+lacks "$(body alpha 4)" "tacplus#9"
+c="$(cat "$FIX/comments")"
+has "$c" "this issue is now \`Blocked-by: #3\`, \`Blocked-by: tacplus-dev/beta#2\`"
+has "$c" "named \`tacplus-dev/tacplus#9\` too, closed by now, so it is not added"
+lacks "$c" "looper:stuck"
+pass
+
+# One that cannot be read (or this issue) among good ones rejects the outcome:
+# none of it is added.
+scenario blocked-one-missing-of-two
+printf '%s\n' 'printf "Blocked-by: #3\nBlocked-by: tacplus-dev/tacplus#9\n" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue alpha 3 OPEN "" "Part 1."
 run
 [[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 lacks "$(body alpha 4)" "Blocked-by"
@@ -270,8 +295,10 @@ scenario blocked-by-closed-issue
 push_fix; echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue tacplus 9 CLOSED "" "A compiler floor."
 run
-[[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 lacks "$(body alpha 4)" "Blocked-by"
+has "$(cat "$FIX/comments")" "the next run resumes"
+lacks "$(cat "$FIX/comments")" "looper:stuck"
 pass
 
 scenario ended-unknown
@@ -1733,7 +1760,14 @@ think
 [[ "$(outcome)" == $'type: blocked\nBlocked-by: tacplus-dev/tacplus#9' ]] || fail "outcome: $(outcome)"
 : > "$FIX/claude.sh"; says 'printf "type: blocked\nBlocked-by: #3\n" > "$OUTCOME"'
 think
-[[ "$(outcome)" == "type: stuck" ]] || fail "a closed blocker: $(outcome)"
+[[ "$(outcome)" == "type: resume" ]] || fail "a closed blocker: $(outcome)"
+has "$(cat "$FIX/think/comment.md")" "closed by now"
+: > "$FIX/claude.sh"; says 'printf "type: blocked\nBlocked-by: #3\nBlocked-by: tacplus-dev/tacplus#9\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == $'type: blocked\nBlocked-by: tacplus-dev/tacplus#9' ]] || fail "a closed blocker and an open one: $(outcome)"
+: > "$FIX/claude.sh"; says 'printf "type: blocked\nBlocked-by: #4\n" > "$OUTCOME"'
+think
+[[ "$(outcome)" == "type: stuck" ]] || fail "itself: $(outcome)"
 untouched approved,bug
 pass
 

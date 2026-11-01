@@ -26,7 +26,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   queued or running when its child's limit fires is landed all the same and reported on the issue, and the parent
   waits for the queue before the job ends; it plans again as each child ends; `repo-looper` works each repository's
   `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, Blocked-by outcomes, one or more,
-  also from a run that pushed nothing because the issue waits on another, #22; a run that ends with its land
+  also from a run that pushed nothing because the issue waits on another, #22, a blocker closed by now dropped and one
+  naming only closed ones resumed, #46; a run that ends with its land
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
   that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one idle after its land
   landed reports `landed`, with main's range, and stays approved for the next run to close, #37; one that ends any way with its land queued and no outcome, in the

@@ -290,7 +290,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | --- | --- |
 | pushed and closed it | closed |
 | asked a question | `needs-decision` |
-| found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. An outcome naming a closed or missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
+| found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | ended (its limit, or earlier) with its land queued or running (looper#34) | the same, and the parent lands it after the run and comments what came of it (landed, with main's range, or why not); it stays `approved` |
 | ended any way (its limit, idle, or earlier) with its land queued and no outcome, but no longer in the parent's queue: its `--land` took the request to land it itself (looper#44) | `land-pending`: a comment that its land has no outcome yet; its branch keeps `.looper/land` (`state=queued`) and the next run lands it first; it stays `approved` |
@@ -545,7 +545,7 @@ commits, pull requests, comments and labels are `kernel-looper[bot]`'s, and noth
   `question`, `blocked` with its `Blocked-by:` lines). On a pull request the looper appends the issue's `HISTORY.md` line and
   runs the gates on the change; they must pass, and must not change the tree. It writes `think/patch` (from `think/base`,
   origin/main) and `think/tree`, **the tested tree**. A run that hits its limit or ends without an outcome is `timeout` or
-  `stuck`, its change kept.
+  `stuck`, its change kept. A `blocked` outcome drops the issues closed by now; one naming only those is `resume` (looper#46).
 - **`commit`** (`looper-identity commit`, LLM-free, compiles nothing, on protected main): applies the patch to its base with
   no hooks and **refuses it unless the tree is the tested one** (or if it touches `ROADMAP.md`). It exchanges its own
   `id_token` at its start, then unsets it; the token's issuer, audience, age (at most 5 minutes) and GitLab's own word for the
@@ -556,7 +556,7 @@ commits, pull requests, comments and labels are `kernel-looper[bot]`'s, and noth
     squash auto-merge, and starts `tacplus-dev/build` on its head with the build trigger token. GitHub squash-merges once
     the required check passes; that commit is GitHub's, so it is **Verified**, and the merge closes the issue.
   - `question`: the comment, and `needs-decision`. `blocked`: the `Blocked-by:` lines the body lacks, and the comment.
-  - `timeout`: the change kept on `looper/kernel-<n>` (the next run resumes from it), and a comment. `stuck` (and a think
+  - `timeout` and `resume`: the change kept on `looper/kernel-<n>` (the next run resumes from it), and a comment. `stuck` (and a think
     job that failed): the same, and `looper:stuck`.
   The outcome is data: its type picks one of these fixed actions, and its text is only ever posted as a comment.
 - **Refused:** a job that holds Jody's tokens or the model's credential (in `prepare` or `commit`); a pipeline that is not

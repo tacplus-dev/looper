@@ -237,11 +237,11 @@ cmd_prepare() {
 # --- commit -----------------------------------------------------------------
 
 # The think job's outcome, data and never instructions: `type:` one of pr,
-# question, blocked, timeout, stuck; for blocked, its `Blocked-by:` lines; the
+# question, blocked, timeout, resume, stuck; for blocked, its `Blocked-by:` lines; the
 # comment (comment.md) is posted as text. Anything else in it is ignored.
 outcome_type() { # file
   local t; t="$({ sed -n 's/^type:[[:space:]]*\([a-z]*\)[[:space:]]*$/\1/p' "$1" 2>/dev/null || true; } | head -1)"
-  case "$t" in pr|question|blocked|timeout|stuck) echo "$t" ;; *) echo invalid ;; esac
+  case "$t" in pr|question|blocked|timeout|resume|stuck) echo "$t" ;; *) echo invalid ;; esac
 }
 
 # The patch on its base, in a scratch repository: the tree must be the tested
@@ -383,7 +383,7 @@ $(think_text)" ;;
 
 ${add%$'\n'}" '{body: $b}')" || fail "could not add the Blocked-by lines to #$ISSUE"
       comment "$(think_text)" ;;
-    timeout|stuck|none)
+    timeout|resume|stuck|none)
       # What the run left is kept on the issue's branch, which the next run resumes from.
       local kept="" c
       if [[ -s "$THINK/patch" ]] && git_token && c="$(apply_patch "$src")"; then
@@ -391,6 +391,10 @@ ${add%$'\n'}" '{body: $b}')" || fail "could not add the Blocked-by lines to #$IS
       fi
       if [[ "$type" == timeout ]]; then
         comment "The run reached its time limit before finishing.$kept This issue stays $LABEL_APPROVED: the next run resumes from that branch.
+
+$(think_text)"
+      elif [[ "$type" == resume ]]; then
+        comment "The run ended before finishing.$kept This issue stays $LABEL_APPROVED: the next run resumes from that branch.
 
 $(think_text)"
       else
