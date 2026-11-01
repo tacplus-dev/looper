@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#29).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#48).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -33,7 +33,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   landed reports `landed`, with main's range, and stays approved for the next run to close, #37; one that ends any way with its land queued and no outcome, in the
   parent's queue or not, is `land-pending`, #44; a land starts only if the repository's last land, else a
   default (70 minutes for tacplus), fits the job's time left: one that does not is deferred, its issue told and its
-  branch left land-pending, and the issue's next run lands it first, as it does a land the job's end cut off, #38);
+  branch left land-pending, and the issue's next run lands it first, as it does a land the job's end cut off, #38;
+  gates scaled to the diff, #48: a repository's `gates.yaml` maps paths to gate sets, a land runs the sets its
+  changed paths call for, full for a path no set names or one of full's, a `gates.yaml` change, or no change, and lands
+  nothing on a map it cannot read; the set and why are in the land's output, the looper's land comments and the issue's
+  HISTORY.md line, the budget is the set's, and the prompts name the map's full for verifying, the nightly scan and
+  releases; this repository has its `gates.yaml`);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); prompt provenance (#40): every
   prompt carries the issue's text (title and body, each comment) in blocks keyed by a per-prompt nonce (`openssl rand`)
@@ -99,7 +104,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   once the image from main is published and a repository has two independent ready issues); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a child's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the land's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
-  pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); no release line yet
+  pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); tacplus has no `gates.yaml`
+  yet, so its lands still run the full gates (#48 waits on it), and the think job (#28) and the build pipeline always
+  run the full gates (PROPOSALS.md); no release line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`

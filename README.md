@@ -216,10 +216,10 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   (`looper/<repo>-N`, the name its checkpoints have on origin), running the per-issue flow below unchanged:
   checkpoints and resume, time limit, idle and done, outcomes. Its log lines in the job's log start `[#N]`.
 - **Landing is serialized, and the parent owns it** (looper#34): the model lands its commits with
-  `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository has no justfile), which queues them
+  `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository has no `gates.yaml` and no justfile), which queues them
   with the parent's lander and waits for the result. The lander lands one at a time, in the parent's process, not
   the child's: it takes the repository's landing lock, rebases the commits onto the current main, re-runs the
-  gates and pushes. A rejected push is rebased and tried again. The lock wait and the gates (over two hours with
+  gates (the set the diff calls for, [Gates scaled to the diff](#gates-scaled-to-the-diff)) and pushes. A rejected push is rebased and tried again. The lock wait and the gates (over two hours with
   three children on one runner, tacplus 2026-10-30) no longer lose a finished fix: a land still queued or running
   when its child's limit fires (or its run ends) is landed all the same, under the parent's job timeout, which
   waits for the queue before it ends; the lander says on the issue what came of it, and the issue stays `approved`
@@ -230,10 +230,12 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   (planning files, `HISTORY.md`) take the same lock.
 - **A land starts only if it can finish before the job ends** (looper#38, tacplus#215: a land started with 65
   minutes left after a 67-minute one was killed with the job, and its issue never heard). In a GitLab job the
-  lander compares the job's time left (`CI_JOB_TIMEOUT` from its start) with what a land takes: the repository's
-  last land that passed its gates (kept with the checkout, `LOOPER_WORK/<repo>/land-seconds`), else
-  `LOOPER_LAND_MINUTES`, else 70 minutes for tacplus and 30 for the others, plus `LOOPER_LAND_MARGIN` (600
-  seconds) for its outcome. A land that does not fit is not started: its issue gets "land deferred to the next
+  lander compares the job's time left (`CI_JOB_TIMEOUT` from its start) with what a land takes on the gate set
+  its diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)): the repository's last land on that
+  set that passed its gates (kept with the checkout, `LOOPER_WORK/<repo>/land-seconds`, `land-seconds.<set>` for
+  a set not full), else for a set not full the sum of its sets' `minutes` in the map, else for full
+  `LOOPER_LAND_MINUTES`, else full's `minutes`, else 70 minutes for tacplus and 30 for the others, plus
+  `LOOPER_LAND_MARGIN` (600 seconds) for its outcome. A docs land is never deferred for want of the full gates' hours. A land that does not fit is not started: its issue gets "land deferred to the next
   job: not enough time left in this one" and stays `approved`, and its branch keeps the land. A land queued and
   not yet reported marks the branch land-pending (`.looper/land` on its checkpoints: the gates, `queued` or
   `deferred`), so one cut off anyway is still seen. The next run of the issue lands a land-pending branch first,
@@ -245,6 +247,55 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   plans again, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
   as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
   others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.
+
+### Gates scaled to the diff
+
+A land runs the gates its diff calls for, not always the full suite (Jody, 2026-11-01, looper#48: a
+`PROPOSALS.md` note on tacplus ran the full gates, about 3 hours, and deferred the next land). Each repository
+declares its **gate map** in a checked-in `gates.yaml`, at its root: its gate sets, each the command it runs,
+the minutes it is expected to take and the paths that call for it.
+
+```yaml
+full:                                # required: the full gates
+  run: just gates
+  minutes: 180
+  paths: [pkg/**, proto/**, /justfile] # optional: these always run full
+docs:
+  run: just docs
+  minutes: 5
+  paths: ["*.md", docs/**]
+```
+
+A pattern without a slash matches a file's name at any depth (`*.md`); one with a slash, a leading one too
+(`/justfile`), matches the path from the root; `*` and `?` stay within a directory, `**` crosses them, and a
+trailing slash (`images/`) means everything under it. Comments are lines of their own. Each `run` is a shell
+command at the root of the tree being landed, with `LOOPER_GATES_BASE` the main it was rebased on. The map is
+read from that tree.
+
+- **The set:** every changed path since that main (`git diff --name-only --no-renames`, so a rename is both its
+  paths) is matched against every set; the land runs each set some path matched, once, in the map's order
+  (`docs+images`).
+- **Fail safe, full whenever in doubt:** a changed path that matches **no** set, or one of full's `paths`; a
+  change to `gates.yaml` itself (full is then the new map's); no changed path at all. A `gates.yaml` that cannot
+  be read lands nothing, and says why. A repository without one runs what it ran before (`--gates`, else
+  `LOOPER_GATES`, else `just gates`); with one, `--land` needs no `--gates`, and the map decides.
+- **Recorded:** the land's output (what the model reports on the issue) names the set and why
+  (`landed on main: a..b, on the gates docs (all 3 changed paths map to docs)`), as do the looper's own comments on a
+  land, and, where a map chose it, the issue's `HISTORY.md` line ends `; gates: docs`. The run's `landed` file has
+  the set, and its `gate-sets` the reasons.
+- **Budgeted by the set** (looper#38): see above; the lander chooses the set from the branch's diff before it
+  starts the land.
+- **Nothing goes unchecked for more than a day, nothing is released on partial gates:** the nightly scan runs the
+  repository's full gates on main (its prompt names the map's full), every release (the patch rule's tag, and the
+  [build pipeline](#build-pipeline)'s release build, which always runs `just gates`) runs them before it ships,
+  and the build pipeline's verdict is always the full gates.
+
+This repository's own map is [`gates.yaml`](gates.yaml): the planning files check for `*.md`, each script's own
+test for the scripts no other test drives, and full for `repo-looper`, `looper-lib.sh` and the rest.
+
+```sh
+tests/repo-looper.test.sh   # gates-*: a docs-only diff runs only docs (named in the land's output and HISTORY.md); an unmapped path, a path of full's, a gates.yaml change run full; several sets run each once; an unreadable map lands nothing; a docs land fits a budget full does not; the prompts name full; this repository's own map
+```
 
 ### A run's work is never lost
 

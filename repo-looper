@@ -48,6 +48,9 @@
 # child's worktree any other way is refused. In a GitLab job a land that would
 # not finish before the job ends is not started (looper#38): it is deferred,
 # its branch left land-pending, and the issue's next run lands it first.
+# The gates a land runs are the set its diff calls for (looper#48): the
+# repository's gates.yaml maps paths to gate sets, and anything in doubt (a
+# path it does not map, a change to the map) runs the full gates.
 # As each child ends the parent logs its outcome and plans again, so a newly
 # ready issue starts while the others run; a child's time limit is its own.
 #
@@ -336,17 +339,32 @@ job_deadline() {
   [[ -z "$end" ]] || echo $(( end - JOB_MARGIN ))
 }
 
-# What a land is expected to take (looper#38), in seconds: the repository's
-# last land that passed its gates (LAND_TIME, kept with the checkout), else
-# LOOPER_LAND_MINUTES, else 70 minutes for tacplus (its full gates) and 30 for
-# the others. A land starts only when that, and LAND_MARGIN after it for its
-# outcome, fit in the job's time left.
+# What a land is expected to take (looper#38), in seconds, by the gate set it
+# runs (looper#48): the repository's last land on that set that passed its
+# gates (LAND_TIME, kept with the checkout; LAND_TIME.<set> for a set not
+# full); else, for a set not full, the sum of its gate sets' minutes in the gate
+# map; else, for full, LOOPER_LAND_MINUTES, else full's minutes in the gate
+# map, else 70 minutes for tacplus (its full gates) and 30 for the others. A
+# land starts only when that, and LAND_MARGIN after it for its outcome, fit in
+# the job's time left.
 LAND_TIME="$WORK/land-seconds"
 LAND_MARGIN="${LOOPER_LAND_MARGIN:-600}"
-land_estimate() {
-  local s; s="$(cat "$LAND_TIME" 2>/dev/null || true)"
-  if [[ "$s" =~ ^[0-9]+$ ]]; then echo "$s"
-  elif [[ "${LOOPER_LAND_MINUTES:-}" =~ ^[0-9]+$ ]]; then echo $(( LOOPER_LAND_MINUTES * 60 ))
+land_time_file() { if [[ "${1:-full}" == full ]]; then echo "$LAND_TIME"; else echo "$LAND_TIME.$1"; fi; } # gate set
+land_estimate() { # [gate set, of the gate map read last]
+  local set="${1:-full}" s x m=0
+  s="$(cat "$(land_time_file "$set")" 2>/dev/null || true)"
+  if [[ "$s" =~ ^[0-9]+$ ]]; then echo "$s"; return 0; fi
+  if [[ "$set" != full ]]; then
+    for x in ${set//+/ }; do
+      [[ "${GM_MIN[$x]:-}" =~ ^[0-9]+$ ]] || { m=""; break; }
+      m=$(( m + GM_MIN[$x] * 60 ))
+    done
+    if [[ -n "$m" ]]; then echo "$m"; return 0; fi
+    s="$(cat "$LAND_TIME" 2>/dev/null || true)"
+    if [[ "$s" =~ ^[0-9]+$ ]]; then echo "$s"; return 0; fi
+  fi
+  if [[ "${LOOPER_LAND_MINUTES:-}" =~ ^[0-9]+$ ]]; then echo $(( LOOPER_LAND_MINUTES * 60 ))
+  elif [[ "${GM_MIN[full]:-}" =~ ^[0-9]+$ ]]; then echo $(( GM_MIN[full] * 60 ))
   elif [[ "$REPO" == tacplus ]]; then echo 4200
   else echo 1800; fi
 }
@@ -521,16 +539,143 @@ land_gates() {
   elif [[ -f "$CHECKOUT/justfile" ]]; then echo "just gates"; fi
 }
 
+# The gate map (looper#48): a repository's gates.yaml names its gate sets, each
+# the command it runs, its expected minutes and the paths that call for it:
+#
+#   full:                      # required: the full gates
+#     run: just gates
+#     minutes: 180
+#   docs:
+#     run: just docs
+#     minutes: 5
+#     paths: ["*.md", "docs/**"]
+#
+# A pattern without a slash matches a file's name at any depth, one with a
+# slash (a leading one too: /LICENSE) the path from the root; `*` and `?` stay
+# within a directory, `**` crosses them, a trailing slash means everything
+# under it. A land runs the
+# sets its changed paths call for, each once, in the map's order; it runs full
+# (fail safe) when a changed path matches no set, or full's paths, when
+# gates.yaml itself changed, and when nothing changed. A repository without a
+# gates.yaml runs land_gates; one whose gates.yaml cannot be read lands nothing.
+# The map is read from the tree being landed. Comments are lines of their own.
+GATE_MAP=gates.yaml
+GM_SETS=(); declare -A GM_RUN=() GM_MIN=() GM_PATHS=()
+read_gate_map() { # file: GM_SETS (in order), GM_RUN, GM_MIN, GM_PATHS (patterns, one per line)
+  local s k v rows
+  GM_SETS=(); GM_RUN=(); GM_MIN=(); GM_PATHS=()
+  rows="$(awk '
+    function unq(v) {
+      sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+      if (v ~ /^".*"$/) { v = substr(v, 2, length(v) - 2); gsub(/\\"/, "\"", v); gsub(/\\\\/, "\\", v) }
+      else if (v ~ /^\047.*\047$/) { v = substr(v, 2, length(v) - 2); gsub(/\047\047/, "\047", v) }
+      return v
+    }
+    function bad(why) { printf "line %d: %s\n", NR, why > "/dev/stderr"; exit 1 }
+    /^[ \t]*(#.*)?$/ { next }
+    /^[A-Za-z0-9_-]+:[ \t]*$/ { set = $0; sub(/:.*/, "", set); list = 0; if (seen[set]++) bad("gate set " set " twice"); print set "\tset\t"; next }
+    /^[ \t]+- / { if (!list) bad("a list item outside paths:"); v = $0; sub(/^[ \t]+- /, "", v); print set "\tpath\t" unq(v); next }
+    /^[ \t]+(run|minutes|paths):/ {
+      if (set == "") bad("a key outside a gate set")
+      k = $0; sub(/^[ \t]+/, "", k); v = k; sub(/:.*/, "", k); sub(/^[a-z]+:/, "", v); sub(/^[ \t]+/, "", v); list = 0
+      if (k != "paths") { print set "\t" k "\t" unq(v); next }
+      if (v == "") { list = 1; next }
+      if (v !~ /^\[.*\]$/) bad("paths: is a list")
+      v = substr(v, 2, length(v) - 2); n = split(v, items, ",")
+      for (i = 1; i <= n; i++) if (unq(items[i]) != "") print set "\tpath\t" unq(items[i])
+      next
+    }
+    { bad("not a gate set, run:, minutes: or paths: " $0) }' "$1")" || return 1
+  while IFS=$'\t' read -r s k v; do
+    [[ -n "$s" ]] || continue
+    case "$k" in
+      set) GM_SETS+=("$s"); GM_RUN[$s]=""; GM_MIN[$s]=""; GM_PATHS[$s]="" ;;
+      run) GM_RUN[$s]="$v" ;;
+      minutes) [[ "$v" =~ ^[0-9]+$ ]] || { echo "$s: minutes: '$v' is not a whole number" >&2; return 1; }; GM_MIN[$s]="$v" ;;
+      path) GM_PATHS[$s]+="$v"$'\n' ;;
+    esac
+  done <<<"$rows"
+  [[ -n "${GM_RUN[full]:-}" ]] || { echo "no full gate set with a run: command" >&2; return 1; }
+  for s in "${GM_SETS[@]}"; do
+    [[ -n "${GM_RUN[$s]}" ]] || { echo "$s: no run: command" >&2; return 1; }
+    [[ "$s" == full || -n "${GM_PATHS[$s]}" ]] || { echo "$s: no paths:" >&2; return 1; }
+  done
+}
+
+glob_regex() { # pattern: the ERE matching the paths it names
+  local p="$1" r="" c i=0
+  [[ "$p" == */ ]] && p+="**"
+  [[ "$p" == */* ]] || p="**/$p"
+  p="${p#/}"
+  while (( i < ${#p} )); do
+    c="${p:i:1}"
+    if [[ "${p:i:3}" == "**/" ]]; then r+="(.*/)?"; i=$(( i + 3 )); continue; fi
+    if [[ "${p:i:2}" == "**" ]]; then r+=".*"; i=$(( i + 2 )); continue; fi
+    case "$c" in
+      '*') r+='[^/]*' ;;
+      '?') r+='[^/]' ;;
+      .|^|$|+|'('|')'|'{'|'}'|'|'|'['|']'|\\) r+="\\$c" ;;
+      *) r+="$c" ;;
+    esac
+    i=$(( i + 1 ))
+  done
+  echo "^$r\$"
+}
+
+# The gate set a land of the tree in dir runs, for its paths changed since
+# base (looper#48): GATES_SET (full, or the sets' names joined by +), GATES_RUN
+# (the command) and GATES_WHY, and GATES_MAPPED when a gate map decided.
+# Without a gates.yaml, full is the fallback command; a gates.yaml that cannot
+# be read fails, GATES_WHY saying why.
+choose_gates() { # dir base fallback
+  local dir="$1" base="$2" fallback="$3" err f s p hit sets=() seen=" " k
+  GATES_SET=full; GATES_RUN="$fallback"; GATES_WHY=""; GATES_MAPPED=""
+  if [[ ! -f "$dir/$GATE_MAP" ]]; then GATES_WHY="no $GATE_MAP"; return 0; fi
+  err="$(mktemp)"
+  if ! read_gate_map "$dir/$GATE_MAP" 2> "$err"; then
+    GATES_RUN=""; GATES_WHY="$GATE_MAP cannot be read: $(tail -n 1 "$err")"; rm -f "$err"; return 1
+  fi
+  rm -f "$err"
+  GATES_RUN="${GM_RUN[full]}"; GATES_MAPPED=1
+  local changed; changed="$(git -C "$dir" diff --name-only --no-renames "$base" HEAD 2>/dev/null)" ||
+    { GATES_WHY="the changed paths cannot be read (since $base)"; return 0; }
+  [[ -n "$changed" ]] || { GATES_WHY="no changed path"; return 0; }
+  if grep -qxF "$GATE_MAP" <<<"$changed"; then GATES_WHY="$GATE_MAP changed"; return 0; fi
+  while IFS= read -r f; do
+    hit=""
+    for s in "${GM_SETS[@]}"; do
+      while IFS= read -r p; do
+        [[ -n "$p" && "$f" =~ $(glob_regex "$p") ]] || continue
+        [[ "$s" == full ]] && { GATES_WHY="$f is mapped to full ($p)"; return 0; }
+        hit=1; [[ "$seen" == *" $s "* ]] || seen+="$s "
+        break
+      done <<<"${GM_PATHS[$s]}"
+    done
+    [[ -n "$hit" ]] || { GATES_WHY="$f matches no gate set"; return 0; }
+  done <<<"$changed"
+  GATES_RUN=""
+  for s in "${GM_SETS[@]}"; do
+    [[ "$seen" == *" $s "* ]] || continue
+    sets+=("$s"); GATES_RUN+="${GATES_RUN:+ && }( ${GM_RUN[$s]} )"
+  done
+  GATES_SET="$(IFS=+; echo "${sets[*]}")"
+  k="$(wc -l <<<"$changed" | tr -d ' ')"
+  if (( k == 1 )); then GATES_WHY="its one changed path, $changed, maps to $GATES_SET"
+  else GATES_WHY="all $k changed paths map to $(sed 's/+/, /g' <<<"$GATES_SET")"; fi
+}
+
 # --land, the model's step (looper#32): lands the commits of the child's branch
 # on main. Under the repository's landing lock it rebases them onto the
 # current main, re-runs the gates on the result and pushes; a rejected push is
 # rebased and tried again. Lands nothing, and says why, when the change is not
 # committed, the rebase conflicts (the model rebases, resolves and lands
-# again), the gates fail or change a tracked file. Each landing is recorded in
-# the run's `landed` file, "<main before> <main after>".
+# again), the gates fail or change a tracked file. The gates are the set the
+# commits' diff calls for (choose_gates, looper#48). Each landing is recorded
+# in the run's `landed` file, "<main before> <main after>", with the gate set
+# when a gate map chose it, and the set and why in its `gate-sets`.
 land_work() {
   local gates out; gates="$(land_gates)"
-  [[ -n "$gates" ]] || die "no gates to re-run before landing: $REPO has no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
+  [[ -n "$gates" || -f "$CHECKOUT/$GATE_MAP" ]] || die "no gates to re-run before landing: $REPO has no $GATE_MAP, no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
   out="${LOOPER_RUN:-$(mktemp -d)}"; mkdir -p "$WORK"
@@ -545,9 +690,13 @@ land_work() {
         log "nothing landed: rebasing $BRANCH onto main conflicts in: $conflicts. Rebase it yourself (git fetch origin && git rebase origin/main), resolve them, verify, and land again." >&2
         exit 3
       fi
-      log "landing $BRANCH: the gates ($gates) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
-      grc=0; t=$SECONDS; bash -c "$gates" > "$out/gates.log" 2>&1 || grc=$?
-      (( grc != 0 )) || echo $(( SECONDS - t )) > "$LAND_TIME"
+      if ! choose_gates . "$before" "$gates"; then
+        log "nothing landed: $GATES_WHY. Fix it, commit, and land again." >&2
+        exit 4
+      fi
+      log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
+      grc=0; t=$SECONDS; LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
+      (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
       if (( grc != 0 )); then
         { log "nothing landed: the gates failed (exit $grc), on your commits rebased on main; their end:"; tail -n 30 "$out/gates.log"; } >&2
         exit 4
@@ -557,8 +706,9 @@ land_work() {
         exit 4
       fi
       if LOOPER_LANDING=1 git push -q origin HEAD:refs/heads/main; then
-        echo "$before $(git rev-parse HEAD)" >> "$out/landed"
-        log "landed on main: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD)"
+        echo "$before $(git rev-parse HEAD)${GATES_MAPPED:+ $GATES_SET}" >> "$out/landed"
+        printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
+        log "landed on main: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD), on the gates $GATES_SET ($GATES_WHY)"
         exit 0
       fi
       log "the push to main was rejected (main moved); rebasing again"
@@ -594,7 +744,7 @@ LAND_DEFERRED=75
 # land-pending, and waits for it.
 land_request() {
   local gates n="$ISSUE" rc=0; gates="$(land_gates)"
-  [[ -n "$gates" ]] || die "no gates to re-run before landing: $REPO has no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
+  [[ -n "$gates" || -f "$CHECKOUT/$GATE_MAP" ]] || die "no gates to re-run before landing: $REPO has no $GATE_MAP, no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
   if [[ -n "${LOOPER_RUN:-}" && ! -e "$LANDS/$n.rc" ]] && ! land_pending "$n"; then
@@ -643,9 +793,10 @@ lander() {
     mv "$f" "$LANDS/$n.running" 2>/dev/null || continue
     run="$(sed -n 's/^run=//p' "$LANDS/$n.running")"; gates="$(sed -n 's/^gates=//p' "$LANDS/$n.running")"
     rc=0
-    if ! land_fits; then
-      log "#$n: deferred to the next job: the job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land takes about $(hours "$(land_estimate)")"
-      land_defer "$n" "$run" > "$LANDS/$n.out" 2> "$LANDS/$n.err"; rc=$LAND_DEFERRED
+    land_set "$(child_dir "$n")"
+    if ! land_fits "$GATES_SET"; then
+      log "#$n: deferred to the next job: the job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")")"
+      land_defer "$n" "$run" "$GATES_SET" > "$LANDS/$n.out" 2> "$LANDS/$n.err"; rc=$LAND_DEFERRED
     else
       log "landing #$n ($(wip_branch "$n"))"
       ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
@@ -660,20 +811,28 @@ lander() {
   done
 }
 
-# A land fits when its expected time and LAND_MARGIN fit in the job's time
-# left; outside a GitLab job every land fits.
-land_fits() {
+# The gate set a land of the worktree dir would run (GATES_SET), from its
+# branch's diff against main, for the budget: the land itself chooses again on
+# the rebased commits. One that cannot be told is full.
+land_set() { # dir
+  local base; base="$(git -C "$1" merge-base origin/main HEAD 2>/dev/null || echo origin/main)"
+  choose_gates "$1" "$base" "" || GATES_SET=full
+}
+
+# A land fits when its expected time on its gate set and LAND_MARGIN fit in
+# the job's time left; outside a GitLab job every land fits.
+land_fits() { # [gate set]
   local end; end="$(job_end)"
-  [[ -z "$end" ]] || (( $(land_estimate) <= end - $(date +%s) - LAND_MARGIN ))
+  [[ -z "$end" ]] || (( $(land_estimate "${1:-full}") <= end - $(date +%s) - LAND_MARGIN ))
 }
 
 # A land that does not fit (looper#38): not started. Its branch stays
 # land-pending (state=deferred) for the next job, which lands it first, and the
 # issue says so and stays approved. Prints, for --land, what came of it.
-land_defer() { # issue run-dir
-  local n="$1" run="$2" end est left why
-  end="$(job_end)"; est="$(land_estimate)"; left=$(( end - $(date +%s) )); (( left > 0 )) || left=0
-  why="land deferred to the next job: not enough time left in this one (${CI_JOB_URL:-$CI_JOB_ID}): it ends in $(hours "$left"), and a land of $REPO takes about $(hours "$est"), with $(hours "$LAND_MARGIN") kept after it for its outcome"
+land_defer() { # issue run-dir [gate set]
+  local n="$1" run="$2" set="${3:-full}" end est left why
+  end="$(job_end)"; est="$(land_estimate "$set")"; left=$(( end - $(date +%s) )); (( left > 0 )) || left=0
+  why="land deferred to the next job: not enough time left in this one (${CI_JOB_URL:-$CI_JOB_ID}): it ends in $(hours "$left"), and a land of $REPO on the gates $set takes about $(hours "$est"), with $(hours "$LAND_MARGIN") kept after it for its outcome"
   [[ -z "$run" || ! -f "$run/land" ]] || sed -i 's/^state=.*/state=deferred/' "$run/land"
   forge_issue_comment "$REPO" "$n" "The looper's $why. Its commits stay queued on [\`$(wip_branch "$n")\`]($(wip_url "$n")): the next run lands them first, then finishes the issue. This issue stays $LABEL_APPROVED." >/dev/null || true
   log "nothing landed: $why. Do not land again in this run: checkpoint and end it; the next run lands it first." >&2
@@ -693,7 +852,7 @@ orphan_land() { # issue
   ( CHECKOUT="$(child_dir "$n")"; checkpoint "$n" "landed by the looper after the run" "$run" )
   if [[ "$rc" == 0 ]]; then
     what="The looper landed this issue's commits on main after its run ended: they were queued to land when the run stopped."
-    [[ -n "$run" && -s "$run/landed" ]] && what+=" Main: $(tail -n 1 "$run/landed" | awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }')."
+    [[ -n "$run" && -s "$run/landed" ]] && what+=" Main: $(landed_range "$run")."
     left="finishes it (comment, any release, close)"
   else
     what="The looper could not land the commits this issue's run queued before it stopped (exit $rc):
@@ -738,7 +897,7 @@ land_prior() { # issue run-dir
   rm -f "$run/land"
   if (( rc == 0 )); then
     what="${cut}The looper landed it first, before this run's model:"
-    if [[ -s "$run/landed" ]]; then what+=" main $(tail -n 1 "$run/landed" | awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }')."
+    if [[ -s "$run/landed" ]]; then what+=" main $(landed_range "$run")."
     else what+=" its commits were on main already."; fi
   else
     what="${cut}The looper tried it first, before this run's model, and nothing landed (exit $rc):
@@ -751,6 +910,15 @@ The run goes on from the branch."
   forge_issue_comment "$REPO" "$n" "$what" >/dev/null || true
   git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" origin/main && git -C "$CHECKOUT" clean -fdq
   return 0
+}
+
+# A run's last landing, as "<main before>..<main after>, on the gates <set>".
+landed_range() { # run-dir
+  tail -n 1 "$1/landed" | awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) ($3 == "" ? "" : ", on the gates " $3) }'
+}
+# The gate sets a run's landings ran, each once, in order: "docs" or "full, docs".
+landed_sets() { # run-dir
+  awk '$3 != "" && !seen[$3]++ { print $3 }' "$1/landed" 2>/dev/null | paste -sd, - | sed 's/,/, /g'
 }
 
 add_planning_files() {
@@ -772,8 +940,12 @@ release_tags() {
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V || true
 }
 
+# The full gates, as the prompts name them: a gate map's full (looper#48), the
+# nightly scan's and every release's, else LOOPER_GATES, else the justfile's.
 gates_hint() {
-  if [[ -n "${LOOPER_GATES:-}" ]]; then echo "$LOOPER_GATES"
+  if [[ -f "$CHECKOUT/$GATE_MAP" ]] && read_gate_map "$CHECKOUT/$GATE_MAP" 2>/dev/null; then
+    echo "the full gates, \`${GM_RUN[full]}\` ($GATE_MAP's full)"
+  elif [[ -n "${LOOPER_GATES:-}" ]]; then echo "$LOOPER_GATES"
   elif [[ -f "$CHECKOUT/justfile" ]]; then echo "just gates (see the justfile)"
   else echo "the repository's own build and tests (README, CONTRIBUTING, CI workflows)"; fi
 }
@@ -1171,7 +1343,8 @@ kind_rule() { # kind
     "   fix as a patch release on every supported release line that has it."
   if [[ -n "$v" ]]; then
     local x="${v#v}"
-    printf '%s\n' "   Release the patch on main: once the fix is pushed and its gates pass, tag \`v${x%.*}.$(( ${x##*.} + 1 ))\` at it" \
+    printf '%s\n' "   Release the patch on main: once the fix is pushed and $(gates_hint) pass on it (a release never ships on" \
+      "   a land's partial gate set), tag \`v${x%.*}.$(( ${x##*.} + 1 ))\` at it" \
       "   (this repository's newest release on main is \`$v\`) and push the tag, the way the repository releases (its" \
       "   release workflow, justfile or CONTRIBUTING). If main has taken features since \`$v\` (they belong to the next" \
       "   minor), do not cut the patch from main: it goes to release/${x%.*} as a backport, below."
@@ -1185,10 +1358,10 @@ kind_rule() { # kind
 
 # How a child lands its commits on main (looper#32), for its prompt.
 land_command() { # issue
-  if [[ -n "$(land_gates)" ]]; then
+  if [[ -n "$(land_gates)" || -f "$CHECKOUT/$GATE_MAP" ]]; then
     echo "\`$LOOPER_SELF --repo $REPO --issue $1 --land\`"
   else
-    echo "\`$LOOPER_SELF --repo $REPO --issue $1 --land --gates \"<the command you verified with>\"\` (this repository has no justfile, so name its gates)"
+    echo "\`$LOOPER_SELF --repo $REPO --issue $1 --land --gates \"<the command you verified with>\"\` (this repository has no gates.yaml and no justfile, so name its gates)"
   fi
 }
 
@@ -1399,7 +1572,9 @@ Rules:
    \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
    It queues your commits with the looper, which lands one at a time: under the repository's landing lock it
    rebases them onto the current main, re-runs the gates and pushes; the command waits for that and prints what
-   came of it, which can take long (the lock, then the full gates): run it detached and poll its output (rule 4).
+   came of it, which can take long (the lock, then the gates): run it detached and poll its output (rule 4).
+   With a $GATE_MAP, the gates it runs are the set your diff calls for, full for any path the map does not name
+   or a change to the map itself, and its output names the set and why.
    Checkpoint before you land (rule 10): if your time runs out while your land is queued or running, the looper
    still lands it after you and says so on the issue, and the next run finishes the issue from your checkpoint.
    A push to main any other way is refused. When it lands nothing it says why: the rebase conflicts
@@ -1412,7 +1587,7 @@ Rules:
    the line for this issue and for any release.
 $(kind_rule "$kind")
 8. When it is landed, comment on the issue with what changed (commit hashes), the gates you ran and their
-   last lines, and anything you could not verify; then, as your last step (any patch tagged and any backport
+   last lines, the gate set the land ran (its output names it), and anything you could not verify; then, as your last step (any patch tagged and any backport
    pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it ends your run.
 9. If the fix is landed but the gates cannot run until another open issue is done (a compiler floor that
    does not exist yet, say), or there is rightly nothing to change here until another open issue is done,
@@ -1472,9 +1647,10 @@ PR
   local unsettled=""
   [[ -z "$pending" && -f "$run/land" ]] && grep -qx state=queued "$run/land" && unsettled=1
   # What the run landed on main (--land records it): its first base and last commit.
-  local head_before="" head_after=""
+  local head_before="" head_after="" sets="" on=""
   if [[ -s "$run/landed" ]]; then
     head_before="$(head -n 1 "$run/landed" | cut -d' ' -f1)"; head_after="$(tail -n 1 "$run/landed" | cut -d' ' -f2)"
+    sets="$(landed_sets "$run")"; [[ -z "$sets" ]] || on=", on the gates $sets"
   fi
   forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
   local state labels
@@ -1485,7 +1661,7 @@ PR
   local title t
   if [[ "$state" == CLOSED ]]; then
     title="$(forge_issue_view "$REPO" "$n" title .title)" || title=""
-    t=""; [[ -n "$head_after" ]] && t=", $(git -C "$CHECKOUT" rev-parse --short "$head_after")"
+    t=""; [[ -n "$head_after" ]] && t=", $(git -C "$CHECKOUT" rev-parse --short "$head_after")${sets:+; gates: $sets}"
     land "HISTORY.md: #$n (looper)" append_history "- $(date -u +%F) looper issue $title (#$n$t)"
     drop_wip "$n"; report "$n" closed; log "#$n done${head_after:+ (main $head_before..$head_after)}"; return 0
   fi
@@ -1496,7 +1672,7 @@ PR
     report "$n" blocked
     if [[ -n "$head_after" ]]; then
       drop_wip "$n"
-      what="The fix is pushed (main $head_before..$head_after); the gates wait"
+      what="The fix is pushed (main $head_before..$head_after$on); the gates wait"
     else
       # Nothing landed: any work left in the checkout is kept on the branch.
       checkpoint "$n" blocked
@@ -1572,7 +1748,7 @@ This issue stays $LABEL_APPROVED: the next run lands that branch first, then res
   fi
   if (( brc == 2 )); then
     report "$n" ended
-    forge_issue_comment "$REPO" "$n" "The run's outcome names only issues closed by now ($dropped), so it was not taken: nothing waits on them.${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after").} $where
+    forge_issue_comment "$REPO" "$n" "The run's outcome names only issues closed by now ($dropped), so it was not taken: nothing waits on them.${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after")$on.} $where
 
 $done_left
 
@@ -1586,7 +1762,7 @@ This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run rec
     if [[ -n "$timed_out" ]]; then report "$n" timeout; more=" A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time."
     elif [[ -n "$head_after" ]]; then report "$n" landed
     else report "$n" ended; fi
-    forge_issue_comment "$REPO" "$n" "$ended${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after").} $where
+    forge_issue_comment "$REPO" "$n" "$ended${head_after:+ It landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after")$on.} $where
 
 $done_left
 

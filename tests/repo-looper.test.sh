@@ -1662,6 +1662,149 @@ c="$(cat "$FIX/comments")"
 has "$c" "was cut off"; has "$c" "landed it first"
 pass
 
+# --- gates scaled to the diff (looper#48) ------------------------------------------
+
+# The seed's gate map, pushed: each set records that it ran in $FIX/ran.
+gate_map() {
+  cat > "$FIX/seed/gates.yaml" <<'EOM'
+# The gate map: a line of its own is a comment.
+full:
+  run: echo full >> "$FIX/ran"
+  minutes: 180
+  paths: ["src/**"]
+docs:
+  run: 'echo "docs since $LOOPER_GATES_BASE" >> "$FIX/ran"'
+  minutes: 1
+  paths: ["*.md", docs/**, /LICENSE]
+images:
+  run: "echo images >> \"$FIX/ran\""
+  paths:
+    - images/
+    - 'build/Dockerfile.?'
+EOM
+  git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "gate map" && git -C "$FIX/seed" push -q origin main
+}
+# A claude.sh line: commit what the scenario changed and land it, no --gates.
+land_map() { echo 'git add -A && git commit -qm change && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land > "$FIX/land-$ISSUE" 2>&1' >> "$FIX/claude.sh"; }
+
+# A docs-only diff runs only the docs gates, named in the land's output and in
+# the issue's HISTORY.md line. Patterns without a slash match at any depth.
+scenario gates-docs-only
+gate_map
+echo 'echo more >> README.md && mkdir -p sub docs/a && echo n > sub/NOTES.md && echo d > docs/a/x.txt' > "$FIX/claude.sh"
+land_map; close_it
+run
+[[ "$(cat "$FIX/ran")" == "docs since $(git -C "$FIX/seed" rev-parse HEAD)" ]] || fail "ran: $(cat "$FIX/ran"); $(cat "$FIX/land-4")"
+has "$(cat "$FIX/land-4")" "on the gates docs (all 3 changed paths map to docs)"
+has "$(history)" "(#4, "; has "$(history)" "; gates: docs)"
+has "$(origin show main:README.md)" "more"
+pass
+
+# A path no set names runs the full gates, whatever else changed.
+scenario gates-unmapped
+gate_map
+echo 'echo more >> README.md && echo x > x.txt' > "$FIX/claude.sh"
+land_map; close_it
+run
+[[ "$(cat "$FIX/ran")" == full ]] || fail "ran: $(cat "$FIX/ran")"
+has "$(cat "$FIX/land-4")" "on the gates full (x.txt matches no gate set)"
+has "$(history)" "; gates: full)"
+pass
+
+# A change to gates.yaml runs the full gates (the new map's), even one that
+# maps every path it changes to docs.
+scenario gates-map-changed
+gate_map
+echo 'sed -i "s/  minutes: 1$/  minutes: 2/" gates.yaml && echo more >> README.md' > "$FIX/claude.sh"
+land_map; close_it
+run
+[[ "$(cat "$FIX/ran")" == full ]] || fail "ran: $(cat "$FIX/ran")"
+has "$(cat "$FIX/land-4")" "on the gates full (gates.yaml changed)"
+pass
+
+# A path mapped to full runs full; paths of several sets run each of them once,
+# in the map's order.
+scenario gates-sets
+gate_map
+echo 'mkdir -p src && echo a > src/a.go && echo more >> README.md' > "$FIX/claude.sh"
+land_map; close_it
+run
+[[ "$(cat "$FIX/ran")" == full ]] || fail "ran: $(cat "$FIX/ran")"
+has "$(cat "$FIX/land-4")" "src/a.go is mapped to full (src/**)"
+pass
+
+scenario gates-sets-union
+gate_map
+echo 'mkdir -p images/x build && echo i > images/x/y && echo d > build/Dockerfile.a && echo l > LICENSE && echo more >> README.md' > "$FIX/claude.sh"
+land_map; close_it
+run
+[[ "$(cat "$FIX/ran")" == "docs since $(git -C "$FIX/seed" rev-parse HEAD)"$'\n'images ]] || fail "ran: $(cat "$FIX/ran")"
+has "$(cat "$FIX/land-4")" "on the gates docs+images (all 4 changed paths map to docs, images)"
+has "$(history)" "; gates: docs+images)"
+pass
+
+# A gate map that cannot be read lands nothing, and says why.
+scenario gates-map-unreadable
+printf 'full:\n  run: true\ndocs:\n  runs: true\n' > "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "a bad gate map" && git -C "$FIX/seed" push -q origin main
+echo 'echo more >> README.md' > "$FIX/claude.sh"
+land_map
+run
+has "$(cat "$FIX/land-4")" "nothing landed: gates.yaml cannot be read: line 4: not a gate set"
+main_unchanged
+pass
+
+# The budget is the chosen set's (looper#38): with 11 minutes left, a docs land
+# (1 minute) starts and one on the full gates (180 minutes) is deferred.
+scenario gates-budget
+gate_map
+issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+areas "touches 4 README.md" "touches 5 x.txt"
+cat > "$FIX/claude.sh" <<'EOS'
+if [ "$ISSUE" = 4 ]; then echo more >> README.md; else echo x > x.txt; fi
+git add -A && git commit -qm "fix $ISSUE"
+if "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land > "$FIX/land-$ISSUE" 2>&1; then
+  jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+fi
+EOS
+drain "${ROOM[@]}" CI_JOB_TIMEOUT=3660 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_TIMEOUT=50 LOOPER_LAND_MARGIN=3000
+closed 4
+has "$(origin show main:README.md)" "more"
+[[ -z "$(landed x.txt)" ]] || fail "#5 landed past the job's budget: $OUT"
+has "$OUT" "#5: deferred to the next job: the job ends in "; has "$OUT" "a land on the gates full takes about 3h"
+has "$(grep '^alpha#5 ' "$FIX/comments")" "a land of alpha on the gates full takes about 3h"
+pass
+
+# The prompts name the full gates: gates.yaml's full, for verifying, the
+# nightly scan and a release; --land needs no --gates.
+scenario gates-prompts
+gate_map
+git -C "$FIX/seed" tag v1.2.3 && git -C "$FIX/seed" push -q origin v1.2.3
+run
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" 'Verify with the full gates, `echo full >> "$FIX/ran"` (gates.yaml'"'"'s full)'
+has "$p" "--issue 4 --land\`."; has "$p" "the gate set the land ran"
+has "$p" "a release never ships on"
+pass
+
+# This repository's own gate map: a docs-only land runs its docs set, the
+# planning files check, which refuses a HISTORY.md edited other than by lines
+# added at its end.
+scenario gates-own-map
+cp "$ROOT/gates.yaml" "$ROOT/planning-files-check" "$ROOT"/*.md "$FIX/seed/"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "this repository's map and docs" && git -C "$FIX/seed" push -q origin main
+cat > "$FIX/claude.sh" <<'EOS'
+echo more >> README.md && git commit -qam readme
+"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1
+sed -i 1d HISTORY.md && git commit -qam "history edited"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4b" 2>&1
+EOS
+run
+has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, README.md, maps to docs)"
+has "$(origin show main:README.md)" "more"
+has "$(cat "$FIX/land-4b")" "nothing landed: the gates failed"; has "$(cat "$FIX/land-4b")" "HISTORY.md changed other than by lines added at its end"
+pass
+
 # --- the think job (looper#28): no identity, nothing written, the outcome --------
 # GitHub refuses a push with the read-only token: here, pushes go nowhere.
 think() { # [VAR=value...]: think about alpha#4 into $FIX/think

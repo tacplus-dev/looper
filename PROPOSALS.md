@@ -276,6 +276,23 @@ the looper then marks it `promoted` or `declined` here with the date.
   file it refreshes rather than by its pid, count `N.taken` as a running land in the watchdog, and have a land
   the model's process ran report on the issue like an orphaned one.
 
+- **Gate sets beyond the land** (2026-11-01, #48): only the lander scales the gates to the diff. The think job
+  (`repo-looper --think`, #28) runs `LOOPER_GATES` or `just gates` whatever it changed, and the build pipeline's
+  `gates` job (`looper-build`) always runs `just gates`: it gets a commit, no base. A `base` input (the PR's base)
+  and the same `gates.yaml` reading in `looper-build` would let a kernel docs PR merge in minutes; a release build
+  (`tag`) would stay full. `looper-build` is self-contained (no looper-lib.sh), so the map's reader would be
+  embedded there too, or moved to a file both carry.
+- **A link check and a secrets scan in this repository's docs set** (2026-11-01, #48): its `gates.yaml` `docs` set
+  runs only `planning-files-check`; tacplus's design has a link check and a secrets scan too, but the image has
+  neither tool. #49's scanners (gitleaks) are the natural home.
+- **tests/looper-docker.test.sh in a model's environment** (2026-11-01, #48): with `LOOPER_REAL_DOCKER` set (it is,
+  in a child's model's environment), `looper-docker` execs the real docker instead of the test's stub, and the
+  test's first scenario fails ("pull access denied for img"). The lander's environment does not have it, so the
+  land's gates pass; the test's `dk` should run with `env -u LOOPER_REAL_DOCKER`, so a model can verify with the
+  full gates as they are.
+- **Preview a land's gate set** (2026-11-01, #48): a `repo-looper --gate-set [BASE]` that prints the set, why and
+  its command for the current checkout would let the model verify with exactly what its land will run.
+
 ## Promoted / declined
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`
   boolean input (default false) and a workflow rule for a web run on `main` with it set, whose pipeline holds only a

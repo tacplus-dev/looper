@@ -1,0 +1,38 @@
+# The gate map of tacplus-dev/looper (looper#48; README: Gates scaled to the
+# diff): the gates a land runs, chosen by the paths its diff changes. A path no
+# set names, a change to this file, the nightly scan and every release run
+# full. Each set's run is a shell command at the root of the checkout, with
+# LOOPER_GATES_BASE the main the land is rebased on.
+full:
+  run: tests/looper-port.test.sh && tests/looper-docker.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh
+  minutes: 30
+  paths: [/repo-looper, /looper-lib.sh, /looper-dispatch, /looper-docker, /Dockerfile, tests/git-server.py, tests/forge.test.sh, tests/repo-looper.test.sh, tests/looper-dispatch.test.sh]
+# The planning files and the docs: what CI checks of them.
+docs:
+  run: './planning-files-check "$LOOPER_GATES_BASE"'
+  minutes: 1
+  paths: ["*.md", /LICENSE]
+planning-files:
+  run: tests/planning-files.test.sh && ./planning-files-check "$LOOPER_GATES_BASE"
+  minutes: 1
+  paths: [/planning-files-check, tests/planning-files.test.sh, .github/workflows/planning-files.yml]
+build:
+  run: tests/looper-build.test.sh
+  minutes: 5
+  paths: [/looper-build, tests/looper-build.test.sh, ci/build.gitlab-ci.yml]
+port:
+  run: tests/looper-port.test.sh
+  minutes: 2
+  paths: [/looper-port, /ports.yaml, tests/looper-port.test.sh]
+identity:
+  run: tests/looper-identity.test.sh
+  minutes: 5
+  paths: [/looper-identity, ci/looper.gitlab-ci.yml, tests/looper-identity.test.sh]
+tacplus:
+  run: tests/tacplus.test.sh
+  minutes: 2
+  paths: [/tacplus, tests/tacplus.test.sh]
+runner:
+  run: tests/runner-image.test.sh
+  minutes: 2
+  paths: [/runner-image, runner/, tests/runner-image.test.sh]
