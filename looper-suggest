@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-suggest: the platform's suggestions (looper#50), kept in the roadmap
+# repository's suggestions/ (LOOPER_ORG/LOOPER_ROADMAP_REPO): one file per
+# suggestion, suggestions/<YYYY-MM-DD>-<slug>.md, and their index, INDEX.md.
+# The roadmap's nightly scan writes them (repo-looper --scan of the roadmap
+# repository), other repositories' jobs file one (tacplus-dev/chaos#1), and the
+# hub records Jody's decision on each.
+#
+#   looper-suggest file [--dir DIR] --suggestion NAME --type TYPE --summary TEXT --why TEXT
+#                       --evidence TEXT [--evidence TEXT...] --cost TEXT --touches TEXT --reuse TEXT
+#                       [--rank N] [--slug SLUG] [--date YYYY-MM-DD] [--by WHO]
+#                       [--earlier FILE --what-changed TEXT]
+#       writes one suggestion and the index. With --dir, in that checkout of the
+#       roadmap repository, committing nothing (the roadmap scan's way); without,
+#       in a fresh clone, committed alone (suggestions/ only) and pushed to its
+#       main, made again on the new main if the push is rejected
+#   looper-suggest check DIR [BASE]   every suggestion's format; with BASE (a commit of DIR), what
+#       changed since it: only suggestions/, no filed suggestion changed, at most
+#       LOOPER_SUGGEST_MAX (5) new ones, none raising again a rejected or deferred
+#       one without new evidence, nor one open or accepted, and the index current
+#   looper-suggest index DIR          rewrites suggestions/INDEX.md from the files
+#   looper-suggest decide DIR FILE accepted|rejected|deferred --reason TEXT [--by WHO] [--date D]
+#       records a decision (Jody's words and the date) in the file and the index,
+#       committing nothing (the hub commits it)
+#   looper-suggest template           prints a suggestion's template
+#
+# A suggestion starts with exactly four fields, in this order (Jody,
+# 2026-11-01): `Suggestion:`, `Type:` (one of suggestions/TYPES.md's, the only
+# source of types), `Summary:`, `Why:`. Then its sections: `## Evidence` (a
+# list, each item with a link: a URL, an issue, a commit or a file), `## Cost`,
+# `## Touches` (the decisions and principles it serves or touches), `## Reuse
+# considered`, and `## Status`: its first line open, accepted, rejected or
+# deferred, then `Rank: N`, `Filed: <date> by <who>` and, once decided,
+# `Decided: <date> by <who>: <their words>`.
+#
+# Rejected and deferred suggestions are kept. One that names such a suggestion
+# again (the same slug, or the same name) is refused unless it says so, in a
+# section `## Raised again` with `Earlier: <its file>` and `What changed: <why
+# now>`, and its evidence has an item the earlier one's lacks. One that names an
+# open or accepted suggestion is refused.
+#
+# The index lists one line per suggestion, `Suggestion | Type | Summary |
+# Status`, under Open, Accepted, Deferred and Rejected; within each, Security
+# first (Jody: "on our (mostly) daily review security comes first"), then the
+# other types in TYPES.md's order, then by rank.
+#
+# Environment: GH_TOKEN (without --dir: clone and push; on GitLab,
+# LOOPER_FORGE_TOKEN), LOOPER_ORG, LOOPER_ROADMAP_REPO, LOOPER_SUGGEST_MAX
+# (default 5), GIT_AUTHOR_NAME/EMAIL.
+set -euo pipefail
+
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=looper-lib.sh
+source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
+
+DIR_S=suggestions
+MAX="${LOOPER_SUGGEST_MAX:-5}"
+STATUSES="open accepted rejected deferred"
+
+err() { echo "looper-suggest: $*" >&2; }
+
+# The types, one per line, from TYPES.md's table (`| **Type** | ... |`).
+types() { # dir
+  [[ -f "$1/$DIR_S/TYPES.md" ]] || { err "no $DIR_S/TYPES.md in $1"; return 1; }
+  awk -F'|' '/^\|[[:space:]]*\*\*/ { t = $2; gsub(/^[[:space:]*]+|[[:space:]*]+$/, "", t); if (t != "") print t }' "$1/$DIR_S/TYPES.md"
+}
+
+# A name as a slug: lowercase, words joined by dashes.
+slugify() { tr '[:upper:]' '[:lower:]' <<<"$1" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'; }
+
+# One of the four leading fields (its line number is its place).
+field() { # file name line
+  awk -v n="$2" -v l="$3" 'NR == l { p = n ": "; if (index($0, p) == 1) { v = substr($0, length(p) + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v } exit }' "$1"
+}
+
+# A section's non-empty lines, trimmed.
+section() { # file heading
+  awk -v h="## $2" '
+    /^## / { on = ($0 == h); next }
+    on { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 != "") print }' "$1"
+}
+
+status_of() { section "$1" Status | head -n 1 | awk '{ print tolower($1) }'; }
+value_of() { section "$1" Status | sed -n "s/^$2:[[:space:]]*//p" | head -n 1; } # file key
+evidence() { section "$1" Evidence | sed -n 's/^[-*][[:space:]]*//p'; }
+
+# The suggestion files of a directory, by name (date first).
+suggestion_files() { # dir
+  find "$1/$DIR_S" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md' -printf '%f\n' 2>/dev/null | sort
+}
+
+# What is wrong with a suggestion's form, one line each; nothing when it is right.
+form_errors() { # dir file
+  local f="$1/$DIR_S/$2" t s n k
+  [[ "$2" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$ ]] || echo "its name is not <YYYY-MM-DD>-<slug>.md"
+  n=1
+  for k in Suggestion Type Summary Why; do
+    [[ -n "$(field "$f" "$k" "$n")" ]] || echo "line $n is not \`$k: <text>\` (the four fields come first, in this order: Suggestion, Type, Summary, Why)"
+    n=$((n + 1))
+  done
+  t="$(field "$f" Type 2)"
+  if [[ -n "$t" ]] && ! types "$1" | grep -qxF -- "$t"; then
+    echo "its type \`$t\` is not one of $DIR_S/TYPES.md's ($(types "$1" | paste -sd, - | sed 's/,/, /g'))"
+  fi
+  evidence "$f" | grep -qE '(https?://|#[0-9]+|@[0-9a-f]{7,}|[A-Za-z0-9_./-]+\.(md|ya?ml|sh)\b)' ||
+    echo "its Evidence has no item with a link (a URL, an issue, a commit or a file): nothing goes in without evidence"
+  for k in Cost Touches "Reuse considered"; do
+    [[ -n "$(section "$f" "$k")" ]] || echo "it has no \`## $k\`"
+  done
+  s="$(status_of "$f")"
+  if [[ " $STATUSES " != *" ${s:-none} "* ]]; then echo "its Status is not one of: $STATUSES"
+  elif [[ "$s" != open && -z "$(value_of "$f" Decided)" ]]; then echo "it is $s with no \`Decided: <date> by <who>: <words>\`"
+  fi
+  [[ "$(value_of "$f" Rank)" =~ ^[0-9]+$ ]] || echo "its Status has no \`Rank: <n>\`"
+}
+
+# Why a new suggestion may not go in beside the earlier ones (the files of
+# the given list): it names one open or accepted, or a rejected or deferred
+# one without saying what changed and with no new evidence. Nothing when it may.
+raise_errors() { # dir file earlier-file...
+  local d="$1" f="$2" e name slug cited what new k st; shift 2
+  name="$(slugify "$(field "$d/$DIR_S/$f" Suggestion 1)")"; slug="${f:11}"; slug="${slug%.md}"
+  cited="$(section "$d/$DIR_S/$f" "Raised again" | sed -n 's/^Earlier:[[:space:]]*//p' | head -n 1)"
+  cited="${cited##*/}"; cited="${cited%% *}"
+  what="$(section "$d/$DIR_S/$f" "Raised again" | sed -n 's/^What changed:[[:space:]]*//p' | head -n 1)"
+  for e in "$@"; do
+    [[ "$e" != "$f" ]] || continue
+    k="${e:11}"; k="${k%.md}"
+    [[ "$k" == "$slug" || "$(slugify "$(field "$d/$DIR_S/$e" Suggestion 1)")" == "$name" ]] || continue
+    st="$(status_of "$d/$DIR_S/$e")"
+    case "$st" in
+      rejected|deferred)
+        if [[ "$cited" != "$e" ]]; then
+          echo "it raises again $e ($st $(value_of "$d/$DIR_S/$e" Decided | awk '{ print $1 }')) without citing it: \`## Raised again\` with \`Earlier: $e\` and \`What changed: <the new evidence>\`"
+        elif [[ -z "$what" ]]; then
+          echo "it raises again $e ($st) without saying what changed (\`What changed: ...\` under \`## Raised again\`)"
+        else
+          new="$(grep -vxF -f <(evidence "$d/$DIR_S/$e") <(evidence "$d/$DIR_S/$f") || true)"
+          [[ -n "$new" ]] || echo "it raises again $e ($st) with no new evidence: every item of its Evidence is the earlier one's"
+        fi ;;
+      *) echo "it is already suggested: $e ($st)" ;;
+    esac
+  done
+}
+
+# The index's table row of a suggestion, with its sort key in front:
+# "<status> <type's place> <rank> <file>\t<row>".
+index_row() { # dir file types...
+  local d="$1" f="$2" t s r i=0 k=99 st; shift 2
+  t="$(field "$d/$DIR_S/$f" Type 2)"
+  for s in "$@"; do [[ "$s" != "$t" ]] || k="$i"; i=$((i + 1)); done
+  st="$(status_of "$d/$DIR_S/$f")"; r="$(value_of "$d/$DIR_S/$f" Rank)"
+  local cell; cell="$st"
+  if [[ "$st" == open ]]; then cell="open (rank ${r:-?}, $(value_of "$d/$DIR_S/$f" Filed | awk '{ print $1 }'))"
+  else cell="$st ($(value_of "$d/$DIR_S/$f" Decided | awk '{ print $1 }'))"; fi
+  printf '%s %02d %05d %s\t| [%s](%s) | %s | %s | %s |\n' "$st" "$k" "${r:-99999}" "$f" \
+    "$(field "$d/$DIR_S/$f" Suggestion 1 | sed 's/|/\\|/g')" "$f" "$t" \
+    "$(field "$d/$DIR_S/$f" Summary 3 | sed 's/|/\\|/g')" "$cell"
+}
+
+# The index as it should be: INDEX.md's preamble (all before its first
+# section) kept, then a table per status.
+index_text() { # dir
+  local d="$1" order=() f st rows
+  mapfile -t order < <(types "$d" | awk '$0 == "Security" { print; next } { rest[++n] = $0 } END { for (i = 1; i <= n; i++) print rest[i] }')
+  if [[ -f "$d/$DIR_S/INDEX.md" ]]; then awk '/^## / { exit } { print }' "$d/$DIR_S/INDEX.md"
+  else printf '# Suggestions\n\nTypes: [TYPES.md](TYPES.md).\n\n'; fi
+  rows="$(for f in $(suggestion_files "$d"); do index_row "$d" "$f" "${order[@]}"; done | sort)"
+  for st in Open Accepted Deferred Rejected; do
+    printf '## %s\n| Suggestion | Type | Summary | Status |\n|---|---|---|---|\n' "$st"
+    awk -F'\t' -v s="$(tr '[:upper:]' '[:lower:]' <<<"$st")" '{ split($1, k, " ") } k[1] == s { print $2 }' <<<"$rows"
+    [[ "$st" == Rejected ]] || echo
+  done
+}
+
+index() { # dir
+  local t; t="$(index_text "$1")"
+  printf '%s\n' "$t" > "$1/$DIR_S/INDEX.md"
+}
+
+# Checks a directory (see the header). Prints each error; fails on any.
+check() { # dir [base]
+  local d="$1" base="${2:-}" bad=0 f e added=() earlier=() p
+  types "$d" >/dev/null || return 1
+  if [[ -n "$base" ]]; then
+    while read -r p; do
+      [[ -n "$p" ]] || continue
+      if [[ "$p" != "$DIR_S/"* ]]; then err "$p: the change may touch $DIR_S/ only"; bad=1
+      elif git -C "$d" cat-file -e "$base:$p" 2>/dev/null; then
+        [[ "$p" == "$DIR_S/INDEX.md" ]] || { err "$p: a filed suggestion or $DIR_S's own file is changed (only the hub records a decision, at Jody's request)"; bad=1; }
+      elif [[ ! -e "$d/$p" ]]; then :
+      elif [[ "$p" == "$DIR_S/"*/* || "$p" != *.md ]]; then err "$p: not a suggestion ($DIR_S/<YYYY-MM-DD>-<slug>.md)"; bad=1
+      else added+=("${p#"$DIR_S/"}"); fi
+    done < <( { git -C "$d" diff --name-only "$base" --; git -C "$d" ls-files --others --exclude-standard; } | sort -u)
+    (( ${#added[@]} <= MAX )) || { err "${#added[@]} new suggestions: at most $MAX at a time"; bad=1; }
+    for f in $(suggestion_files "$d"); do [[ " ${added[*]-} " == *" $f "* ]] || earlier+=("$f"); done
+  else
+    mapfile -t added < <(suggestion_files "$d")
+  fi
+  for f in "${added[@]+"${added[@]}"}"; do
+    while read -r e; do [[ -z "$e" ]] || { err "$DIR_S/$f: $e"; bad=1; }; done < <(form_errors "$d" "$f")
+    if [[ -n "$base" ]]; then
+      while read -r e; do [[ -z "$e" ]] || { err "$DIR_S/$f: $e"; bad=1; }; done < <(raise_errors "$d" "$f" "${earlier[@]+"${earlier[@]}"}")
+    fi
+  done
+  if [[ -n "$base" || -f "$d/$DIR_S/INDEX.md" ]]; then
+    cmp -s <(index_text "$d") "$d/$DIR_S/INDEX.md" || { err "$DIR_S/INDEX.md is not current (looper-suggest index $d)"; bad=1; }
+  fi
+  return "$bad"
+}
+
+template() {
+  cat <<'T'
+Suggestion: <a short name>
+Type: <one of suggestions/TYPES.md's>
+Summary: <one line: what to do>
+Why: <why now, in a sentence or two; the other types it serves, if any>
+
+## Evidence
+- <a link: an issue, a run, a commit, a decision, a scan report, a repeated failure>
+
+## Cost
+<rough size: hours, days, weeks; what it needs>
+
+## Touches
+<the decisions and principles it serves or touches>
+
+## Reuse considered
+<what exists that could do it, and why it does or does not (the issue-flow addendum, 2026-10-31)>
+
+## Status
+open
+Rank: <its place in the night's list, 1 first>
+Filed: <YYYY-MM-DD> by <who>
+T
+}
+
+# Writes the suggestion; prints its path under the directory.
+write() { # dir (and the options, in the globals below)
+  local d="$1" f p e errs
+  [[ -n "$O_DATE" ]] || O_DATE="$(date -u +%F)"
+  [[ "$O_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { err "--date $O_DATE is not YYYY-MM-DD"; return 1; }
+  [[ -n "$O_SLUG" ]] || O_SLUG="$(slugify "$O_NAME")"
+  f="$O_DATE-$O_SLUG.md"; p="$d/$DIR_S/$f"
+  [[ ! -e "$p" ]] || { err "$DIR_S/$f exists"; return 1; }
+  mkdir -p "$d/$DIR_S"
+  { printf 'Suggestion: %s\nType: %s\nSummary: %s\nWhy: %s\n\n## Evidence\n' "$O_NAME" "$O_TYPE" "$O_SUMMARY" "$O_WHY"
+    for e in "${O_EVIDENCE[@]+"${O_EVIDENCE[@]}"}"; do printf -- '- %s\n' "$e"; done
+    printf '\n## Cost\n%s\n\n## Touches\n%s\n\n## Reuse considered\n%s\n\n' "$O_COST" "$O_TOUCHES" "$O_REUSE"
+    if [[ -n "$O_EARLIER" ]]; then printf '## Raised again\nEarlier: %s\nWhat changed: %s\n\n' "${O_EARLIER##*/}" "$O_CHANGED"; fi
+    printf '## Status\nopen\nRank: %s\nFiled: %s by %s\n' "$O_RANK" "$O_DATE" "$O_BY"
+  } > "$p"
+  errs="$(form_errors "$d" "$f"; mapfile -t all < <(suggestion_files "$d"); raise_errors "$d" "$f" "${all[@]}")"
+  if [[ -n "$errs" ]]; then
+    rm -f "$p"; while read -r e; do err "$DIR_S/$f: $e"; done <<<"$errs"; return 1
+  fi
+  index "$d"
+  echo "$DIR_S/$f"
+}
+
+file_cmd() {
+  O_NAME=""; O_TYPE=""; O_SUMMARY=""; O_WHY=""; O_EVIDENCE=(); O_COST=""; O_TOUCHES=""; O_REUSE=""
+  O_RANK=1; O_SLUG=""; O_DATE=""; O_BY="looper-suggest"; O_EARLIER=""; O_CHANGED=""
+  local dir="" k
+  while [[ $# -gt 0 ]]; do
+    [[ $# -ge 2 ]] || die "$1 needs a value (see --help)"
+    case "$1" in
+      --dir) dir="$2" ;; --suggestion) O_NAME="$2" ;; --type) O_TYPE="$2" ;; --summary) O_SUMMARY="$2" ;;
+      --why) O_WHY="$2" ;; --evidence) O_EVIDENCE+=("$2") ;; --cost) O_COST="$2" ;; --touches) O_TOUCHES="$2" ;;
+      --reuse) O_REUSE="$2" ;; --rank) O_RANK="$2" ;; --slug) O_SLUG="$2" ;; --date) O_DATE="$2" ;; --by) O_BY="$2" ;;
+      --earlier) O_EARLIER="$2" ;; --what-changed) O_CHANGED="$2" ;;
+      *) die "unknown argument: $1 (see --help)" ;;
+    esac
+    shift 2
+  done
+  for k in O_NAME:--suggestion O_TYPE:--type O_SUMMARY:--summary O_WHY:--why O_COST:--cost O_TOUCHES:--touches O_REUSE:--reuse; do
+    local v="${k%%:*}"; [[ -n "${!v}" ]] || die "${k#*:} is required (see --help)"
+  done
+  (( ${#O_EVIDENCE[@]} )) || die "--evidence is required: nothing goes in without evidence"
+  [[ "$O_RANK" =~ ^[0-9]+$ ]] || die "--rank $O_RANK is not a number"
+  [[ -z "$O_EARLIER" || -n "$O_CHANGED" ]] || die "--earlier needs --what-changed"
+  for k in "$O_NAME" "$O_TYPE" "$O_SUMMARY" "$O_WHY"; do [[ "$k" != *$'\n'* ]] || die "the four fields are one line each"; done
+  if [[ -n "$dir" ]]; then write "$dir"; return; fi
+
+  # Another job's suggestion: committed alone to the roadmap repository's
+  # main, suggestions/ only, made again on the new main if the push is rejected.
+  forge_need; need git
+  local i p
+  wt="$(mktemp -d)"; trap 'rm -rf "$wt"' EXIT
+  forge_setup_git
+  forge_clone "$LOOPER_ROADMAP_REPO" "$wt/r" || die "cannot clone $LOOPER_ORG/$LOOPER_ROADMAP_REPO"
+  for i in 1 2 3; do
+    git -C "$wt/r" fetch -q origin main && git -C "$wt/r" checkout -q -f -B main origin/main && git -C "$wt/r" clean -fdq || die "cannot fetch $LOOPER_ORG/$LOOPER_ROADMAP_REPO"
+    p="$(write "$wt/r")" || exit 1
+    check "$wt/r" origin/main || die "refused: the change does not pass looper-suggest check"
+    git -C "$wt/r" add -A -- "$DIR_S" && git -C "$wt/r" commit -q -m "Suggestion: $O_NAME ($O_BY; looper-suggest, looper#50)" || die "cannot commit"
+    if git -C "$wt/r" push -q origin HEAD:refs/heads/main; then
+      log "filed $(forge_web "$LOOPER_ROADMAP_REPO")/blob/main/$p" >&2; echo "$p"; return 0
+    fi
+    log "the push was rejected; again on the new main" >&2
+  done
+  die "could not push the suggestion to $LOOPER_ORG/$LOOPER_ROADMAP_REPO"
+}
+
+decide_cmd() { # dir file status options
+  [[ $# -ge 3 ]] || die "decide DIR FILE accepted|rejected|deferred --reason TEXT (see --help)"
+  local d="$1" f="${2##*/}" st="$3" reason="" by=Jody date; date="$(date -u +%F)"; shift 3
+  while [[ $# -gt 0 ]]; do
+    [[ $# -ge 2 ]] || die "$1 needs a value"
+    case "$1" in --reason) reason="$2" ;; --by) by="$2" ;; --date) date="$2" ;; *) die "unknown argument: $1" ;; esac
+    shift 2
+  done
+  [[ " accepted rejected deferred " == *" $st "* ]] || die "a decision is accepted, rejected or deferred, not $st"
+  [[ -n "$reason" ]] || die "--reason is required: the decision is kept with its reasoning"
+  [[ -f "$d/$DIR_S/$f" ]] || die "no $DIR_S/$f in $d"
+  local t; t="$(awk -v st="$st" -v dec="Decided: $date by $by: $reason" '
+    /^## / { if (on) { print dec; print ""; done = 1 } on = ($0 == "## Status"); print; first = on; next }
+    on && first && NF { print st; first = 0; next }
+    on && /^Decided:/ { next }
+    on && !NF { next }
+    { print }
+    END { if (on && !done) print dec }' "$d/$DIR_S/$f")"
+  printf '%s\n' "$t" > "$d/$DIR_S/$f"
+  local e; e="$(form_errors "$d" "$f")"
+  [[ -z "$e" ]] || { while read -r l; do err "$DIR_S/$f: $l"; done <<<"$e"; exit 1; }
+  index "$d"
+}
+
+case "${1:-}" in
+  -h|--help|help|"") usage ;;
+  file) shift; file_cmd "$@" ;;
+  check) [[ $# -ge 2 ]] || die "check DIR [BASE]"; check "$2" "${3:-}" ;;
+  index) [[ $# -ge 2 ]] || die "index DIR"; types "$2" >/dev/null && index "$2" ;;
+  decide) shift; decide_cmd "$@" ;;
+  template) template ;;
+  *) die "unknown command: $1 (see --help)" ;;
+esac

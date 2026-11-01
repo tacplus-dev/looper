@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A suggestion's sameness beyond its name** (2026-11-01, #50): `looper-suggest` refuses a rejected or deferred
+  suggestion raised again by its slug or its name; one reworded under another name passes the check, and only the
+  prompt (read every rejected one first) guards it. The doppelganger panel's pre-screen (doppelganger#10), or a
+  model-judged similarity check against the rejected list before the commit, could catch rewordings.
+- **The suggestion pass reads more of the pipelines** (2026-11-01, #50): the looper hands the model the week's
+  failed jobs (name, stage, reason, link), not their logs, and the model holds no GitLab credential (#25). The
+  tails of the failed jobs' logs (`/jobs/:id/trace`), read by the looper into `context/`, would let it tell a
+  disk-full from a timeout without guessing from the job name.
 - **Ready the repositories before the security checks start** (2026-11-01, #49): run by hand on 2026-11-01
   (`looper-scan local`), tacplus fails the policy on 136 findings (gosec: 55 G122, 49 G703, 11 G115, ...; six OSV
   advisories with fixes) and kernel on 8 gitleaks findings (PEM markers in its Java sources and tests). The checks start

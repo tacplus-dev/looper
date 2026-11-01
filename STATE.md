@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#49).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#50).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -66,7 +66,14 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
-  and run by hand (`looper-scan local`) on tacplus and kernel. Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
+  and run by hand (`looper-scan local`) on tacplus and kernel. Nightly suggestions (#50, README: Suggestions): the
+  platform roadmap's nightly scan is the suggestion pass for the whole platform: the looper reads the pipelines' failed
+  jobs of the week and every repository's security report for the model, which writes up to 5 ranked, evidenced
+  suggestions with `looper-suggest` (in the image), and the looper commits them to tacplus-dev/roadmap's main as one
+  commit touching `suggestions/` only (and `suggestions/TEMPLATE.md` where it is missing), each checked: the four
+  leading fields, a type from `suggestions/TYPES.md`, linked evidence, a rejected or deferred one never raised again
+  without citing it and new evidence, the index Security first; `looper-suggest file` files one from another
+  repository's job (pushed alone), `looper-suggest decide` records Jody's decision for the hub. Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
   holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The looper identity pilot (#28), built and tested, not yet
   deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
   `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:
@@ -119,7 +126,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   `nightly` input; a schedule per repository), and on the day they start tacplus's build fails them (gosec's HIGH
   findings, six OSV advisories with fixes) as kernel's does (gitleaks: PEM markers in its Java) until each is fixed
   or accepted in a `security-exceptions.yaml` (PROPOSALS.md), and tacplus has no `generated` recipe yet, so its
-  cross-test models are not scanned; no release line yet
+  cross-test models are not scanned; the suggestion pass (#50) has run only against a stub roadmap: it starts with
+  the next looper image, on the roadmap's nightly scan, and the hub's daily review (the sitrep, `looper-suggest
+  decide`) is the hub's to wire; no release line yet
 - **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`

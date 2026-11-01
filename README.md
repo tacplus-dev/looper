@@ -55,6 +55,8 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 - **The nightly scan** changes no code: it files a `bug` per finding (dependency vulnerabilities,
   gates failing on main, pins off the latest MAJOR.MINOR line). Mechanical fixes are filed `approved`,
   the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
+  The platform roadmap's own nightly scan is instead the suggestion pass for the whole platform: up to 5 evidenced
+  suggestions a night in tacplus-dev/roadmap `suggestions/`, for Jody's daily review. See [Suggestions](#suggestions).
 - **The port scan** (`looper-port`, hourly) changes no code either: while SeaBeam still commits to its
   pre-migration GitLab projects, it files an issue on the tacplus-dev repository each one moved to, and
   that repository's looper does the port. See [Port scan](#port-scan).
@@ -399,6 +401,73 @@ jobs:
 ```sh
 ./planning-files-check [BASE]              # at a repository's root: the four files, HISTORY.md append-only since BASE
 tests/planning-files.test.sh               # the check against a scratch repository
+```
+
+## Suggestions
+
+The platform roadmap's nightly scan (`repo-looper --repo roadmap --scan`, the repository `LOOPER_ROADMAP_REPO`) is the
+**suggestion pass for the whole platform** (looper#50, Jody 2026-11-01: "the roadmap looks around on its nightly run and
+documents things that it thinks we can or should be doing that we are not, or things we should be doing better ... we
+keep the rejected and the reasoning"). Unlike each repository's PROPOSALS.md, which a looper writes while working an
+issue, it looks across every repository of the org, and Jody reviews it daily.
+
+**Where.** tacplus-dev/roadmap `suggestions/`: one file per suggestion, `suggestions/<YYYY-MM-DD>-<slug>.md`;
+`TYPES.md`, the types (Resiliency, Security, Correctness, Performance, Cost, Operability, Developer experience,
+Documentation), the one source of them, changed only by an agent at Jody's request; `TEMPLATE.md`, a suggestion's
+template (`looper-suggest template`), which the pass commits where it is missing; and `INDEX.md`, one line per
+suggestion (`Suggestion | Type | Summary | Status`) under Open, Accepted, Deferred and Rejected, Security first
+("on our (mostly) daily review security comes first"), then the other types in TYPES.md's order, then by rank.
+
+**A suggestion** starts with exactly four fields, in this order, so the review reads like a list (`looper-suggest
+template`):
+
+```
+Suggestion: Chaos
+Type: Resiliency
+Summary: Implement a chaos agent like Chaos Monkey
+Why: ...
+```
+
+then `## Evidence` (links: issues, runs, commits, decisions, scan reports, repeated failures; nothing goes in without
+one), `## Cost` (rough size), `## Touches` (the decisions and principles it serves or touches), `## Reuse considered`
+(the issue-flow addendum, 2026-10-31), and `## Status`: `open`, `accepted`, `rejected` or `deferred`, its `Rank:`,
+`Filed: <date> by <who>` and, once decided, `Decided: <date> by <who>: <Jody's words>`.
+
+**The nightly pass.** Before the model runs, the looper reads what the model cannot (it holds no GitLab credential):
+the last week's failed jobs of the looper and build pipelines (`LOOPER_SUGGEST_PROJECTS`, default `tacplus-dev/looper
+tacplus-dev/build`) and every repository's latest security report (the build project's `security-<repo>` packages),
+into the run's `context/`. The model reads TYPES.md and every suggestion (the rejected and deferred ones with their
+reasoning first), then every repository's PROPOSALS.md and STATE.md, the roadmap's ROADMAP.md, its open and held
+items and its decisions not yet implemented, the loopers' recurring failures, the scans' and security checks'
+findings, the gaps between docs and code, and writes at most 5 suggestions, ranked, each with `looper-suggest file
+--dir <checkout>`. The looper then commits them to the roadmap's main as **one commit touching `suggestions/` only**:
+best ranked first, each kept only while `looper-suggest check` passes, at most 5; one that fails is dropped with its
+reason in the job's log, and anything else the model changed is left out.
+
+**Rejected ones are kept, never raised again without new evidence.** A rejected or deferred file stays, with Jody's
+words and the date. A new suggestion with its slug or its name is refused unless it cites it (`## Raised again`,
+`Earlier: <its file>`, `What changed: ...`; `--earlier` and `--what-changed`) and has evidence the earlier one lacked;
+one with the slug or name of an open or accepted suggestion is refused. The command refuses it when it is written,
+and the looper's check again before the commit, whoever wrote the file.
+
+**Other jobs file one** (tacplus-dev/chaos#1's nightly Chaos Mesh watch, say): `looper-suggest file` without `--dir`
+clones the roadmap repository (`GH_TOKEN`), writes the suggestion in the same format, checks it against TYPES.md and
+the rejected list, and pushes it to main as its own commit touching `suggestions/` only, made again on the new main
+when the push is rejected.
+
+**The review** (the hub, outside this repository): the hub brings the open suggestions to Jody in its daily sitrep, in
+the index's order; Jody accepts, rejects or defers each, with a reason; the hub records it (`looper-suggest decide
+<checkout> <file> accepted|rejected|deferred --reason "<Jody's words>"`, which rewrites the file's Status and the
+index) and commits it. On accept the hub adds the ROADMAP.md line (and the issue) at Jody's request, as today: a
+looper never edits ROADMAP.md. Later, the doppelganger panel (doppelganger#10) may pre-screen suggestions, marked as
+derived.
+
+```sh
+looper-suggest file --suggestion Chaos --type Resiliency --summary "..." --why "..." --evidence "<link>" \
+  --cost "a week" --touches "<decisions>" --reuse "<what exists>" [--dir CHECKOUT] [--rank N] [--by WHO]
+looper-suggest check DIR [BASE] | index DIR | decide DIR FILE STATUS --reason TEXT | template
+tests/looper-suggest.test.sh   # the format, types from TYPES.md, evidence required, a rejected or deferred suggestion not raised again without new evidence (by the command and by check), open ones not duplicated, the index's order (Security first), check's limits (5, suggestions/ only, filed ones unchanged, the index current), a decision recorded, the template, another job's suggestion pushed as one commit and retried
+tests/repo-looper.test.sh      # scan-suggestions: the roadmap's scan commits the template where it is missing, then the model's suggestions as one commit (suggestions/ only, best ranked 5, a re-raise without new evidence dropped, other changes left out), the prompt's rules and context (failed jobs, security reports), an empty night commits nothing
 ```
 
 ## Port scan

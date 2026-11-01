@@ -322,19 +322,21 @@ forge_web() { # repo [issue N | tree BRANCH | release TAG]
 
 # A command line for a prompt, the model's way to the forge: gh, or glab
 # (with GITLAB_TOKEN and GITLAB_HOST, which repo-looper gives it on GitLab).
-forge_cmd() { # view|close|label|list repo [n] [label] | file repo path
-  local R="$LOOPER_ORG/$2"
+forge_cmd() { # view|close|label|list repo [n] [label] | file repo path | repos
+  local R="$LOOPER_ORG/${2:-}"
   case "$LOOPER_FORGE:$1" in
     github:view) echo "gh issue view $3 --repo $R --comments" ;;
     github:close) echo "gh issue close $3 --repo $R" ;;
     github:label) echo "gh issue edit $3 --repo $R --add-label $4" ;;
     github:list) echo "gh issue list --repo $R" ;;
     github:file) echo "gh api repos/$R/contents/$3 -H 'Accept: application/vnd.github.raw'" ;;
+    github:repos) echo "gh repo list $LOOPER_ORG --no-archived --limit 200" ;;
     gitlab:view) echo "glab issue view $3 --repo $R --comments" ;;
     gitlab:close) echo "glab issue close $3 --repo $R" ;;
     gitlab:label) echo "glab issue update $3 --repo $R --label $4" ;;
     gitlab:list) echo "glab issue list --repo $R" ;;
     gitlab:file) echo "glab api 'projects/$(gl_enc "$R")/repository/files/$(gl_enc "$3")/raw?ref=HEAD'" ;;
+    gitlab:repos) echo "glab api 'groups/$(gl_enc "$LOOPER_ORG")/projects?include_subgroups=true&archived=false&per_page=100'" ;;
   esac
 }
 
