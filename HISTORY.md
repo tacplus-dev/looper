@@ -27,3 +27,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-31 looper issue A child's containers have no memory limit: one cargo kani run takes the runner VM down (tacplus#196, twice) (#41, ddb6f98)
 - 2026-10-31 looper issue Runner VMs outlive failed jobs: orphaned containers thrash a VM, and the autoscaler keeps sending jobs to it (3 runner_system_failures, 10-31) (#42, d25cded)
 - 2026-10-31 looper issue An idle run whose land is still queued is marked stuck (tacplus#200); #37 covered only 'landed' (#44, a74311e)
+- 2026-11-01 looper issue A 'blocked' outcome naming one closed blocker among open ones is refused and the issue marked stuck (operator#17) (#46, 3eccc8f)
