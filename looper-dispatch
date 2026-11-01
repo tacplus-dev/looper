@@ -17,7 +17,14 @@
 #   looper-dispatch status             the looper jobs in GitLab, and what is ready
 #   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
 #                                      order the plan takes them: priority:high first (looper#31)
+#   looper-dispatch plan               the pipeline's child jobs, one per free repository with a
+#                                      ready issue, as YAML on stdout (ci/instance.gitlab-ci.yml)
 #   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
+#
+# The forge (looper#29): LOOPER_FORGE=github (the default; issues through gh)
+# or gitlab (a GitLab group's issues through its API, LOOPER_FORGE_TOKEN), and
+# LOOPER_ORG, the org or group (looper-lib.sh). SeaBeam's instance is the
+# second: README, A SeaBeam instance.
 #
 # Credentials (looper#25; README, Credentials): GH_TOKEN (GitHub issues),
 # GITLAB_TOKEN (read_api on the pipeline's project: its jobs) and
@@ -61,12 +68,11 @@ active_jobs() {
 # issue says why, and the pipeline's job resumes it from its checkpoint.
 release_orphans() { # active jobs
   local repo n
-  gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_IN_PROGRESS" --limit 200 \
-    --json repository,number --jq '.[] | "\(.repository.name) \(.number)"' \
+  forge_search_issues "$LABEL_IN_PROGRESS" 200 repository,number '.[] | "\(.repository.name) \(.number)"' \
   | while read -r repo n; do
       busy "$repo" "$1" >/dev/null && continue
-      gh issue edit "$n" --repo "$LOOPER_ORG/$repo" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
-      gh issue comment "$n" --repo "$LOOPER_ORG/$repo" --body "This issue was \`$LABEL_IN_PROGRESS\`, but $repo has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true
+      forge_issue_edit "$repo" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
+      forge_issue_comment "$repo" "$n" "This issue was \`$LABEL_IN_PROGRESS\`, but $repo has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true
       log "$repo#$n: $LABEL_IN_PROGRESS with no looper job; label removed"
     done
 }
@@ -91,9 +97,49 @@ pass() {
   log "no repository with a ready issue is free; nothing to start"
 }
 
+# The pipeline's plan (looper#29; ci/instance.gitlab-ci.yml): its child
+# pipeline on stdout, one job per repository with a ready issue and no looper
+# job of its own active (looper#16), named looper-<repo>-<issue>, in the order
+# of ready_by_repo (priority:high first, looper#31), sized by
+# `repo-looper --job-timeout` (looper#33), one at a time per repository
+# (resource_group looper-<repo>). LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS
+# (comma-separated) are the jobs' image and runner tags. With none to plan, one
+# job that says so: a child pipeline has at least one.
+plan() {
+  local jobs ready repo n t image="${LOOPER_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}" any=""
+  jobs="$(active_jobs)"; ready="$(ready_by_repo)"
+  printf 'variables:\n  GIT_STRATEGY: none\n  LOOPER_WORK: /builds/looper\n'
+  while read -r repo n; do
+    [[ -n "$repo" ]] || continue
+    if busy "$repo" "$jobs" >/dev/null; then log "$repo already has a looper job; not planned again" >&2; continue; fi
+    t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=6h
+    any=1; log "planned looper-$repo-$n ($t)" >&2
+    cat <<YML
+looper-$repo-$n:
+  image: $image
+  tags: [${LOOPER_JOB_TAGS:-arm64, autoscale}]
+  retry:
+    max: 2
+    when: [runner_system_failure, scheduler_failure, unknown_failure]
+  resource_group: looper-$repo
+  timeout: $t
+  variables:
+    LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs
+  script:
+    - repo-looper --repo "$repo" --issue $n
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [looper-runs/]
+YML
+  done <<<"$ready"
+  [[ -n "$any" ]] || printf 'looper-none:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "no repository with a ready issue is free"\n' \
+    "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"
+}
+
 case "${1:-}" in
   run)
-    need gh; need curl; need jq
+    forge_need; need curl
     if [[ "${2:-}" == --for ]]; then
       [[ "${3:-}" =~ ^[0-9]+$ ]] || die "run --for SECONDS"
       end=$((SECONDS + $3)); failed=0
@@ -108,18 +154,19 @@ case "${1:-}" in
     fi
     pass ;;
   status)
-    jobs="$(active_jobs)"; ready="$(ready_by_repo)"
+    forge_need; jobs="$(active_jobs)"; ready="$(ready_by_repo)"
     echo "active jobs in $PIPELINE: $(tr '\n' ' ' <<<"$jobs")"
     while read -r repo n; do
       [[ -n "$repo" ]] && echo "$repo: ready $n$(busy "$repo" "$jobs" >/dev/null && echo ' (busy)')"
     done <<<"$ready" ;;
-  ready) need gh; need jq; ready_by_repo ;;
+  ready) forge_need; ready_by_repo ;;
+  plan) forge_need; need curl; plan ;;
   uninstall)
     # run and nightly: the launchd jobs earlier versions installed (looper#24).
     for job in run nightly; do
       plist="$HOME/Library/LaunchAgents/dev.tacplus.looper.$job.plist"
       launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true; rm -f "$plist"
     done; log "uninstalled" ;;
-  -h|--help|help|"") sed -n '5,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (see --help)" ;;
 esac

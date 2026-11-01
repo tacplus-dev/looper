@@ -1,0 +1,87 @@
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# The .gitlab-ci.yml of a looper instance's pipeline project (looper#29):
+# SeaBeam's, gitlab.com/seabeam/tools/looper, whose code and issues are on
+# GitLab, in the `seabeam` group. Kept here (github.com/tacplus-dev/looper
+# ci/instance.gitlab-ci.yml) and copied into that project as is, on its
+# protected main, by the hub. The project holds no code: every job runs the
+# looper image, the same one tacplus-dev's pipeline runs. README: A SeaBeam
+# instance.
+#
+# The deployment is the project's CI variables, masked and protected, never
+# another org's: LOOPER_FORGE (gitlab), LOOPER_ORG (seabeam),
+# LOOPER_FORGE_TOKEN (the seabeam bot's: issues and pushes), GITLAB_TOKEN
+# (read_api: this project's jobs), LOOPER_TRIGGER_TOKEN (environment kicker:
+# this project's trigger), CLAUDE_CODE_OAUTH_TOKEN (the model),
+# GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL, LOOPER_SCAN_REPOS (the
+# repositories the nightly scan reads) and LOOPER_RUNNER_TAG (the instance's
+# own runner).
+#
+#   schedule "kicker" (hourly)  looper-kick: looper-dispatch run --for 3420, a pass every 3
+#                               minutes; when a repository has a ready issue and no looper job
+#                               of its own, it starts this pipeline through its trigger
+#   trigger, web or api         looper-plan writes one job per such repository
+#                               (looper-dispatch plan), and looper-run runs them as a child
+#                               pipeline: each is that repository's parent looper (repo-looper)
+#   schedule "nightly"          looper-scan: repo-looper --scan of each of LOOPER_SCAN_REPOS
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SOURCE =~ /^(schedule|trigger|web|api)$/
+
+variables:
+  GIT_STRATEGY: none
+  LOOPER_RUNNER_TAG: seabeam-looper
+  LOOPER_JOB_TAGS: $LOOPER_RUNNER_TAG
+  LOOPER_PIPELINE: $CI_PROJECT_PATH
+
+default:
+  image: ghcr.io/tacplus-dev/looper:main
+  tags: [$LOOPER_RUNNER_TAG]
+  retry:
+    max: 2
+    when: [runner_system_failure, scheduler_failure, unknown_failure]
+
+# The kicker: one at a time, the next hour's waiting for the last.
+looper-kick:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/
+  resource_group: kicker
+  environment:
+    name: kicker
+    action: prepare
+  timeout: 1h
+  script:
+    - looper-dispatch run --for 3420
+
+looper-plan:
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(trigger|web|api)$/
+  script:
+    - looper-dispatch plan > looper-jobs.yml
+    - cat looper-jobs.yml
+  artifacts:
+    paths: [looper-jobs.yml]
+    expire_in: 1 day
+
+looper-run:
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(trigger|web|api)$/
+  needs: [looper-plan]
+  trigger:
+    include:
+      - artifact: looper-jobs.yml
+        job: looper-plan
+
+looper-scan:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /nightly/
+  timeout: 6h
+  variables:
+    LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs
+  script:
+    - for r in $LOOPER_SCAN_REPOS; do repo-looper --repo "$r" --scan || echo "scan of $r failed"; done
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [looper-runs/]

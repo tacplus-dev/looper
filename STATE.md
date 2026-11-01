@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by looper (#44).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#29).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -66,7 +66,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   (the build pipeline's `runner-image` job, input `runner_image: true`) bakes the image family `runner-arm64-docker`
   (Docker preinstalled) and publishes an image only once a VM booted from it is ready with nothing to install;
   `runner-image template` copies a template onto the family and the script; `runner-image measure` gives jobs'
-  creation-to-"Running on" times; tested in an Ubuntu container and against stub gcloud and curl
+  creation-to-"Running on" times; tested in an Ubuntu container and against stub gcloud and curl; two forges (#29):
+  `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
+  credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
+  `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, a reference to another org held and
+  never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs and
+  `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
+  both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
@@ -82,7 +88,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-10-31 by lo
   still run as `build-box` (Artifact Registry uploads, every bucket's objects); its job keeps a runner worker up around the clock (see PROPOSALS.md);
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green
   for a day; the ROADMAP.md guard is a pre-push hook in the looper's checkout, so a push that skips hooks
-  is not refused (see PROPOSALS.md); the GitLab plan (`looper-plan` in gitlab.com/tacplus-dev/looper) still plans
+  is not refused (see PROPOSALS.md); SeaBeam's instance (README, A SeaBeam instance: `seabeam/tools/looper`, its
+  bots, variables, schedules and runner) is not set up: parked by Jody until tacplus.dev's functional suite is green
+  (fleet-seatrials#17), so no SeaBeam issue has been worked end to end on the real GitLab yet, and on GitLab a
+  Reporter may set `approved`, and a SeaBeam repository that runs tacplus needs GitHub access it does not have
+  (PROPOSALS.md); the GitLab plan (`looper-plan` in gitlab.com/tacplus-dev/looper) still plans
   repositories in name order until the hub makes it iterate `looper-dispatch ready` (#31, PROPOSALS.md); parallel
   children (#32) are tested against a stub repository but not yet seen end to end on a real repository (they run
   once the image from main is published and a repository has two independent ready issues); the identity pilot's

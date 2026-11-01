@@ -38,6 +38,15 @@ RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-inst
 # openssl: the nonce of each prompt (repo-looper, looper#40).
 RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
+# glab: the model's way to GitLab issues on a GitLab-hosted instance (SeaBeam's,
+# looper#29), as gh is on GitHub; the looper itself calls GitLab's API with curl.
+# The release's archive, checked against its checksums.txt.
+ARG GLAB_VERSION=1.126.0
+RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a}.tar.gz"; \
+    u="https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads"; d="$(mktemp -d)"; \
+    curl -fsSL -o "$d/$f" "$u/$f"; curl -fsSL -o "$d/checksums.txt" "$u/checksums.txt"; \
+    (cd "$d" && grep " $f\$" checksums.txt | sha256sum -c -); \
+    tar -xzf "$d/$f" -C "$d" bin/glab; install -m 0755 "$d/bin/glab" /usr/local/bin/glab; rm -rf "$d"; glab --version
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/

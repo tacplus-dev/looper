@@ -4,6 +4,26 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Check who approved, on GitLab** (2026-11-01, #29): on GitHub only write access sets a label, so `approved` is
+  the gate. On GitLab a Reporter or a Planner may set one too, so an instance's gate is only as strong as its group's
+  roles (README, Forges). The looper could read the issue's label events
+  (`GET /projects/:id/issues/:iid/resource_label_events`) and take an issue only when a DEVELOPER or above added
+  `approved`, as it reads roles for prompt provenance.
+- **SeaBeam's tacplus and GitHub** (2026-11-01, #29): SeaBeam's instance holds no GitHub credential (no coupling),
+  but the `tacplus` wrapper reads tacplus' releases from GitHub, and a tacplus 2.4+ repository's `depends` clone the
+  private tacplus-dev/registry with `GH_TOKEN` (#11, #27). A SeaBeam repository that builds with tacplus needs either a
+  read-only token of tacplus-dev's (a coupling Jody decides) or the releases and registry mirrored to SeaBeam's GitLab.
+  Until then, SeaBeam repositories that run tacplus are not ready for the instance.
+- **One pipeline file for both instances** (2026-11-01, #29): `ci/instance.gitlab-ci.yml` and `looper-dispatch plan`
+  put SeaBeam's plan under this repository's tests. tacplus-dev's pipeline (gitlab.com/tacplus-dev/looper's
+  `.gitlab-ci.yml`, outside this repository) still plans with its own `gh search issues` script (see "The plan's
+  script in this repository" and "The plan in priority order" below). Moving it onto the same file, with its
+  nightly scan's repositories and the port scan as extra jobs, would retire both proposals and keep the two
+  instances on one plan.
+- **Fewer GitLab requests for the blockers' states** (2026-11-01, #29): on GitLab `forge_issue_states` asks once per
+  distinct blocker (REST), where GitHub's is one GraphQL query. gitlab.com allows 2000 authenticated requests a
+  minute, far above a pass's, but one aliased GraphQL query (`project(fullPath:) { issue(iid:) { state } }`) would
+  match GitHub's shape if the group grows.
 - **Keep gitlab-runner-mgr's config here** (2026-10-31, #43): the runner entries (`[runners.autoscaler]`: #42's keys,
   #43's `instance_ready_command`) and the instance templates are README snippets that the hub applies by hand,
   and nothing checks that the manager matches them. A `runner/config.toml` (tokens as placeholders) and a hub

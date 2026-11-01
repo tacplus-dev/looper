@@ -960,6 +960,123 @@ restart, and it brings looper#42's keys in only once the image and the gate are 
    before "Running on" is listed with its failure reason. Each job's log shows `Running on runner-arm64-tacplus-<id>`
    on a different instance, and the startup-script's serial output ends with `runner: ready (baked)`.
 
+## Forges
+
+The looper runs for one org on one forge: `LOOPER_FORGE=github` (the default, tacplus-dev's: every issue call through
+`gh`, with `GH_TOKEN`) or `LOOPER_FORGE=gitlab` (SeaBeam's: the GitLab API v4 through `curl` at `LOOPER_FORGE_URL`,
+default `https://gitlab.com`, with `LOOPER_FORGE_TOKEN`), and `LOOPER_ORG`, the GitHub organization or the GitLab group
+(looper#29). Every call goes through the `forge_*` functions of `looper-lib.sh`, which give a GitLab issue gh's shape
+(`number`, `title`, `state` OPEN or CLOSED, `labels`, `body`, `createdAt`), so the rules above them are the same code on
+both forges. They cover listing the ready issues, one repository's or the whole org's; viewing an issue; labels,
+comments and body edits; an issue's texts with each author's standing; the blockers' states; a file of the platform
+roadmap (`LOOPER_ROADMAP_REPO`, default `roadmap`); clone, and git's credentials for push. The labels (`approved`,
+`looper:in-progress`, `looper:stuck`, `needs-decision`, `bug`, `feature`, the priorities) are the same on both.
+
+- **A repository** is its path under the org: `kernel` on GitHub; on GitLab a subgroup's project too, `tools/looper`.
+  Its job is `looper-<path>-<issue>`, its branch `looper/<path>-<issue>`.
+- **`Blocked-by:`** takes `#N` (the same repository) or `<org>/<path>#N`: `tacplus-dev/kernel#3` on GitHub,
+  `seabeam/tools/looper#5` on GitLab. A reference outside the org never resolves, so it holds its issue: an instance
+  never reads another org.
+- **Who directs a run** ([prompt provenance](#who-directs-a-run-prompt-provenance)): on GitHub an OWNER's or MEMBER's
+  text, or a write COLLABORATOR's; on GitLab the text of a member who may push, a DEVELOPER, MAINTAINER or OWNER of the
+  project (the association in the prompt is the author's role there). **On GitLab a Reporter, or a Planner, may set
+  labels**, `approved` among them, where on GitHub only write access may: an instance's group gives those roles to
+  no one it would not let approve work.
+- **Git**: on GitLab the looper's git gets a credential helper for `LOOPER_FORGE_URL` alone that answers from
+  `$LOOPER_FORGE_TOKEN` when git asks (user `oauth2`), as `gh auth setup-git` does on GitHub; the token is in no file.
+  The GitLab API calls send it from a file descriptor, never on a command line.
+- **The model** reaches GitHub with `gh`; on GitLab with `glab` (in the image), its prompt naming `glab` commands, its
+  `GITLAB_TOKEN` the forge's token and `GITLAB_HOST` the forge, never the job's GitLab token.
+- **The pipeline** is GitLab's on both: the kicker, the plan and the jobs read the pipeline project's jobs with
+  `GITLAB_TOKEN` as before. `looper-dispatch plan` writes the child jobs, so an instance's pipeline file
+  ([`ci/instance.gitlab-ci.yml`](ci/instance.gitlab-ci.yml)) calls no `gh`.
+- **The think job** of the identity pilot ([Looper identity](#looper-identity)) is GitHub's only.
+
+```sh
+tests/forge.test.sh   # both forges against a gh stub and a GitLab API stub: ready issues (one repository, the org, priority), Blocked-by within and across repositories, GitLab subgroups and another org (held, never read), labels, comments and body edits, the texts' authors, clone and push over HTTPS (stub git server), looper-dispatch's ready, plan and orphan release, and a SeaBeam issue worked end to end by repo-looper
+```
+
+## A SeaBeam instance
+
+SeaBeam's code and issues live on GitLab, in the `seabeam` group, and SeaBeam gets loopers of its own on the same
+code: this image, `LOOPER_FORGE=gitlab`, `LOOPER_ORG=seabeam` (Jody, 2026-10-29, looper#29). Each world keeps its own
+home: the instance's kicker, pipeline, runner and credentials are all in the `seabeam` group. **No coupling:**
+tacplus-dev's instance has no SeaBeam credential beyond the port scan's read-only `SEABEAM_READ_TOKEN` and never
+reads SeaBeam issues; SeaBeam's has no tacplus-dev credential at all (no `GH_TOKEN`), so it cannot write
+tacplus-dev. The [port scan](#port-scan) stays the one bridge, and SeaBeam's realign commits carry
+`Ported-from: tacplus-dev/<repo>@<sha>` trailers, so it never ports them back. The rules SeaBeam adopts are phase 1
+of the realign brief (tacplus-dev/roadmap `items/seabeam-realign-2026-10-29.md`): the issue flow and the four roadmap
+files in each repository.
+
+**Parked:** the hub sets it up when Jody says go. He parked SeaBeam's kicker until tacplus.dev's functional suite is
+green (fleet-seatrials#17; looper#29, 2026-10-31).
+
+**The setup.** The hub does it, with Jody creating what only he can (the bot accounts and their tokens). The values go
+from GitLab straight into the variables; no agent handles them. `G=https://gitlab.com/api/v4`,
+`H="PRIVATE-TOKEN: <Jody's token>"`, `P=seabeam%2Ftools%2Flooper`:
+
+1. **The pipeline project** `seabeam/tools/looper` (the looper's old home, re-enabled), holding no code. Its
+   `.gitlab-ci.yml` on a protected `main` is [`ci/instance.gitlab-ci.yml`](ci/instance.gitlab-ci.yml), copied as is,
+   and only Jody or the hub changes it. CI/CD settings: pipeline variables `no_one_allowed`; job token access limited
+   to this project.
+2. **The bot users** (Jody: free gitlab.com accounts with addresses of his, never his own account):
+   - `seabeam-looper-bot` is the forge's: a **Developer** of the `seabeam` group, or of each project it works, with
+     push to their protected `main` allowed (Settings, Repository, Protected branches, "Allowed to push": the bot, or
+     Developers and Maintainers). Its personal access token, scope `api` (issues, labels, notes and git over HTTPS),
+     expiring within a year, is `LOOPER_FORGE_TOKEN`.
+   - `seabeam-looper-jobs` reads the pipeline: a **Reporter** of `seabeam/tools/looper` alone. Its token, scope
+     `read_api`, is `GITLAB_TOKEN`.
+3. **The variables** of `seabeam/tools/looper`, masked and protected, project variables (never group ones: a group
+   variable reaches every pipeline of the group):
+
+   | Variable | Value | Scope |
+   |---|---|---|
+   | `LOOPER_FORGE` | `gitlab` (not masked) | `*` |
+   | `LOOPER_ORG` | `seabeam` (not masked) | `*` |
+   | `LOOPER_FORGE_TOKEN` | `seabeam-looper-bot`'s token | `*` |
+   | `GITLAB_TOKEN` | `seabeam-looper-jobs`'s token | `*` |
+   | `LOOPER_TRIGGER_TOKEN` | the project's trigger token (below) | `kicker` |
+   | `CLAUDE_CODE_OAUTH_TOKEN` | the model's credential for SeaBeam | `*` |
+   | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | the looper's commits' identity (not masked) | `*` |
+   | `LOOPER_SCAN_REPOS` | the paths the nightly scan reads, space-separated: `tools/foo platform/bar` (not masked) | `*` |
+   | `LOOPER_RUNNER_TAG` | the instance runner's tag, if not `seabeam-looper` (not masked) | `*` |
+
+   ```sh
+   T="$(curl -sfH "$H" -X POST $G/projects/$P/triggers -d description=kicker | jq -r .token)"
+   curl -sfH "$H" -X POST $G/projects/$P/variables -d key=LOOPER_TRIGGER_TOKEN --data-urlencode value="$T" \
+     -d protected=true -d masked=true -d environment_scope=kicker >/dev/null; unset T
+   curl -sfH "$H" -X POST $G/projects/$P/variables -d key=LOOPER_FORGE -d value=gitlab -d protected=true
+   curl -sfH "$H" -X POST $G/projects/$P/variables -d key=LOOPER_ORG -d value=seabeam -d protected=true
+   ```
+   The tokens are stored the same way (`-d masked=true`), by Jody.
+4. **The labels**, once, as group labels of `seabeam`. `bug`, `feature` and the priorities the looper also creates
+   per project when it scans one:
+
+   ```sh
+   for l in approved:0e8a16 looper:in-progress:fbca04 looper:stuck:d93f0b needs-decision:5319e7 bug:d73a4a \
+            feature:a2eeef priority:high:b60205 priority:low:c5def5; do
+     curl -sfH "$H" -X POST $G/groups/seabeam/labels --data-urlencode "name=${l%:*}" -d "color=%23${l##*:}" >/dev/null
+   done
+   ```
+5. **The schedules** of `seabeam/tools/looper`, on `main`, both run as Jody: `kicker` hourly
+   (gitlab.com runs schedules at most once an hour on the Free tier, and `looper-kick` runs for 57 minutes)
+   and `nightly`:
+
+   ```sh
+   curl -sfH "$H" -X POST $G/projects/$P/pipeline_schedules -d description=kicker -d ref=main -d cron="0 * * * *" -d cron_timezone=UTC
+   curl -sfH "$H" -X POST $G/projects/$P/pipeline_schedules -d description=nightly -d ref=main -d cron="30 7 * * *" -d cron_timezone=UTC
+   ```
+6. **Its own runner**: a project runner of `seabeam/tools/looper` with the tag `seabeam-looper`, built like
+   tacplus-dev's ([Infrastructure](#infrastructure)): docker-autoscaler on GCE, arm64 (the image is arm64), a fresh
+   VM for every job (`capacity_per_instance = 1`, `max_use_count = 1`), the image family `runner-arm64-docker` and
+   its readiness gate ([A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)), the workers'
+   `/builds` bind-mounted at the same path and the docker socket given to the jobs (the `tacplus` wrapper's sibling
+   containers), and a Google account of its own that may pull the tacplus build images and nothing else. Never
+   tacplus-dev's runner: SeaBeam's jobs never share a VM with tacplus-dev's.
+7. **Checked**, before the schedules are on: a web pipeline on `main` runs `looper-plan`, whose log lists SeaBeam's
+   ready issues or none; then one SeaBeam issue, labelled `approved`, is worked end to end (taken, worked,
+   landed, closed, its HISTORY.md line on main).
+
 ## Later
 
 Doppelganger decides resource requests (more loopers, new repositories) instead of the fixed rules

@@ -6,9 +6,21 @@
 # container) must agree on, sourced by both so the rules live in one place:
 # which labels mean what, and which issues are ready to work.
 #
-# Every forge call goes through gh (GH_TOKEN, or the host's gh login).
+# Every forge call goes through the forge_* functions below (looper#29).
 
+# The deployment (looper#29): one looper, two homes. LOOPER_FORGE is where its
+# code and issues live: github (tacplus-dev's: every call through gh, with
+# GH_TOKEN) or gitlab (SeaBeam's: the GitLab API through curl at
+# LOOPER_FORGE_URL, default https://gitlab.com, with LOOPER_FORGE_TOKEN).
+# LOOPER_ORG is the GitHub organization or the GitLab group; a repository is
+# its path under it (`kernel`; on GitLab a subgroup's project too,
+# `tools/looper`). LOOPER_ROADMAP_REPO (default roadmap) is the org's platform
+# roadmap repository. The rules above the forge (labels, order, Blocked-by)
+# are the same on both, and an instance reads and writes its own org alone.
+LOOPER_FORGE="${LOOPER_FORGE:-github}"
 LOOPER_ORG="${LOOPER_ORG:-tacplus-dev}"
+LOOPER_FORGE_URL="${LOOPER_FORGE_URL:-https://gitlab.com}"
+LOOPER_ROADMAP_REPO="${LOOPER_ROADMAP_REPO:-roadmap}"
 
 # Labels. Only someone with write access to a repository can set a label, so
 # `approved` is the gate: an issue nobody with write access approved is never
@@ -37,27 +49,28 @@ ISSUE_ORDER="[(if any(.labels[]; .name == \"$LABEL_PRIORITY_HIGH\") then 0
 
 # The kind and priority labels, in a repository that lacks them. Never fatal.
 ensure_kind_labels() { # repo
-  gh label create "$LABEL_BUG" --repo "$LOOPER_ORG/$1" --color d73a4a \
-    --description "The code does not do what it already promises: fixed, and released as a patch" >/dev/null 2>&1 || true
-  gh label create "$LABEL_FEATURE" --repo "$LOOPER_ORG/$1" --color a2eeef \
-    --description "New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor" >/dev/null 2>&1 || true
-  gh label create "$LABEL_PRIORITY_HIGH" --repo "$LOOPER_ORG/$1" --color b60205 \
-    --description "The looper takes it before unlabelled ready issues; a running issue is never pre-empted" >/dev/null 2>&1 || true
-  gh label create "$LABEL_PRIORITY_LOW" --repo "$LOOPER_ORG/$1" --color c5def5 \
-    --description "The looper takes it after every other ready issue" >/dev/null 2>&1 || true
+  forge_label_create "$1" "$LABEL_BUG" d73a4a \
+    "The code does not do what it already promises: fixed, and released as a patch" >/dev/null 2>&1 || true
+  forge_label_create "$1" "$LABEL_FEATURE" a2eeef \
+    "New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor" >/dev/null 2>&1 || true
+  forge_label_create "$1" "$LABEL_PRIORITY_HIGH" b60205 \
+    "The looper takes it before unlabelled ready issues; a running issue is never pre-empted" >/dev/null 2>&1 || true
+  forge_label_create "$1" "$LABEL_PRIORITY_LOW" c5def5 \
+    "The looper takes it after every other ready issue" >/dev/null 2>&1 || true
 }
 
 # A file of the platform's roadmap repository (ROADMAP.md, items/...), raw.
 platform_file() { # path
-  gh api "repos/$LOOPER_ORG/roadmap/contents/$1" -H "Accept: application/vnd.github.raw"
+  forge_file "$LOOPER_ROADMAP_REPO" "$1"
 }
 
-# The text on stdin links issue <repo>#<n>: `tacplus-dev/<repo>#<n>`,
-# `<repo>#<n>` or its URL; with `own` (the repository's own ROADMAP.md), a
+# The text on stdin links issue <repo>#<n>: `<org>/<repo>#<n>`, `<repo>#<n>`
+# or its URL on the forge; with `own` (the repository's own ROADMAP.md), a
 # bare `#<n>` too.
 links_issue() { # repo n [own]
-  local r="${1//./\\.}" n="$2" re
-  re="(^|[^A-Za-z0-9_.-])($LOOPER_ORG/)?$r#$n([^0-9]|\$)|github\\.com/$LOOPER_ORG/$r/issues/$n([^0-9]|\$)"
+  local r="${1//./\\.}" n="$2" re url
+  url="$(forge_web "$1" issue "$n")"; url="${url#*://}"; url="${url//./\\.}"
+  re="(^|[^A-Za-z0-9_.-])($LOOPER_ORG/)?$r#$n([^0-9]|\$)|$url([^0-9]|\$)"
   [[ "${3:-}" == own ]] && re="$re|(^|[^A-Za-z0-9_./-])#$n([^0-9]|\$)"
   grep -qE "$re"
 }
@@ -74,34 +87,297 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "FATAL $*" >&2; exit 2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
+# --- the forge (looper#29) ----------------------------------------------------
+#
+# What the looper asks of a forge, as gh answers it: issues as JSON objects
+# {number, title, state (OPEN or CLOSED), labels: [{name}], body, createdAt}
+# (and repository: {name}, the path under LOOPER_ORG, from a search), each jq
+# filter applied to that shape on both forges. github calls gh as before;
+# gitlab calls the GitLab API (v4) with LOOPER_FORGE_TOKEN, sent from a file
+# descriptor, never on a command line, and gives its issues that same shape.
+
+forge_need() {
+  case "$LOOPER_FORGE" in
+    github) need gh ;;
+    gitlab) need curl ;;
+    *) die "LOOPER_FORGE is github or gitlab, not $LOOPER_FORGE" ;;
+  esac
+  need jq
+}
+
+# GitLab: the URL-encoded form of a path or value.
+gl_enc() { jq -rn --arg s "$1" '$s | @uri'; } # text
+# GitLab: a project's API path.
+gl_project() { echo "projects/$(gl_enc "$LOOPER_ORG/$1")"; } # repo
+# GitLab: a call (method, path under /api/v4, curl's other arguments); its
+# body on stdout. Fails on any HTTP error.
+gl_api() { # method path [curl args...]
+  local m="$1" p="$2"; shift 2
+  [[ -n "${LOOPER_FORGE_TOKEN:-}" ]] || { echo "no LOOPER_FORGE_TOKEN: a GitLab token with api scope on $LOOPER_ORG" >&2; return 1; }
+  curl -fsS --retry 2 -X "$m" -H @<(printf 'PRIVATE-TOKEN: %s\n' "$LOOPER_FORGE_TOKEN") "$@" "$LOOPER_FORGE_URL/api/v4/$p"
+}
+# GitLab: every page of a list (up to max items), as one JSON array.
+gl_all() { # path?query max
+  local p="$1" max="$2" page=1 t got n=0
+  t="$(mktemp)"
+  while (( n < max )); do
+    got="$(gl_api GET "$p&per_page=100&page=$page")" || { rm -f "$t"; return 1; }
+    printf '%s\n' "$got" >> "$t"
+    n=$(( n + $(jq length <<<"$got") )); page=$(( page + 1 ))
+    (( $(jq length <<<"$got") == 100 )) || break
+  done
+  jq -s --argjson max "$max" 'add // [] | .[:$max]' "$t"; rm -f "$t"
+}
+# GitLab: an issue in gh's shape; its repository from its reference
+# (`seabeam/tools/looper#5`: tools/looper).
+GL_ISSUE='{number: .iid, title, body: (.description // ""), state: (if .state == "opened" then "OPEN" else "CLOSED" end),
+           labels: [.labels[] | {name: .}], createdAt: .created_at,
+           repository: {name: (.references.full // "" | sub("#[0-9]+$"; "") | ltrimstr($org + "/"))}}'
+gl_issues() { jq --arg org "$LOOPER_ORG" "if type == \"array\" then map($GL_ISSUE) else $GL_ISSUE end"; }
+
+# One issue: the fields gh is asked for (github), the jq filter on its shape.
+forge_issue_view() { # repo n fields jq
+  case "$LOOPER_FORGE" in
+    github) gh issue view "$2" --repo "$LOOPER_ORG/$1" --json "$3" --jq "$4" ;;
+    gitlab) local i; i="$(gl_api GET "$(gl_project "$1")/issues/$2")" || return 1
+            gl_issues <<<"$i" | jq -r "$4" ;;
+  esac
+}
+
+# A repository's issues, newest first: state open or all, at most limit, with
+# every label given.
+forge_issue_list() { # repo state limit fields jq [label...]
+  local r="$1" st="$2" lim="$3" f="$4" q="$5" l a=() ls=""; shift 5
+  case "$LOOPER_FORGE" in
+    github) for l in "$@"; do a+=(--label "$l"); done
+            gh issue list --repo "$LOOPER_ORG/$r" --state "$st" "${a[@]+"${a[@]}"}" --limit "$lim" --json "$f" --jq "$q" ;;
+    gitlab) for l in "$@"; do ls+="${ls:+,}$l"; done
+            [[ "$st" == open ]] && st=opened
+            local i; i="$(gl_all "$(gl_project "$r")/issues?state=$st&order_by=created_at&sort=desc${ls:+&labels=$(gl_enc "$ls")}" "$lim")" || return 1
+            gl_issues <<<"$i" | jq -r "$q" ;;
+  esac
+}
+
+# The org's open issues with a label, every repository's (repository.name is
+# the path under LOOPER_ORG); the jq filter optional.
+forge_search_issues() { # label limit fields [jq]
+  case "$LOOPER_FORGE" in
+    github) local q=(); [[ -z "${4:-}" ]] || q=(--jq "$4")
+            gh search issues --owner "$LOOPER_ORG" --state open --label "$1" --limit "$2" --json "$3" "${q[@]+"${q[@]}"}" ;;
+    gitlab) local i; i="$(gl_all "groups/$(gl_enc "$LOOPER_ORG")/issues?state=opened&labels=$(gl_enc "$1")" "$2")" || return 1
+            gl_issues <<<"$i" | jq -r "${4:-.}" ;;
+  esac
+}
+
+# Labels and body, as gh issue edit takes them: --add-label L, --remove-label L, --body B.
+forge_issue_edit() { # repo n [--add-label L]... [--remove-label L]... [--body B]
+  local r="$1" n="$2"; shift 2
+  case "$LOOPER_FORGE" in
+    github) gh issue edit "$n" --repo "$LOOPER_ORG/$r" "$@" ;;
+    gitlab)
+      local add="" rm="" d=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --add-label) add+="${add:+,}$2" ;;
+          --remove-label) rm+="${rm:+,}$2" ;;
+          --body) d+=(--data-urlencode "description=$2") ;;
+          *) echo "forge_issue_edit: unknown $1" >&2; return 2 ;;
+        esac; shift 2
+      done
+      [[ -z "$add" ]] || d+=(--data-urlencode "add_labels=$add")
+      [[ -z "$rm" ]] || d+=(--data-urlencode "remove_labels=$rm")
+      gl_api PUT "$(gl_project "$r")/issues/$n" "${d[@]}" >/dev/null ;;
+  esac
+}
+
+forge_issue_comment() { # repo n body
+  case "$LOOPER_FORGE" in
+    github) gh issue comment "$2" --repo "$LOOPER_ORG/$1" --body "$3" ;;
+    gitlab) gl_api POST "$(gl_project "$1")/issues/$2/notes" --data-urlencode "body=$3" >/dev/null ;;
+  esac
+}
+
+forge_label_create() { # repo name color(hex, no #) description
+  case "$LOOPER_FORGE" in
+    github) gh label create "$2" --repo "$LOOPER_ORG/$1" --color "$3" --description "$4" ;;
+    gitlab) gl_api POST "$(gl_project "$1")/labels" --data-urlencode "name=$2" --data-urlencode "color=#$3" \
+              --data-urlencode "description=$4" >/dev/null ;;
+  esac
+}
+
+# An issue's texts for a prompt (looper#40), oldest first, one JSON object a
+# line: {a: author, s: association, t: text}, the title and body first, then
+# each comment (on GitLab, each note a person wrote). The association is
+# GitHub's author_association; on GitLab, the author's role in the project
+# (OWNER, MAINTAINER, DEVELOPER, REPORTER, PLANNER, GUEST, or NONE).
+forge_issue_texts() { # repo n
+  local issue comments
+  case "$LOOPER_FORGE" in
+    github)
+      issue="$(gh api "repos/$LOOPER_ORG/$1/issues/$2")" || return 1
+      comments="$(gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate)" || return 1
+      jq -c '{a: .user.login, s: .author_association, t: ("# " + .title + "\n\n" + (.body // ""))}' <<<"$issue"
+      jq -c '.[] | {a: .user.login, s: .author_association, t: (.body // "")}' <<<"$comments" ;;
+    gitlab)
+      local p u roles='{}' l m; p="$(gl_project "$1")"
+      issue="$(gl_api GET "$p/issues/$2")" || return 1
+      comments="$(gl_all "$p/issues/$2/notes?sort=asc&order_by=created_at" 1000)" || return 1
+      for u in $( { jq -r .author.username <<<"$issue"; jq -r '.[] | select(.system | not) | .author.username' <<<"$comments"; } | sort -u); do
+        m="$(gl_api GET "$p/members/all?query=$(gl_enc "$u")")" || return 1
+        l="$(jq --arg u "$u" '[.[] | select(.username == $u) | .access_level] | max // 0' <<<"$m")"
+        roles="$(jq -c --arg u "$u" --argjson l "$l" '.[$u] = (if $l >= 50 then "OWNER" elif $l >= 40 then "MAINTAINER"
+          elif $l >= 30 then "DEVELOPER" elif $l >= 20 then "REPORTER" elif $l >= 15 then "PLANNER" elif $l >= 10 then "GUEST" else "NONE" end)' <<<"$roles")"
+      done
+      jq -c --argjson r "$roles" '{a: .author.username, s: $r[.author.username], t: ("# " + .title + "\n\n" + (.description // ""))}' <<<"$issue"
+      jq -c --argjson r "$roles" '.[] | select(.system | not) | {a: .author.username, s: $r[.author.username], t: (.body // "")}' <<<"$comments" ;;
+  esac
+}
+
+# GitHub: a COLLABORATOR's permission on the repository (admin, maintain,
+# write, triage, read). GitLab's roles come with the texts.
+forge_permission() { # repo login
+  [[ "$LOOPER_FORGE" == github ]] || return 1
+  gh api "repos/$LOOPER_ORG/$1/collaborators/$2/permission" --jq .permission
+}
+
+# The states of issues given as "<repo> <n>" lines (each once), as
+# "<repo> <n> <OPEN|CLOSED|MISSING>" lines in the same order: MISSING for a
+# reference the forge does not resolve to an issue of LOOPER_ORG. Fails when
+# the forge cannot be read. GitHub: one aliased GraphQL query.
+forge_issue_states() { # (stdin)
+  local refs r n q="" i=0 out code t
+  refs="$(cat)"; [[ -n "$refs" ]] || return 0
+  case "$LOOPER_FORGE" in
+    github)
+      # A path with a slash is no repository of the org (another org's): never asked.
+      while read -r r n; do
+        [[ "$r" != */* ]] || continue
+        q="$q b$i: repository(owner: \"$LOOPER_ORG\", name: \"$r\") { issue(number: $n) { state } }"; i=$((i + 1))
+      done <<<"$refs"
+      out='{"data": {}}'
+      # A blocker that is no issue answers null and gh exits 1; no data at all is GitHub refusing.
+      [[ -z "$q" ]] || out="$(gh api graphql -f query="{$q }" 2>/dev/null)" || true
+      jq -e '.data | type == "object"' <<<"$out" >/dev/null 2>&1 || return 1
+      i=0
+      while read -r r n; do
+        if [[ "$r" == */* ]]; then echo "$r $n MISSING"
+        else echo "$r $n $(jq -r --arg b "b$i" '.data[$b].issue.state // "MISSING"' <<<"$out")"; i=$((i + 1)); fi
+      done <<<"$refs" ;;
+    gitlab)
+      [[ -n "${LOOPER_FORGE_TOKEN:-}" ]] || return 1
+      t="$(mktemp)"
+      while read -r r n; do
+        code="$(curl -sS --retry 2 -o "$t" -w '%{http_code}' -H @<(printf 'PRIVATE-TOKEN: %s\n' "$LOOPER_FORGE_TOKEN") \
+                  "$LOOPER_FORGE_URL/api/v4/$(gl_project "$r")/issues/$n")" || code=""
+        case "$code" in
+          200) echo "$r $n $(gl_issues < "$t" | jq -r .state)" ;;
+          404) echo "$r $n MISSING" ;;
+          *) rm -f "$t"; return 1 ;;
+        esac
+      done <<<"$refs"
+      rm -f "$t" ;;
+  esac
+}
+
+# A file of a repository's default branch, raw.
+forge_file() { # repo path
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/contents/$2" -H "Accept: application/vnd.github.raw" ;;
+    gitlab) gl_api GET "$(gl_project "$1")/repository/files/$(gl_enc "$2")/raw?ref=HEAD" ;;
+  esac
+}
+
+# Git's credentials for the forge, for this user: gh's, or on GitLab a helper
+# for LOOPER_FORGE_URL alone that answers from $LOOPER_FORGE_TOKEN when git
+# asks (the token in no file), every other helper for it dropped.
+forge_setup_git() {
+  case "$LOOPER_FORGE" in
+    github) gh auth setup-git >/dev/null 2>&1 || true ;;
+    gitlab)
+      # shellcheck disable=SC2016  # expanded by git's shell when it asks, not here
+      git config --global --replace-all "credential.$LOOPER_FORGE_URL.helper" '' &&
+      git config --global --add "credential.$LOOPER_FORGE_URL.helper" \
+        '!f() { test "$1" = get || exit 0; test -n "$LOOPER_FORGE_TOKEN" || exit 0; echo username=oauth2; echo "password=$LOOPER_FORGE_TOKEN"; }; f' ;;
+  esac
+}
+
+forge_clone() { # repo dir
+  case "$LOOPER_FORGE" in
+    github) gh repo clone "$LOOPER_ORG/$1" "$2" -- --quiet ;;
+    gitlab) git clone -q "$LOOPER_FORGE_URL/$LOOPER_ORG/$1.git" "$2" ;;
+  esac
+}
+
+# A page of a repository on the forge: the repository, an issue, a branch's
+# tree or a release.
+forge_web() { # repo [issue N | tree BRANCH | release TAG]
+  local base
+  case "$LOOPER_FORGE" in
+    github) base="https://github.com/$LOOPER_ORG/$1"
+            case "${2:-}" in issue) echo "$base/issues/$3" ;; tree) echo "$base/tree/$3" ;; release) echo "$base/releases/tag/$3" ;; *) echo "$base" ;; esac ;;
+    gitlab) base="$LOOPER_FORGE_URL/$LOOPER_ORG/$1"
+            case "${2:-}" in issue) echo "$base/-/issues/$3" ;; tree) echo "$base/-/tree/$3" ;; release) echo "$base/-/releases/$3" ;; *) echo "$base" ;; esac ;;
+  esac
+}
+
+# A command line for a prompt, the model's way to the forge: gh, or glab
+# (with GITLAB_TOKEN and GITLAB_HOST, which repo-looper gives it on GitLab).
+forge_cmd() { # view|close|label|list repo [n] [label] | file repo path
+  local R="$LOOPER_ORG/$2"
+  case "$LOOPER_FORGE:$1" in
+    github:view) echo "gh issue view $3 --repo $R --comments" ;;
+    github:close) echo "gh issue close $3 --repo $R" ;;
+    github:label) echo "gh issue edit $3 --repo $R --add-label $4" ;;
+    github:list) echo "gh issue list --repo $R" ;;
+    github:file) echo "gh api repos/$R/contents/$3 -H 'Accept: application/vnd.github.raw'" ;;
+    gitlab:view) echo "glab issue view $3 --repo $R --comments" ;;
+    gitlab:close) echo "glab issue close $3 --repo $R" ;;
+    gitlab:label) echo "glab issue update $3 --repo $R --label $4" ;;
+    gitlab:list) echo "glab issue list --repo $R" ;;
+    gitlab:file) echo "glab api 'projects/$(gl_enc "$R")/repository/files/$(gl_enc "$3")/raw?ref=HEAD'" ;;
+  esac
+}
+
+# --- the issues -----------------------------------------------------------------
+
 # Open approved issues in one repository that no run holds or parked, in
 # ISSUE_ORDER (by priority, then oldest first), as "number" lines.
 approved_issues() { # repo
-  gh issue list --repo "$LOOPER_ORG/$1" --state open --label "$LABEL_APPROVED" --limit 200 \
-    --json number,labels,createdAt --jq "
+  forge_issue_list "$1" open 200 number,labels,createdAt "
       [.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
-      | sort_by($ISSUE_ORDER) | .[].number"
+      | sort_by($ISSUE_ORDER) | .[].number" "$LABEL_APPROVED"
 }
 
 # The issues an issue waits on: lines `Blocked-by: #N` (same repository) or
-# `Blocked-by: tacplus-dev/<repo>#N` in its body, printed as "<repo> <N>".
-# Fails (non-zero) when the body cannot be read: an unreadable issue is never
-# taken for an unblocked one.
+# `Blocked-by: <org>/<repo>#N` in its body (on GitLab `seabeam/<path>#N`,
+# subgroups included), printed as "<repo> <N>". Fails (non-zero) when the
+# body cannot be read: an unreadable issue is never taken for an unblocked one.
 blockers() { # repo issue
   local body
-  body="$(gh issue view "$2" --repo "$LOOPER_ORG/$1" --json body --jq .body)" || return 1
+  body="$(forge_issue_view "$1" "$2" body .body)" || return 1
   printf '%s\n' "$body" | parse_blockers "$1"
 }
 
-# The `Blocked-by:` lines of the text on stdin, as "<repo> <N>"; `#N` is in repo.
+# The `Blocked-by:` lines of the text on stdin, as "<repo> <N>"; `#N` is in
+# repo, `<org>/<path>#N` in path. A reference outside LOOPER_ORG keeps its
+# whole path, which names no repository of the org, so it never resolves and
+# holds its issue: an instance reads no other org (looper#29).
 parse_blockers() { # repo
-  grep -oiE '^[[:space:]]*blocked-by:[[:space:]]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+' \
+  grep -oiE '^[[:space:]]*blocked-by:[[:space:]]*([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)?#[0-9]+' \
     | sed -E 's/^[[:space:]]*[Bb][Ll][Oo][Cc][Kk][Ee][Dd]-[Bb][Yy]:[[:space:]]*//' \
     | while IFS= read -r ref; do
         num="${ref##*#}"; slug="${ref%#*}"
-        if [[ -z "$slug" ]]; then echo "$1 $num"; else echo "${slug##*/} $num"; fi
+        if [[ -z "$slug" ]]; then echo "$1 $num"
+        elif [[ "$slug" == "$LOOPER_ORG/"* ]]; then echo "${slug#"$LOOPER_ORG/"} $num"
+        else echo "$slug $num"; fi
       done
   return 0
+}
+
+# An issue's state (OPEN, CLOSED), or a failure when it cannot be read.
+issue_state() { # repo n
+  [[ "$1" == */* && "$LOOPER_FORGE" == github ]] && return 1   # no GitHub repository: not one of the org's
+  forge_issue_view "$1" "$2" state .state
 }
 
 # Ready: approved, not held, and every issue it is blocked by is closed. Any
@@ -111,7 +387,7 @@ ready() { # repo issue
   list="$(blockers "$1" "$2")" || return 1
   while read -r r n; do
     [[ -z "$r" ]] && continue
-    state="$(gh issue view "$n" --repo "$LOOPER_ORG/$r" --json state --jq .state 2>/dev/null)" || return 1
+    state="$(issue_state "$r" "$n" 2>/dev/null)" || return 1
     [[ "$state" == CLOSED ]] || return 1
   done <<<"$list"
   return 0
@@ -128,42 +404,31 @@ next_ready() { # repo
 
 # Every repository's next ready issue, as "<repo> <number>" lines: the rule
 # of next_ready, read for the whole org at once (the kicker's pass, looper#24),
-# one search and one GraphQL query for the blockers' states. next_ready costs a
-# request per issue and per blocker: about 270 for the org in 2026-10, past
-# GitHub's 5000 an hour at a pass every 3 minutes. A blocker GitHub does not
-# resolve to an issue holds its issue. Fails when GitHub cannot be read.
-# The lines are in ISSUE_ORDER of those issues: a repository whose next issue
-# is priority:high comes first (looper#31), so it is planned first.
+# one search and one query for the blockers' states (forge_issue_states).
+# next_ready costs a request per issue and per blocker: about 270 for the org
+# in 2026-10, past GitHub's 5000 an hour at a pass every 3 minutes. A blocker
+# the forge does not resolve to an issue holds its issue. Fails when the forge
+# cannot be read. The lines are in ISSUE_ORDER of those issues: a repository
+# whose next issue is priority:high comes first (looper#31), so it is planned
+# first.
 ready_by_repo() {
-  local all issues r n b64 refs q="" i=0 out states
-  all="$(gh search issues --owner "$LOOPER_ORG" --state open --label "$LABEL_APPROVED" --limit 1000 \
-           --json repository,number,labels,createdAt,body)" || return 1
+  local all issues r n b64 refs states
+  all="$(forge_search_issues "$LABEL_APPROVED" 1000 repository,number,labels,createdAt,body)" || return 1
   # Not held, in ISSUE_ORDER: "<repo> <number> <body, base64>".
   issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
                    | sort_by($ISSUE_ORDER) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1
   # Each issue's blockers: "<repo> <number> <blocker repo> <blocker number>".
   refs="$(while read -r r n b64; do
             [[ -n "$r" ]] || continue
-            base64 -d <<<"$b64" | parse_blockers "$r" | sed "s/^/$r $n /"
+            base64 -d <<<"$b64" | parse_blockers "$r" | sed "s|^|$r $n |"
           done <<<"$issues")"
-  # The blockers' states, one aliased GraphQL query: "<repo> <number> <state>".
-  while read -r r n; do
-    [[ -n "$r" ]] || continue
-    q="$q b$i: repository(owner: \"$LOOPER_ORG\", name: \"$r\") { issue(number: $n) { state } }"; i=$((i + 1))
-  done < <(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u)
-  states=""
-  if [[ -n "$q" ]]; then
-    # A blocker that is no issue answers null and gh exits 1; no data at all is GitHub refusing.
-    out="$(gh api graphql -f query="{$q }" 2>/dev/null)" || true
-    jq -e '.data | type == "object"' <<<"$out" >/dev/null 2>&1 || return 1
-    states="$(paste -d' ' <(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u) \
-                          <(jq -r '.data as $d | range(0; $d | length) | $d["b\(.)"].issue.state // "MISSING"' <<<"$out"))"
-  fi
+  # The blockers' states: "<repo> <number> <state>".
+  states="$(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u | forge_issue_states)" || return 1
   # Ready: every blocker closed. The first per repository is its next.
   while read -r r n b64; do
     [[ -n "$r" ]] || continue
     if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
-         while read -r br bn; do grep -qx "$br $bn CLOSED" <<<"$states" || exit 1; done
+         while read -r br bn; do grep -qxF "$br $bn CLOSED" <<<"$states" || exit 1; done
        }; then echo "$r $n"; fi
   done <<<"$issues" | awk '!seen[$1]++'
 }
