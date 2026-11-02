@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by looper (#50).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by looper (#51).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -73,7 +73,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-01 by lo
   commit touching `suggestions/` only (and `suggestions/TEMPLATE.md` where it is missing), each checked: the four
   leading fields, a type from `suggestions/TYPES.md`, linked evidence, a rejected or deferred one never raised again
   without citing it and new evidence, the index Security first; `looper-suggest file` files one from another
-  repository's job (pushed alone), `looper-suggest decide` records Jody's decision for the hub. Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
+  repository's job (pushed alone), `looper-suggest decide` records Jody's decision for the hub. Trace propagation
+  (#51, README: Trace propagation) is a standing rule of every work and think prompt: causal downstream calls carry the
+  inbound `trace_id`, unrelated ones say so (`// trace: unrelated: <why>`), each such handler has a propagation test,
+  and the outcome comment names the handlers checked and their tests; `looper-trace check` (in the image) reads Go
+  and Rust handlers and flags a dropped `trace_id` and a missing test; the nightly scan runs it on main for the model
+  to verify and file as bugs (run by hand on tacplus-dev's services, 2026-11-02: gateway, oauth and mailbox flagged). Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
   holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The looper identity pilot (#28), built and tested, not yet
   deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
   `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:

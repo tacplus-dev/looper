@@ -1,0 +1,444 @@
+#!/usr/bin/env -S python3 -I
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-trace: the loopers' trace propagation check (looper#51; README: Trace
+# propagation). tacplus's `trace_id` (field 200 of every message) is propagated
+# by handler code, not by the generated wrappers, which cannot know which calls
+# a request causes (tacplus#265; USER.md, Distributed Tracing). So every looper
+# run that touches a service's handlers, and the nightly scan, check:
+#
+#   - every downstream call a handler makes carries the inbound trace_id, unless
+#     the request does not cause it (background work, unrelated fan-out, batching
+#     across requests) and the code says so where the call is made:
+#         // trace: unrelated: <why>
+#     on the call's line or the comment lines just above its statement;
+#   - each handler that makes such calls has a test asserting that the trace_id
+#     it received arrives on them (a test that calls the handler and names the
+#     trace_id).
+#
+#   looper-trace check [DIR]   the check of a checkout (default: .): the handlers
+#       it read, each causal and unrelated call, the tests covering them, then one
+#       FINDING line per defect and the verdict; exit 0 on pass, 1 on a finding, 2
+#       when it cannot run
+#
+# It reads hand-written Go and Rust (the service targets USER.md shows the
+# pattern for), never generated code (tacplus.yaml's output-dir, a "Code
+# generated"/"DO NOT EDIT"/"@generated" header, vendor/, target/, testdata/),
+# and names the Java files it did not read. It is a floor, not the review: a
+# handler is a function taking a request message (Go: a pointer to a struct;
+# Rust: a struct or tonic::Request<...> taken by value), a downstream call is a call on a
+# generated client (Go: ...Clients()...<X>Client(); Rust: .s2s()|.grpc()...<x>_client(),
+# directly, kept in a variable or field, or through an accessor method), and a call made
+# through a helper of the handler's is not seen: the model reads those.
+# Python, standard library only (the looper image's python3), isolated (-I):
+# it reads repositories' code and runs none of it.
+import os
+import re
+import sys
+
+SKIP_DIRS = {".git", "vendor", "target", "node_modules", "testdata"}
+GENERATED = re.compile(r"Code generated|DO NOT EDIT|@generated")
+MARKER = re.compile(r"trace:\s*unrelated\b[\s:\-\u2014]*(.*)")
+RUST_NOT_MESSAGES = {"String", "Vec", "Option", "Result", "Arc", "Rc", "Box", "HashMap", "BTreeMap", "HashSet",
+                     "Duration", "Instant", "Path", "PathBuf", "Bytes", "Uuid", "Context"}
+
+
+def usage(code=2):
+    print("usage: looper-trace check [DIR]   trace propagation in DIR's handlers (looper#51)", file=sys.stderr if code else sys.stdout)
+    sys.exit(code)
+
+
+# --- source text --------------------------------------------------------------
+
+def blank(src, lang):
+    """The source with comments and string and char literals blanked (newlines and
+    offsets kept), so braces and names in them are never read as code."""
+    out = list(src)
+    i, n = 0, len(src)
+
+    def wipe(a, b):
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            wipe(i, j); i = j
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            wipe(i, j); i = j
+        elif lang == "go" and c == "`":
+            j = src.find("`", i + 1)
+            j = n if j < 0 else j + 1
+            wipe(i + 1, j - 1); i = j
+        elif lang == "rust" and re.match(r'r#*"', src[i:i + 8]) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+            m = re.match(r'r(#*)"', src[i:])
+            end = '"' + m.group(1)
+            j = src.find(end, i + m.end())
+            j = n if j < 0 else j + len(end)
+            wipe(i + m.end(), j - len(end)); i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            wipe(i + 1, min(j, n)); i = j + 1
+        elif c == "'":
+            m = re.match(r"'(\\.[^']*|[^\\'\n])'", src[i:])
+            if m:
+                wipe(i + 1, i + m.end() - 1); i += m.end()
+            else:
+                i += 1  # a Rust lifetime
+        else:
+            i += 1
+    return "".join(out)
+
+
+def match_close(code, i, open_ch, close_ch):
+    """The index just past the bracket that closes the one at i."""
+    depth = 0
+    for j in range(i, len(code)):
+        if code[j] == open_ch:
+            depth += 1
+        elif code[j] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return len(code)
+
+
+def split_top(text, sep=","):
+    """text split at sep outside brackets."""
+    parts, depth, cur = [], 0, ""
+    for ch in text:
+        if ch in "([{<":
+            depth += 1
+        elif ch in ")]}>":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append(cur); cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return [p.strip() for p in parts]
+
+
+def line_of(code, pos):
+    return code.count("\n", 0, pos) + 1
+
+
+# --- functions ----------------------------------------------------------------
+
+class Func:
+    def __init__(self, name, line, params, body_start, body_end, is_test):
+        self.name, self.line, self.params = name, line, params
+        self.body_start, self.body_end, self.is_test = body_start, body_end, is_test
+
+
+def functions(code, lang, path):
+    """Every function with a body: its name, line, parameter list and body span."""
+    found = []
+    pat = r"\bfunc\s*(?:\([^)]*\)\s*)?(\w+)\s*\(" if lang == "go" else r"\bfn\s+(\w+)\s*(?:<[^>{(]*>)?\s*\("
+    for m in re.finditer(pat, code):
+        p_open = m.end() - 1
+        p_close = match_close(code, p_open, "(", ")")
+        brace = semi = None
+        for j in range(p_close, len(code)):
+            if code[j] == "{":
+                brace = j; break
+            if code[j] == ";":
+                semi = j; break
+        if brace is None or semi is not None:
+            continue
+        end = match_close(code, brace, "{", "}")
+        if lang == "go":
+            is_test = path.endswith("_test.go") and m.group(1).startswith("Test")
+        else:
+            before = code[max(0, m.start() - 300):m.start()]
+            attrs = re.findall(r"#\[([^\]]*)\]\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?$", before)
+            is_test = bool(attrs) and re.search(r"(^|::)test\b", attrs[-1]) is not None
+        found.append(Func(m.group(1), line_of(code, m.start()), code[p_open + 1:p_close - 1], brace + 1, end - 1, is_test))
+    return found
+
+
+def rust_test_spans(code):
+    """The spans of #[cfg(test)] modules: no handler is in them."""
+    spans = []
+    for m in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", code):
+        spans.append((m.end() - 1, match_close(code, m.end() - 1, "{", "}")))
+    return spans
+
+
+def inbound_params(params, lang):
+    """The parameters that are a request message."""
+    names = []
+    if lang == "go":
+        pending = []
+        for p in split_top(params):
+            parts = p.split(None, 1)
+            if len(parts) == 1:
+                pending.append(parts[0]); continue
+            name, typ = parts
+            group = pending + [name]; pending = []
+            if re.fullmatch(r"\*\s*(?:\w+\.)?[A-Z]\w*", typ.strip()) and typ.strip() != "*testing.T":
+                names += group
+    else:
+        for p in split_top(params):
+            if ":" not in p:
+                continue
+            name, typ = p.split(":", 1)
+            name, typ = re.sub(r"^mut\s+", "", name.strip()), typ.strip()
+            if typ.startswith("&"):
+                continue  # a request message is taken by value (USER.md; tonic's Request<T>)
+            head = re.match(r"((?:\w+::)*)(\w+)", typ)
+            if not head or name in ("self", "_") or not head.group(2)[:1].isupper() or head.group(2) in RUST_NOT_MESSAGES:
+                continue
+            names.append(name)
+    return names
+
+
+# --- the check of one handler ----------------------------------------------------
+
+def trace_ref(names, aliases):
+    alts = []
+    if names:
+        alts.append(r"\b(?:%s)\s*\.\s*(?:TraceId\b|GetTraceId\s*\(\s*\)|trace_id\b)" % "|".join(map(re.escape, names)))
+    if aliases:
+        alts.append(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(aliases))))
+    return "(?:%s)" % "|".join(alts)
+
+
+def bindings(body):
+    """name -> the expression bound to it (Go :=, var, =; Rust let), each statement's first line."""
+    out = []
+    for m in re.finditer(r"(?:\blet\s+(?:mut\s+)?(\w+)(?:\s*:[^=;]+)?|\b(\w+)\s*:?|\bvar\s+(\w+)[^=\n]*)=(?!=)\s*", body):
+        name = m.group(1) or m.group(2) or m.group(3)
+        out.append((name, m.start(), m.end()))
+    return out
+
+
+def resolve(body, at, name, lang):
+    """The text that sets up message `name` before position at: its literal and any field assignment."""
+    text = ""
+    for n, s, e in bindings(body[:at]):
+        if n != name:
+            continue
+        rest = body[e:at]
+        lit = re.match(r"&?\s*[\w.:]+(?:<[^>{]*>)?\s*\{", rest)
+        if lit:
+            text = rest[:match_close(rest, lit.end() - 1, "{", "}")]
+        else:
+            text = rest.split("\n", 1)[0]
+    for m in re.finditer(r"\b%s\s*\.\s*(?:TraceId|trace_id)\s*=[^=][^\n;]*" % re.escape(name), body[:at]):
+        text += "\n" + m.group(0).replace(name, "", 1).lstrip(" .").replace("=", ":", 1)
+    return text
+
+
+def carries(text, ref):
+    """Whether a message's construction uses the inbound trace_id: a field set from it, or a
+    request builder handed it."""
+    return re.search(ref, text) is not None
+
+
+def marker(src_lines, code_lines, call_line):
+    """The `trace: unrelated` marker of the call at call_line: (found, reason)."""
+    lines = [call_line]
+    k = call_line
+    while k > 1:
+        here, above = code_lines[k - 1].strip(), code_lines[k - 2].strip()
+        if here.startswith(".") or above.endswith((".", "(", ",")) or (not above and src_lines[k - 2].strip()):
+            k -= 1; lines.append(k)
+        else:
+            break
+    for k in sorted(lines):
+        m = MARKER.search(src_lines[k - 1])
+        if m:
+            return True, m.group(1).strip()
+    return False, ""
+
+
+# A generated client (USER.md): Go sm.Grpc().Clients().<Host>().<Service>Client(),
+# Rust sm.s2s()|grpc().<host>().<service>_client().
+CLIENT = {"go": r"\bClients\(\)(?:\s*\.\s*\w+\(\))*?\s*\.\s*\w+Client\(\)",
+          "rust": r"\.\s*(?:s2s|grpc)\(\)(?:\s*\.\s*\w+\(\))*?\s*\.\s*\w+_client\(\)"}
+
+
+def clients_of(code, lang, funcs):
+    """A file's names for generated clients: variables and fields bound to one, and
+    accessor methods returning one."""
+    names = set()
+    for m in re.finditer(r"(?:\blet\s+(?:mut\s+)?(\w+)(?:\s*:[^=;]+)?\s*=|\b(\w+)\s*(?::=|=|:))(?!=)", code):
+        rest = code[m.end():]
+        rest = rest.split(";", 1)[0] if lang == "rust" else rest.split("\n", 1)[0]
+        if re.fullmatch(r"[^;]*?%s\s*,?\s*" % CLIENT[lang], rest):
+            names.add(m.group(1) or m.group(2))
+    accessors = {f.name for f in funcs
+                 if re.fullmatch(r"\s*(?:return\s+)?[^;{}]*?%s\s*;?\s*" % CLIENT[lang], code[f.body_start:f.body_end])}
+    return names, accessors
+
+
+def check_handler(f, code, src, lang, clients):
+    body = code[f.body_start:f.body_end]
+    names = inbound_params(f.params, lang)
+    for n, s, e in bindings(body):
+        if re.match(r"(?:%s)\s*\.\s*(?:into_inner|get_ref)\s*\(\s*\)" % "|".join(map(re.escape, names)), body[e:]) and n not in names:
+            names.append(n)
+    aliases = set()
+    for _ in range(3):
+        ref = trace_ref(names, aliases)
+        for n, s, e in bindings(body):
+            if n not in names and re.match(r"[^\n;]*" + ref, body[e:].split("\n", 1)[0]):
+                aliases.add(n)
+    ref = trace_ref(names, aliases)
+    client_vars, accessors = clients
+    pats = [CLIENT[lang] + r"\s*\.\s*(\w+)\s*\("]
+    if client_vars:
+        pats.append(r"(?<![\w)])(?:%s)\s*\.\s*(\w+)\s*\(" % "|".join(map(re.escape, sorted(client_vars))))
+    if accessors:
+        pats.append(r"\b(?:%s)\s*\(\s*\)\s*\.\s*(\w+)\s*\(" % "|".join(map(re.escape, sorted(accessors))))
+    src_lines, code_lines = src.split("\n"), code.split("\n")
+    calls = []
+    for pat in pats:
+        for m in re.finditer(pat, body):
+            p_open = m.end() - 1
+            args = split_top(body[p_open + 1:match_close(body, p_open, "(", ")") - 1])
+            ok = False
+            for a in args:
+                a = re.sub(r"^&\s*(?:mut\s+)?", "", a)
+                a = re.sub(r"\.clone\(\)$", "", a)
+                if a in names:
+                    ok = True  # the inbound request itself, forwarded: its trace_id with it
+                elif re.fullmatch(r"\w+", a):
+                    a = resolve(body, m.start(), a, lang)
+                if carries(a, ref):
+                    ok = True
+            line = line_of(code, f.body_start + m.start(1))
+            calls.append((line, m.group(1), ok))
+    calls.sort()
+    return names, [(line, name, ok, *marker(src_lines, code_lines, line)) for line, name, ok in calls]
+
+
+# --- the checkout -----------------------------------------------------------------
+
+def output_dirs(root):
+    dirs = set()
+    for dp, dn, fn in os.walk(root):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS]
+        if "tacplus.yaml" in fn:
+            try:
+                with open(os.path.join(dp, "tacplus.yaml"), encoding="utf-8", errors="replace") as fh:
+                    m = re.search(r"^output-dir:\s*['\"]?([^'\"#\n]+?)['\"]?\s*(?:#.*)?$", fh.read(), re.M)
+            except OSError:
+                continue
+            if m:
+                dirs.add(os.path.normpath(os.path.join(dp, m.group(1).strip())))
+    return dirs
+
+
+def sources(root):
+    gen = output_dirs(root)
+    files, java = [], 0
+    for dp, dn, fn in os.walk(root):
+        dn[:] = sorted(d for d in dn if d not in SKIP_DIRS and os.path.normpath(os.path.join(dp, d)) not in gen)
+        for f in sorted(fn):
+            lang = {".go": "go", ".rs": "rust", ".java": "java"}.get(os.path.splitext(f)[1])
+            if not lang:
+                continue
+            path = os.path.join(dp, f)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    src = fh.read()
+            except OSError:
+                continue
+            if GENERATED.search("\n".join(src.split("\n", 10)[:10])):
+                continue
+            if lang == "java":
+                java += 1
+            else:
+                files.append((os.path.relpath(path, root), lang, src))
+    return files, java
+
+
+def check(root):
+    files, java = sources(root)
+    parsed = []
+    for rel, lang, src in files:
+        code = blank(src, lang)
+        parsed.append((rel, lang, src, code, functions(code, lang, rel)))
+    tests = []
+    for rel, lang, src, code, funcs in parsed:
+        for f in funcs:
+            if f.is_test:
+                tests.append((rel, f, code[f.body_start:f.body_end]))
+    report, findings, handlers = [], [], 0
+    for rel, lang, src, code, funcs in parsed:
+        if lang == "go" and rel.endswith("_test.go"):
+            continue
+        spans = rust_test_spans(code) if lang == "rust" else []
+        clients = clients_of(code, lang, funcs)
+        for f in funcs:
+            if f.is_test or any(a <= f.body_start < b for a, b in spans) or not inbound_params(f.params, lang):
+                continue
+            names, calls = check_handler(f, code, src, lang, clients)
+            if not calls:
+                continue
+            handlers += 1
+            report.append("handler %s:%d %s (inbound: %s)" % (rel, f.line, f.name, ", ".join(names)))
+            causal = []
+            for line, name, ok, marked, reason in calls:
+                if marked and reason:
+                    report.append("  unrelated %s:%d %s: %s" % (rel, line, name, reason))
+                elif ok:
+                    causal.append(name)
+                    report.append("  causal %s:%d %s: carries the inbound trace_id" % (rel, line, name))
+                else:
+                    causal.append(name)
+                    report.append("  causal %s:%d %s: DROPS the inbound trace_id" % (rel, line, name))
+                    findings.append("FINDING dropped-trace %s:%d: %s's call %s is caused by the request but does not carry its trace_id (%s); "
+                                    "propagate it, or, if the request does not cause the call, say so where it is made: `// trace: unrelated: <why>`%s"
+                                    % (rel, line, f.name, name, ", ".join(names),
+                                       " (its `trace: unrelated` marker gives no reason)" if marked else ""))
+            if not causal:
+                continue
+            call = re.compile(r"\b%s\s*\(" % re.escape(f.name))
+            covering = [(t_rel, t) for t_rel, t, t_body in tests
+                        if call.search(t_body) and re.search(r"\b(?:TraceId|GetTraceId|trace_id)\b", t_body)]
+            for t_rel, t in covering:
+                report.append("  tested by %s:%d %s" % (t_rel, t.line, t.name))
+            if not covering:
+                findings.append("FINDING untested %s:%d: %s makes causal downstream calls (%s) but no test asserts that its trace_id arrives on them"
+                                % (rel, f.line, f.name, ", ".join(dict.fromkeys(causal))))
+    if java:
+        report.append("not checked: %d Java file%s: read %s handlers yourself" % (java, "" if java == 1 else "s", "its" if java == 1 else "their"))
+    print("looper-trace: %s" % root)
+    for r in report + findings:
+        print(r)
+    word = "handler" if handlers == 1 else "handlers"
+    if findings:
+        print("verdict: fail (%d finding%s)" % (len(findings), "" if len(findings) == 1 else "s"))
+        return 1
+    print("verdict: pass (%d %s, 0 findings)" % (handlers, word))
+    return 0
+
+
+def main(argv):
+    if argv[:1] in (["-h"], ["--help"]):
+        usage(0)
+    if not argv:
+        usage()
+    if argv[0] != "check" or len(argv) > 2:
+        usage()
+    root = argv[1] if len(argv) == 2 else "."
+    if not os.path.isdir(root):
+        print("looper-trace: %s: not a directory" % root, file=sys.stderr)
+        return 2
+    return check(os.path.abspath(root))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

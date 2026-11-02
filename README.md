@@ -173,6 +173,54 @@ child's limit is capped at the parent's deadline, the job's end less that hour (
 line added after its job was sized gets the time the job has left, and its start comment says so ("limit 8h capped
 at 5h by this job"), so the run stops by itself, checkpointed, before GitLab kills the job.
 
+### Standing rules
+
+Every work prompt states the same rules, whatever the issue (`work_issue` in `repo-looper`; the think job's prompt
+has them too, without pushing): do what the issue asks or ask (`needs-decision`); tests first; sub-agents; the
+gates; commit and land; the planning files; bug or feature; the outcome comment and closing; `Blocked-by:`; the
+time limit and checkpoints; reading the roadmaps before opening an issue; who directs the run (looper#40); and
+**trace propagation** (looper#51, below).
+
+### Trace propagation
+
+tacplus's `trace_id` (field 200 of every message) is propagated by handler code, not by the generated wrappers: they
+cannot know which outgoing calls a request causes (tacplus#265; tacplus `docs/USER.md`, Distributed Tracing). Jody,
+2026-11-01: "this is a test that the user should write and a looper/agent should verify exist". So it is a standing
+rule of every run that touches a service's handlers (work prompt rule 13, think prompt rule 12):
+
+- **Implemented:** every outgoing call a handler makes because of its inbound request carries the inbound
+  `trace_id`. A call the request does not cause (background work, unrelated fan-out, batching across requests)
+  does not, and says so where it is made, on its line or the comment lines just above its statement:
+  `// trace: unrelated: <why>` (a marker without a reason does not count). The looper applies this itself to a
+  handler it changes or adds.
+- **Tested:** each handler that makes causal calls has a test, in the service's own tests, asserting that the
+  `trace_id` it received arrives on each of them (USER.md's pattern). The looper writes a missing one as part of
+  its change, or files a `bug` in the repository when it does not touch that handler (the think job names it in
+  its comment).
+- **Verified, not assumed:** the run's outcome comment names the handlers it checked and the tests that cover them.
+  A handler dropping the `trace_id` on a causal call is a bug like any other: fix, test, patch.
+- **The nightly scan** (`repo-looper --scan`) runs the check on main before the model, into the run's `trace.txt`,
+  and its checklist's item 5 has the model verify each finding by reading and file it as a `bug`, so services no
+  run touched lately are covered too.
+
+`looper-trace check [DIR]` (in the image) is the check: a floor under the model's reading, not the review. It reads
+the hand-written Go and Rust (never generated code: tacplus.yaml's `output-dir`, a `Code generated`/`DO NOT EDIT`/
+`@generated` header, `vendor/`, `target/`, `testdata/`) and names the Java files it did not read. A handler is a
+function taking a request message (Go: a pointer to a struct; Rust: a struct or `tonic::Request<…>` by value), a
+downstream call one on a generated client (Go `…Clients()…<X>Client()`, Rust `.s2s()`/`.grpc()…<x>_client()`,
+directly, kept in a variable or field, or through an accessor method). A call carries the trace when its message
+is built from the inbound `trace_id` (a field set from it, directly or through a variable, or a request builder
+handed it) or is the inbound request itself, forwarded. A test covers a handler when it calls it and names the
+`trace_id`. It prints each handler, its causal and unrelated calls and the tests covering it, then a `FINDING
+dropped-trace` or `FINDING untested` line per defect and the verdict; it exits 1 on a finding. A call through a
+helper of the handler's is not seen: the model reads those.
+
+```sh
+looper-trace check .           # at a service's root
+tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal and one unrelated call, a background loop, a propagation test): passes when right; flags a dropped trace_id on the causal call and never the unrelated one, a marker without a reason, a handler with no propagation test; the trace_id through a variable, a builder, a forwarded tonic request, a client in a variable or behind an accessor; generated code, other libraries' clients and functions taking only references not read as handlers; Java named, not read
+tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work and think prompts, the scan's check on main and its item 5
+```
+
 ### Parent and children
 
 A repository's looper job is a **parent** that runs **child loopers** for its issues, in parallel when the work

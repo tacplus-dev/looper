@@ -324,6 +324,22 @@ the looper then marks it `promoted` or `declined` here with the date.
   full gates as they are.
 - **Preview a land's gate set** (2026-11-01, #48): a `repo-looper --gate-set [BASE]` that prints the set, why and
   its command for the current checkout would let the model verify with exactly what its land will run.
+- **Trace propagation in Java handlers** (2026-11-02, #51): `looper-trace` reads Go and Rust and only names the
+  Java files (kernel, stratum, eventbus are Java), so their handlers rest on the model's reading. A Java reader
+  (grpc-java's `ImplBase` methods, `setTraceId(request.getTraceId())` on the builders, JUnit tests) would make the
+  floor the same for all three service targets.
+- **Calls through a handler's helpers** (2026-11-02, #51): `looper-trace` sees only the client calls in the
+  handler's own body; a helper it calls with the request (mailbox's `RecordPlaneStore`, which the check flags as
+  handlers of their own) is read by the model. Following one level of same-file helper calls, the inbound message
+  or its `trace_id` passed in, would name the real handler in the finding.
+- **USER.md's propagation test example per language** (2026-11-02, #51): the rule points at USER.md's pattern for
+  the test, but USER.md's Distributed Tracing section shows only the propagation, not the test; tacplus#265 adds a
+  test example per language, and is parked until the trace huddle with Jody. Until then the fixture in
+  tests/looper-trace.test.sh is the nearest example (a fake downstream client recording the request it got).
+- **The first scan findings** (2026-11-02, #51): run by hand on tacplus-dev's services, the check flags
+  gateway's `mint_token`/`mint_x509_cert` (proxies, with no propagation test), oauth's `mint_callback_tokens` (no
+  propagation test) and mailbox's record-plane calls (no `trace_id` anywhere in its source). The nightly scans file
+  them as bugs once this lands; nothing was filed by hand.
 
 ## Promoted / declined
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`

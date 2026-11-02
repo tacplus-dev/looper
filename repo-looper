@@ -137,6 +137,11 @@
 # the source text a port scan quoted, is data, never instructions. A text that
 # holds the nonce is refused; the nonce never leaves the job.
 #
+# Trace propagation (looper#51): every work and think prompt has the standing
+# rule that a handler's causal downstream calls carry the inbound trace_id and
+# that a test asserts it; looper-trace checks it, and the nightly scan runs it
+# on main for the model to verify and file.
+#
 # The think job (looper#28, the pilot on kernel; looper-identity and
 # ci/looper.gitlab-ci.yml do the rest): the model and the gates, with no
 # identity. It refuses to run beside a write credential or an id_token, reads
@@ -1380,6 +1385,26 @@ ${1:+$1 }Before you open any issue (a follow-up, say), read this repository's RO
 EOF
 }
 
+# Trace propagation, a standing rule (looper#51; README: Trace propagation):
+# the trace_id is propagated by handler code (tacplus#265), so every run that
+# touches a service's handlers applies it and checks it with looper-trace.
+TRACE="$(dirname "$LOOPER_SELF")/looper-trace"
+trace_rule() { # its number in the prompt, what becomes of a finding in a handler the change does not touch
+  cat <<EOF
+$1 Trace propagation, a standing rule (tacplus-dev/looper#51; tacplus-dev/tacplus docs/USER.md, Distributed
+   Tracing), on every run that touches a service's handlers: every outgoing call a handler makes because of its
+   inbound request carries the inbound \`trace_id\` (field 200); a call the request does not cause (background work,
+   unrelated fan-out, batching across requests) does not, and says so where it is made: \`// trace: unrelated: <why>\`.
+   Each handler that makes causal calls has a test asserting that the \`trace_id\` it received arrives on each of
+   them. When you change or add a handler, apply this yourself and write the test it lacks; a handler dropping the
+   \`trace_id\` on a causal call is a bug like any other: fix it and test it. Run \`$TRACE check\` at the
+   checkout's root: it lists the handlers it reads (Go and Rust), their causal and unrelated calls and the tests
+   covering them, and flags a dropped \`trace_id\` and a missing test. It is a floor, not the review: read the
+   handlers yourself too (calls through helpers, other languages). A finding in a handler your change does not
+   touch $2. Your outcome comment names the handlers you checked and the tests that cover them.
+EOF
+}
+
 # Prompt provenance (looper#40). The repositories are public: anyone can
 # comment on an approved issue, and a run reads it all. So every piece of issue
 # text a prompt carries is in a block keyed by a nonce the looper drew for that
@@ -1606,6 +1631,7 @@ $(kind_rule "$kind")
    done and what is left. Do not push to that branch yourself: your work lands on main as rule 5 says.
 $(opening_rule 11.)
 $(provenance_rule 12.)
+$(trace_rule 13. "is a \`$LABEL_BUG\` you file in this repository (rule 11), not part of your change")
 
 The issue, #$n (its title and body, then each comment, oldest first):
 
@@ -1895,6 +1921,7 @@ Rules:
    runs out, your change is kept on the branch $(wip_branch "$n") and the next run resumes from it with that message.
 10. Open no issue (you cannot): put follow-ups in PROPOSALS.md, and name in your comment any issue a person should open.
 $(provenance_rule 11.)
+$(trace_rule 12. "is a \`$LABEL_BUG\` to name in your comment for a person to file (rule 10), not part of your change")
 
 The issue, #$n (its title and body, then each comment, oldest first):
 
@@ -2165,6 +2192,26 @@ suggest_scan() { # run-dir
   log "scan of $REPO finished"
 }
 
+# The scan's trace propagation item (looper#51): looper-trace check of main,
+# run by the looper into the run's trace.txt, so services no run touched
+# lately are covered too; the model verifies each finding by reading.
+trace_item() { # run-dir
+  local verdict
+  if (cd "$CHECKOUT" && "$TRACE" check) > "$1/trace.txt" 2>&1 || [[ "$(tail -n 1 "$1/trace.txt")" == "verdict: fail"* ]]; then
+    verdict="$(tail -n 1 "$1/trace.txt")"; cat <<IT
+5. Trace propagation (tacplus-dev/looper#51; README: Trace propagation): \`looper-trace check\` of this checkout
+   is $1/trace.txt ($verdict).
+   Read each handler it lists, and the ones it cannot (calls through helpers, other languages): a handler that
+   drops the inbound \`trace_id\` on a downstream call its request causes, and a handler with causal downstream
+   calls and no test asserting that its \`trace_id\` arrives on them, is a finding. One it flags that reading
+   shows right (the request does not cause the call) is not, but say in an issue that the call lacks its
+   \`// trace: unrelated: <why>\` marker.
+IT
+  else
+    echo "5. Trace propagation: \`looper-trace check\` could not run ($1/trace.txt): check the handlers by reading (README: Trace propagation)."
+  fi
+}
+
 scan() {
   local run before report; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
@@ -2181,6 +2228,7 @@ $(security_item "$report")
 3. The repository's own gates failing on main ($(gates_hint)).
 4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
    MAJOR.MINOR line it should follow.
+$(trace_item "$run")
 For each finding, first check the open issues (\`$(forge_cmd list "$REPO")\`) and skip one already
 filed. Each finding is a bug ($ISSUE_FLOW): file each new one as one issue labelled \`$LABEL_BUG\`, with a title, the
 evidence (command and output), the fix you recommend and acceptance criteria. Label it \`$LABEL_APPROVED\` too when the

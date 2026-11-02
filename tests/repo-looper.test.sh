@@ -921,6 +921,41 @@ OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT
 has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "security report of alpha could not be read"
 pass
 
+# Trace propagation is a standing rule (looper#51): the work prompt states it
+# with the other rules, naming looper-trace; the nightly scan runs the check on
+# main and its prompt points at the report: a handler dropping the trace_id is
+# in it, the scan's to verify and file as a bug.
+scenario prompt-trace-rule
+run
+pp="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pp" "13. Trace propagation, a standing rule (tacplus-dev/looper#51"
+has "$pp" "\`$ROOT/looper-trace check\`"
+has "$pp" "\`// trace: unrelated: <why>\`"
+has "$pp" "Your outcome comment names the handlers you checked and the tests that cover them."
+has "$pp" "is a \`bug\` you file in this repository"
+pass
+
+scenario scan-trace
+templates
+: > "$FIX/scan.sh"
+mkdir -p "$FIX/seed/internal"
+cat > "$FIX/seed/internal/handler.go" <<'GO'
+package internal
+
+func (s *impl) Place(ctx context.Context, req *orderpb.PlaceRequest) (*orderpb.PlaceResponse, error) {
+	return s.sm.Grpc().Clients().Inventory().InventoryApiClient().Reserve(ctx, &inventorypb.ReserveRequest{Sku: req.Sku})
+}
+GO
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm handler && git -C "$FIX/seed" push -q origin main
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+pp="$(cat "$d/prompt.md")"
+has "$pp" "5. Trace propagation (tacplus-dev/looper#51"
+has "$pp" "is $d/trace.txt (verdict: fail (2 findings))."
+has "$(cat "$d/trace.txt")" "FINDING dropped-trace internal/handler.go:4: Place's call Reserve"
+has "$(cat "$d/trace.txt")" "FINDING untested internal/handler.go:3: Place"
+pass
+
 # The roadmap's nightly scan is the platform's suggestion pass (looper#50): the
 # model writes suggestions with looper-suggest, and the looper commits them as
 # one commit to main, suggestions/ only: the best ranked first, at most 5, a
@@ -1962,6 +1997,8 @@ untouched approved,bug
 has "$(cat "$FIX/prompts")" "working issue #4"
 has "$(cat "$FIX"/project/looper-runs/*/prompt.md)" "Your GitHub token is read-only"
 has "$(cat "$FIX"/project/looper-runs/*/prompt.md)" "<<issue-text nonce=$NONCE_T author=jody association=MEMBER role=direction>>"
+has "$(cat "$FIX"/project/looper-runs/*/prompt.md)" "12. Trace propagation, a standing rule (tacplus-dev/looper#51"
+has "$(cat "$FIX"/project/looper-runs/*/prompt.md)" "is a \`bug\` to name in your comment for a person to file (rule 10)"
 pass
 
 scenario think-holds-identity
