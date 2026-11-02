@@ -7,6 +7,7 @@ The per-repository loopers of tacplus-dev: `looper-dispatch` on the Mac starts t
 Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 
 ## Next
+- Per-repository runner tags: tacplus jobs on the 16-CPU pool (runner 58307468), others unchanged (#55). Agent, at Jody's request, 2026-11-02.
 - Standing rule: trace propagation implemented and tested in every service's handlers, verified by loopers and the nightly scan (#51) (Jody, 2026-11-01)
 - Nightly suggestions: the roadmap scan writes evidenced platform suggestions for Jody's daily review; rejected kept with reasoning (#50) (Jody, 2026-11-01)
 - Deterministic security checks in the build pipeline: SCA and SAST on source and generated code, SBOM per release, fail on HIGH/CRITICAL with expiring exceptions (#49) (Jody, 2026-11-01)
