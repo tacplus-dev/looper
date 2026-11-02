@@ -1,0 +1,9 @@
+# The image build's Semgrep smoke (looper#53): this rule over smoke.py must report
+# its one finding, so Semgrep runs on the wheels scanners/requirements.txt pins. A
+# harmless pattern: the repository's own scans must find nothing here.
+rules:
+  - id: looper-smoke
+    languages: [python]
+    severity: INFO
+    message: the smoke's finding
+    pattern: print("looper-smoke")

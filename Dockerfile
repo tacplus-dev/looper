@@ -87,11 +87,17 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.
 RUN rustup component add clippy && cargo clippy --version
+# Semgrep runs on dependency versions it does not declare (scanners/requirements.txt,
+# looper#53): it scans scanners/smoke/ here, offline, and must report its one finding.
 COPY scanners/requirements.txt /opt/scanners/requirements.txt
+COPY scanners/smoke/ /opt/scanners/smoke/
 RUN set -eu; python3 -m venv /opt/scanners/venv; \
     /opt/scanners/venv/bin/pip install -q --no-cache-dir --require-hashes --no-deps -r /opt/scanners/requirements.txt; \
     ln -s /opt/scanners/venv/bin/semgrep /opt/scanners/venv/bin/bandit /usr/local/bin/; \
-    for t in osv-scanner cargo-deny trivy syft gitleaks gosec spotbugs govulncheck semgrep bandit; do command -v "$t" >/dev/null; done
+    for t in osv-scanner cargo-deny trivy syft gitleaks gosec spotbugs govulncheck semgrep bandit; do command -v "$t" >/dev/null; done; \
+    s=/opt/scanners/smoke; semgrep scan --config "$s/rule.yaml" --metrics=off --disable-version-check --json -q "$s/smoke.py" > /tmp/smoke.json; \
+    jq -e '[.results[].check_id | endswith("looper-smoke")] == [true] and .errors == []' /tmp/smoke.json >/dev/null || \
+      { echo "semgrep: the smoke's finding is missing" >&2; cat /tmp/smoke.json >&2; exit 1; }; rm -f /tmp/smoke.json
 COPY looper-lib.sh ports.yaml /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/

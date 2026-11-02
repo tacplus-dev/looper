@@ -25,6 +25,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   can get other SAST findings another day; the run records the fetch time only. A pinned semgrep-rules commit,
   fetched at run time (the license forbids redistributing the rules, not fetching them), would make Semgrep as
   reproducible as the tools.
+- **Drop Semgrep's dependency override** (2026-11-02, #53): `scanners/requirements.txt` runs Semgrep 1.183.0 on
+  mcp 1.30.0 and OpenTelemetry 1.45.2/0.66b2, not the mcp==1.29.0 and ~=1.37.0 it declares (their advisories); the
+  image build's smoke scan is all that shows it works. When a Semgrep release requires the fixed versions, move to it
+  and make the file again without the override. Raising it upstream with Semgrep (option 3 of #53) would hasten that.
 - **The baseline per branch** (2026-11-01, #49): "the previous run" is the repository's latest published findings,
   whatever commit or branch built them (a land's branch build updates it too). A version per branch
   (`security-<repo>/<branch>`) would compare main with main.
