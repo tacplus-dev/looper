@@ -31,3 +31,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-01 looper issue Deterministic security checks in the build pipeline: SCA (OSV-Scanner, govulncheck, cargo-deny, Trivy, Syft SBOM) and SAST (Semgrep CE, CodeQL, gosec/clippy/Bandit/FindSecBugs), on source and generated code (#49, 568640b; gates: full)
 - 2026-11-02 looper issue Nightly suggestions: the roadmap scan writes up to 5 evidenced platform suggestions a night to tacplus-dev/roadmap suggestions/; Jody reviews daily; accepted go to ROADMAP, rejected are kept with reasoning (#50, caaedcc; gates: full)
 - 2026-11-02 looper issue Standing rule: trace propagation is implemented and tested in every service's handlers; loopers apply and verify it, and the nightly scan checks it (#51, d6c2135; gates: full)
+- 2026-11-02 looper issue Watchdog stops the model when a land closes its issue, so the issue closes with no report (redo#5) (#54, 1cfac48; gates: full)
