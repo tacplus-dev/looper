@@ -381,9 +381,13 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
   `looper:stuck`. The model's output is its event stream (`--output-format stream-json`), rendered
   into `claude.log` as its text, each tool call and the start of each result, so a working run
   always shows output.
-- **Done:** once the run closed the issue, or wrote its `Blocked-by:` outcome, the
-  model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run ends as
-  done. The prompt has it close the issue as its last step, after any backport pull requests.
+- **Done:** once the run reported on the issue and it is closed, or the run wrote its `Blocked-by:`
+  outcome, the model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run
+  ends as done. The prompt has it comment and close the issue as its last step, after any backport pull
+  requests. Closed alone is not done (looper#54): a land's commit can close the issue while the model
+  still verifies or writes its report, so its report is a comment since its last land (or since it
+  started, when it landed nothing). A run the looper stops on a closed issue with no such comment gets
+  the looper's own: the land, the HISTORY.md line and the end of the run's log.
 
 ### After a run
 

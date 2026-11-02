@@ -25,7 +25,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by lo
   worktree is refused), which the parent owns (#34): `--land` queues with the parent's lander, so a land still
   queued or running when its child's limit fires is landed all the same and reported on the issue, and the parent
   waits for the queue before the job ends; it plans again as each child ends; `repo-looper` works each repository's
-  `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, Blocked-by outcomes, one or more,
+  `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, done only once the run reported on its closed issue and a stopped one reported by the looper, #54, Blocked-by outcomes, one or more,
   also from a run that pushed nothing because the issue waits on another, #22, a blocker closed by now dropped and one
   naming only closed ones resumed, #46; a run that ends with its land
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one

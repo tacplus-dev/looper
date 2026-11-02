@@ -81,7 +81,7 @@ case "$cmd" in
     p="${cmd#api repos/}"; [[ "${p%%/*}" == "$ORG" ]] || exit 1; p="${p#*/}"
     f="$(file "${p%%/*}" "$(cut -d/ -f3 <<<"$p")")"; [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
     if [[ "$p" == */comments ]]; then jq '[.comments[] | {body, user: {login: .author}, author_association: (.association // "MEMBER")}]' "$f"
-    else jq '{number, title, body, user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}' "$f"; fi | jq -r "$q" ;;
+    else jq '{number, title, body, comments: ([.comments[]? | select(.system | not)] | length), user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}' "$f"; fi | jq -r "$q" ;;
   "label create") echo "$repo $n" >> "$FIX/labels-created" ;;
   "search issues")
     [[ "$owner" == "$ORG" ]] || exit 1
@@ -135,6 +135,7 @@ fi
 [[ "$(param page || echo 1)" == 1 ]] || reply 200 '[]'
 GL='{iid: .number, title, description: .body, state: (if .state == "OPEN" then "opened" else "closed" end),
      labels: [.labels[].name], created_at: .createdAt, author: {username: (.author // "jody")},
+     user_notes_count: ([.comments[]? | select(.system | not)] | length),
      references: {full: ($org + "/" + .repo + "#" + (.number | tostring))}}'
 list() { # repo or "" (the group): state, labels from the query
   local st labels; st="$(param state || echo all)"; labels="$(param labels || true)"
@@ -291,8 +292,12 @@ for FORGE in github gitlab; do
 
 Blocked-by: #2"' || fail "edit body"
   [[ "$(store alpha 1 .body)" == $'Body.\n\nBlocked-by: #2' ]] || fail "body: $(store alpha 1 .body)"
+  [[ "$(lib 'forge_issue_comment_count alpha 1')" == 0 ]] || fail "comment count: $(lib 'forge_issue_comment_count alpha 1')"
   lib 'forge_issue_comment alpha 1 "The looper says: a & b = c; 100% #1"' || fail "comment"
   [[ "$(store alpha 1 '.comments[-1].body')" == "The looper says: a & b = c; 100% #1" ]] || fail "comment: $(store alpha 1 '.comments[-1].body')"
+  # The count is of the comments people and the looper wrote, not GitLab's system notes.
+  t="$(jq '.comments += [{author: "looper", body: "closed", system: true}]' "$FIX/issues/alpha-1.json")"; printf '%s\n' "$t" > "$FIX/issues/alpha-1.json"
+  [[ "$(lib 'forge_issue_comment_count alpha 1')" == 1 ]] || fail "comment count: $(lib 'forge_issue_comment_count alpha 1')"
   [[ "$(lib "forge_issue_view alpha 1 state,labels 'select(.state == \"OPEN\") | .labels[].name'" | sort | paste -sd,)" == "approved,bug,looper:stuck" ]] || fail "view"
   lib 'ensure_kind_labels alpha'
   [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "alpha bug,alpha feature,alpha priority:high,alpha priority:low" ]] || fail "labels created: $(cat "$FIX/labels-created")"

@@ -713,6 +713,7 @@ land_work() {
         log "nothing landed: the gates changed tracked files ($(git status --porcelain --untracked-files=no | awk '{ print $2 }' | paste -sd' ' -)): it is not the tested tree" >&2
         exit 4
       fi
+      [[ -z "${LOOPER_RUN:-}" || -z "${ISSUE:-}" ]] || comments_mark "$ISSUE" "$out"
       if LOOPER_LANDING=1 git push -q origin HEAD:refs/heads/main; then
         echo "$before $(git rev-parse HEAD)${GATES_MAPPED:+ $GATES_SET}" >> "$out/landed"
         printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
@@ -807,7 +808,7 @@ lander() {
       land_defer "$n" "$run" "$GATES_SET" > "$LANDS/$n.out" 2> "$LANDS/$n.err"; rc=$LAND_DEFERRED
     else
       log "landing #$n ($(wip_branch "$n"))"
-      ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
+      ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
         > "$LANDS/$n.out" 2> "$LANDS/$n.err" || rc=$?
       if (( rc == 0 )); then log "#$n: $(tail -n 1 "$LANDS/$n.out" | cut -c24-)"; else log "#$n: nothing landed (exit $rc)"; fi
       # It has an outcome now: the branch is no longer land-pending.
@@ -893,7 +894,7 @@ land_prior() { # issue run-dir
     git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" origin/main || true; return 0
   fi
   printf '%s\n' "$m" > "$run/land"
-  ( LAND_GATES="$gates"; LOOPER_RUN="$run"
+  ( ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$run"
     if [[ -n "${LOOPER_LANDER:-}" && -d "$LOOPER_LANDER" ]]; then land_wait "$gates"; else land_work; fi ) > "$run/prior-land" 2>&1 || rc=$?
   if (( rc == LAND_DEFERRED )); then
     # The branch as it was, but for its land's state.
@@ -1032,12 +1033,28 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
   return "$rc"
 }
 
-# The issue's run is done: the issue is closed, or the run wrote its
-# Blocked-by outcome (its last step, whether it pushed or not: looper#22).
+# The issue's comments before its run's closing report (looper#54): their
+# count when the run starts, and again before each land, whose push can close
+# the issue while the model still works. One that cannot be read leaves none.
+comments_mark() { # issue run-dir
+  local c
+  if c="$(forge_issue_comment_count "$REPO" "$1" 2>/dev/null)" && [[ "$c" =~ ^[0-9]+$ ]]; then echo "$c" > "$2/comments"
+  else rm -f "$2/comments"; fi
+}
+# The run has reported on its issue: a comment since its last land, or since
+# it started when it landed nothing.
+run_reported() { # issue run-dir
+  local c
+  [[ -s "$2/comments" ]] && c="$(forge_issue_comment_count "$REPO" "$1" 2>/dev/null)" && [[ "$c" =~ ^[0-9]+$ ]] && (( c > $(cat "$2/comments") ))
+}
+
+# The issue's run is done: it reported on the issue and the issue is closed,
+# or the run wrote its Blocked-by outcome (its last step, whether it pushed or
+# not: looper#22). Closed alone is not done: a land closes it (looper#54).
 run_done() { # issue run-dir
   if [[ "$MODE" == think ]]; then grep -qE '^type:[[:space:]]*[a-z]+' "$THINK_OUT/outcome" 2>/dev/null; return; fi
   if [[ -f "$2/outcome" ]] && grep -qi '^[[:space:]]*blocked-by:' "$2/outcome"; then return 0; fi
-  [[ "$(forge_issue_view "$REPO" "$1" state .state 2>/dev/null)" == CLOSED ]]
+  [[ "$(forge_issue_view "$REPO" "$1" state .state 2>/dev/null)" == CLOSED ]] && run_reported "$1" "$2"
 }
 
 # The watchdog, every LOOPER_WATCH_INTERVAL until killed: stops the model when
@@ -1639,6 +1656,7 @@ $(issue_texts "$n")
 PR
   local rc=0 ticker
   checkpoint_ticker "$n" "$run" & ticker=$!
+  comments_mark "$n" "$run"
   run_claude "$run/prompt.md" "$run/claude.log" "$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))" "$run" "$n" || rc=$?
   kill "$ticker" 2>/dev/null; wait "$ticker" 2>/dev/null || true
   local stopped=""; [[ -s "$run/stopped" ]] && stopped="$(cat "$run/stopped")"
@@ -1687,11 +1705,28 @@ PR
   labels="$(forge_issue_view "$REPO" "$n" labels '.labels[].name')"
   # HISTORY.md: a line for the closed issue, with the run's last commit on
   # main if it landed one. The parent adds the releases' lines.
-  local title t
+  local title t line ended
   if [[ "$state" == CLOSED ]]; then
     title="$(forge_issue_view "$REPO" "$n" title .title)" || title=""
     t=""; [[ -n "$head_after" ]] && t=", $(git -C "$CHECKOUT" rev-parse --short "$head_after")${sets:+; gates: $sets}"
-    land "HISTORY.md: #$n (looper)" append_history "- $(date -u +%F) looper issue $title (#$n$t)"
+    line="- $(date -u +%F) looper issue $title (#$n$t)"
+    land "HISTORY.md: #$n (looper)" append_history "$line"
+    # No issue closes silently (looper#54): a run the looper stopped on its
+    # closed issue with no report of its own since its last land (a land
+    # closed it) gets the looper's.
+    ended=""
+    case "$stopped:$rc" in
+      done:*) ended="the looper stopped it ${DONE_GRACE}s after it was done" ;;
+      idle:*) ended="it went idle (no output, no change) for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it" ;;
+      :124|:137) ended="the looper stopped it at its time limit ($(hours "$limit"))" ;;
+    esac
+    if [[ -n "$ended" ]] && ! run_reported "$n" "$run"; then
+      forge_issue_comment "$REPO" "$n" "This issue was closed with no closing report from its run: $ended before it wrote one, so the looper reports instead.${head_after:+ The run landed main $(git -C "$CHECKOUT" rev-parse --short "$head_before")..$(git -C "$CHECKOUT" rev-parse --short "$head_after")$on.} HISTORY.md: \`$line\`. The end of its log:
+
+$(log_tail "$run" 40)
+
+Run record: $(run_record "$run")." >/dev/null || true
+    fi
     drop_wip "$n"; report "$n" closed; log "#$n done${head_after:+ (main $head_before..$head_after)}"; return 0
   fi
   local blocked what by those="that issue is" brc=0 dropped="" also=""

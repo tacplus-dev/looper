@@ -197,6 +197,16 @@ forge_issue_comment() { # repo n body
   esac
 }
 
+# How many comments an issue has: the ones people and the looper wrote, not
+# GitLab's system notes (a label added, the issue closed).
+forge_issue_comment_count() { # repo n
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/issues/$2" --jq .comments ;;
+    gitlab) local i; i="$(gl_api GET "$(gl_project "$1")/issues/$2")" || return 1
+            jq -r .user_notes_count <<<"$i" ;;
+  esac
+}
+
 forge_label_create() { # repo name color(hex, no #) description
   case "$LOOPER_FORGE" in
     github) gh label create "$2" --repo "$LOOPER_ORG/$1" --color "$3" --description "$4" ;;

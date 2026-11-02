@@ -55,7 +55,7 @@ case "$cmd" in
     [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
     who='{user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}'
     if [[ "$p" == */comments ]]; then jq "[.comments[] | {body} + $who]" "$f"
-    else jq "{number, title, body} + $who" "$f"; fi | jq -r "$q" ;;
+    else jq "{number, title, body, comments: (.comments | length)} + $who" "$f"; fi | jq -r "$q" ;;
   api\ repos/*/collaborators/*/permission)
     l="${cmd%/permission}"; l="$FIX/permissions/${l##*/}"
     [[ -f "$l" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
@@ -162,6 +162,8 @@ LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true'   #
 push_fix() { # a claude.sh line: commit and land a fix
   echo "git commit -q --allow-empty -m fix && $LAND" >> "$FIX/claude.sh"
 }
+# A claude.sh line: the run's closing report on its issue, as rule 8 asks.
+report() { echo "gh issue comment 4 --repo tacplus-dev/alpha --body \"$1\"" >> "$FIX/claude.sh"; }
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
@@ -616,19 +618,60 @@ run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
-# Done means done: once the run closed its issue, the model gets
-# LOOPER_DONE_GRACE seconds to exit, then it is stopped.
+# Done means done: once the run reported on its issue and closed it, the
+# model gets LOOPER_DONE_GRACE seconds to exit, then it is stopped.
 scenario done-closed
-push_fix
+push_fix; report "Fixed."
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 20 )) || fail "the finished run was not ended"
-[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+[[ "$(cat "$FIX/comments")" == "alpha#4 Fixed." ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$OUT" "done"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "ends your run"
+pass
+
+# A land can close the issue while the model still works (looper#54: a
+# commit's "Fixes #N" closes it on GitHub): closed is not done. The done-grace
+# starts at the run's closing report, written after the land, so the model is
+# not stopped before it. The stub land's gates close the issue, as the push would.
+CLOSING_LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates "bash \"\$FIX/close.sh\""'
+closing_land() { # a claude.sh line: commit and land a fix that closes the issue
+  echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' > "$FIX/close.sh"
+  echo "git commit -q --allow-empty -m fix && $CLOSING_LAND" >> "$FIX/claude.sh"
+}
+scenario land-closes-mid-run
+echo 'gh issue comment 4 --repo tacplus-dev/alpha --body "Starting."' >> "$FIX/claude.sh"
+closing_land
+echo 'for i in 1 2 3 4 5 6; do echo still verifying; sleep 1; done' >> "$FIX/claude.sh"
+report "Landed, the gates pass."
+echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
+(( SECONDS - start < 30 )) || fail "the finished run was not ended"
+[[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == CLOSED ]] || fail "not closed"
+[[ "$(cat "$FIX/comments")" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
+has "$OUT" "its run was done"
+pass
+
+# A run stopped on an issue its land closed, with no closing report of its
+# own: the looper posts one, with the land, the HISTORY line and the log's end.
+scenario land-closes-no-report
+closing_land
+echo 'echo "last words"; sleep 60' >> "$FIX/claude.sh"
+start=$SECONDS
+run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1 LOOPER_IDLE_MINUTES=0.1
+(( SECONDS - start < 40 )) || fail "the model was not stopped"
+c="$(cat "$FIX/comments")"
+[[ "$(grep -c '^alpha#4 ' <<<"$c")" == 1 ]] || fail "comments: $c"
+has "$c" "closed with no closing report from its run"
+has "$c" "main $(origin rev-parse --short main~2)..$(origin rev-parse --short main~1)"
+has "$c" "- $(date -u +%F) looper issue Issue 4 (#4, $(origin rev-parse --short main~1))"
+has "$c" "last words"
+has "$c" "https://gl.test/jobs/77"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
 # Likewise once the fix is pushed and the run wrote its Blocked-by outcome.
