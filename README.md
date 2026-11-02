@@ -245,7 +245,8 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   - **the runner's CPU and memory:** as many children as the VM holds at `LOOPER_CHILD_CPUS` (2) and
     `LOOPER_CHILD_MEMORY_GB` (4) a child (a t2a-standard-8 worker: 4), never more than `LOOPER_MAX_CHILDREN`
     (6), a safety ceiling only. A repository whose gates run Kani (the word in a justfile, a Makefile or a CI
-    workflow on main) gets `LOOPER_KANI_MEMORY_GB` (12) a child: two on that worker (looper#41, tacplus#196).
+    workflow on main) gets `LOOPER_KANI_MEMORY_GB` (12) a child: two on that worker (looper#41, tacplus#196), five on
+    tacplus's t2a-standard-16 worker ([Infrastructure](#infrastructure), looper#55).
     The child's memory is a limit, not only a count: each container its model starts (`docker run`, and
     `tacplus`'s) gets `--memory` and `--memory-swap` of it, from `looper-docker`, the `docker` first on the
     model's PATH (`LOOPER_CHILD_MEMORY`), which refuses a larger `--memory` or none. A container over it is
@@ -963,7 +964,7 @@ commit Verified on main), and a follow-up issue for every other repository; Jody
 looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL seconds for 57 minutes
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
-tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, else the default); a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
 The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/looper, masked and protected,
@@ -1064,6 +1065,25 @@ project jody1-328023). The manager runs the docker-autoscaler executor with the 
 plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 `runner-arm64-t2a8-v5`, t2a-standard-8; `runner-arm64-t2a8-v7`, booting the image family `runner-arm64-docker`, once
 the hub applies [A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)): up to 5 workers, size 0 at rest.
+
+**Two pools** (looper#55). tacplus's gates run Kani at 12 GB a child, so on a t2a-standard-8 (8 CPUs, 31 GB) its job
+gets two children; every other repository fits four. tacplus's jobs therefore run on a larger pool, the others stay:
+
+| Pool | Runner | Tags | Instance group, template | Holds |
+|---|---|---|---|---|
+| every repository but tacplus | 57939705 *tacplus-dev arm64 autoscaler* | `arm64, autoscale` | `runner-arm64-tacplus`, `runner-arm64-t2a8-v*` (t2a-standard-8, 31 GB) | up to 5 workers |
+| tacplus | 58307468 (group runner, protected refs only) | `arm64, autoscale-16` | `runner-arm64-tacplus-big`, `runner-arm64-t2a16-v7` (t2a-standard-16, 64 GB, `looper-runner`, 400 GB pd-standard) | up to 2 VMs; 5 children a job (64 GB / 12; the CPUs allow 8) |
+
+`looper-dispatch plan` gives a repository's job the tags of `LOOPER_JOB_TAGS_<repo>` (its name, `-` as `_`), else
+`LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper (outside this
+repository; the hub changes it) sets, among its `variables`:
+
+```yaml
+  LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"
+```
+
+The plan's log names each job's tags (`planned looper-tacplus-<n> (<timeout>, tags arm64, autoscale-16)`), and the
+job's page names the runner.
 
 - The workers run as their own Google account, `looper-runner`, which may only pull the tacplus build images
   (once the hub applies [Credentials](#credentials); until then, `build-box`).

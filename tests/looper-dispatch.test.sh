@@ -318,6 +318,25 @@ grep -q 'pass failed' <<<"$OUT" || fail "log: $OUT"
 [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "labels $(labels alpha 4)"
 pass
 
+# Per-repository runner tags (looper#55): a repository's job takes
+# LOOPER_JOB_TAGS_<repo> (`-` as `_`), else LOOPER_JOB_TAGS, else the default;
+# so tacplus's jobs go to the 16-CPU pool and every other repository's stay.
+scenario plan-tags
+issue tacplus 5 OPEN "Go." approved
+issue fleet-lab 6 OPEN "Go." approved
+tags_of() { awk -v j="looper-$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  tags:/ {sub(/^  tags: /, ""); print}' <<<"$PLAN"; }
+plan_with() { PLAN="$(env "$@" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed"; }
+plan_with -u LOOPER_JOB_TAGS LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16"
+[[ "$(tags_of tacplus-5)" == "[arm64, autoscale-16]" ]] || fail "tacplus: $(tags_of tacplus-5): $PLAN"
+[[ "$(tags_of alpha-4)" == "[arm64, autoscale]" ]] || fail "alpha: $(tags_of alpha-4)"
+[[ "$(tags_of fleet-lab-6)" == "[arm64, autoscale]" ]] || fail "fleet-lab: $(tags_of fleet-lab-6)"
+plan_with LOOPER_JOB_TAGS="arm64, other" LOOPER_JOB_TAGS_fleet_lab="arm64, lab"
+[[ "$(tags_of fleet-lab-6)" == "[arm64, lab]" ]] || fail "fleet-lab's override: $(tags_of fleet-lab-6)"
+[[ "$(tags_of tacplus-5)" == "[arm64, other]" ]] || fail "tacplus without its override: $(tags_of tacplus-5)"
+[[ "$(tags_of alpha-4)" == "[arm64, other]" ]] || fail "alpha: $(tags_of alpha-4)"
+pass
+
 # Nothing runs on the Mac any more: there is no launchd install.
 scenario no-install
 dispatch_fails install

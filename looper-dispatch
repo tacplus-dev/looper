@@ -103,21 +103,24 @@ pass() {
 # of ready_by_repo (priority:high first, looper#31), sized by
 # `repo-looper --job-timeout` (looper#33), one at a time per repository
 # (resource_group looper-<repo>). LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS
-# (comma-separated) are the jobs' image and runner tags. With none to plan, one
-# job that says so: a child pipeline has at least one.
+# (comma-separated) are the jobs' image and runner tags; LOOPER_JOB_TAGS_<repo>
+# (`-` as `_`) overrides the tags for one repository's job (looper#55: tacplus's
+# on the 16-CPU pool). With none to plan, one job that says so: a child
+# pipeline has at least one.
 plan() {
-  local jobs ready repo n t image="${LOOPER_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}" any=""
+  local jobs ready repo n t v tags image="${LOOPER_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}" any=""
   jobs="$(active_jobs)"; ready="$(ready_by_repo)"
   printf 'variables:\n  GIT_STRATEGY: none\n  LOOPER_WORK: /builds/looper\n'
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
     if busy "$repo" "$jobs" >/dev/null; then log "$repo already has a looper job; not planned again" >&2; continue; fi
     t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=6h
-    any=1; log "planned looper-$repo-$n ($t)" >&2
+    v="LOOPER_JOB_TAGS_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
+    any=1; log "planned looper-$repo-$n ($t, tags $tags)" >&2
     cat <<YML
 looper-$repo-$n:
   image: $image
-  tags: [${LOOPER_JOB_TAGS:-arm64, autoscale}]
+  tags: [$tags]
   retry:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]

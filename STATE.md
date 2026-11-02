@@ -96,14 +96,15 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by lo
   `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
   credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, a reference to another org held and
-  never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs and
+  never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, #55), and
   `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43)
-- **Known gaps:** until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
+- **Known gaps:** until the hub sets `LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"` in gitlab.com/tacplus-dev/looper's
+  pipeline file (README, Infrastructure, #55), tacplus's jobs stay on runner 57939705, two children a job; until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
   account and WIF binding, the first image, the templates, `instance_ready_command`), a fresh worker installs and
   restarts Docker at boot under its first job, which fails in preparation and is retried; the bake's IAM role and
   `runner-image build` have not run against GCP (no looper may change IAM or create VMs), and #43's acceptance (twenty
