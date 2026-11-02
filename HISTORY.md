@@ -33,3 +33,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-02 looper issue Standing rule: trace propagation is implemented and tested in every service's handlers; loopers apply and verify it, and the nightly scan checks it (#51, d6c2135; gates: full)
 - 2026-11-02 looper issue Watchdog stops the model when a land closes its issue, so the issue closes with no report (redo#5) (#54, 1cfac48; gates: full)
 - 2026-11-02 looper issue scanners/requirements.txt: Semgrep 1.183.0 pins mcp 1.29.0 and opentelemetry-api 1.37.0, both with advisories (no Semgrep release fixes it) (#53, 57247d4; gates: full)
+- 2026-11-02 looper issue tests/looper-docker.test.sh fails (or hangs) when a child runs the full gates: it inherits the child's own docker shim (#52, b42e115; gates: full)
