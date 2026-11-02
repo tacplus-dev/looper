@@ -8,6 +8,8 @@
 # records its argv. With a docker daemon at hand, a real container that
 # allocates more than its limit is OOM-killed on its own (exit 137), while a
 # container beside it and this script carry on.
+# It runs as a child runs it too (looper#52): with a looper-docker first on
+# the PATH and LOOPER_REAL_DOCKER set, neither of which it may inherit.
 # Run: tests/looper-docker.test.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +17,15 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 NAME=""
 fail() { echo "FAIL $NAME: $*" >&2; exit 1; }
 pass() { echo "ok $NAME"; }
+
+# The test's own environment, not the child's it may run in (looper#52): a
+# child's docker is a looper-docker first on its PATH, with LOOPER_REAL_DOCKER
+# set. Drop both, so the shim under test finds the stub, or the real docker.
+is_shim() { [[ -f "$1" ]] && head -n 10 "$1" | grep -qa '^# looper-docker: '; }
+unset LOOPER_REAL_DOCKER LOOPER_CHILD_MEMORY
+path=""; IFS=: read -ra dirs <<< "$PATH"
+for d in "${dirs[@]}"; do is_shim "$d/docker" || path="${path:+$path:}$d"; done
+PATH="$path"
 
 mkdir -p "$TMP/real" "$TMP/shim"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "$TMP/argv"\n' > "$TMP/real/docker"
@@ -77,6 +88,19 @@ argv "ps -a" ps -a
 argv "build --memory 64g ." build --memory 64g .
 LIMIT="" argv "run -m 64g img" run -m 64g img
 pass
+
+# The test as a child runs it: a copy of looper-docker first on its PATH, with
+# LOOPER_REAL_DOCKER the real docker, or unset (looper#52). It passes, in time.
+NAME=child-env
+if [[ -z "${LOOPER_DOCKER_TEST_CHILD:-}" ]]; then
+  mkdir -p "$TMP/child"; cp "$ROOT/looper-docker" "$TMP/child/docker"
+  for rd in "$(command -v docker || true)" ""; do
+    rc=0; timeout 600 env LOOPER_DOCKER_TEST_CHILD=1 PATH="$TMP/child:$PATH" LOOPER_REAL_DOCKER="$rd" \
+      LOOPER_CHILD_MEMORY=4096m "${BASH_SOURCE[0]}" > "$TMP/child.out" 2>&1 || rc=$?
+    (( rc == 0 )) || fail "under a child, LOOPER_REAL_DOCKER=\"$rd\": exit $rc: $(tail -n 5 "$TMP/child.out")"
+  done
+  pass
+fi
 
 # The real thing: 64 MB, and a container that asks for 256.
 NAME=oom-killed-alone

@@ -321,11 +321,6 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **A link check and a secrets scan in this repository's docs set** (2026-11-01, #48): its `gates.yaml` `docs` set
   runs only `planning-files-check`; tacplus's design has a link check and a secrets scan too, but the image has
   neither tool. #49's scanners (gitleaks) are the natural home.
-- **tests/looper-docker.test.sh in a model's environment** (2026-11-01, #48): with `LOOPER_REAL_DOCKER` set (it is,
-  in a child's model's environment), `looper-docker` execs the real docker instead of the test's stub, and the
-  test's first scenario fails ("pull access denied for img"). The lander's environment does not have it, so the
-  land's gates pass; the test's `dk` should run with `env -u LOOPER_REAL_DOCKER`, so a model can verify with the
-  full gates as they are.
 - **Preview a land's gate set** (2026-11-01, #48): a `repo-looper --gate-set [BASE]` that prints the set, why and
   its command for the current checkout would let the model verify with exactly what its land will run.
 - **Trace propagation in Java handlers** (2026-11-02, #51): `looper-trace` reads Go and Rust and only names the
