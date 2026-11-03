@@ -37,3 +37,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue Per-repository runner tags: tacplus jobs on the 16-CPU pool (runner 58307468), others unchanged (#55, a5d0e24; gates: docs)
 - 2026-11-03 looper issue tacplus-dev's GitLab pipeline plans jobs inline instead of with looper-dispatch plan, so looper changes (like #55) don't reach it (#56, 4ec7bd1; gates: full)
 - 2026-11-03 looper issue The looper image hasn't published since #48: image workflow fails a looper-build plan scenario only in Actions; 19 commits never reached the loopers (#58, e92e403; gates: full)
+- 2026-11-03 looper issue The parent re-plans only when a child ends: free slots sit idle while a newly ready issue waits hours (#59, c757480; gates: full)
