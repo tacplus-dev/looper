@@ -51,3 +51,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue runner-image build: RUNNER_IMAGE_SUBNET (--no-address) for projects without a default network; pinned Docker; print the image name (#67)
 - 2026-11-03 looper issue Model users: useradd -U can give a model the docker socket's gid (1002 on the runner), so it reaches the socket the broker should own (#68) (#69, 07482fa; gates: full)
 - 2026-11-03 looper issue One job per issue (direct reports) and a manager per repo that alone merges to main (#70, 38f35fa; gates: full)
+- 2026-11-03 looper issue Recap: manager scores, per-repo cap advice, capacity numbers for manual scale-up (#72, b8bad8d; gates: full)
