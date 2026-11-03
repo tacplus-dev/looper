@@ -756,6 +756,12 @@ land_work() {
 # request), N.out, N.err and N.rc (the result, written last); N.orphan when the
 # child ended first, and N.claimed by whichever reads the result.
 LANDS="$WORK/lands"
+# A file of the queue that is the looper's or one of these users': the queue is
+# every model's to write (looper#68), so another issue's model may plant one.
+lands_by() { # file [user...]
+  local o; o="$(stat -c %U "$1" 2>/dev/null)" || return 1
+  [[ " root $(id -un) ${*:2} " == *" $o "* ]]
+}
 land_pending() { [[ -n "${LOOPER_LANDER:-}" && ( -e "$LANDS/$1.req" || -e "$LANDS/$1.running" ) ]]; } # issue
 
 # A land the lander does not start because it would not finish before the job
@@ -772,7 +778,7 @@ land_request() {
   [[ -n "$gates" || -f "$CHECKOUT/$GATE_MAP" ]] || die "no gates to re-run before landing: $REPO has no $GATE_MAP, no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
-  if [[ -n "${LOOPER_RUN:-}" && ! -e "$LANDS/$n.rc" ]] && ! land_pending "$n"; then
+  if [[ -n "${LOOPER_RUN:-}" ]] && ! lands_by "$LANDS/$n.rc" "$(model_user "$n")" && ! land_pending "$n"; then
     printf 'gates=%s\nstate=queued\n' "$gates" > "$LOOPER_RUN/land"
     checkpoint "$n" "land queued" "$LOOPER_RUN"
   fi
@@ -787,20 +793,20 @@ land_request() {
 # lands it here.
 land_wait() { # gates
   local gates="$1" n="$ISSUE" rc
-  if [[ -e "$LANDS/$n.rc" ]]; then log "a land of $BRANCH ended unread; its result:"
+  if lands_by "$LANDS/$n.rc" "$(model_user "$n")"; then log "a land of $BRANCH ended unread; its result:"
   elif land_pending "$n"; then log "a land of $BRANCH is already queued; waiting for it"
   else
     printf 'run=%s\ngates=%s\nqueued=%s\n' "${LOOPER_RUN:-}" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LANDS/$n.req.new" && mv "$LANDS/$n.req.new" "$LANDS/$n.req"
     log "queued: the looper lands $BRANCH after the lands queued before it, one at a time; waiting for it. If your time runs out first, it still lands it after you and says so on the issue."
   fi
-  until [[ -e "$LANDS/$n.rc" ]]; do
+  until lands_by "$LANDS/$n.rc" "$(model_user "$n")"; do
     # The lander's process, by /proc: another user's (looper#68) refuses kill -0.
     if [[ ! -e "/proc/${LOOPER_LANDER_PID:-0}" ]] && mv "$LANDS/$n.req" "$LANDS/$n.taken" 2>/dev/null; then
       rm -f "$LANDS/$n.taken"; log "the looper's lander is gone; landing here"; land_work; return
     fi
     sleep 1
   done
-  { [[ ! -e "$LANDS/$n.orphan" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; } || die "this run has ended: the looper reports the land on the issue"
+  { ! lands_by "$LANDS/$n.orphan" && mkdir "$LANDS/$n.claimed" 2>/dev/null; } || die "this run has ended: the looper reports the land on the issue"
   rc="$(cat "$LANDS/$n.rc")"; cat "$LANDS/$n.out"; cat "$LANDS/$n.err" >&2
   rm -rf "$LANDS/$n".{ran,out,err,rc,claimed}
   return "$rc"
@@ -812,9 +818,9 @@ land_wait() { # gates
 lander() {
   local f n run gates rc q o
   while :; do
-    [[ -e "$LANDS/.stop" ]] && return 0
+    lands_by "$LANDS/.stop" && return 0
     f="$(ls -tr "$LANDS"/*.req 2>/dev/null | head -n 1)" || true
-    if [[ -z "$f" ]]; then [[ -e "$LANDS/.done" ]] && return 0; sleep 1; continue; fi
+    if [[ -z "$f" ]]; then lands_by "$LANDS/.done" && return 0; sleep 1; continue; fi
     n="$(basename "$f" .req)"
     mv "$f" "$LANDS/$n.running" 2>/dev/null || continue
     run="$(sed -n 's/^run=//p' "$LANDS/$n.running")"; gates="$(sed -n 's/^gates=//p' "$LANDS/$n.running")"
@@ -845,7 +851,7 @@ lander() {
       chown "$(model_user "$n")" "$LANDS/$n".{ran,out,err,rc.new} 2>/dev/null || true; chmod 0600 "$LANDS/$n".{ran,out,err,rc.new} 2>/dev/null || true
     fi
     mv "$LANDS/$n.rc.new" "$LANDS/$n.rc"
-    if [[ -e "$LANDS/$n.orphan" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
+    if lands_by "$LANDS/$n.orphan" && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
   done
 }
 
@@ -1816,8 +1822,8 @@ PR
   # lander lands it and reports it on the issue. One that ended unread is
   # reported here.
   local pending=""
-  if [[ -n "${LOOPER_LANDER:-}" ]] && { land_pending "$n" || [[ -e "$LANDS/$n.rc" ]]; }; then
-    pending=1; touch "$LANDS/$n.orphan"
+  if [[ -n "${LOOPER_LANDER:-}" ]] && { land_pending "$n" || lands_by "$LANDS/$n.rc" "$(model_user "$n")"; }; then
+    pending=1; rm -f "$LANDS/$n.orphan"; touch "$LANDS/$n.orphan"
   fi
   # A land the lander deferred to the next job (looper#38) keeps the branch
   # land-pending: the issue resumes, the land first.
@@ -1923,7 +1929,7 @@ $done_left
 
 This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run record: $(run_record "$run")." >/dev/null || true
     log "#$n ended with its land queued; the parent lands it, and the issue resumes on the next pass"
-    if [[ -e "$LANDS/$n.rc" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
+    if lands_by "$LANDS/$n.rc" "$(model_user "$n")" && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
     return 0
   fi
   if [[ -n "$unsettled" ]]; then
@@ -2819,7 +2825,7 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
     log "#$n: $res; still running: $(issue_list "${pids[@]}")"
     # A child whose job GitLab no longer runs (looper#21): the job's retry takes over; nothing more starts,
     # and nothing more lands after the land under way (looper#34).
-    [[ "$res" == job-gone ]] && { stop=1; touch "$LANDS/.stop"; }
+    [[ "$res" == job-gone ]] && { stop=1; rm -f "$LANDS/.stop"; touch "$LANDS/.stop"; }
     # HISTORY.md: a line for each release the children made.
     local new=()
     for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_seen") || true); do
@@ -2832,7 +2838,8 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
   [[ -z "$timer" ]] || kill "$timer" 2>/dev/null || true
   # The lands the children left queued: the lander lands them before the job
   # ends. A job GitLab no longer runs lands no more: its retry resumes them.
-  touch "$LANDS/.done"
+  # Made afresh: one a model planted is not the looper's (lands_by).
+  rm -f "$LANDS/.done"; touch "$LANDS/.done"
   if [[ -z "$stop" ]] && { compgen -G "$LANDS/*.req" >/dev/null || compgen -G "$LANDS/*.running" >/dev/null; }; then
     log "landing what the children left queued"
   fi

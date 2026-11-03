@@ -1529,7 +1529,8 @@ pass
 # the other's processes or the lander, kill or pkill them, read
 # /proc/<pid>/environ of the other or of the lander, find a withheld
 # credential (GITLAB_TOKEN) in any process it can read, read the other's
-# worktree or run record, or reach the Docker socket. Its docker goes through
+# worktree or run record, reach the Docker socket, or stop the lander or
+# answer for the other's land by planting files in the landing queue. Its docker goes through
 # the broker, as the broker's user, for its worktree and not /etc. Both
 # checkpoint and land as before. Root only. The scripts run from a copy anyone
 # reads: this checkout may be a model's own (0750).
@@ -1566,6 +1567,8 @@ docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused it
 ! docker run --rm -v /etc:/e img true 2>> "$p.docker" || echo "docker mounted /etc" >> "$p"
 touch "$FIX/probed-$ISSUE"
 for i in $(seq 300); do [[ -e "$FIX/probed-$o" ]] && break; sleep 0.1; done
+# The landing queue is every model's to write: what #4 plants for the lander or for #5 is not the looper's.
+[[ "$ISSUE" != 4 ]] || touch "$LOOPER_LANDER/.stop" "$LOOPER_LANDER/.done" "$LOOPER_LANDER/5.rc" "$LOOPER_LANDER/5.orphan"
 kill "$(cat "$FIX/pid-$ISSUE")" || echo "could not stop its own process" >> "$p"
 echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" &&
   "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "committed" &&

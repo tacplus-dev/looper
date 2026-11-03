@@ -380,7 +380,9 @@ done
 
 # One SeaBeam issue worked end to end (gitlab, a subgroup's project): taken
 # (looper:in-progress), the model closes it, the label goes and HISTORY.md's
-# line is pushed to gitlab.com through the forge's credentials.
+# line is pushed to gitlab.com through the forge's credentials. The model runs
+# as the job's user (LOOPER_MODEL_USERS=0), to read this test's files: the
+# models' own users are repo-looper.test.sh's (looper#68).
 scenario end-to-end gitlab
 issue "$SUB" 21 OPEN "Fix the thing." approved bug
 echo '{"jody": 50}' > "$FIX/members.json"
@@ -397,7 +399,7 @@ env -u GITLAB_TOKEN -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPE
   -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT -u LOOPER_ROADMAP_REPO -u LOOPER_FORGE_URL \
   PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" ORG=seabeam PIPELINE=seabeam/tools/looper TOKEN="$TOKEN" \
   LOOPER_FORGE=gitlab LOOPER_ORG=seabeam LOOPER_FORGE_TOKEN="$TOKEN" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
-  LOOPER_WATCH_INTERVAL=1 LOOPER_DONE_GRACE=1 HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem" \
+  LOOPER_MODEL_USERS=0 LOOPER_WATCH_INTERVAL=1 LOOPER_DONE_GRACE=1 HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem" \
   "$ROOT/repo-looper" --repo tools/looper --issue 21 > "$FIX/out" 2>&1 || fail "repo-looper: $(tail -n 20 "$FIX/out")"
 grep -q 'looper:in-progress' "$FIX/labels-during" || fail "not taken: $(cat "$FIX/labels-during")"
 [[ "$(store "$SUB" 21 '[.labels[].name] | join(",")')" == approved,bug ]] || fail "labels after: $(store "$SUB" 21 '[.labels[].name] | join(",")')"
