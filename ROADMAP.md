@@ -24,6 +24,7 @@ Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 - Looper image separate from the build image; branch → start a build → land on main only on a passing build (#15, after #17)
 - Loopers keep STATE/HISTORY/PROPOSALS, never ROADMAP; CI check for the four files in every repo (#13)
 - Org secret TACPLUS_REGISTRY_TOKEN for release CI (#12) (needs Jody's decision)
+- The nightly recap: deterministic performance data (queue, prepare and run times, slot use, holds, lands, runner pools) in the suggestion pass; recurring bottlenecks become actionable Performance, Operability or Cost suggestions, transient ones a one-line note; a recap file for Jody's daily report (#57). Agent, at Jody's request, 2026-11-02.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
