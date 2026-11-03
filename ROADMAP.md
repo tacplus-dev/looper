@@ -26,6 +26,7 @@ Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 - Org secret TACPLUS_REGISTRY_TOKEN for release CI (#12) (needs Jody's decision)
 - The nightly recap: deterministic performance data (queue, prepare and run times, slot use, holds, lands, runner pools) in the suggestion pass; recurring bottlenecks become actionable Performance, Operability or Cost suggestions, transient ones a one-line note; a recap file for Jody's daily report (#57). Agent, at Jody's request, 2026-11-02.
 - Retire looper-port, the SeaBeam port scan: SeaBeam is retired on cutover, not ported (#60). Agent, at Jody's request, 2026-11-03.
+- runner-image build in projects with no default network (RUNNER_IMAGE_SUBNET, --no-address), a pinned Docker, the published image's name printed for pinning (#67; for tacplus-dev/cloud#4). Agent, hub's call under Jody's deterministic-deployments rule, 2026-11-03.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
