@@ -108,7 +108,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   also says the runner entries connect as `username = "runner"`, but the workers' docker socket is group `fleeting`
   and the startup-script's comment says the manager connects as `fleeting` (seen on a worker, 2026-10-31). One of
   the two is stale, and only the manager's config.toml can say which.
-- **Pin the bake's Docker** (2026-10-31, #43): `runner-image build` installs the newest `docker-ce` from Docker's
+- **Pin the bake's Docker** (2026-10-31, #43; **superseded** 2026-11-03: the pools boot a pinned
+  Container-Optimized OS and nothing is baked, roadmap `decisions/builds-in-containers-2026-11-03.md`, looper#67
+  closed): `runner-image build` installs the newest `docker-ce` from Docker's
   apt repository, so two bakes a month apart differ, and a bad Docker release reaches the workers by the monthly
   schedule (the boot check catches only a Docker that does not start). Pinning the version in `runner/startup.sh`
   (bumped by a looper issue) would make each rebake a change on main; deprecating the newest image is the rollback

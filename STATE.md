@@ -120,11 +120,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   when the hub copies it there; until then that pipeline plans with its inline script (tacplus's jobs on the 16-CPU
   pool, #55, through its own `LOOPER_JOB_TAGS_tacplus`); README's "A fresh VM is ready before its job" (#43) is not hand-applied on
   jody1-328023 (the hub, 2026-11-03: the recap measured 0.24 h of waiting in 24 h, and lasting infrastructure comes
-  from the cloud pipeline): the baked image, the readiness gate and one VM per job come with the runner pools of
-  tacplus-dev/cloud's `ci` stack (cloud#4), and until then a fresh worker installs and
-  restarts Docker at boot under its first job, which fails in preparation and is retried; the bake's IAM role and
-  `runner-image build` have not run against GCP (no looper may change IAM or create VMs), and #43's acceptance (twenty
-  jobs on fresh VMs, before and after times, `runner-image measure`) waits on cloud#4; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
+  from the cloud pipeline): the runner pools of tacplus-dev/cloud's `ci` stack (cloud#4, closed) boot a pinned
+  Container-Optimized OS with nothing installed at boot, a `docker info` readiness gate and one VM per job, and the
+  baked image is superseded (roadmap `decisions/builds-in-containers-2026-11-03.md`; `runner/` and `runner-image
+  build`/`template` stay until the redesign retires them, never run against GCP); until the jobs move onto those
+  pools a fresh worker installs and restarts Docker at boot under its first job, which fails in preparation and is
+  retried, and #43's acceptance (twenty jobs on fresh VMs, before and after times, `runner-image measure`) waits on
+  that move; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
   once it no longer answers SSH (tacplus, 2026-10-31); README's Credentials (#25) are applied (hub, checked 2026-11-03): the jobs' `GITLAB_TOKEN` is
   `tacplus-looper-bot`'s `read_api` token (`looper-jobs`, expires 2027-10-01), `looper-runtime` is revoked, and every

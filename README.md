@@ -1233,9 +1233,15 @@ before it. `set-instance-template` back to the old template returns to the insta
 `BP` tacplus-dev/build's project id). The order matters. Steps 1 to 4 change no running job; step 5 is the one
 restart, and it brings looper#42's keys in only once the image and the gate are in place.
 
-These steps are not applied by hand on jody1-328023 (the hub, 2026-11-03): the runner pools of tacplus-dev/cloud's
-`ci` stack get the baked image, the readiness gate and one VM per job from the start (tacplus-dev/cloud#4). They
-stay here as what that stack does, and as the way to do it by hand.
+These steps are not applied by hand on jody1-328023 (the hub, 2026-11-03), and the baked image is **superseded**
+(tacplus-dev/roadmap `decisions/builds-in-containers-2026-11-03.md`). The runner pools of tacplus-dev/cloud's `ci`
+stack (tacplus-dev/cloud#4, landed as its 6ded61d) boot Container-Optimized OS for arm64, pinned by image name,
+with no startup-script and nothing installed at boot. They keep the gate, as
+`instance_ready_command = "timeout 600 sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'"` (COS's own
+runtime, so there is no marker file), and one VM per job. `runner/`, `runner-image build` and `runner-image template`
+stay until the redesign's issues retire them. `runner-image measure` is still how looper#43's acceptance is
+measured (step 6), once the jobs run on those pools. The steps below are the procedure for jody1-328023's
+Ubuntu workers, kept as a record.
 
 1. **The bake's identity.** It gets a service account that can only manage the bake's own VMs, disks and images, and
    that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER`
