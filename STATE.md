@@ -122,9 +122,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   `runner-image build` have not run against GCP (no looper may change IAM or create VMs), and #43's acceptance (twenty
   jobs on fresh VMs, before and after times, `runner-image measure`) waits on that; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
-  once it no longer answers SSH (tacplus, 2026-10-31); until Jody and the hub apply README's Credentials (#25), the jobs' `GITLAB_TOKEN` is still
-  Jody's `looper-runtime` (`api`, Owner of the group: it reads fleet-seatrials' protected variables) and the workers
-  still run as `build-box` (Artifact Registry uploads, every bucket's objects); its job keeps a runner worker up around the clock (see PROPOSALS.md);
+  once it no longer answers SSH (tacplus, 2026-10-31); README's Credentials (#25) are applied (hub, checked 2026-11-03): the jobs' `GITLAB_TOKEN` is
+  `tacplus-looper-bot`'s `read_api` token (`looper-jobs`, expires 2027-10-01), `looper-runtime` is revoked, and every
+  worker runs as `looper-runner` (template `runner-arm64-t2a8-v6` and the 16-CPU pool), not `build-box`; its job keeps a runner worker up around the clock (see PROPOSALS.md);
   the Mac's launchd kicker is removed by the hub with Jody (`looper-dispatch uninstall`) once it has run green
   for a day; the ROADMAP.md guard is a pre-push hook in the looper's checkout, so a push that skips hooks
   is not refused (see PROPOSALS.md); SeaBeam's instance (README, A SeaBeam instance: `seabeam/tools/looper`, its
