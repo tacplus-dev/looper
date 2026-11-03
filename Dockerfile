@@ -52,16 +52,26 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
     tar -xzf "$d/$f" -C "$d" bin/glab; install -m 0755 "$d/bin/glab" /usr/local/bin/glab; rm -rf "$d"; glab --version
 # The build pipeline's security checks (looper-scan, looper#49): every scanner
 # pinned, each release archive checked against its sha256 here (linux/arm64,
-# as the image), govulncheck and OSV-Scanner by their module checksums (go install,
-# sum.golang.org). OSV-Scanner's release binary is built with a Go whose stdlib
-# carries reachable vulnerabilities (looper#63): it is built here with
+# as the image), govulncheck, OSV-Scanner and Trivy by their module checksums (go
+# install, sum.golang.org). OSV-Scanner's and Trivy's release binaries carry
+# reachable vulnerabilities (looper#63: its Go's stdlib; looper#64: x/net
+# GO-2026-6860/6866, x/crypto's openpgp GO-2026-5932): they are built here with
 # GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum.
+# Trivy built so reports GO-2026-4919 alone, not applicable: the compromised
+# v0.69.4 release (CVE-2026-33634), whose range has no fix event and so matches
+# every later version. Trivy is a long build: its own layer, before the others,
+# so that moving another scanner does not rebuild it. Its version as the release
+# sets it (goreleaser.yml), else it reads "dev".
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
-ARG OSV_SCANNER_VERSION=2.7.0 GO_TOOLCHAIN=go1.27.3
+ARG GO_TOOLCHAIN=go1.27.3 TRIVY_VERSION=0.76.1
+RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
+      -ldflags "-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=$TRIVY_VERSION" \
+      "github.com/aquasecurity/trivy/cmd/trivy@v$TRIVY_VERSION"; \
+    go clean -cache -modcache; trivy --version | grep -qx "Version: $TRIVY_VERSION"
+ARG OSV_SCANNER_VERSION=2.7.0
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
-ARG TRIVY_VERSION=0.76.1 TRIVY_SHA256=e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f
 ARG SYFT_VERSION=1.56.0 SYFT_SHA256=ace61b9397ae28189c674ae332d67a8074dafd71e87724dfb8b22412d8253bb5
 ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
 ARG GOSEC_VERSION=2.30.0 GOSEC_SHA256=0867994920453070a5d6a713e35921a3058473e5c3bf777fdd5a2d6f95313fda
@@ -72,8 +82,6 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
     get deny.tgz "$gh/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl.tar.gz" "$CARGO_DENY_SHA256"; \
     tar -xzf "$d/deny.tgz" -C "$d"; install -m 0755 "$d/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny; \
-    get trivy.tgz "$gh/aquasecurity/trivy/releases/download/v$TRIVY_VERSION/trivy_${TRIVY_VERSION}_Linux-ARM64.tar.gz" "$TRIVY_SHA256"; \
-    tar -xzf "$d/trivy.tgz" -C "$d" trivy; install -m 0755 "$d/trivy" /usr/local/bin/trivy; \
     get syft.tgz "$gh/anchore/syft/releases/download/v$SYFT_VERSION/syft_${SYFT_VERSION}_linux_arm64.tar.gz" "$SYFT_SHA256"; \
     tar -xzf "$d/syft.tgz" -C "$d" syft; install -m 0755 "$d/syft" /usr/local/bin/syft; \
     get gitleaks.tgz "$gh/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_arm64.tar.gz" "$GITLEAKS_SHA256"; \
@@ -93,7 +101,10 @@ RUN rustup component add clippy && cargo clippy --version
 # Semgrep runs on dependency versions it does not declare (scanners/requirements.txt,
 # looper#53): it scans scanners/smoke/ here, offline, and must report its one finding.
 # OSV-Scanner, built from source (looper#63), must find the vulnerable dependency
-# planted in scanners/smoke/osv-smoke.pip (OSV's API: the network).
+# planted in scanners/smoke/osv-smoke.pip (OSV's API: the network), and Trivy, built
+# from source (looper#64), the same one in the SBOM scanners/smoke/trivy-smoke.json
+# (its database fetched into a cache of its own and removed: the scans fetch theirs;
+# the file's name keeps it out of the tree scans, which read SBOMs named *.cdx.json).
 COPY scanners/requirements.txt /opt/scanners/requirements.txt
 COPY scanners/smoke/ /opt/scanners/smoke/
 RUN set -eu; python3 -m venv /opt/scanners/venv; \
@@ -105,7 +116,10 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
       { echo "semgrep: the smoke's finding is missing" >&2; cat /tmp/smoke.json >&2; exit 1; }; \
     osv-scanner scan source -L "requirements.txt:$s/osv-smoke.pip" --format json --output /tmp/smoke.json >/dev/null || test $? = 1; \
     jq -e '[.results[].packages[] | select(.package.name == "urllib3") | (.vulnerabilities | length) > 0] == [true]' /tmp/smoke.json >/dev/null || \
-      { echo "osv-scanner: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; rm -f /tmp/smoke.json
+      { echo "osv-scanner: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; \
+    trivy sbom -q --cache-dir /tmp/trivy-smoke --scanners vuln --format json -o /tmp/smoke.json "$s/trivy-smoke.json"; rm -rf /tmp/trivy-smoke; \
+    jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "urllib3")] | length > 0' /tmp/smoke.json >/dev/null || \
+      { echo "trivy: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; rm -f /tmp/smoke.json
 COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/

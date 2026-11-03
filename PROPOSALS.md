@@ -9,7 +9,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   gosec, cargo-deny). The nightly scan found reachable vulnerabilities in four of them by running
   `govulncheck -mode=binary` by hand. A step in the image workflow (or `looper-scan` on a release's image, beside its
   SBOM) running `govulncheck -mode=binary` on each Go binary under `/usr/local/bin` that the base image does not
-  have, or `trivy image` on the built image, would put them under the same policy as the tree.
+  have, or `trivy image` on the built image, would put them under the same policy as the tree. Trivy built from
+  source reports GO-2026-4919 (the compromised v0.69.4 release, an open range: not applicable, #64): such a step
+  needs an exception for it.
+- **`child-timeout` is load-sensitive** (2026-11-03, #64): `tests/repo-looper.test.sh`'s scenario failed once
+  (`expected "#5: closed" in: stub gh: HTTP 404`) while a Go build ran on the same machine, and passed alone right
+  after. Its children's time limits are wall-clock; a margin scaled to the load, or limits the stub clock drives,
+  would keep a land's gates from failing on it.
 - **A cheaper re-plan check** (2026-11-03, #59): every `LOOPER_REPLAN_INTERVAL` the parent reads the ready set
   again (`candidates`: the approved list and each issue's `ready`, a few GitHub requests an issue), and asks the
   plan's model again whenever the set changed, even when only a running issue's areas were judged before. It could

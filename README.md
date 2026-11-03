@@ -735,7 +735,7 @@ status. A release's `publish` makes the SBOM of the image it pushed.
 | [Bandit](https://github.com/PyCQA/bandit) | 1.9.4 | wheel hashes (`scanners/requirements.txt`) | Python files |
 | [SpotBugs](https://github.com/spotbugs/spotbugs) + [FindSecBugs](https://github.com/find-sec-bugs/find-sec-bugs) | 4.10.5 + 1.14.0 | release sha256, Maven Central sha256 | the bytecode the gates compiled (`target/classes`) |
 | [CodeQL](https://github.com/github/codeql-action) (nightly, release) | 2.27.3 | the bundle's sha256, fetched when a run needs it (680 MB, not in the image) | Go, Python, Java, JavaScript/TypeScript, Rust; public repositories only |
-| [Trivy](https://github.com/aquasecurity/trivy) (nightly, release) | 0.76.1 | release sha256 | the tree (vulnerabilities, Kubernetes manifests and other configs), the Dockerfiles' base images |
+| [Trivy](https://github.com/aquasecurity/trivy) (nightly, release) | 0.76.1 | module checksum (`go install`, sum.golang.org), built with Go 1.27.3 in a layer of its own: the release binary carries reachable x/net and x/crypto vulnerabilities (looper#64); smoke-scanned at the image build | the tree (vulnerabilities, Kubernetes manifests and other configs), the Dockerfiles' base images |
 | [Syft](https://github.com/anchore/syft) | 1.56.0 | release sha256 | the SBOM, CycloneDX and SPDX: the source every run, the image on a release |
 
 The vulnerability databases are fetched each run, and `security/databases.json` records what each result was checked
