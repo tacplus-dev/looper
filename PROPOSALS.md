@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47): the build's checks scan the tree and Trivy the
+  Dockerfiles' base images, never the tools our Dockerfile downloads (glab, OSV-Scanner, Trivy, Syft, gitleaks,
+  gosec, cargo-deny). The nightly scan found reachable vulnerabilities in four of them by running
+  `govulncheck -mode=binary` by hand. A step in the image workflow (or `looper-scan` on a release's image, beside its
+  SBOM) running `govulncheck -mode=binary` on each Go binary under `/usr/local/bin` that the base image does not
+  have, or `trivy image` on the built image, would put them under the same policy as the tree.
 - **A cheaper re-plan check** (2026-11-03, #59): every `LOOPER_REPLAN_INTERVAL` the parent reads the ready set
   again (`candidates`: the approved list and each issue's `ready`, a few GitHub requests an issue), and asks the
   plan's model again whenever the set changed, even when only a running issue's areas were judged before. It could
