@@ -105,6 +105,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   without docker) are not limited at all. A cgroup per child (the job's container with a writable cgroup v2
   subtree, or the runner's `docker` config giving the job container a memory limit and each child a
   `--cgroup-parent`) would bound the child's whole tree; `looper-docker` could then pass `--cgroup-parent` too.
+- **The lander's processes out of the models' reach** (2026-11-03, #61): every model runs as root in the job's
+  one PID namespace, beside the parent, the lander and the other children, so any model can signal any of them.
+  `looper-pkill` (the model's `pkill`) spares what its run did not start, and rule 4 asks for a PID, never a
+  pattern, but `kill $(pgrep -f 'just gates')`, `kill <pid>` of another run's process, or a process started with
+  a cleared environment are not guarded. A boundary needs either a PID namespace per model (`unshare --pid`, which
+  the job's container refuses without `CAP_SYS_ADMIN`; the runner's docker config could grant it), with
+  `--land` finding the lander by a file rather than `kill -0 $LOOPER_LANDER_PID` (see tacplus#200's land, above),
+  or each model as its own non-root user, with the docker socket, its worktree and its credentials made its own.
+  Seen twice on tacplus#222 (tacplus#256's and tacplus#283's models, 2026-11-03), whose land passed its gates when
+  they were cut off.
 - **Room for the land's gates** (2026-10-31, #41): the lander runs a land's gates in the parent, unlimited, while
   the children go on; the child whose land it is waits meanwhile, so its share is mostly free, but a gate heavier
   than a child (Kani) can still press the VM. The capacity could keep one child's memory for the lander, or the

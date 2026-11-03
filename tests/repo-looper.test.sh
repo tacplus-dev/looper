@@ -166,7 +166,7 @@ push_fix() { # a claude.sh line: commit and land a fix
 report() { echo "gh issue comment 4 --repo tacplus-dev/alpha --body \"$1\"" >> "$FIX/claude.sh"; }
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
-  env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
+  env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
@@ -1719,6 +1719,48 @@ run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
 closed 4
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+pass
+
+# Nor is a land an earlier job left land-pending, which the run lands before
+# its model starts, however long its gates run (looper#61).
+scenario land-prior-not-idle
+git -C "$FIX/seed" checkout -q -b looper/alpha-4
+echo 4 > "$FIX/seed/f-4.txt" && git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "fix 4"
+mkdir "$FIX/seed/.looper" && printf 'gates=sleep 6\nstate=queued\n' > "$FIX/seed/.looper/land"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "looper: work in progress on #4 (land queued)"
+git -C "$FIX/seed" push -q origin looper/alpha-4
+close_it
+drain "${ROOM[@]}" LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+[[ "$(landed f-4.txt)" == 4 ]] || fail "not landed: $(origin log --oneline main); $OUT"
+has "$(cat "$FIX/comments")" "The looper landed it first, before this run's model"
+closed 4
+pass
+
+# A model stopping its own processes by a pattern (pkill -f) stops only its
+# run's (looper#61, tacplus#222): another child's land, its gates running in the
+# lander under the same pattern, lands all the same.
+scenario pkill-spares-the-land
+issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+areas "touches 4 f-4.txt" "touches 5 f-5.txt"
+cat > "$FIX/claude.sh" <<'EOS'
+echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
+if [[ "$ISSUE" == 4 ]]; then
+  "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'sleep 4; : looper61-gates' > "$FIX/land-4" 2>&1 || true
+else
+  until [[ -e "$FIX/work/alpha/lands/4.running" ]]; do sleep 0.1; done; sleep 1
+  bash -c 'exec -a looper61-gates-own sleep 60' & own=$!
+  sleep 0.5; pkill -f looper61-gates 2> "$FIX/pkill-5" || true
+  sleep 0.5; kill -0 "$own" 2>/dev/null && [[ "$(ps -o stat= -p "$own")" != Z* ]] && echo alive > "$FIX/own-alive"
+  "$ROOT/repo-looper" --repo alpha --issue 5 --land --gates true
+fi
+jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+EOS
+drain "${ROOM[@]}"
+[[ "$(landed f-4.txt)" == 4 ]] || fail "#4's land was stopped: $(cat "$FIX/land-4"); $OUT"
+[[ "$(landed f-5.txt)" == 5 ]] || fail "#5 not landed: $OUT"
+[[ ! -e "$FIX/own-alive" ]] || fail "the model's own process was spared"
+has "$(cat "$FIX/pkill-5")" "spared"; has "$(cat "$FIX/pkill-5")" "looper61-gates"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"; has "$p" "never by a pattern"
 pass
 
 # A model that lands detached, ends its turn waiting on it and goes quiet

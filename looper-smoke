@@ -8,7 +8,7 @@
 # host's docker socket and LOOPER_WORK mounted at the same path (the wrapper runs
 # the build image as a sibling container), and the network (the release).
 set -euo pipefail
-for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-dispatch looper-build looper-scan looper-identity looper-trace looper-recap tacplus looper-docker runner-image \
+for t in claude gh git jq curl just docker gcloud openssl repo-looper looper-dispatch looper-build looper-scan looper-identity looper-trace looper-recap tacplus looper-docker looper-pkill runner-image \
          osv-scanner govulncheck cargo-deny trivy syft gitleaks gosec spotbugs semgrep bandit cargo-clippy; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 1; }
 done

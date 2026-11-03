@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-pkill: the `pkill` a looper's model sees (looper#61). Every model of a
+# job runs as root in the job's one PID namespace, beside the parent, its
+# lander (which runs each child's land's gates) and the other children's
+# models. A model stopping its own gates with `pkill -f 'just gates'` stopped
+# those of the land under way too: tacplus#222's, twice, its gates passing,
+# "recipe `gates` was terminated by signal 15". repo-looper puts this script
+# first on the model's PATH as `pkill`, with LOOPER_MODEL_RUN its run's
+# directory, which every process the model starts inherits.
+#
+#   pkill [-SIGNAL | --signal SIGNAL] [-e] [pgrep's options] [pattern]
+#       signals the processes pgrep matches (never pkill's own ancestors) that
+#       are the run's own: LOOPER_MODEL_RUN in their environment. The others
+#       (another issue's run, the looper's lands) are spared and named on
+#       stderr. Exits 0 when it signalled one, 1 when none matched, as pkill.
+#   without LOOPER_MODEL_RUN
+#       the real pkill: LOOPER_REAL_PKILL, else the next pkill on the PATH
+#       that is not this script.
+#
+# It is a guard, not a boundary: `kill <pid>` reaches any process, and a
+# process started with a cleared environment is not the run's to this script.
+set -euo pipefail
+
+me="$(readlink -f "${BASH_SOURCE[0]}")"
+if [[ -z "${LOOPER_MODEL_RUN:-}" ]]; then
+  real="${LOOPER_REAL_PKILL:-}"
+  [[ -z "$real" || "$(readlink -f "$real")" != "$me" ]] || real=""
+  if [[ -z "$real" ]]; then
+    while read -r p; do
+      [[ "$(readlink -f "$p")" == "$me" ]] || { real="$p"; break; }
+    done < <(type -aP pkill)
+  fi
+  [[ -n "$real" ]] || { echo "pkill: not found (looper-pkill stands in front of it)" >&2; exit 127; }
+  exec "$real" "$@"
+fi
+
+# pkill's own options out, pgrep's left to it.
+sig=TERM echo="" args=()
+while (( $# )); do
+  case "$1" in
+    --signal) sig="${2:?pkill: --signal needs a signal}"; shift 2; continue ;;
+    --signal=*) sig="${1#--signal=}" ;;
+    -e|--echo) echo=1 ;;
+    -[0-9]*|-[A-Z]*) if [[ "${1#-}" =~ ^[A-Z0-9+-]+$ ]] && kill -l "${1#-}" >/dev/null 2>&1; then sig="${1#-}"; else args+=("$1"); fi ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+
+ours() { # pid: the run's own, by the environment it started with
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -qxF "LOOPER_MODEL_RUN=$LOOPER_MODEL_RUN"
+}
+
+rc=0; matched="$(pgrep -A "${args[@]+"${args[@]}"}")" || rc=$?
+(( rc <= 1 )) || exit "$rc"
+hit=0 spared=()
+for p in $matched; do
+  if ours "$p"; then
+    comm="$(cat "/proc/$p/comm" 2>/dev/null || echo "?")"
+    if kill -s "$sig" "$p" 2>/dev/null; then
+      hit=1; [[ -z "$echo" ]] || echo "$comm killed (pid $p)"
+    fi
+  elif [[ -e "/proc/$p" ]]; then
+    spared+=("$p ($(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-80))")
+  fi
+done
+if (( ${#spared[@]} )); then
+  echo "pkill (looper): spared ${#spared[@]} process(es) this run did not start: another issue's run or the looper's lands share this machine (looper#61). Stop your own by PID." >&2
+  printf '  %s\n' "${spared[@]}" >&2
+fi
+(( hit )) || exit 1

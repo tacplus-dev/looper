@@ -1013,13 +1013,21 @@ model_forge_env() {
 # A child's model (LOOPER_CHILD_MEMORY set, by the parent's plan) finds
 # looper-docker first on its PATH as `docker` (looper#41): each container it
 # starts, itself or through tacplus, is limited to the child's memory.
+#
+# Every model finds looper-pkill first as `pkill` (looper#61): the job's
+# processes are one PID namespace, the lander's gates among them, and a
+# model's `pkill -f 'just gates'` stopped another child's land under way
+# (tacplus#222). It signals only the run's own processes, those with the run's
+# LOOPER_MODEL_RUN in their environment.
 run_claude() { # prompt-file log-file seconds run-dir [issue]
   local rc=0 dir pid fmt watcher k withheld limited=()
   mapfile -t withheld < <(model_env)
   dir="$(mktemp -d)"; mkfifo "$dir/out"
+  mkdir "$dir/bin"; ln -s "$(dirname "$LOOPER_SELF")/looper-pkill" "$dir/bin/pkill"
+  limited=(PATH="$dir/bin:$PATH" LOOPER_MODEL_RUN="$4")
   if [[ -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
-    mkdir "$dir/bin"; ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
-    limited=(PATH="$dir/bin:$PATH" LOOPER_REAL_DOCKER="$(command -v docker || true)")
+    ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
+    limited+=(LOOPER_REAL_DOCKER="$(command -v docker || true)")
   fi
   jq -R -r --unbuffered "$RENDER" < "$dir/out" > "$2" & fmt=$!
   ( cd "$CHECKOUT" && model_forge_env && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" "${limited[@]+"${limited[@]}"}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
@@ -1616,7 +1624,9 @@ Rules:
    commit or land; you do.
 4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
-   reply ends the run.$(memory_rule)
+   reply ends the run. Stop a process you started by its PID (\`kill <pid>\`, the \`\$!\` you noted when you
+   started it), never by a pattern (\`pkill -f\`, \`kill \$(pgrep ...)\`): other issues' runs and the looper's lands
+   run on this machine too, and a pattern stops theirs (looper#61); \`pkill\` here signals only your run's own.$(memory_rule)
 5. Commit on $BRANCH with a message that says why and ends with
    \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
    It queues your commits with the looper, which lands one at a time: under the repository's landing lock it
@@ -1939,7 +1949,9 @@ Rules:
 3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same checkout.
 4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
-   reply ends the run.$(memory_rule)
+   reply ends the run. Stop a process you started by its PID (\`kill <pid>\`, the \`\$!\` you noted when you
+   started it), never by a pattern (\`pkill -f\`, \`kill \$(pgrep ...)\`): other issues' runs and the looper's lands
+   run on this machine too, and a pattern stops theirs (looper#61); \`pkill\` here signals only your run's own.$(memory_rule)
 5. Leave your change in this checkout (committing it locally is fine); do not push and do not open a pull
    request. After you, the looper runs the gates on it, and $REPO-looper[bot] opens the pull request, which
    GitHub squash-merges once the required check tacplus-dev/build passes. Never commit secrets.

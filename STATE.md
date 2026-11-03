@@ -19,7 +19,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   allows (#32): it plans from the issues' `Blocked-by` lines, the areas the model says each will touch (paths,
   generated outputs, contracts, other conflicts), between issues that conflict the rank, not the order taken (#39): a land-pending one first (landed before any conflicting issue starts), then a bug before a feature, then priority, then age, the other waiting even for one that waits too; the runner's CPU and memory (4 GB a child, 12 in a repository whose gates run Kani, #41) and the job's remaining time (from the job's start; the job sized by
   `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33); a child's limit is capped at the job's deadline, its end less an hour, so an issue's `Timeout:` grown after the job was sized stops by itself, checkpointed, not killed by GitLab, and the issue is told, #35, each container a child's model starts (`docker run`, `tacplus`) limited to the child's memory without swap by
-  `looper-docker`, the model's `docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone, not the VM (#41); logs
+  `looper-docker`, the model's `docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone, not the VM (#41); every model's `pkill` is `looper-pkill`, which signals only its
+  run's own processes, so a model stopping its gates by a pattern no longer stops another child's land under way (tacplus#222, #61); logs
   the plan and its reasons (job log, `looper-runs/<time>-plan/`, the issues), runs each child in its own worktree and
   branch, serializes landing (`repo-looper --land`: lock, rebase, gates, push; a direct push to main from a
   worktree is refused), which the parent owns (#34): `--land` queues with the parent's lander, so a land still
