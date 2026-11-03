@@ -4,7 +4,7 @@
 # full. Each set's run is a shell command at the root of the checkout, with
 # LOOPER_GATES_BASE the main the land is rebased on.
 full:
-  run: tests/looper-port.test.sh && tests/looper-docker.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh
+  run: tests/looper-docker.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh
   minutes: 30
   paths: [/repo-looper, /looper-lib.sh, /looper-dispatch, /looper-docker, /Dockerfile, tests/git-server.py, tests/forge.test.sh, tests/repo-looper.test.sh, tests/looper-dispatch.test.sh]
 # The planning files and the docs: what CI checks of them.
@@ -20,10 +20,6 @@ build:
   run: tests/looper-build.test.sh
   minutes: 5
   paths: [/looper-build, /looper-scan, tests/looper-build.test.sh, ci/build.gitlab-ci.yml]
-port:
-  run: tests/looper-port.test.sh
-  minutes: 2
-  paths: [/looper-port, /ports.yaml, tests/looper-port.test.sh]
 identity:
   run: tests/looper-identity.test.sh
   minutes: 5

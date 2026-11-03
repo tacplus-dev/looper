@@ -76,11 +76,10 @@ links_issue() { # repo n [own]
 }
 
 # Prompt provenance (looper#40): text a tool quotes into an issue from outside
-# tacplus-dev (the port scan's upstream commits) sits between these two lines,
-# so repo-looper gives it to the model as data, whoever filed the issue. The
-# tool that quotes it keeps `<` and `>` out of the quoted text, so it cannot
+# tacplus-dev sits between `<!-- looper:source-text from=<source> -->` and this
+# line, so repo-looper gives it to the model as data, whoever filed the issue.
+# The tool that quotes it keeps `<` and `>` out of the quoted text, so it cannot
 # end the section early.
-source_text_begin() { echo "<!-- looper:source-text from=$1 -->"; } # source
 SOURCE_TEXT_END="<!-- /looper:source-text -->"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }

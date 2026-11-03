@@ -9,7 +9,7 @@
 # tacplus-dev repositories with a ready issue and, when one of them has no
 # looper job created, pending, waiting or running, starts that pipeline, whose
 # plan runs repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled
-# runner. The nightly scan and the port scan are its other schedules.
+# runner. The nightly scan is its other schedule.
 #
 #   looper-dispatch run                one pass: start the pipeline if a repository needs it
 #   looper-dispatch run --for SECONDS  a pass every LOOPER_INTERVAL seconds (default 180) for

@@ -39,3 +39,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue The looper image hasn't published since #48: image workflow fails a looper-build plan scenario only in Actions; 19 commits never reached the loopers (#58, e92e403; gates: full)
 - 2026-11-03 looper issue The parent re-plans only when a child ends: free slots sit idle while a newly ready issue waits hours (#59, c757480; gates: full)
 - 2026-11-03 looper issue Nightly recap: deterministic performance data (queue, prepare, run, slots, lands, holds) → actionable suggestions; transient noted only; recap file for Jody's daily report (#57, fc4273b; gates: full)
+- 2026-11-03 looper-port retired 2026-11-03: SeaBeam is retired on cutover, not ported (Jody; #60)

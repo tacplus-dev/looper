@@ -73,10 +73,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   read-only token of tacplus-dev's (a coupling Jody decides) or the releases and registry mirrored to SeaBeam's GitLab.
   Until then, SeaBeam repositories that run tacplus are not ready for the instance.
 - **One pipeline file for both instances** (2026-11-01, #29; 2026-11-03, #56): both pipelines now plan with
-  `looper-dispatch plan`, but from two files: `ci/tacplus-dev.gitlab-ci.yml` (with the port scan, and its nightly
+  `looper-dispatch plan`, but from two files: `ci/tacplus-dev.gitlab-ci.yml` (its nightly
   scan planned as a job per repository) and `ci/instance.gitlab-ci.yml` (its nightly scan one job over
   `LOOPER_SCAN_REPOS`). The instance's scan could be the plan's too (a `LOOPER_SCAN_REPOS` filter on `forge_repos`),
-  and the two files one, with the port scan's job ruled by a variable. Neither file is linted by a test yet ("Check
+  and the two files one. Neither file is linted by a test yet ("Check
   the CI files' rules in a test" below).
 - **Fewer GitLab requests for the blockers' states** (2026-11-01, #29): on GitLab `forge_issue_states` asks once per
   distinct blocker (REST), where GitHub's is one GraphQL query. gitlab.com allows 2000 authenticated requests a
@@ -133,11 +133,6 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Pin the planning-files check to the caller's ref** (2026-10-27, #13): the reusable workflow checks out
   `planning-files-check` from tacplus-dev/looper `main`, whatever ref the caller pinned; fine while every caller
   uses `@main`, wrong if one pins a tag.
-- **Port issues and the roadmap** (2026-10-27, #14): port issues are `feature` + `approved`, so a port range that
-  no ROADMAP.md links gets a design proposal and `needs-decision` instead of being ported, and a live roadmap entry
-  for a port turns new SeaBeam commits into a prioritization issue. If ports are meant to flow without a roadmap
-  step (Jody's standing decision, #6), either file them as `bug` or let repo-looper treat a `Port SeaBeam` issue
-  filed by the scan as on the roadmap.
 - **Patch tags on release branches** (2026-10-27, #14): a bug's backport pull request names the patch tag to cut
   once it merges, but nothing cuts it; a release-branch workflow (or the looper, on the merge) could tag it.
 - **Check that a bug's patch shipped** (2026-10-27, #14): the patch release is the prompt's rule; repo-looper could
@@ -166,14 +161,6 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Say why a Blocked-by outcome was rejected** (2026-10-29, #22): an outcome naming a closed or missing issue, or
   the issue itself, is rejected whole and the issue is `looper:stuck` with the generic "ended without finishing"
   comment; naming the rejected blocker and the reason in that comment would save the person a trip to the run record.
-- **The realign's fail-closed match** (2026-10-29, #23): the port scan sends to `needs-decision` any untrailered
-  SeaBeam commit whose message contains `tacplus-dev` (any case) or a `Ported-from:` line, so a genuine change that
-  merely mentions tacplus-dev (a pinned image, a link) waits on a person too. If that proves noisy, narrow it to
-  references (`tacplus-dev/<repo>#N`, `@<sha>`, GitHub URLs); a realign commit that lacks its trailer cannot be
-  amended in SeaBeam's history, so a person moves the target's mark past it.
-- **The flood guard's issue goes stale** (2026-10-29, #23): while *Port scan: flood guard tripped* is open, a scan
-  still over the limit files nothing and does not update it, so its list is the first run's. A comment when the
-  list changes (as the unmapped tracking issue gets) would keep it current.
 - **A narrower credential for the kicker** (2026-10-29, #24): the issue asked for a project access token with `api`
   scope, held as a protected project variable; gitlab.com's Free tier does not offer project access tokens (an Owner
   gets "does not have permission"), so the kicker uses the group's `GITLAB_TOKEN`, which already has `api` and
@@ -185,8 +172,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   every `curl -H "PRIVATE-TOKEN: ..."` puts its token on a command line any process of the job can read. Running the
   model as another user (or in a sandbox without the job's processes), and headers from a file (`-H @file`), would make
   the withholding a boundary; until then the tokens' reach is (README, Credentials).
-- **Rotate the bots' tokens** (2026-10-30, #25): `tacplus-looper-bot`'s and `tacplus-port-reader`'s tokens and
-  memberships expire within a year; nothing reminds anyone. A scheduled check of `GET /personal_access_tokens/self`
+- **Rotate the bots' tokens** (2026-10-30, #25): `tacplus-looper-bot`'s token and
+  membership expire within a year; nothing reminds anyone. A scheduled check of `GET /personal_access_tokens/self`
   (`expires_at`) filing an issue a month ahead would.
 - **Whether fleet-seatrials' key material counts as exposed** (2026-10-30, #25): the jobs' former `GITLAB_TOKEN`
   (`api`, Owner) could read fleet-seatrials' protected variables, `FLEET_CRYPTO_YAML` among them, since they were
@@ -200,10 +187,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   The kicker's pass used about 270 (now three requests); on 2026-10-29 the budget ran out at 06:36 and a run's own
   `gh` calls failed with it. A GitHub App installation token for the loopers (5000+ an hour of its own, per
   installation) would take them off a person's budget; `repo-looper --list` could also use `ready_by_repo`.
-- **The port scan runs every two hours, not hourly** (2026-10-29, #24): gitlab.com runs this group's schedules at
-  most hourly, on the hour, and a schedule's next run is the first hour after its cron's next time; so the port
-  scan's `7 * * * *` fires at 21:07, 23:07, 01:08... (its pipelines on 2026-10-28/29). Its cron `0 * * * *` would
-  make it hourly, as README says.
 - **Pin the build pipeline's own image** (2026-10-29, #17): `ci/build.gitlab-ci.yml` runs plan, status and publish
   in `ghcr.io/tacplus-dev/looper:main`, a moving tag, and that image carries the claude CLI (inert there: the build
   project holds no Anthropic credential). A digest written by the image workflow, or a slim `looper-build` image

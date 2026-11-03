@@ -44,11 +44,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); prompt provenance (#40): every
   prompt carries the issue's text (title and body, each comment) in blocks keyed by a per-prompt nonce (`openssl rand`)
   with author and association, only an OWNER's or MEMBER's text, or a write COLLABORATOR's, directing the run and the
-  rest, with the port scan's quoted SeaBeam text (source-text markers), data; text holding the nonce refused, the
-  nonce redacted from what leaves the job; the nightly scan; the hourly
-  SeaBeam port scan (stratum only, #5), which never ports back a SeaBeam commit
-  trailered `Ported-from: tacplus-dev/<repo>@<sha>` (the realign), sends one that names tacplus-dev without it to
-  `needs-decision`, and files nothing past a flood guard of 5 issues (#23); the `tacplus` wrapper with GitHub credentials for its container
+  rest, with a tool's quoted source text (source-text markers), data; text holding the nonce refused, the
+  nonce redacted from what leaves the job; the nightly scan; the `tacplus` wrapper with GitHub credentials for its container
   (#11), which runs the released tacplus (the repository's `tacplus.lock` pin, else its floor's newest patch,
   checksum-verified) in the `build:<MAJOR.MINOR>` image of its line, so Go repositories generate (no longer the
   retired, Go-less `tacplus/tacplus` image), and `looper-smoke` generates Go through it on every image build (#27); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
@@ -94,7 +91,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   request with squash auto-merge, build trigger, comment, labels); one run at a time, in a child pipeline. The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
   `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables; the
   model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
-  `LOOPER_TRIGGER_TOKEN` and the port scan reads SeaBeam with `SEABEAM_READ_TOKEN` when they are set (#25); the runner
+  `LOOPER_TRIGGER_TOKEN` when it is set (#25); the runner
   VMs' image and readiness (#43): `runner/startup.sh`, the templates' startup-script, marks a VM ready
   (`/var/run/runner-ready`) only once Docker answers, for the autoscaler's `instance_ready_command`; `runner-image build`
   (the build pipeline's `runner-image` job, input `runner_image: true`) bakes the image family `runner-arm64-docker`

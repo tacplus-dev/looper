@@ -40,7 +40,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   stopped). Once GitLab reports it anything but `running`, the run checkpoints and stops: nothing more
   pushed to main, no comment, `looper:in-progress` left to the retry, which resumes from that checkpoint.
   A run that cannot read GitLab keeps going: GitLab being down is not the job being gone.
-  Its schedules run the kicker, the nightly scan of every repository and the port scan (told apart by the
+  Its schedules run the kicker and the nightly scan of every repository (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
 - **`repo-looper`** is the looper of one repository: a parent that runs a child per issue
   ([Parent and children](#parent-and-children)). It takes the issue it was given first, or the next ready one
@@ -57,9 +57,6 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
   The platform roadmap's own nightly scan is instead the suggestion pass for the whole platform: up to 5 evidenced
   suggestions a night in tacplus-dev/roadmap `suggestions/`, for Jody's daily review. See [Suggestions](#suggestions).
-- **The port scan** (`looper-port`, hourly) changes no code either: while SeaBeam still commits to its
-  pre-migration GitLab projects, it files an issue on the tacplus-dev repository each one moved to, and
-  that repository's looper does the port. See [Port scan](#port-scan).
 - **The image** is the tacplus build image (the complete build environment) plus the claude CLI and
   these scripts. It has **no tacplus binary**: `tacplus` is a wrapper that runs the released tacplus the
   repository's `tacplus.lock` pins, else the newest patch of its floor (`tacplus:` in tacplus.yaml or
@@ -124,10 +121,10 @@ piece (the title and body, then each comment) in a block keyed by a nonce drawn 
   and the job's log names its author. The nonce is redacted from the run's checkpoints (`.looper/prompt.md` on the
   issue's branch, the log tail), the looper's comments and the think job's `comment.md`, and the model is told
   never to write it.
-- **Quoted source text is data, whoever filed the issue.** The port scan's issues quote SeaBeam's commit titles; it
-  puts them between `<!-- looper:source-text from=seabeam -->` and `<!-- /looper:source-text -->` (with `<` and `>`
-  escaped, so a title cannot end the section), and `repo-looper` gives that section to the model in its own block,
-  `author=source:seabeam association=NONE role=data`, though the issue's body is the looper's.
+- **Quoted source text is data, whoever filed the issue.** A tool that quotes text from outside tacplus-dev into an
+  issue puts it between `<!-- looper:source-text from=<source> -->` and `<!-- /looper:source-text -->` (with `<` and
+  `>` escaped, so the text cannot end the section), and `repo-looper` gives that section to the model in its own
+  block, `author=source:<source> association=NONE role=data`, though the issue's body is the looper's.
 - **Defence in depth, not the boundary.** The boundary stays what a run can reach (narrow tokens, no deploy, no
   secrets: Credentials below, looper#25); this lowers the odds that injected text steers a run.
 
@@ -578,56 +575,6 @@ looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--histor
 tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links
 ```
 
-## Port scan
-
-The port scan is the one part of this repository that reads SeaBeam (Hub, 2026-10-27, looper#6): its
-script, `ports.yaml`, its test and this section are the only places SeaBeam is named, other than the
-dated note at the top. Nothing else here fetches from or depends on gitlab.com/seabeam.
-
-`ports.yaml` maps each SeaBeam source under `seabeam/schematic/platform/services` to its tacplus-dev
-target, lists the sources that have none (`unmapped`), and the sources that are never carried over
-(`retired`, each with its reason and date). Every hour the pipeline's port-scan schedule
-runs `looper-port` (mechanical: GitLab API with `SEABEAM_READ_TOKEN`, else `GITLAB_TOKEN`; issues with `GH_TOKEN`):
-
-- **Mark:** the target's `PROVENANCE.md` line ``Ported through `<sha>` ``; until the first port, the
-  migration commit it names (`` `<source>/<svc>` at commit `<sha>` ``).
-- **Commits after the mark** on the source's default branch: none, or an open port issue already ends at
-  the head, files nothing. Otherwise one issue `Port SeaBeam <svc> <from>..<to>`, labelled `feature` and
-  `approved` (so its looper builds it only once a ROADMAP.md links it),
-  listing each commit (sha, link, date, subject: SeaBeam's text, between the source-text markers, which the looper
-  gives its model as data, looper#40) and the instructions: per commit, port it, or say it
-  is already covered or not applicable and why; never copy generated code; then set the mark to `<to>`
-  and release. Commits after an open port issue's `<to>` get the next issue, `Blocked-by:` that one.
-- **The roadmaps first** (looper#14): before filing a port issue, the scan reads the target's ROADMAP.md
-  and the platform's (`ROADMAP.md`, `items/`). When one has an entry for the port that is not done (a line
-  naming `Port SeaBeam <svc>` whose first linked issue is open, or that links none), it files no port
-  issue but, once, *Prioritize the roadmap entry: Port SeaBeam <svc>* (`feature`), quoting and linking the
-  entry, with the new commits as the why-now. A roadmap it cannot read files nothing.
-- **The realign** (looper#23): a SeaBeam commit that ports tacplus-dev work carries
-  `Ported-from: tacplus-dev/<repo>@<sha>` (one line per source commit; tacplus-dev/roadmap
-  `items/seabeam-realign-2026-10-29.md`), and is never ported back: the issue leaves it out of its commits
-  (naming it as not to port), but its range and so the mark still move past it. A range of nothing but such
-  commits files nothing. Fail closed: a commit that names tacplus-dev, or has a malformed trailer, without a
-  trailer is listed for a person to decide, and the port issue is labelled `needs-decision`, not `approved`.
-- **The flood guard** (looper#23): a scan that would file more than `LOOPER_PORT_MAX_ISSUES` (default 5) issues
-  on the targets files none, and opens one *Port scan: flood guard tripped* on this repository (`bug`,
-  `needs-decision`) listing them; while it is open, a scan still over the limit files nothing more.
-- **No usable mark** (no PROVENANCE.md, no mark in it, or a mark that is not a commit of the source):
-  one issue `Port SeaBeam <svc>: no usable mark`, labelled `bug` and `needs-decision`. The scan never guesses a
-  baseline; a person records it and closes the issue.
-- **Unmapped sources** (and any project under the source group that `ports.yaml` does not list): each
-  change is reported once on this repository's issue *Port scan: changes in unmapped SeaBeam sources*
-  (`feature`, `needs-decision`), which records the last commit reported per source.
-- **Retired sources** are skipped entirely: never ported, never reported, not even read. Since
-  2026-10-27 nothing comes over from SeaBeam that is not already in tacplus-dev, except stratum, so
-  every source without a target is retired (looper#5); a new source shows up as unmapped until it is
-  listed.
-
-```sh
-SEABEAM_READ_TOKEN=... ./looper-port --dry-run   # what it would file, filing nothing
-tests/looper-port.test.sh                  # the scan against fixtures (stub gh and curl); SeaBeam's titles between the source-text markers, unable to end them (#40)
-```
-
 ## Build pipeline
 
 A build is the only verdict (tacplus-dev/roadmap `decisions/deterministic-builds-2026-10-27.md`, looper#17): it
@@ -1048,7 +995,7 @@ builds' too. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
 
 Every looper job's model runs on the same VM, as the same user, as the job that holds its credentials, so whatever
 a job's token may do, an agent may do (looper#25). The model's environment holds no GitLab credential: `repo-looper`
-withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, `SEABEAM_READ_TOKEN`, GitLab's job token and the variables that
+withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, GitLab's job token and the variables that
 carry it, and any `*ID_TOKEN` (`MODEL_WITHHELD`), and keeps them for its own reads of GitLab. That is not a boundary
 (the model could read its parent's environment): **the boundary is each token's reach**, which is this project's
 and nothing else's, with only the scopes its job uses.
@@ -1057,7 +1004,6 @@ and nothing else's, with only the scopes its job uses.
 |---|---|---|
 | `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`repo-looper --list`) and each parent's job poll read the project's jobs; the kicker reads them too |
 | `LOOPER_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/looper (`glptt-`), environment scope `kicker` | the kicker starts the pipeline with it (`POST /projects/:id/trigger/pipeline`; the token is on no command line) |
-| `SEABEAM_READ_TOKEN` | a personal access token of the bot user `tacplus-port-reader`, scope `read_api` only, the bot a **Reporter** of `seabeam/schematic/platform/services` alone, environment scope `port-scan` | the port scan reads the SeaBeam sources |
 | `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before | GitHub, the model |
 
 A Reporter with `read_api` reads the project's code, pipelines and jobs. It cannot read CI variables (Maintainer),
@@ -1065,17 +1011,16 @@ play a manual job, start a pipeline or change a setting, and it reaches no other
 variables nor its `apply` jobs. The trigger token can do one thing, start this project's pipeline. A triggered pipeline
 runs as the trigger's owner, and on protected main only one allowed to merge to it may run one, so it is Jody's, as the
 schedules are: the pipelines run as Jody as they do today (their bot identity is the looper-identity follow-up,
-looper#28). Without `LOOPER_TRIGGER_TOKEN` the kicker starts the pipeline with `GITLAB_TOKEN`, and without
-`SEABEAM_READ_TOKEN` the port scan reads with `GITLAB_TOKEN`: both work with today's token until the switch below.
+looper#28). Without `LOOPER_TRIGGER_TOKEN` the kicker starts the pipeline with `GITLAB_TOKEN`: it works with today's
+token until the switch below.
 gitlab.com's Free tier has no project or group access tokens, hence the bot users (free gitlab.com accounts, never
-Jody, each a member of its one project or group).
+Jody, each a member of its one project).
 
 **Setting them up** (Jody; the values go from GitLab straight into the variables, no agent handles them).
 `G=https://gitlab.com/api/v4`, `H="PRIVATE-TOKEN: <Jody's token>"`, `L=tacplus-dev%2Flooper`:
 
 1. The pipeline file of gitlab.com/tacplus-dev/looper (its `.gitlab-ci.yml`, `ci/tacplus-dev.gitlab-ci.yml` here): `looper-kick`
-   gets `environment: {name: kicker, action: prepare}` and `looper-port` gets `environment: {name: port-scan,
-   action: prepare}`, so only those jobs receive their variables; their comments' "the group GITLAB_TOKEN (api
+   gets `environment: {name: kicker, action: prepare}`, so only that job receives its variables; its comments' "the group GITLAB_TOKEN (api
    scope)" becomes this section's tokens.
 2. The trigger (Settings, CI/CD, Pipeline trigger tokens, description `kicker`, or the API), stored as is:
 
@@ -1084,21 +1029,18 @@ Jody, each a member of its one project or group).
    curl -sfH "$H" -X POST $G/projects/$L/variables -d key=LOOPER_TRIGGER_TOKEN --data-urlencode value="$T" \
      -d protected=true -d masked=true -d environment_scope=kicker >/dev/null; unset T
    ```
-3. The bot users `tacplus-looper-bot` and `tacplus-port-reader` (sign up, each with an address of Jody's), then their
-   memberships, Reporter (`access_level=20`), expiring within a year:
+3. The bot user `tacplus-looper-bot` (sign up, with an address of Jody's), then its membership, Reporter
+   (`access_level=20`), expiring within a year:
 
    ```sh
    curl -sfH "$H" -X POST $G/projects/$L/members -d user_id=<tacplus-looper-bot's id> -d access_level=20 -d expires_at=<date>
-   curl -sfH "$H" -X POST $G/groups/seabeam%2Fschematic%2Fplatform%2Fservices/members -d user_id=<tacplus-port-reader's id> \
-     -d access_level=20 -d expires_at=<date>
    ```
-4. Signed in as each bot, a personal access token with the one scope `read_api` (User settings, Access tokens; name
-   `looper-jobs` and `port-scan`, expiring within a year), stored by Jody: `SEABEAM_READ_TOKEN` as a new variable
-   (`-d protected=true -d masked=true -d environment_scope=port-scan`), then `GITLAB_TOKEN` replaced
+4. Signed in as the bot, a personal access token with the one scope `read_api` (User settings, Access tokens; name
+   `looper-jobs`, expiring within a year), stored by Jody: `GITLAB_TOKEN` replaced
    (`curl -sfH "$H" -X PUT $G/projects/$L/variables/GITLAB_TOKEN --data-urlencode value=<the bot's token>`, protected,
    masked, scope `*`).
 5. Checked on the next pipeline: the plan's log lists jobs, the kicker's says `started the tacplus-dev/looper
-   pipeline`, the port scan files or finds nothing new; `curl -sH "PRIVATE-TOKEN: <the bot's>" $G/projects/<fleet-seatrials' id>`
+   pipeline`; `curl -sH "PRIVATE-TOKEN: <the bot's>" $G/projects/<fleet-seatrials' id>`
    is a 404. Then Jody revokes `looper-runtime`, the token the jobs held before (`api`, `write_repository`, Jody's
    own, Owner of the group).
 
@@ -1375,10 +1317,8 @@ tests/forge.test.sh   # both forges against a gh stub and a GitLab API stub: rea
 SeaBeam's code and issues live on GitLab, in the `seabeam` group, and SeaBeam gets loopers of its own on the same
 code: this image, `LOOPER_FORGE=gitlab`, `LOOPER_ORG=seabeam` (Jody, 2026-10-29, looper#29). Each world keeps its own
 home: the instance's kicker, pipeline, runner and credentials are all in the `seabeam` group. **No coupling:**
-tacplus-dev's instance has no SeaBeam credential beyond the port scan's read-only `SEABEAM_READ_TOKEN` and never
-reads SeaBeam issues; SeaBeam's has no tacplus-dev credential at all (no `GH_TOKEN`), so it cannot write
-tacplus-dev. The [port scan](#port-scan) stays the one bridge, and SeaBeam's realign commits carry
-`Ported-from: tacplus-dev/<repo>@<sha>` trailers, so it never ports them back. The rules SeaBeam adopts are phase 1
+tacplus-dev's instance has no SeaBeam credential and never reads SeaBeam; SeaBeam's has no tacplus-dev credential
+at all (no `GH_TOKEN`), so it cannot write tacplus-dev. The rules SeaBeam adopts are phase 1
 of the realign brief (tacplus-dev/roadmap `items/seabeam-realign-2026-10-29.md`): the issue flow and the four roadmap
 files in each repository.
 

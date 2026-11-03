@@ -8,7 +8,7 @@
 # code github.com/tacplus-dev/looper tests: looper#56); `looper-run` triggers it.
 # This file is kept in github.com/tacplus-dev/looper as ci/tacplus-dev.gitlab-ci.yml and copied into
 # this project as is, on its protected main, by the hub (README, Credentials).
-# `looper-port` is the hourly port scan, `looper-kick` the kicker. Moved here from seabeam/tools/looper on 2026-10-27 (Jody: tacplus-dev
+# `looper-kick` is the kicker. Moved here from seabeam/tools/looper on 2026-10-27 (Jody: tacplus-dev
 # must work by itself).
 stages:
   - plan
@@ -27,9 +27,8 @@ stages:
 # two of its runs never overlap. The next issue is taken by the next pipeline.
 # schedule: the nightly scan of every repository (files issues, changes no code).
 # The kicker schedule (description containing "kicker") runs only looper-kick
-# below (tacplus-dev/looper#24). The hourly port-scan schedule (description containing "port scan"; schedules
-# are told apart by CI_PIPELINE_SCHEDULE_DESCRIPTION, since pipeline variables
-# are forbidden) runs only looper-port below (tacplus-dev/looper#2).
+# below (tacplus-dev/looper#24; schedules are told apart by
+# CI_PIPELINE_SCHEDULE_DESCRIPTION, since pipeline variables are forbidden).
 #
 # LOOPER_WORK is under /builds, which the runner bind-mounts from the worker,
 # so the containers repo-looper starts on the worker's docker (the `tacplus`
@@ -49,7 +48,7 @@ stages:
 # it is requested so the path is in place.
 .looper-rules: &looper-rules
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /port scan|kicker/
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/
       when: never
     - if: $CI_PIPELINE_SOURCE =~ /^(schedule|web|trigger|api)$/
     - when: manual
@@ -91,29 +90,6 @@ looper-run:
       - artifact: looper-jobs.yml
         job: looper-plan
     strategy: depend
-
-# The port scan (github.com/tacplus-dev/looper, looper-port and ports.yaml):
-# while SeaBeam still commits to its pre-migration projects, file a port issue
-# on each tacplus-dev target. Mechanical, no model: reads SeaBeam with SEABEAM_READ_TOKEN
-# (environment port-scan; looper#25), files issues with GH_TOKEN. One at a time (resource_group), so
-# a slow scan never files the same issue twice.
-looper-port:
-  stage: plan
-  image: ghcr.io/tacplus-dev/looper:main
-  tags: [arm64, autoscale]
-  retry:
-    max: 2
-    when: [runner_system_failure, scheduler_failure, unknown_failure]
-  needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /port scan/
-  resource_group: looper-port
-  environment: {name: port-scan, action: prepare}
-  timeout: 30m
-  variables:
-    GIT_STRATEGY: none
-  script:
-    - looper-port
 
 # The kicker (github.com/tacplus-dev/looper, looper-dispatch; tacplus-dev/looper#24):
 # every 3 minutes, clear looper:in-progress from issues no looper job holds and

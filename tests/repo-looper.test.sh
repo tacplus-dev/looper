@@ -464,7 +464,7 @@ pass
 # in a block keyed by the run's nonce, with its author and association; only
 # members' text (and a collaborator's with write access) directs the run. A
 # stranger's comment is data and changes nothing else in the prompt; text that
-# holds the nonce is refused; a port's upstream text in a member's body is data; the
+# holds the nonce is refused; a tool's quoted source text in a member's body is data; the
 # nonce stays out of the branch.
 comment() { # repo n author association body
   jq --arg a "$3" --arg s "$4" --arg b "$5" '.comments += [{author: $a, association: $s, body: $b}]' "$FIX/issues/$1-$2.json" > "$FIX/x" \
@@ -1380,10 +1380,10 @@ jobs "looper-alpha-4 running 77"
 echo 'env > "$FIX/model-env"' >> "$FIX/claude.sh"
 working
 run "${GL[@]}" CI_JOB_ID=77 CI_JOB_TOKEN=j CI_BUILD_TOKEN=j CI_REGISTRY_PASSWORD=j CI_DEPENDENCY_PROXY_PASSWORD=j \
-  CI_REPOSITORY_URL=https://gitlab-ci-token:j@gl.test/x.git LOOPER_TRIGGER_TOKEN=x SEABEAM_READ_TOKEN=x \
+  CI_REPOSITORY_URL=https://gitlab-ci-token:j@gl.test/x.git LOOPER_TRIGGER_TOKEN=x \
   FLEET_ID_TOKEN=x CI_JOB_JWT_V2=x GH_TOKEN=g "${POLL[@]}"
 not_stopped
-held="$(cut -d= -f1 "$FIX/model-env" | grep -xE 'GITLAB_TOKEN|CI_JOB_TOKEN|CI_BUILD_TOKEN|CI_REGISTRY_PASSWORD|CI_DEPENDENCY_PROXY_PASSWORD|CI_REPOSITORY_URL|LOOPER_TRIGGER_TOKEN|SEABEAM_READ_TOKEN|FLEET_ID_TOKEN|CI_JOB_JWT_V2' || true)"
+held="$(cut -d= -f1 "$FIX/model-env" | grep -xE 'GITLAB_TOKEN|CI_JOB_TOKEN|CI_BUILD_TOKEN|CI_REGISTRY_PASSWORD|CI_DEPENDENCY_PROXY_PASSWORD|CI_REPOSITORY_URL|LOOPER_TRIGGER_TOKEN|FLEET_ID_TOKEN|CI_JOB_JWT_V2' || true)"
 [[ -z "$held" ]] || fail "the model held: $held"
 grep -qx 'GH_TOKEN=g' "$FIX/model-env" || fail "the model lost GH_TOKEN"
 has "$(cat "$FIX/gitlab")" "PRIVATE-TOKEN https://gl.test/api/v4/projects/42/jobs/77"
