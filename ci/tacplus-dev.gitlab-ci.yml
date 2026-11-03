@@ -4,8 +4,9 @@
 # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub
 # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper:main); this project only runs them, on the
 # autoscaled runner registered to the tacplus-dev group. `looper-plan` lists the ready issues across
-# tacplus-dev and writes a child pipeline with one job per repository (`looper-dispatch plan`, the
-# code github.com/tacplus-dev/looper tests: looper#56); `looper-run` triggers it.
+# tacplus-dev and writes a child pipeline with a report job per ready issue, up to each repository's
+# cap (caps.yaml), and each such repository's manager (`looper-dispatch plan`, the code
+# github.com/tacplus-dev/looper tests: looper#56, looper#70); `looper-run` triggers it.
 # This file is kept in github.com/tacplus-dev/looper as ci/tacplus-dev.gitlab-ci.yml and copied into
 # this project as is, on its protected main, by the hub (README, Credentials).
 # `looper-kick` is the kicker. Moved here from seabeam/tools/looper on 2026-10-27 (Jody: tacplus-dev
@@ -21,10 +22,12 @@ stages:
 # repository has a ready issue and no looper job of its own. Nothing is passed
 # as a pipeline variable.
 #
-# api/web/trigger: one job per tacplus-dev repository with a ready issue
-# (approved, not held, every Blocked-by closed), working its oldest ready issue.
-# resource_group is per repository: a repository's looper commits to main, so
-# two of its runs never overlap. The next issue is taken by the next pipeline.
+# api/web/trigger (looper#70): one report job per ready issue (approved, not
+# held, every Blocked-by closed), looper-<repo>-<issue>, up to the repository's
+# cap, each on its own branch and never on main (resource_group per issue), and
+# the repository's manager, looper-<repo>-manager, the only job that merges to
+# its main (resource_group looper-<repo>-main). The kicker and the plan are the
+# control jobs.
 # schedule: the nightly scan of every repository (files issues, changes no code).
 # The kicker schedule (description containing "kicker") runs only looper-kick
 # below (tacplus-dev/looper#24; schedules are told apart by
@@ -38,9 +41,10 @@ stages:
 # job's project directory, and kept as the job's artifacts for 30 days, also when
 # the job fails: the worker is gone after the job (tacplus-dev/looper#4).
 #
-# A looper job's timeout is its issue's limit plus an hour (`repo-looper
+# A report job's timeout is its issue's limit plus an hour (`repo-looper
 # --job-timeout`: a `Timeout: <hours>h` line in the issue, at most 10h, else 4h),
-# so up to 11h; the project's maximum job timeout allows it (tacplus-dev/looper#7).
+# so up to 11h, a manager's 11h; the project's maximum job timeout allows it
+# (tacplus-dev/looper#7).
 #
 # FLEET_ID_TOKEN is the job's GitLab OIDC identity for our fleet (looper
 # identity in roadmap/items/looper-hierarchy.md): to be exchanged at the

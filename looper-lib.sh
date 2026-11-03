@@ -29,6 +29,9 @@ LABEL_APPROVED="approved"
 LABEL_IN_PROGRESS="looper:in-progress"
 LABEL_STUCK="looper:stuck"           # a run ended without finishing, for no known reason; a person looks
 LABEL_DECISION="needs-decision"      # the looper needs a decision it may not make
+# A report's commits queued with its repository's manager (looper#70): not
+# ready, so no other report takes the issue, until the manager's verdict.
+LABEL_LANDING="looper:landing"
 
 # Every issue is a bug or a feature (tacplus-dev/roadmap
 # decisions/issue-flow-2026-10-27.md, looper#14). A bug is fixed and ships as a
@@ -216,6 +219,15 @@ forge_issue_comment_count() { # repo n
   esac
 }
 
+# An issue's comment bodies, oldest first, each a JSON string on a line of its
+# own (on GitLab, the notes a person or the looper wrote).
+forge_issue_comments() { # repo n
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate --jq '.[] | .body | tojson' ;;
+    gitlab) gl_all "$(gl_project "$1")/issues/$2/notes?sort=asc&order_by=created_at" 1000 | jq -c '.[] | select(.system | not) | .body' ;;
+  esac
+}
+
 forge_label_create() { # repo name color(hex, no #) description
   case "$LOOPER_FORGE" in
     github) gh label create "$2" --repo "$LOOPER_ORG/$1" --color "$3" --description "$4" ;;
@@ -365,7 +377,7 @@ forge_cmd() { # view|close|label|list repo [n] [label] | file repo path | repos
 # ISSUE_ORDER (by priority, then oldest first), as "number" lines.
 approved_issues() { # repo
   forge_issue_list "$1" open 200 number,labels,createdAt "
-      [.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
+      [.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
       | sort_by($ISSUE_ORDER) | .[].number" "$LABEL_APPROVED"
 }
 
@@ -423,7 +435,7 @@ next_ready() { # repo
   return 0
 }
 
-# Every repository's next ready issue, as "<repo> <number>" lines: the rule
+# Every repository's ready issues, as "<repo> <number>" lines: the rule
 # of next_ready, read for the whole org at once (the kicker's pass, looper#24),
 # one search and one query for the blockers' states (forge_issue_states).
 # next_ready costs a request per issue and per blocker: about 270 for the org
@@ -431,12 +443,13 @@ next_ready() { # repo
 # the forge does not resolve to an issue holds its issue. Fails when the forge
 # cannot be read. The lines are in ISSUE_ORDER of those issues: a repository
 # whose next issue is priority:high comes first (looper#31), so it is planned
-# first.
-ready_by_repo() {
+# first. ready_by_repo is each repository's first.
+ready_by_repo() { ready_all_by_repo | awk '!seen[$1]++'; }
+ready_all_by_repo() {
   local all issues r n b64 refs states
   all="$(forge_search_issues "$LABEL_APPROVED" 1000 repository,number,labels,createdAt,body)" || return 1
   # Not held, in ISSUE_ORDER: "<repo> <number> <body, base64>".
-  issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\"))]
+  issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
                    | sort_by($ISSUE_ORDER) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1
   # Each issue's blockers: "<repo> <number> <blocker repo> <blocker number>".
   refs="$(while read -r r n b64; do
@@ -451,7 +464,7 @@ ready_by_repo() {
     if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
          while read -r br bn; do grep -qxF "$br $bn CLOSED" <<<"$states" || exit 1; done
        }; then echo "$r $n"; fi
-  done <<<"$issues" | awk '!seen[$1]++'
+  done <<<"$issues"
 }
 
 # A looper job holds its repository while it is created, pending, waiting for
@@ -460,10 +473,29 @@ ready_by_repo() {
 LOOPER_JOB_SCOPES="scope[]=created&scope[]=pending&scope[]=waiting_for_resource&scope[]=running"
 
 # A repository is busy while one of the active jobs (names, one per line) is a
-# job of its looper: looper-<repo>-<issue>, as the pipeline's plan names them.
-# Prints those jobs.
-busy() { # repo jobs
-  grep -E "^looper-${1//./\\.}-[0-9]+\$" <<<"$2"
+# job of its looper: a report, looper-<repo>-<issue>, as the pipeline's plan
+# names them (looper#70: one job per issue). Prints those jobs; with an issue,
+# that issue's alone.
+busy() { # repo jobs [issue]
+  grep -E "^looper-${1//./\\.}-${3:-[0-9]+}\$" <<<"$2"
+}
+
+# The manager's job of a repository (looper#70), which alone merges to its main.
+manager_job() { echo "looper-$1-manager"; } # repo
+
+# How many reports of a repository run at once (looper#70): its line in the
+# committed caps file (LOOPER_CAPS, default caps.yaml beside this file), else
+# the file's `default`, else 3. A line is `<repo>: <n>`; comments are lines of
+# their own.
+LOOPER_CAPS="${LOOPER_CAPS:-$(dirname "${BASH_SOURCE[0]}")/caps.yaml}"
+repo_cap() { # repo
+  local c
+  c="$(awk -v r="$1" -F: '/^[ \t]*(#|$)/ { next }
+    { k = $1; v = $2; gsub(/[ \t"\047]/, "", k); gsub(/[ \t]/, "", v); sub(/#.*/, "", v)
+      if (v !~ /^[0-9]+$/) next
+      if (k == r) { print v; found = 1; exit } else if (k == "default") d = v }
+    END { if (!found && d != "") print d }' "$LOOPER_CAPS" 2>/dev/null)" || c=""
+  echo "${c:-3}"
 }
 
 # GitHub credentials for a container that clones from GitHub (the tacplus

@@ -94,7 +94,7 @@ scenario() { # name: alpha has a ready issue #4
 }
 jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
 run_dispatch() {
-  OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u LOOPER_TRIGGER_TOKEN ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
+  OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u LOOPER_TRIGGER_TOKEN ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
     "$ROOT/looper-dispatch" "$@" 2>&1)"
 }
 dispatch() { run_dispatch "$@" || { echo "$OUT"; fail "looper-dispatch exited non-zero"; }; }
@@ -184,16 +184,102 @@ started || fail "no pipeline started: $OUT"
 grep -q "alpha#4" <<<"$OUT" || fail "log: $OUT"
 pass
 
-# A job of the repository created, pending, waiting or running holds the label.
+# The issue's own report job (looper#70) created, pending, waiting or running holds the label.
 for st in created pending waiting_for_resource running; do
   scenario "orphan-held-$st"
   in_progress
-  jobs "looper-alpha-9 $st"
+  jobs "looper-alpha-4 $st"
   dispatch run
   [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "labels $(labels alpha 4)"
   [[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
   pass
 done
+
+# Another issue's report, or the manager, does not: one job per issue.
+scenario orphan-released-beside-others
+in_progress
+jobs "looper-alpha-9 running" "looper-alpha-manager running"
+dispatch run
+[[ "$(labels alpha 4)" == approved ]] || fail "labels $(labels alpha 4)"
+started || fail "no pipeline started: $OUT"
+pass
+
+# The kicker (looper#70) starts the pipeline for a ready issue with no report
+# job of its own while its repository is under its cap (caps.yaml), not at it;
+# and for commits queued to land (looper:landing) with no manager job.
+scenario kick-under-cap
+issue alpha 5 OPEN "Go." approved
+jobs "looper-alpha-4 running" "looper-alpha-7 running"
+printf 'default: 3\n' > "$FIX/caps.yaml"
+CAPS="$FIX/caps.yaml" dispatch run
+started || fail "no pipeline started under the cap: $OUT"
+grep -q 'alpha#5 is ready' <<<"$OUT" || fail "log: $OUT"
+pass
+
+scenario kick-at-cap
+issue alpha 5 OPEN "Go." approved
+jobs "looper-alpha-4 running" "looper-alpha-7 running" "looper-alpha-8 pending"
+printf 'default: 3\n' > "$FIX/caps.yaml"
+CAPS="$FIX/caps.yaml" dispatch run
+! started || fail "started a pipeline at the cap: $OUT"
+pass
+
+scenario kick-landing
+issue alpha 4 OPEN "Done, its land queued." approved looper:landing
+dispatch run
+started || fail "no pipeline for a queued land without a manager: $OUT"
+grep -q 'queued to land and no manager' <<<"$OUT" || fail "log: $OUT"
+rm "$FIX/started"
+jobs "looper-alpha-manager running"
+dispatch run
+! started || fail "started a pipeline while the manager runs: $OUT"
+pass
+
+# The plan (looper#70): a report job per ready issue, in order, up to the
+# repository's cap less its active reports (caps.yaml: tacplus 6, the others
+# 3), none for an issue whose report is active, each one at a time per issue;
+# and the repository's manager, the only job on its main's resource group,
+# unless one already waits to start.
+scenario plan-reports-up-to-cap
+for k in 5 6 7 8; do issue alpha "$k" OPEN "Go." approved; done
+for k in 1 2 3 4 5 6 7; do issue tacplus "$k" OPEN "Go." approved; done
+jobs "looper-alpha-4 running" "looper-alpha-manager running"
+printf '#!/usr/bin/env bash\nexec "%s/repo-looper" "$@"\n' "$ROOT" > "$TMP/bin/repo-looper"; chmod +x "$TMP/bin/repo-looper"
+plan_jobs() { PLAN="$(env -u CI_PIPELINE_SOURCE ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
+plan_jobs
+[[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-5 looper-alpha-6 looper-alpha-manager" ]] \
+  || fail "alpha's jobs: $(grep '^looper-' <<<"$PLAN")"
+[[ "$(grep -cE '^looper-tacplus-[0-9]+:' <<<"$PLAN")" == 6 ]] || fail "tacplus's reports: $(grep '^looper-' <<<"$PLAN")"
+grep -qx 'looper-tacplus-manager:' <<<"$PLAN" || fail "no tacplus manager: $PLAN"
+grep -q 'alpha#7 waits: alpha is at its cap of 3 reports' "$FIX/err" || fail "log: $(cat "$FIX/err")"
+group_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  resource_group:/ {print $2}' <<<"$PLAN"; }
+script_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^    - / {sub(/^    - /, ""); print}' <<<"$PLAN"; }
+[[ "$(group_of looper-alpha-5)" == looper-alpha-5 ]] || fail "alpha-5's group: $(group_of looper-alpha-5)"
+[[ "$(group_of looper-alpha-manager)" == looper-alpha-main ]] || fail "the manager's group: $(group_of looper-alpha-manager)"
+[[ "$(script_of looper-alpha-5)" == "repo-looper --repo alpha --issue 5" ]] || fail "alpha-5's script: $(script_of looper-alpha-5)"
+[[ "$(script_of looper-alpha-manager)" == "repo-looper --repo alpha --manage" ]] || fail "the manager's script: $(script_of looper-alpha-manager)"
+# A manager already waiting to start serves the new reports.
+jobs "looper-alpha-4 running" "looper-alpha-manager waiting_for_resource"
+plan_jobs
+! grep -qx 'looper-alpha-manager:' <<<"$PLAN" || fail "a second manager waits: $PLAN"
+# A cap from the committed file.
+printf 'default: 1\nalpha: 4\n' > "$FIX/caps.yaml"
+CAPS="$FIX/caps.yaml" plan_jobs
+[[ "$(grep -cE '^looper-alpha-[0-9]+:' <<<"$PLAN")" == 3 ]] || fail "alpha's reports at a cap of 4: $(grep '^looper-' <<<"$PLAN")"
+[[ "$(grep -cE '^looper-tacplus-[0-9]+:' <<<"$PLAN")" == 1 ]] || fail "tacplus's at the default 1: $(grep '^looper-' <<<"$PLAN")"
+# The committed caps: tacplus 6, the others 3.
+[[ "$(LOOPER_CAPS="$ROOT/caps.yaml" bash -c "source '$ROOT/looper-lib.sh'; repo_cap tacplus; repo_cap kernel" | paste -sd' ')" == "6 3" ]] \
+  || fail "caps.yaml's caps"
+pass
+
+# A queued land alone (looper:landing, no ready issue) plans the manager alone.
+scenario plan-manager-for-landing
+jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed"
+[[ "$(grep -E '^looper-' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-manager:" ]] || fail "planned: $(grep '^looper-' <<<"$PLAN")"
+pass
 
 # Blocked-by: ready only when every issue it names is closed; a missing one
 # (or a pull request, which is no issue) holds it as an open one does.
@@ -246,7 +332,7 @@ done
 issue gamma 8 OPEN "Not approved."
 dispatch run
 [[ "$(wc -l < "$FIX/gh")" -le 4 ]] || fail "$(wc -l < "$FIX/gh") GitHub calls: $(sort "$FIX/gh" | uniq -c)"
-grep -q 'started the .* (alpha has a ready issue)' <<<"$OUT" || fail "log: $OUT"
+grep -q 'started the .* (alpha#4 is ready)' <<<"$OUT" || fail "log: $OUT"
 pass
 
 scenario status-oldest
@@ -279,14 +365,14 @@ dispatch ready
 dispatch status
 [[ "$(grep ': ready' <<<"$OUT" | paste -sd' ')" == "beta: ready 8 delta: ready 9 alpha: ready 2 eps: ready 5 gamma: ready 1" ]] || fail "status: $OUT"
 dispatch run
-grep -q 'started the .* (beta has a ready issue)' <<<"$OUT" || fail "log: $OUT"
+grep -q 'started the .* (beta#[0-9]* is ready)' <<<"$OUT" || fail "log: $OUT"
 pass
 
 scenario priority-busy
 issue beta 8 OPEN "High." approved priority:high
 jobs "looper-beta-8 running"
 dispatch run
-grep -q 'started the .* (alpha has a ready issue)' <<<"$OUT" || fail "log: $OUT"
+grep -q 'started the .* (alpha#[0-9]* is ready)' <<<"$OUT" || fail "log: $OUT"
 pass
 
 # The kicker (looper#24): an hourly scheduled job, since gitlab.com schedules
@@ -372,11 +458,20 @@ for source in schedule api; do
     || fail "the inline plan failed ($source)"
   got="$(env "${CLEAN[@]}" "${plan_vars[@]}" CI_PIPELINE_SOURCE="$source" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" \
            HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed ($source)"
-  diff -u "$FIX/inline-$source/looper-jobs.yml" <(printf '%s\n' "$got") >&2 || fail "the plan ($source) is not the inline one's"
+  # The scan is as it was; the rest is a report per issue and a manager per repository (looper#70).
+  [[ "$source" != schedule ]] || diff -u "$FIX/inline-$source/looper-jobs.yml" <(printf '%s\n' "$got") >&2 || fail "the plan ($source) is not the inline one's"
 done
 [[ "$(grep -c '^looper-scan-' "$FIX/inline-schedule/looper-jobs.yml")" == 5 ]] || fail "scheduled: $(cat "$FIX/inline-schedule/looper-jobs.yml")"
 [[ "$(grep -E '^looper-' "$FIX/inline-api/looper-jobs.yml" | paste -sd' ')" == "looper-alpha-4: looper-fleet-lab-8: looper-tacplus-9:" ]] \
   || fail "kicked: $(cat "$FIX/inline-api/looper-jobs.yml")"
+[[ "$(grep -E '^looper-' <<<"$got" | paste -sd' ')" == "looper-alpha-4: looper-fleet-lab-8: looper-tacplus-9: looper-alpha-manager: looper-fleet-lab-manager: looper-tacplus-manager:" ]] \
+  || fail "planned: $(grep -E '^looper-' <<<"$got")"
+# Each report's job is the inline one's but for its resource group, its issue's own.
+for j in alpha-4 fleet-lab-8 tacplus-9; do
+  job_of() { awk -v j="looper-$j:" '$0 == j {f=1; print; next} /^[^ ]/ {f=0} f' "$@"; }
+  diff -u <(job_of "$FIX/inline-api/looper-jobs.yml" | sed "s/resource_group: looper-.*/resource_group: looper-$j/") <(printf '%s\n' "$got" | job_of) >&2 \
+    || fail "looper-$j is not the inline one's"
+done
 grep -qx '  tags: \[arm64, autoscale-16\]' <<<"$got" || fail "tacplus's tags: $got"
 pass
 

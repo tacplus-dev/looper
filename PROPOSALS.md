@@ -4,6 +4,30 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A verdict only the manager can give** (2026-11-03, #70): a report's `--land` takes the newest comment on its
+  issue carrying its land's id (`<!-- looper-land id=... -->`) as the manager's verdict, and the id is on its branch
+  (`.looper/land`) for anyone to read. Every model holds the same `GH_TOKEN` as the manager, so another issue's model
+  could post a verdict for it. The merge itself is the manager's alone (nothing reaches main without its gates), so
+  the worst is a model told "merged" or "sent back" falsely. A manager identity of its own (a GitHub App, as the
+  looper identity pilot has), checked by author, or a ref only that identity may push, would close it.
+- **Lock files every repository has, without a generated.yaml** (2026-11-03, #70): the manager regenerates only
+  what a repository's `generated.yaml` maps; none has one yet, so every lock-file conflict is sent back today. A
+  `generated.yaml` in tacplus (its generated code: `just generate`), kernel and the Go services (`go.sum`: `go mod
+  tidy`) and the Rust ones (`Cargo.lock`), or defaults for the well-known lock files, would let the manager resolve
+  them. Regenerating runs the repository's tools in the manager's job: with #71, in a build job instead.
+- **The manager's gates as a build job** (2026-11-03, #70, #71): the manager runs the gates its diff calls for in its
+  own job, as the lander did. The companion issue (#71) makes them a build job's verdict on the rebased commit.
+- **The nightly scan's PROPOSALS.md push** (2026-11-03, #70): the scan still commits PROPOSALS.md on main itself
+  (`git pull --rebase` and push), the one push to main that is not the manager's. It could queue it on a branch of
+  its own for the manager, as a report does.
+- **The manager's polling** (2026-11-03, #70): every `LOOPER_MANAGER_POLL` (30s) the manager lists its branches
+  (one `ls-remote`), reads two labels (two GitHub requests) and, for a branch queued it has not judged, its issue's
+  comments; a waiting `--land` reads its issue's comments every `LOOPER_LAND_POLL` (30s). With 15 reports at once
+  that is about 2000 requests an hour on the shared `GH_TOKEN`. A longer poll while nothing is queued, or a
+  `repository_dispatch`-style wake-up, would cut it.
+- **Caps against the VM** (2026-11-03, #70): `caps.yaml` caps each repository's reports (tacplus 6, the others 3),
+  not the always-on VM: three busy repositories and tacplus can ask for 15 report containers at once on one VM.
+  The recap (#72) reports at-cap waits and saturation; a cap on the pool's jobs (the runner's `limit`) bounds it.
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47): the build's checks scan the tree and Trivy the
   Dockerfiles' base images, never the tools our Dockerfile downloads (glab, OSV-Scanner, Trivy, Syft, gitleaks,
   gosec, cargo-deny). The nightly scan found reachable vulnerabilities in four of them by running
@@ -19,16 +43,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   a combination upstream did not test, smoke-tested only by a planted AWS key. When gitleaks releases with xz >= 0.5.15
   (or drops it), move `GITLEAKS_VERSION`, remove the replace and its README note; a release whose own binary
   `govulncheck -mode=binary` reads clean could go back to its release sha256.
-- **`child-timeout` is load-sensitive** (2026-11-03, #64): `tests/repo-looper.test.sh`'s scenario failed once
+- **`child-timeout` is load-sensitive** (2026-11-03, #64; **superseded** 2026-11-03 by #70: no children, and the scenario is gone): `tests/repo-looper.test.sh`'s scenario failed once
   (`expected "#5: closed" in: stub gh: HTTP 404`) while a Go build ran on the same machine, and passed alone right
   after. Its children's time limits are wall-clock; a margin scaled to the load, or limits the stub clock drives,
   would keep a land's gates from failing on it.
-- **A cheaper re-plan check** (2026-11-03, #59): every `LOOPER_REPLAN_INTERVAL` the parent reads the ready set
+- **A cheaper re-plan check** (2026-11-03, #59; **superseded** 2026-11-03 by #70: no parent re-plans; the planner reads the org once a pipeline): every `LOOPER_REPLAN_INTERVAL` the parent reads the ready set
   again (`candidates`: the approved list and each issue's `ready`, a few GitHub requests an issue), and asks the
   plan's model again whenever the set changed, even when only a running issue's areas were judged before. It could
   read the set the kicker already reads for the whole org each pass, and keep each issue's areas from its last plan,
   asking the model only about issues it has not judged.
-- **A newly ready issue in a job with no free slot** (2026-11-03, #59): a re-plan fills free slots only; an issue
+- **A newly ready issue in a job with no free slot** (2026-11-03, #59; **superseded** 2026-11-03 by #70: an issue gets its own job when its repository is under its cap): a re-plan fills free slots only; an issue
   that becomes ready while every slot is taken waits for a child's end, and one ready after the job's last child
   ended waits for the kicker's next job. Both are as intended (no pre-emption); the recap (#57) measures them.
 - **The image workflow runs the full gate set from gates.yaml** (2026-11-03, #58): `.github/workflows/image.yml`'s

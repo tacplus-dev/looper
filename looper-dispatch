@@ -5,11 +5,12 @@
 # looper-dispatch: the kicker. It does no work itself and runs as the
 # kicker schedule of the GitLab looper pipeline (LOOPER_PIPELINE, default
 # tacplus-dev/looper; looper#24): nothing runs on the Mac. Each pass clears
-# looper:in-progress from issues no looper job holds any more, then looks for
-# tacplus-dev repositories with a ready issue and, when one of them has no
-# looper job created, pending, waiting or running, starts that pipeline, whose
-# plan runs repo-looper in ghcr.io/tacplus-dev/looper:main on the autoscaled
-# runner. The nightly scan is its other schedule.
+# looper:in-progress from issues no looper job holds any more, then starts that
+# pipeline when a tacplus-dev repository has a ready issue no report job holds
+# and fewer reports than its cap (caps.yaml, looper#70), or commits queued to
+# land (an issue labelled looper:landing) and no manager job; the pipeline's
+# plan runs repo-looper in ghcr.io/tacplus-dev/looper:main. The nightly scan
+# is its other schedule.
 #
 #   looper-dispatch run                one pass: start the pipeline if a repository needs it
 #   looper-dispatch run --for SECONDS  a pass every LOOPER_INTERVAL seconds (default 180) for
@@ -17,8 +18,9 @@
 #   looper-dispatch status             the looper jobs in GitLab, and what is ready
 #   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
 #                                      order the plan takes them: priority:high first (looper#31)
-#   looper-dispatch plan               the pipeline's child jobs, one per free repository with a
-#                                      ready issue (on a schedule, a scan per repository), as YAML
+#   looper-dispatch plan               the pipeline's child jobs: a report per ready issue, up to each
+#                                      repository's cap, and its manager (on a schedule, a scan per
+#                                      repository), as YAML
 #                                      on stdout (ci/instance.gitlab-ci.yml, ci/tacplus-dev.gitlab-ci.yml)
 #   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
 #
@@ -62,52 +64,83 @@ start_pipeline() {
 active_jobs() {
   gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[].name'
 }
+# The same, as "<name> <status>".
+active_job_statuses() {
+  gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[] | "\(.name) \(.status)"'
+}
 
 # A run killed outright (its runner gone, looper#20) never removes
-# looper:in-progress. An issue labelled so in a repository with no looper job
-# created, pending, waiting or running is held by no run: the label goes, the
-# issue says why, and the pipeline's job resumes it from its checkpoint.
+# looper:in-progress. An issue labelled so with no report job of its own
+# (looper-<repo>-<issue>, looper#70) created, pending, waiting or running is
+# held by no run: the label goes, the issue says why, and its next report
+# resumes it from its checkpoint.
 release_orphans() { # active jobs
   local repo n
   forge_search_issues "$LABEL_IN_PROGRESS" 200 repository,number '.[] | "\(.repository.name) \(.number)"' \
   | while read -r repo n; do
-      busy "$repo" "$1" >/dev/null && continue
+      busy "$repo" "$1" "$n" >/dev/null && continue
       forge_issue_edit "$repo" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
-      forge_issue_comment "$repo" "$n" "This issue was \`$LABEL_IN_PROGRESS\`, but $repo has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true
+      forge_issue_comment "$repo" "$n" "This issue was \`$LABEL_IN_PROGRESS\`, but it has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true
       log "$repo#$n: $LABEL_IN_PROGRESS with no looper job; label removed"
     done
 }
 
+# The reports a repository may still start (looper#70): its cap less its
+# active report jobs.
+free_reports() { # repo jobs
+  local k; k="$(busy "$1" "$2" | grep -c . || true)"
+  echo $(( $(repo_cap "$1") - k ))
+}
+
+# The repositories with commits queued to land (an open issue labelled
+# looper:landing, looper#70), one a line.
+landing_repos() {
+  forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name' | sort -u
+}
+
 # One pass: release the orphans, then start the pipeline for the first
-# repository with a ready issue and no looper job of its own, in the order of
-# ready_by_repo (priority:high first, looper#31).
+# repository with a ready issue no report job holds and a free report (its
+# cap, caps.yaml), in the order of ready_all_by_repo (priority:high first,
+# looper#31), or with commits queued to land and no manager job (looper#70).
 pass() {
   local jobs ready repo n
   jobs="$(active_jobs)"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
-  ready="$(ready_by_repo)"
+  ready="$(ready_all_by_repo)"
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
-    busy "$repo" "$jobs" >/dev/null && continue
+    busy "$repo" "$jobs" "$n" >/dev/null && continue
+    (( $(free_reports "$repo" "$jobs") > 0 )) || continue
     start_pipeline
-    log "started the $PIPELINE pipeline ($repo has a ready issue)"
+    log "started the $PIPELINE pipeline ($repo#$n is ready)"
     return 0
   done <<<"$ready"
-  log "no repository with a ready issue is free; nothing to start"
+  for repo in $(landing_repos); do
+    grep -qx "$(manager_job "$repo")" <<<"$jobs" && continue
+    start_pipeline
+    log "started the $PIPELINE pipeline ($repo has commits queued to land and no manager)"
+    return 0
+  done
+  log "no ready issue has a free report, and no queued land lacks a manager; nothing to start"
 }
 
 # The pipeline's plan (looper#29; ci/instance.gitlab-ci.yml, and
 # ci/tacplus-dev.gitlab-ci.yml since looper#56): its child pipeline on stdout.
 # A scheduled pipeline's (CI_PIPELINE_SOURCE schedule, the nightly scan) is a
 # job per repository of the org, looper-scan-<repo>, running repo-looper
-# --scan. Any other's is a job per repository with a ready issue and no looper
-# job of its own active (looper#16; when GitLab cannot be read, every one, as
-# before), named looper-<repo>-<issue>, in the order of ready_by_repo
-# (priority:high first, looper#31), sized by `repo-looper --job-timeout`
-# (looper#33). Either is one at a time per repository (resource_group
-# looper-<repo>). LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
+# --scan (resource_group looper-<repo>). Any other's (looper#70) is a
+# report per ready issue, looper-<repo>-<issue> running repo-looper --issue N,
+# in the order of ready_all_by_repo (priority:high first, looper#31), none for
+# an issue whose report is active, and at most the repository's cap
+# (caps.yaml) active at once (when GitLab cannot be read, the cap alone), each
+# sized by `repo-looper --job-timeout` and one at a time per issue
+# (resource_group looper-<repo>-<issue>); and for each repository with a report
+# planned or commits queued to land (looper:landing), its manager,
+# looper-<repo>-manager running repo-looper --manage, the only job that merges
+# to its main (resource_group looper-<repo>-main), unless one is already
+# waiting to start. LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
 # jobs' image and runner tags; LOOPER_JOB_TAGS_<repo> (`-` as `_`) overrides the
 # tags for one repository's jobs (looper#55: tacplus's on the 16-CPU pool). The
 # plan's GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL, those it has, are
@@ -121,17 +154,32 @@ plan() {
   done
   if [[ "${CI_PIPELINE_SOURCE:-}" == schedule ]]; then
     ready="$(forge_repos)"   # a forge it cannot read fails the plan: never an empty scan
-    for repo in $ready; do plan_job "looper-scan-$repo" 5h --repo "$repo" --scan; any=1; done
+    for repo in $ready; do plan_job "looper-scan-$repo" 5h "looper-$repo" --repo "$repo" --scan; any=1; done
   else
-    jobs="$(active_jobs)" || { log "could not read $PIPELINE's jobs; planning every repository with a ready issue" >&2; jobs=""; }
-    ready="$(ready_by_repo)"
+    local statuses="" landing free managed=" "; local -A left=()
+    if statuses="$(active_job_statuses)"; then jobs="$(cut -d' ' -f1 <<<"$statuses")"
+    else log "could not read $PIPELINE's jobs; planning each repository's ready issues up to its cap" >&2; jobs=""; fi
+    ready="$(ready_all_by_repo)"
     while read -r repo n; do
       [[ -n "$repo" ]] || continue
-      if busy "$repo" "$jobs" >/dev/null; then log "$repo already has a looper job; not planned again" >&2; continue; fi
+      if busy "$repo" "$jobs" "$n" >/dev/null; then log "$repo#$n already has its report job; not planned again" >&2; continue; fi
+      [[ -n "${left[$repo]:-}" ]] || left[$repo]="$(free_reports "$repo" "$jobs")"
+      if (( ${left[$repo]} <= 0 )); then log "$repo#$n waits: $repo is at its cap of $(repo_cap "$repo") reports" >&2; continue; fi
+      left[$repo]=$(( ${left[$repo]} - 1 ))
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
-      plan_job "looper-$repo-$n" "$t" --repo "$repo" --issue "$n"; any=1
+      plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n"; any=1
+      [[ "$managed" == *" $repo "* ]] || managed+="$repo "
     done <<<"$ready"
+    landing="$(landing_repos)" || landing=""
+    for repo in $landing; do [[ "$managed" == *" $repo "* ]] || managed+="$repo "; done
+    for repo in $managed; do
+      # One already waiting to start serves these too; one running may be ending.
+      if grep -qE "^$(manager_job "$repo") (created|pending|waiting_for_resource)\$" <<<"$statuses"; then
+        log "$(manager_job "$repo") is already waiting to start; not planned again" >&2; continue
+      fi
+      plan_job "$(manager_job "$repo")" "${LOOPER_MANAGER_TIMEOUT:-11h}" "looper-$repo-main" --repo "$repo" --manage; any=1
+    done
   fi
   [[ -n "$any" ]] || printf 'looper-none:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "no repository with a ready issue is free"\n' \
     "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"
@@ -139,8 +187,8 @@ plan() {
 
 # One job of the plan, its repository's; repo-looper's arguments are names and
 # numbers, unquoted in its script.
-plan_job() { # name timeout --repo REPO repo-looper-args...
-  local name="$1" t="$2" repo="$4" v tags; shift 2
+plan_job() { # name timeout resource-group --repo REPO repo-looper-args...
+  local name="$1" t="$2" group="$3" repo="$5" v tags; shift 3
   v="LOOPER_JOB_TAGS_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
   log "planned $name ($t, tags $tags)" >&2
   cat <<YML
@@ -150,7 +198,7 @@ $name:
   retry:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]
-  resource_group: looper-$repo
+  resource_group: $group
   timeout: $t
   variables:
     LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs

@@ -9,29 +9,27 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 - **Nothing runs on the Mac** (Jody, 2026-10-29, looper#24). All looper work, the kicker included, runs
   in this image as jobs of the GitLab pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (see
   [Infrastructure](#infrastructure)).
-- **The kicker** (`looper-dispatch`) does no work itself: every 3 minutes, when a repository has a ready
-  issue and no looper job of its own created, pending, waiting for its `resource_group` or running, it
-  starts that pipeline. It is the pipeline's kicker schedule (description containing `kicker`), hourly,
+- **The kicker** (`looper-dispatch`) does no work itself: every 3 minutes, when a ready issue has no report
+  job of its own created, pending, waiting for its `resource_group` or running and its repository is under
+  its cap, or commits are queued to land and the repository has no manager job, it starts that pipeline
+  ([Managers and direct reports](#managers-and-direct-reports)). It is the pipeline's kicker schedule (description containing `kicker`), hourly,
   since gitlab.com runs this group's schedules at most once an hour (Free tier): its job, `looper-kick`,
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
   fails at the end if a pass failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
   `looper-lib.sh`: one search, one GraphQL query for the blockers' states), since the per-repository
   reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`): the next
   hour's waits for the last. Nothing else runs when there is no ready issue.
-- **The pipeline** plans one job per repository with a ready issue (`looper-<repo>-<issue>`), each
-  working that repository's next ready issue (by [priority](#priority), then oldest first), and plans first
-  the repositories whose next issue is `priority:high` (`looper-dispatch ready`); jobs of one repository never overlap (`resource_group`).
-  A repository that already has a looper job created, pending, waiting or running in the project gets
-  no other one, and the plan's log says so (`repo-looper --list` reads the project's jobs with
-  `GITLAB_TOKEN`, else the job's token; looper#16): a duplicate would only wait for the slot to find its
-  issue taken. A job takes its repository's next ready issue when it runs: the planned one if it is
-  still ready, else the one that is next now. The job is that repository's parent looper, which also works
-  its other ready issues, in parallel when they allow it ([Parent and children](#parent-and-children)).
+- **The pipeline** plans one job per ready issue (`looper-<repo>-<issue>`, its report), in
+  [priority](#priority) order, up to each repository's cap (`caps.yaml`), and each such repository's manager
+  (`looper-<repo>-manager`), the only job that merges to its main
+  ([Managers and direct reports](#managers-and-direct-reports), looper#70). An issue whose report is
+  created, pending, waiting or running in the project gets no other one, and the plan's log says so (it reads
+  the project's jobs with `GITLAB_TOKEN`; looper#16).
 - **A run killed outright** (its runner VM gone mid-job, looper#20) never removes `looper:in-progress`.
   The job for that issue (GitLab's automatic retry, say) takes it as a resume, from its checkpoint, when
-  no *other* looper job of the repository is created, pending, waiting or running: the label is that
-  job's. And every `looper-dispatch run` removes the label, with a comment, from any issue whose
-  repository has no such job, so the next pass resumes it. An issue whose job is really running, or
+  no *other* report job of that issue is created, pending, waiting or running: the label is that
+  job's. And every `looper-dispatch run` removes the label, with a comment, from any issue with no such
+  job, so the next pass resumes it. An issue whose job is really running, or
   whose jobs GitLab cannot tell, is never taken twice.
 - **A run whose job GitLab no longer runs** (looper#21): GitLab can mark a job failed
   (`runner_system_failure`, the manager's tunnel to the VM lost) while its container keeps working on the
@@ -42,13 +40,12 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   A run that cannot read GitLab keeps going: GitLab being down is not the job being gone.
   Its schedules run the kicker and the nightly scan of every repository (told apart by the
   schedule's description, `CI_PIPELINE_SCHEDULE_DESCRIPTION`: the group forbids pipeline variables).
-- **`repo-looper`** is the looper of one repository: a parent that runs a child per issue
-  ([Parent and children](#parent-and-children)). It takes the issue it was given first, or the next ready one
-  ([priority](#priority), then oldest) if that issue is no longer ready, then the others it can plan, and does
-  nothing if none is ready. Each child works its issue in its own worktree of the repository at origin/main;
-  Claude may run sub-agents in that worktree; only the child's top-level run commits and lands, always on main
-  (pre-production; a protected release line with review comes later). Bug fixes on repositories with release
-  branches are also offered as backport pull requests.
+- **`repo-looper`** is the looper of one repository: a report's job works one issue (`--issue N`; nothing if
+  it is no longer ready), and its manager's (`--manage`) merges the reports' work
+  ([Managers and direct reports](#managers-and-direct-reports)). Each report works its issue in its own clone
+  at origin/main; Claude may run sub-agents in that clone; only the report's top-level run commits, and the
+  manager alone merges, always on main (pre-production; a protected release line with review comes later).
+  Bug fixes on repositories with release branches are also offered as backport pull requests.
   Each run's record (`prompt.md`, `claude.log`) is uploaded as the job's artifacts (`looper-runs/`,
   kept 30 days, also when the job fails): the runner VM is gone after the job, so the issue comments
   link the job, not a path on it. See [After a run](#after-a-run).
@@ -135,7 +132,7 @@ unlabelled, then `priority:low`, oldest first within each (`approved_issues` in 
 looper creates both labels with `bug` and `feature`. Across repositories, the kicker and the plan take a repository
 whose next ready issue is `priority:high` before the others, so it gets a runner first when they are short
 (`looper-dispatch ready`). Priority only decides what starts next: a running issue is never pre-empted, and a blocked
-issue waits whatever its priority. Between two issues that conflict, a land-pending one and then a bug go before priority (see the parent's plan below). To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
+issue waits whatever its priority; a repository at its cap of reports starts its next issue when one ends. To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
 real dependency, not for ordering.
 
 ### Bug or feature
@@ -165,13 +162,11 @@ Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocke
 repository) in an issue's body holds it until that issue is closed.
 
 Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
-instead, at most 10h. The pipeline's job for a repository is sized for what its parent may run together
-(`repo-looper --job-timeout N`, looper#33): the longest limit of its issue and of the ready issues that could start
-beside it (up to `LOOPER_MAX_CHILDREN` in all), plus the plan's 20 minutes and an hour, rounded up to hours, at most
-`LOOPER_JOB_MAX_HOURS` (11h). With the default limits that is 6h, room for two 4h children from the start. A
-child's limit is capped at the parent's deadline, the job's end less that hour (looper#35): an issue's `Timeout:`
-line added after its job was sized gets the time the job has left, and its start comment says so ("limit 8h capped
-at 5h by this job"), so the run stops by itself, checkpointed, before GitLab kills the job.
+instead, at most 10h. A report's job is sized for its issue (`repo-looper --job-timeout N`, looper#70): its
+limit and an hour, rounded up to hours, at most `LOOPER_JOB_MAX_HOURS` (11h). Its limit is capped at the job's
+deadline, its end less that hour (looper#35): an issue's `Timeout:` line added after its job was sized gets the
+time the job has left, and its start comment says so ("limit 8h capped at 5h by this job"), so the run stops by
+itself, checkpointed, before GitLab kills the job.
 
 ### Standing rules
 
@@ -224,94 +219,62 @@ tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal
 tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work and think prompts, the scan's check on main and its item 5
 ```
 
-### Parent and children
+### Managers and direct reports
 
-A repository's looper job is a **parent** that runs **child loopers** for its issues, in parallel when the work
-allows (Jody, 2026-10-30, looper#32). Children run in the parent's job, with the same code (`repo-looper --child N`).
-The kicker still starts one parent per repository (`resource_group`), and repositories run in parallel as before.
+**One GitLab job per issue, a manager per repository that owns main** (Jody, 2026-11-03, looper#70;
+`tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`). It replaces the parent and its in-job
+children (looper#32): the area plan and its conflict holds, the time-left holds, the worktrees and the in-job
+lander are gone. One job per issue needs none of them.
 
-- **The parent plans.** It takes the ready issues in [priority](#priority) order (each one's `Blocked-by:` lines
-  closed; the job's own issue first if it is still ready, and any issue a killed run left `looper:in-progress`),
-  then decides which can run together and how many:
-  - **the areas each will touch:** when there is more than one issue to place, the model (read-only, at most
-    `LOOPER_PLAN_TIMEOUT`, 20 minutes) writes for each the paths it will change, generated outputs included
-    (`touches N <path>...`), the contracts it changes (`contract N <name>`), and any other conflict it judges
-    (`conflict A B <why>`). Two issues that touch the same path (or one under the other) or the same contract, or
-    that it names, never run at the same time; an issue whose areas it does not tell runs alone. `STATE.md`,
-    `PROPOSALS.md` and `HISTORY.md` do not count: every issue may touch them, and a landing rebases over them;
-  - **the rank, between issues that conflict** (looper#39): not the order taken, but a **land-pending** issue first
-    (finished work whose land was deferred or cut off, looper#38; its run lands it before its model, so it lands
-    before any conflicting issue starts; land-pending issues are also taken first), then a `bug` before a
-    `feature`, then priority, then age. The other waits for it, even when it waits too (for a running issue, a
-    slot), so a conflicting feature waits for the bug, never the other way round; a running issue is never
-    pre-empted;
-  - **the runner's CPU and memory:** as many children as the VM holds at `LOOPER_CHILD_CPUS` (2) and
-    `LOOPER_CHILD_MEMORY_GB` (4) a child (a t2a-standard-8 worker: 4), never more than `LOOPER_MAX_CHILDREN`
-    (6), a safety ceiling only. A repository whose gates run Kani (the word in a justfile, a Makefile or a CI
-    workflow on main) gets `LOOPER_KANI_MEMORY_GB` (12) a child: two on that worker (looper#41, tacplus#196), five on
-    tacplus's t2a-standard-16 worker ([Infrastructure](#infrastructure), looper#55).
-    The child's memory is a limit, not only a count: each container its model starts (`docker run`, and
-    `tacplus`'s) gets `--memory` and `--memory-swap` of it, from `looper-docker`, the `docker` first on the
-    model's PATH (`LOOPER_CHILD_MEMORY`), which refuses a larger `--memory` or none. A container over it is
-    OOM-killed alone (exit 137), a failure the child sees, where one unlimited `cargo kani` took the runner VM
-    down with the parent, the lander and every child. The limit is per container (`docker build`'s containers and
-    what runs in the job's own container are not limited; PROPOSALS.md); the land's gates, in the parent, are not
-    limited either. The job is one PID namespace, and a model's `pkill -f 'just gates'` once stopped another
-    child's land under way (tacplus#222, looper#61), so **each child's model runs as its own unprivileged user**
-    (looper#68; [Credentials](#credentials)): it cannot signal another run's processes or the lander's, nor read
-    their `/proc/<pid>/environ`, and its `docker` is `looper-docker` through `looper-docker-broker`, which serves
-    it only its own containers. Every model also finds `looper-pkill` first on its PATH as `pkill`: it signals
-    only the matching processes with the run's `LOOPER_MODEL_RUN` in their environment (each process the model
-    starts) and names the others it spared, and the prompt's rule 4 says to stop a process by its PID, never by a
-    pattern;
-  - **the job's time:** in a GitLab job no child starts that would outlast it (`CI_JOB_TIMEOUT` from the job's
-    start, `CI_JOB_STARTED_AT`, less the hour the job keeps for itself); the job's own issue always does, and the
-    job is sized for the others that are ready with it. When a child ends, the parent plans again and fills its
-    slot if an issue's limit still fits. It also plans again while children run (looper#59): every
-    `LOOPER_REPLAN_INTERVAL` (300 seconds), when the ready issues or the free slots changed since its last plan, so
-    an issue approved, unblocked or filed mid-job starts in a free slot within minutes, not at the next child's end.
-    A running child is never pre-empted.
+- **The planner** (`looper-dispatch plan`) writes the child pipeline with **one job per ready issue**, its
+  *direct report*, `looper-<repo>-<n>` running `repo-looper --repo <repo> --issue <n>`, in
+  [priority](#priority) order, up to the repository's **cap** less its reports already active. The caps are
+  committed in `caps.yaml` (in the image beside `looper-lib.sh`): 6 for tacplus, 3 for every other repository
+  (`default`). The nightly recap is to say when one needs adjusting. An issue whose report is created, pending,
+  waiting or running gets no other (`resource_group: looper-<repo>-<n>`), and the plan's log says why an issue
+  waits (`alpha#7 waits: alpha is at its cap of 3 reports`). The kicker starts the pipeline when a ready issue has
+  no report and its repository is under its cap, or when commits are queued to land and the repository has no
+  manager job. Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
+  tacplus-dev/cloud's pools (whose containers share VMs) once it exists: until then their runner tags are as before.
+- **A report** works its issue alone, in its own clone (`LOOPER_WORK/<repo>/issues/<n>`) on its own branch
+  (`looper/<repo>-<n>`), as its own unprivileged user (looper#68), with the per-issue flow below unchanged:
+  checkpoints and resume, time limit, idle and done, outcomes. **It never touches main**: a push to main from its
+  clone is refused (its pre-push hook). Its job's timeout is its issue's limit and an hour
+  (`repo-looper --job-timeout N`), and its limit is capped at the job's deadline (looper#35). Its containers are
+  limited to `LOOPER_CHILD_MEMORY_GB` (4; `LOOPER_KANI_MEMORY_GB`, 12, in a repository whose gates run Kani),
+  through `looper-docker` (looper#41).
+- **Landing is queuing.** The model's `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository
+  has no `gates.yaml` and no justfile) pushes a checkpoint whose `.looper/land` names the land (its id, gates and
+  when it was queued), labels the issue `looper:landing` (a hold: no other report takes it) and waits for the
+  manager's verdict, which it prints, exiting with its code: 0 merged, 3 sent back, 4 red. A land still queued when
+  the report's time runs out is the manager's all the same; the report says so on the issue.
+- **The manager**, one job per repository with work to merge (`looper-<repo>-manager`, `repo-looper --repo R
+  --manage`, `resource_group: looper-<repo>-main`), is **the only merger** of the repository's main. The planner
+  adds it beside the reports it starts (unless one already waits to start) and for any queued land. It takes the
+  queued branches oldest first, one at a time under the landing lock: it rebases each on main, runs the gates its
+  diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)), pushes **only on green**, and **deletes
+  the merged branch**. Until the companion issue's build jobs (looper#71) the gates run in the manager's job.
+  - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
+    (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
+    resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
+    and the gates judge the result. Any other conflict it **sends back** to the report, the conflicting files
+    named: the report's `--land` says so, and if the report has ended, the issue (no longer `looper:landing`) gets
+    a new report job, which resumes from the branch with the conflicts marked.
+  - **Logged:** every merge (its main range, gate set and why: green; any files it regenerated), send-back and red
+    verdict (the gates' end) is a comment on the issue, with the land's id as a marker line the report reads.
+    The merge comment quotes the report's last checkpoint, for the issue's next report when its own run had ended.
+  - It adds the planning files from their templates, `HISTORY.md`'s line for each closed issue (its report queues
+    the line as `.looper/history` on its branch) and for each release.
+  - It runs while a report job of the repository is active, an open issue of it is `looper:in-progress` (a closed
+    one too, for as long as its report may take to end), or any is `looper:landing` (a closed one's `HISTORY.md`
+    line), and `LOOPER_MANAGER_LINGER` (300 seconds) after, polling every `LOOPER_MANAGER_POLL` (30). A land that would not
+    finish before its job ends (looper#38: its estimate, by gate set, as before) is left queued, and the manager
+    ends: the kicker starts the next one.
 
-  Higher priority goes first, but an issue that conflicts with a running one waits while a lower one that does
-  not starts. The plan and its reasons are in the job's log (`plan: ...`), in its record (`looper-runs/<time>-plan/`:
-  `plan.md`, whose first line names its occasion: the job's start, `#N ended`, or the interval; the model's
-  `prompt.md` and `claude.log`; a second plan in the same second is `<time>-plan-2/`), and on each issue when there was a choice to make: a
-  comment when it starts beside others, or why it is held back (once per reason).
-- **Children:** one per issue, each in its own git worktree (`LOOPER_WORK/<repo>/worktrees/N`) on its own branch
-  (`looper/<repo>-N`, the name its checkpoints have on origin), running the per-issue flow below unchanged:
-  checkpoints and resume, time limit, idle and done, outcomes. Its log lines in the job's log start `[#N]`.
-- **Landing is serialized, and the parent owns it** (looper#34): the model lands its commits with
-  `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository has no `gates.yaml` and no justfile), which queues them
-  with the parent's lander and waits for the result. The lander lands one at a time, in the parent's process, not
-  the child's: it takes the repository's landing lock, rebases the commits onto the current main, re-runs the
-  gates (the set the diff calls for, [Gates scaled to the diff](#gates-scaled-to-the-diff)) and pushes. A rejected push is rebased and tried again. The lock wait and the gates (over two hours with
-  three children on one runner, tacplus 2026-10-30) no longer lose a finished fix: a land still queued or running
-  when its child's limit fires (or its run ends) is landed all the same, under the parent's job timeout, which
-  waits for the queue before it ends; the lander says on the issue what came of it, and the issue stays `approved`
-  for the next run to comment and close. While its land is queued or running a model is not idle. When the rebase conflicts it lands nothing and names the paths: the model rebases, resolves, verifies and
-  lands again, or the run ends stuck. Gates that fail, or that change a tracked file, land nothing, nor does an
-  uncommitted change: broken work never lands. A push to main from a child's worktree any other way is refused
-  (the checkout's pre-push hook, which `--no-verify` skips, as the ROADMAP.md guard). The looper's own commits
-  (planning files, `HISTORY.md`) take the same lock.
-- **A land starts only if it can finish before the job ends** (looper#38, tacplus#215: a land started with 65
-  minutes left after a 67-minute one was killed with the job, and its issue never heard). In a GitLab job the
-  lander compares the job's time left (`CI_JOB_TIMEOUT` from its start) with what a land takes on the gate set
-  its diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)): the repository's last land on that
-  set that passed its gates (kept with the checkout, `LOOPER_WORK/<repo>/land-seconds`, `land-seconds.<set>` for
-  a set not full), else for a set not full the sum of its sets' `minutes` in the map, else for full
-  `LOOPER_LAND_MINUTES`, else full's `minutes`, else 70 minutes for tacplus and 30 for the others, plus
-  `LOOPER_LAND_MARGIN` (600 seconds) for its outcome. A docs land is never deferred for want of the full gates' hours. A land that does not fit is not started: its issue gets "land deferred to the next
-  job: not enough time left in this one" and stays `approved`, and its branch keeps the land. A land queued and
-  not yet reported marks the branch land-pending (`.looper/land` on its checkpoints: the gates, `queued` or
-  `deferred`), so one cut off anyway is still seen. The next run of the issue lands a land-pending branch first,
-  before its model (what was queued: the commits under the branch's last checkpoint), says on the issue what came
-  of it (and, for one cut off, that it was), then resumes from the branch to finish the issue. Its child's outcome
-  is `land-deferred` when the land was deferred.
-- **The parent supervises:** as each child ends it logs its outcome (`#N: closed`, `blocked`, `needs-decision`,
-  `proposed`, `timeout`, `land-pending`, `land-deferred`, `landed`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
-  plans again, as it does on the interval, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
-  as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
-  others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.
+```sh
+tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group
+tests/repo-looper.test.sh       # reports-in-parallel, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short
+```
 
 ### Gates scaled to the diff
 
@@ -348,8 +311,9 @@ read from that tree.
   (`landed on main: a..b, on the gates docs (all 3 changed paths map to docs)`), as do the looper's own comments on a
   land, and, where a map chose it, the issue's `HISTORY.md` line ends `; gates: docs`. The run's `landed` file has
   the set, and its `gate-sets` the reasons.
-- **Budgeted by the set** (looper#38): see above; the lander chooses the set from the branch's diff before it
-  starts the land.
+- **Budgeted by the set** (looper#38): the manager chooses the set from the branch's diff before it starts the
+  land, and starts it only when the land's estimate on that set fits in its job's time left; else it leaves the
+  land queued for the next manager ([Managers and direct reports](#managers-and-direct-reports)).
 - **Nothing goes unchecked for more than a day, nothing is released on partial gates:** the nightly scan runs the
   repository's full gates on main (its prompt names the map's full), every release (the patch rule's tag, and the
   [build pipeline](#build-pipeline)'s release build, which always runs `just gates`) runs them before it ships,
@@ -412,8 +376,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | asked a question | `needs-decision` |
 | found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
-| ended (its limit, or earlier) with its land queued or running (looper#34) | the same, and the parent lands it after the run and comments what came of it (landed, with main's range, or why not); it stays `approved` |
-| ended any way (its limit, idle, or earlier) with its land queued and no outcome, but no longer in the parent's queue: its `--land` took the request to land it itself (looper#44) | `land-pending`: a comment that its land has no outcome yet; its branch keeps `.looper/land` (`state=queued`) and the next run lands it first; it stays `approved` |
+| ended (its limit, or earlier) with its land queued and no verdict yet (looper#70) | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |
 | went idle after its fix landed: waiting on a land that was done (looper#37) | as an early end with progress: a comment with main's range and its last checkpoint; it stays `approved` and the next run comments and closes |
 | went idle (nothing landed or queued) | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
@@ -423,7 +386,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 ```sh
 tests/looper-docker.test.sh                # a child's docker: the limit added, a lower one kept, a higher one or none refused, the image's own arguments left alone, other commands passed through; with a docker daemon, a container over its limit OOM-killed alone while the one beside it carries on (#41)
 tests/looper-pkill.test.sh                 # a model's pkill: its run's own processes signalled, another run's and the lander's spared and named, pkill's signal and -e options, the real pkill outside a run (#61)
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; the parent: two independent issues at once, both landed; two touching one file (or one contract, or named by the plan, or of unknown areas, or with room for one) one after the other; between conflicting issues a land-pending bug landed before an older priority:high feature starts, and a bug before a feature, priority after (#39); a landing conflict rebased and landed again, a rejected push retried, broken work refused; lands queued or running when their children's limits fire landed by the parent, not stuck; a model waiting on its land not idle, nor a land-pending branch's land before the model however long its gates (#61), nor stuck when it goes quiet after its land landed or while its land has no outcome; an early end with progress resumable, without it stuck; a child's time limit not stopping the others; a child whose issue asks for more time than the job has left capped at the job's deadline, stopped by the looper with a checkpoint and a timeout outcome; the plan in the log, the record and on the issues; a child's model given looper-docker and its memory, more for a repository whose gates run Kani (#41); another child's land landed through a model's `pkill -f` of its gates' pattern (#61) (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged oldest first; a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more for a repository whose gates run Kani (#41); each model as its own user (#68) (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -432,11 +395,11 @@ Every tacplus-dev repository carries `ROADMAP.md`, `PROPOSALS.md`, `STATE.md` an
 (tacplus-dev/roadmap `decisions/repo-roadmap-files-2026-10-27.md`, templates in its `templates/repo/`;
 looper#13). The loopers keep them:
 
-- **repo-looper, mechanically:** before the model runs, a missing `STATE.md`, `PROPOSALS.md` or
-  `HISTORY.md` is created on main from its template (`<repo>` filled in), never `ROADMAP.md`. After the
-  run, a closed issue gets one line at the end of `HISTORY.md`,
+- **repo-looper, mechanically, by the manager** (#70): as it starts, a missing `STATE.md`, `PROPOSALS.md` or
+  `HISTORY.md` is created on main from its template (`<repo>` filled in), never `ROADMAP.md`. After a
+  report's run, a closed issue gets one line at the end of `HISTORY.md` (its report queues it on its branch),
   `- <YYYY-MM-DD> looper issue <title> (#N, <commit>)` (the run's last commit on main, if it pushed), and
-  each release it made (a new `vX.Y.Z` tag) one more, `- <YYYY-MM-DD> looper release <vX.Y.Z> (<release link>)`.
+  each release (a new `vX.Y.Z` tag while the manager runs) one more, `- <YYYY-MM-DD> looper release <vX.Y.Z> (<release link>)`.
   These are the looper's own commits on main, made in a scratch worktree and made again if the push is
   rejected.
 - **The model** (the prompt's rule 6): updates `STATE.md` when its change changes what it states, puts
@@ -978,7 +941,7 @@ looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL 
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
 looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
-tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, else the default); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh), scheduled and kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; a repository at its cap (caps.yaml) starts none; a report per ready issue up to the cap and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, else the default); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
 **The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is
@@ -1019,22 +982,21 @@ else's, with only the scopes its job uses: the land's gates run a child's commit
 
 | User | Runs | Reaches |
 |---|---|---|
-| the job's (root) | the parent, each child's `repo-looper`, the lander, the land's gates | everything in the job: the withheld credentials, the Docker socket, every worktree and run record |
-| `looper-<issue>`, one per child | that child's models (classify, propose, work), and what they start | its worktree (`LOOPER_WORK/<repo>/worktrees/<issue>`, a clone of the checkout sharing its objects, its `.git` its own), its home (`LOOPER_WORK/<repo>/homes/looper-<issue>`: git's credential helper, `TMPDIR`, `CARGO_HOME`, the tacplus cache) and its run directory, each `0700`/`0750` and its own; the checkout, read-only; its own environment (`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, not the withheld ones); the landing queue (`lands/`, sticky: the lander serves a request only to its issue's user, and gives the result to it alone) and the two locks. Not another user's processes (no signal, no `/proc/<pid>/environ`), files or containers, nor the Docker socket |
-| `looper-plan` | the parent's plan model | the checkout, read-only, and its plan's record |
+| the job's (root) | the report's `repo-looper`; the manager and its gates, in the manager's job | everything in the job: the withheld credentials, the Docker socket, every clone and run record |
+| `looper-<issue>`, the report's | that report's models (classify, propose, work), and what they start | its clone (`LOOPER_WORK/<repo>/issues/<issue>`), its home (`LOOPER_WORK/<repo>/homes/looper-<issue>`: git's credential helper, `TMPDIR`, `CARGO_HOME`, the tacplus cache) and its run directory, each `0700`/`0750` and its own; its own environment (`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, not the withheld ones); the checkpoint lock. Not another user's processes (no signal, no `/proc/<pid>/environ`), files or containers, nor the Docker socket |
 | `looper-docker` | `looper-docker-broker`, one per model run, in the socket's group and that model's | the Docker socket, for that model's uid alone (`SO_PEERCRED`): `docker run`/`create` with its memory limit, no `--privileged`, capabilities, devices, host or other containers' namespaces, and no mount outside its worktree and home (symlinks resolved) nor of a named volume; `start`, `stop`, `exec`, `logs`, `rm`, `cp` and the like on its own containers (label `io.tacplus.looper.owner`); `ps` of its own; `build` of a context in its worktree; `pull`, `images`, `inspect`. `compose`, `buildx`, `volume`, `network`, `system`, `login` and the rest are refused |
 
-The scan and the think job run their one model as the job's user, with no child beside it. GitLab's file variables
-(`$CI_PROJECT_DIR.tmp`, world-readable as the runner writes them) are made the job's alone before a child starts, and
+The scan and the think job run their one model as the job's user, with no report beside it. GitLab's file variables
+(`$CI_PROJECT_DIR.tmp`, world-readable as the runner writes them) are made the job's alone before a report's model starts, and
 the job's home (`/root`, where the image keeps tools on the PATH such as tacplus's openjml) the models' to pass
 through, not to list, its private parts (`.claude`, `.config`, `.cache/gh`, `.docker`, ...) the job's alone.
-What the boundary is not: the land's gates run each child's commits (its tests) as the job's user, as they must to
+What the boundary is not: the manager's gates run each report's commits (its tests) as its job's user, as they must to
 pass the work, so a model reaches the job's user through what it lands (PROPOSALS.md, "The land's gates as a user
 of their own").
 
 | Variable | What it is | Who uses it |
 |---|---|---|
-| `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`repo-looper --list`) and each parent's job poll read the project's jobs; the kicker reads them too |
+| `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`looper-dispatch plan`) and each report's job poll read the project's jobs; the kicker reads them too |
 | `LOOPER_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/looper (`glptt-`), environment scope `kicker` | the kicker starts the pipeline with it (`POST /projects/:id/trigger/pipeline`; the token is on no command line) |
 | `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before | GitHub, the model |
 

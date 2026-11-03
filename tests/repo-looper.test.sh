@@ -27,7 +27,7 @@ cat > "$TMP/bin/gh" <<'EOF'
 set -euo pipefail
 cmd="$1 $2"; shift 2
 case "$cmd" in
-  "auth setup-git") exit 0 ;;
+  "auth setup-git") git config --global --add safe.directory '*'; exit 0 ;;   # the local origin, a model user's too (looper#68)
   "repo clone") git clone -q "$FIX/origin.git" "$2"; exit 0 ;;
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
@@ -171,14 +171,29 @@ looper() { # [VAR=value...] -- repo-looper args
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
-      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS LOOPER_MODEL_USERS=0 \
+      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
 }
-run() { # [VAR=value...]: work alpha#4
+run() { # [VAR=value...]: work alpha#4, the manager beside its report (looper#70)
+  manager_start "$@"
+  OUT="$(looper "$@" -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+  manager_wait
+}
+# The report alone, for a scenario whose issue no report works (held by a run
+# that is gone, say): its stale looper:in-progress would keep a manager waiting.
+run_alone() { # [VAR=value...]
   OUT="$(looper "$@" -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
 }
+# The manager of alpha in the background, until no report is at work and no
+# land queued; it has added the planning files when it returns.
+manager_start() { # [VAR=value...]
+  # Not the scenario's GitLab: its jobs there are the report's, which the manager would wait for.
+  looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=5 "$@" CI_API_V4_URL= -- --repo alpha --manage > "$FIX/manager.log" 2>&1 & MANAGER=$!
+  for _ in $(seq 100); do grep -q 'the manager of alpha: merging' "$FIX/manager.log" && return 0; kill -0 "$MANAGER" 2>/dev/null || return 0; sleep 0.1; done
+}
+manager_wait() { wait "$MANAGER" || { cat "$FIX/manager.log"; fail "the manager exited non-zero"; }; }
 # A claude.sh line: checkpoint the step, as the prompt tells the model to.
 step() { echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --checkpoint \"$1\"" >> "$FIX/claude.sh"; }
 origin() { git -C "$FIX/origin.git" "$@"; }
@@ -190,6 +205,8 @@ body() { jq -r .body "$FIX/issues/$1-$2.json"; }
 has() { grep -qF -- "$2" <<<"$1" || fail "expected \"$2\" in: $1"; }
 lacks() { ! grep -qF -- "$2" <<<"$1" || fail "unexpected \"$2\" in: $1"; }
 pass() { echo "ok $NAME"; }
+# The comments but the manager's verdicts on merges (looper#70).
+others() { awk '/^[a-z-]+#[0-9]+ /{ m = ($0 ~ /^[a-z-]+#[0-9]+ The manager (merged|had nothing)/) } !m' "$FIX/comments"; }
 
 scenario pushed-gates-blocked
 push_fix; echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
@@ -360,7 +377,8 @@ push_fix; echo 'gh issue edit 4 --repo tacplus-dev/alpha --add-label closed-by-t
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 run
 [[ "$(labels alpha 4)" == "approved,bug,closed-by-test" ]] || fail "labels $(labels alpha 4)"
-[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+# The one comment is the manager's verdict on the merge (looper#70).
+[[ "$(grep -c '^alpha#4 ' "$FIX/comments")" == 1 ]] && grep -q '^alpha#4 The manager merged' "$FIX/comments" || fail "unexpected comment"
 pass
 
 # Checkpoint: the model's step pushes everything in the checkout, committed or
@@ -420,23 +438,21 @@ pass
 # ready issues that could run beside it, plus the plan's 20 minutes and an
 # hour, rounded up, at most 11h.
 scenario timeout-per-issue
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 6h ]] || fail "default job timeout"
+# A report's job (looper#70): its issue's limit and an hour.
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 5h ]] || fail "default job timeout"
 issue alpha 4 OPEN approved,bug "Fix it.
 Timeout: 6h"
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 8h ]] || fail "job timeout for 6h"
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 7h ]] || fail "job timeout for 6h"
 push_fix
 run
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 6h"
 issue alpha 4 OPEN approved,bug "Timeout: 12h"
 [[ "$(looper -- --repo alpha --job-timeout 4)" == 11h ]] || fail "job timeout for 12h"
 issue alpha 4 OPEN approved,bug "Timeout: 2h"
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 4h ]] || fail "job timeout for 2h"
-# A ready issue that could run beside it sizes the job too; a blocked one does not.
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 3h ]] || fail "job timeout for 2h"
+# Another ready issue is its own job's: it does not size this one.
 issue alpha 5 OPEN approved,bug "Timeout: 7h"
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 9h ]] || fail "job timeout for a 7h issue beside it"
-issue alpha 5 OPEN approved,bug "Timeout: 7h
-Blocked-by: #9"; issue alpha 9 OPEN bug "Later."
-[[ "$(looper -- --repo alpha --job-timeout 4)" == 4h ]] || fail "job timeout with a blocked issue"
+[[ "$(looper -- --repo alpha --job-timeout 4)" == 3h ]] || fail "job timeout with a 7h issue beside it"
 pass
 
 # Resume: the branch, rebased on main, is the run's uncommitted work on main;
@@ -617,7 +633,7 @@ echo 'for i in 1 2 3 4 5; do echo tick; sleep 1; done; for i in 1 2 3 4 5; do da
 push_fix
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
-[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+[[ -z "$(others)" ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
@@ -630,7 +646,7 @@ echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 20 )) || fail "the finished run was not ended"
-[[ "$(cat "$FIX/comments")" == "alpha#4 Fixed." ]] || fail "unexpected comment"
+[[ "$(others)" == "alpha#4 Fixed." ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$OUT" "done"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "ends your run"
@@ -655,7 +671,7 @@ start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 (( SECONDS - start < 30 )) || fail "the finished run was not ended"
 [[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == CLOSED ]] || fail "not closed"
-[[ "$(cat "$FIX/comments")" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
+[[ "$(others)" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
 has "$OUT" "its run was done"
 pass
 
@@ -667,7 +683,7 @@ echo 'echo "last words"; sleep 60' >> "$FIX/claude.sh"
 start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1 LOOPER_IDLE_MINUTES=0.1
 (( SECONDS - start < 40 )) || fail "the model was not stopped"
-c="$(cat "$FIX/comments")"
+c="$(others)"
 [[ "$(grep -c '^alpha#4 ' <<<"$c")" == 1 ]] || fail "comments: $c"
 has "$c" "closed with no closing report from its run"
 has "$c" "main $(origin rev-parse --short main~2)..$(origin rev-parse --short main~1)"
@@ -758,7 +774,7 @@ push_fix; echo 'git tag v1.2.3 && git push -q origin v1.2.3' >> "$FIX/claude.sh"
 run
 h="$(history)"
 has "$h" "- $today looper issue Issue 4 (#4, "
-[[ "$(tail -n 1 <<<"$h")" == "- $today looper release v1.2.3 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.3)" ]] || fail "HISTORY.md: $h"
+has "$h" "- $today looper release v1.2.3 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.3)"
 pass
 
 # ROADMAP.md is Jody's: a push of a commit that touches it is refused, whichever
@@ -868,7 +884,7 @@ gh issue edit 4 --repo tacplus-dev/alpha --add-label bug
 EOS
 push_fix; close_it
 run
-[[ "$(prompts)" == "You are the looper of tacplus-dev/alpha, classifying issue #4 before it is worked.|You are the looper of tacplus-dev/alpha, working issue #4. Your working directory is a worktree of this|" ]] || fail "prompts: $(prompts)"
+[[ "$(prompts)" == "You are the looper of tacplus-dev/alpha, classifying issue #4 before it is worked.|You are the looper of tacplus-dev/alpha, working issue #4. Your working directory is a clone of this|" ]] || fail "prompts: $(prompts)"
 [[ "$(labels alpha 4)" == "approved,bug" ]] || fail "labels $(labels alpha 4)"
 has "$(cat "$FIX/comments")" "Classified as bug"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/classify/prompt.md)" "decisions/issue-flow-2026-10-27.md"
@@ -1187,35 +1203,36 @@ list
 [[ "$(paste -sd' ' <<<"$OUT")" == "7 6 8 4 5 9" ]] || fail "listed: $(paste -sd' ' <<<"$OUT")"
 pass
 
-# A job takes the highest-priority ready issue first, not the oldest; the parent
-# goes on with the others (looper#32).
+# Without --issue, the report of the highest-priority ready issue, not the
+# oldest, and of it alone (looper#31, looper#70).
 scenario run-takes-priority
 issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
 issue alpha 5 OPEN approved,bug "Older."; created alpha 5 2026-10-20T00:00:00Z
 issue alpha 6 OPEN approved,bug,priority:high "Urgent."; created alpha 6 2026-10-29T00:00:00Z
-push_fix
-run
-[[ "$(grep -m 1 'working issue' "$FIX/prompts")" == *"working issue #6."* ]] || fail "prompts: $(prompts)"
-has "$(prompts)" "working issue #5."
+OUT="$(looper -- --repo alpha 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+[[ "$(grep 'working issue' "$FIX/prompts")" == *"working issue #6. "* && "$(grep -c 'working issue' "$FIX/prompts")" == 1 ]] || fail "prompts: $(prompts)"
 pass
 
-# A planned job whose issue another run took or finished meanwhile works the
-# repository's oldest ready issue at run time instead.
+# Without --issue, the oldest ready issue, and it alone: each issue is its own
+# job's (looper#70). A report whose issue another run took or finished
+# meanwhile does nothing: the plan starts the others' own.
 scenario run-takes-oldest-ready
 issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
 issue alpha 5 OPEN approved,bug "Fix that."
 issue alpha 6 OPEN approved,bug "And this."
 jq '.createdAt = "2026-10-26T00:00:00Z"' "$FIX/issues/alpha-6.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-6.json"
-push_fix
-run
-has "$(prompts)" "working issue #6."; lacks "$(prompts)" "issue #4"
-has "$OUT" "#4 is no longer ready; working #6"
+OUT="$(looper -- --repo alpha 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+[[ "$(grep 'working issue' "$FIX/prompts")" == *"working issue #6. "* && "$(grep -c 'working issue' "$FIX/prompts")" == 1 ]] || fail "prompts: $(prompts)"
+: > "$FIX/prompts"
+run_alone
+[[ -z "$(prompts)" ]] || fail "#4's report worked: $(prompts)"
+has "$OUT" "#4 is no longer ready; nothing to do"
 pass
 
 scenario run-nothing-ready
 issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
 push_fix
-run
+run_alone
 [[ -z "$(prompts)" ]] || fail "prompts: $(prompts)"
 has "$OUT" "nothing to do"
 main_unchanged
@@ -1223,8 +1240,9 @@ pass
 
 # A run killed after it labelled its issue (its runner gone, looper#20) leaves
 # looper:in-progress behind. GitLab's retry, the job for that issue, takes it as
-# a resume from its checkpoint when no other looper job of the repository is
-# active (its own does not count), and the label goes when the run ends.
+# a resume from its checkpoint when no other report job of that issue is
+# active (its own does not count, nor another issue's: looper#70), and the
+# label goes when the run ends.
 scenario killed-run-resumed
 echo 'echo x > a.txt; sleep 1' >> "$FIX/claude.sh"
 step "a.txt written; left: close it"
@@ -1257,7 +1275,7 @@ for st in created pending waiting_for_resource running; do
   issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
   push_fix
   jobs "looper-alpha-4 $st 77" "looper-alpha-4 running 78"
-  run "${GL[@]}" CI_JOB_ID=78
+  run_alone "${GL[@]}" CI_JOB_ID=78
   [[ -z "$(prompts)" ]] || fail "taken twice: $(prompts)"
   has "$OUT" "nothing to do"
   [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
@@ -1268,7 +1286,7 @@ done
 scenario in-progress-gitlab-down
 issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
 push_fix
-run "${GL[@]}" CI_JOB_ID=78
+run_alone "${GL[@]}" CI_JOB_ID=78
 [[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
 [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
 pass
@@ -1279,7 +1297,7 @@ for l in looper:stuck needs-decision; do
   issue alpha 4 OPEN "approved,bug,looper:in-progress,$l" "Fix it."
   push_fix
   jobs "looper-alpha-4 running 78"
-  run "${GL[@]}" CI_JOB_ID=78
+  run_alone "${GL[@]}" CI_JOB_ID=78
   [[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
   pass
 done
@@ -1287,7 +1305,7 @@ done
 scenario in-progress-outside-ci
 issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
 push_fix
-run
+run_alone
 [[ -z "$(prompts)" ]] || fail "taken: $(prompts)"
 pass
 
@@ -1313,7 +1331,7 @@ orphan_stopped() { # elapsed seconds
   (( $1 < 20 )) || fail "the orphaned run was not stopped"
   has "$OUT" "GitLab no longer runs this job"
   main_unchanged
-  [[ ! -s "$FIX/comments" ]] || fail "commented"
+  [[ -z "$(others)" ]] || fail "commented"
   [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
   [[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt " ]] \
     || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
@@ -1324,7 +1342,7 @@ scenario job-gone
 jobs "looper-alpha-4 running 77"
 orphan "$(fail_job 77)"
 start=$SECONDS
-run "${GL[@]}" CI_JOB_ID=77 "${POLL[@]}"
+run_alone "${GL[@]}" CI_JOB_ID=77 "${POLL[@]}"
 orphan_stopped "$(( SECONDS - start ))"
 has "$(cat "$FIX/gitlab")" "PRIVATE-TOKEN https://gl.test/api/v4/projects/42/jobs/77"
 : > "$FIX/prompts"
@@ -1349,7 +1367,7 @@ scenario job-gone-job-token
 jobs "looper-alpha-4 running 77"
 orphan 'touch "$FIX/revoked"'
 start=$SECONDS
-run CI_API_V4_URL=https://gl.test/api/v4 CI_PROJECT_ID=42 CI_JOB_TOKEN=j CI_JOB_ID=77 "${POLL[@]}"
+run_alone CI_API_V4_URL=https://gl.test/api/v4 CI_PROJECT_ID=42 CI_JOB_TOKEN=j CI_JOB_ID=77 "${POLL[@]}"
 orphan_stopped "$(( SECONDS - start ))"
 has "$(cat "$FIX/gitlab")" "JOB-TOKEN https://gl.test/api/v4/job"
 pass
@@ -1363,7 +1381,7 @@ working() { # claude.sh: work a while, then push and close
 }
 not_stopped() {
   lacks "$OUT" "no longer runs"
-  [[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+  [[ -z "$(others)" ]] || fail "unexpected comment"
   [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
   [[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == CLOSED ]] || fail "not closed"
 }
@@ -1415,125 +1433,199 @@ not_stopped
 [[ ! -e "$FIX/gitlab" ]] || fail "asked GitLab: $(cat "$FIX/gitlab")"
 pass
 
-# --- the parent and its children (looper#32) -------------------------------------
-# The job's repo-looper is the parent: it plans which ready issues run together
-# (the model's areas, the runner's capacity), runs each as a child in its own
-# worktree and branch, and the children land one at a time through --land.
-ROOM=(LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=0.01)   # room for several children on any test host
-drain() { # [VAR=value...]: the parent over alpha's ready issues
-  OUT="$(looper "$@" -- --repo alpha 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+# --- managers and direct reports (looper#70) -------------------------------------
+# A report job per issue works it in its own clone on its own branch and never
+# touches main: --land queues its commits with the repository's manager, which
+# alone merges them, one at a time, in the order queued, on green gates only,
+# deletes the merged branch, and gives every verdict on the issue.
+reports() { # [VAR=value...] -- issue...: each issue's report at once, the manager beside them
+  local vars=() n p pids=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
+  manager_start "${vars[@]+"${vars[@]}"}"
+  for n in "$@"; do looper "${vars[@]+"${vars[@]}"}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & pids+=($!); done
+  for p in "${pids[@]}"; do wait "$p" || { cat "$FIX"/report-*.log; fail "a report exited non-zero"; }; done
+  manager_wait
+  OUT="$(cat "$FIX"/report-*.log "$FIX/manager.log")"
 }
-areas() { # the plan's model writes these lines as its areas
-  printf '%s\n' "$@" > "$FIX/areas.txt"; echo 'cp "$FIX/areas.txt" "$AREAS"' > "$FIX/plan.sh"
+manage() { # [VAR=value...]: the manager alone, until nothing is queued
+  OUT="$(looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 "$@" -- --repo alpha --manage 2>&1)" || { echo "$OUT"; fail "the manager exited non-zero"; }
 }
 landed() { origin show "main:$1" 2>/dev/null; } # a file on main
 closed() { [[ "$(jq -r .state "$FIX/issues/alpha-$1.json")" == CLOSED ]] || fail "#$1 not closed: $(labels alpha "$1")"; }
+close_all() { echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"' >> "$FIX/claude.sh"; }
+# A branch queued for the manager as a report's --land leaves it: the report's
+# commits, then a checkpoint carrying .looper/land.
+queue() { # issue queued-time file content [gates]
+  local n="$1" b="looper/alpha-$1" d="$FIX/q-$1"
+  rm -rf "$d"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b "$b"
+  printf '%s\n' "$4" > "$d/$3"; git -C "$d" add -A; git -C "$d" commit -qm "fix $n"
+  mkdir -p "$d/.looper"; printf 'id=q%s\ngates=%s\nstate=queued\nqueued=%s\n' "$n" "${5:-true}" "$2" > "$d/.looper/land"
+  git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #$n (land queued)"; git -C "$d" push -q origin "$b"
+  jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-$n.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-$n.json"
+}
+on_main() { # a commit on main by hand, as another land would leave it
+  printf '%s\n' "$2" > "$FIX/seed/$1"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm "main: $1"; git -C "$FIX/seed" push -q origin main
+}
 
-# Two independent issues run at the same time, each in its own worktree on its
-# own branch, and both land; the plan is in the job's log, its record, and on
-# each issue.
-scenario parallel-independent
+# Two reports at once, each in its own clone on its own branch; both merge,
+# each verdict on its issue with its gates, their branches deleted, and each
+# closed issue's HISTORY.md line added by the manager.
+scenario reports-in-parallel
 issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.txt" "touches 5 src/b/"
 cat > "$FIX/claude.sh" <<'EOS'
 touch "$FIX/running-$ISSUE"
 for i in $(seq 150); do ls "$FIX"/running-* | grep -qv "running-$ISSUE\$" && { echo together > "$FIX/together-$ISSUE"; break; }; sleep 0.1; done
 { pwd; git rev-parse --abbrev-ref HEAD; } > "$FIX/where-$ISSUE"
-echo "$ISSUE" > "file-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+echo "$ISSUE" > "file-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
+! git push -q origin HEAD:main 2> "$FIX/push-$ISSUE" || echo "pushed to main" >> "$FIX/push-$ISSUE"
+"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true > "$FIX/land-$ISSUE" 2>&1
+echo "rc $?" >> "$FIX/land-$ISSUE"
 EOS
-drain "${ROOM[@]}"
+close_all
+reports -- 4 5
 [[ -e "$FIX/together-4" && -e "$FIX/together-5" ]] || fail "not run at the same time: $OUT"
-[[ "$(cat "$FIX/where-4")" == "$FIX/work/alpha/worktrees/4"$'\nlooper/alpha-4' ]] || fail "#4 ran in: $(cat "$FIX/where-4")"
-[[ "$(cat "$FIX/where-5")" == "$FIX/work/alpha/worktrees/5"$'\nlooper/alpha-5' ]] || fail "#5 ran in: $(cat "$FIX/where-5")"
+[[ "$(cat "$FIX/where-4")" == "$FIX/work/alpha/issues/4"$'\nlooper/alpha-4' ]] || fail "#4 ran in: $(cat "$FIX/where-4")"
+[[ "$(cat "$FIX/where-5")" == "$FIX/work/alpha/issues/5"$'\nlooper/alpha-5' ]] || fail "#5 ran in: $(cat "$FIX/where-5")"
+has "$(cat "$FIX/push-4")" "refused to push to main from this clone"
 [[ "$(landed file-4.txt)" == 4 && "$(landed file-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "on the gates full (no gates.yaml): green"; has "$(cat "$FIX/land-4")" "rc 0"
+lacks "$(cat "$FIX/land-4")" "looper-land id="
 closed 4; closed 5
 [[ "$(labels alpha 4)" == approved,bug && "$(labels alpha 5)" == approved,bug ]] || fail "labels $(labels alpha 4) / $(labels alpha 5)"
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 starts"; has "$OUT" "[#4] "; has "$OUT" "#5: closed"
-has "$(cat "$FIX"/project/looper-runs/*-plan/plan.md)" "#5 starts"
-has "$(cat "$FIX"/project/looper-runs/*-plan/prompt.md)" "touches <n> <path>"
-has "$(cat "$FIX"/project/looper-runs/*-plan/prompt.md)" "<<issue-text nonce=$NONCE_T author=jody association=MEMBER role=direction>>"
-has "$(cat "$FIX"/project/looper-runs/*-plan/prompt.md)" "Fix that."
-c="$(cat "$FIX/comments")"; has "$c" "alpha#4 The looper of alpha starts this issue alongside #5"; has "$c" "alpha#5 The looper of alpha starts this issue alongside #4"
-has "$c" "- #4 starts"; has "$c" "looper-runs/"
+c="$(cat "$FIX/comments")"; has "$c" "alpha#4 The manager merged [\`looper/alpha-4\`]"; has "$c" "alpha#5 The manager merged [\`looper/alpha-5\`]"
+has "$c" "<!-- looper-land id="
+[[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
 h="$(history)"; has "$h" "looper issue Issue 4 (#4, "; has "$h" "looper issue Issue 5 (#5, "
+[[ "$(grep -c 'looper issue Issue 4 ' <<<"$h")" == 1 ]] || fail "HISTORY.md: $h"
+has "$OUT" "#4: deleted looper/alpha-4"
 pass
 
-# Two issues that touch the same file never run at the same time: the second
-# waits, says why, and starts when the first ends.
-scenario parallel-same-file
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 shared.txt docs" "touches 5 ./shared.txt"
+# The manager takes the queued branches oldest first, each rebased on the main
+# the one before it left.
+scenario manager-order
+issue alpha 5 OPEN approved,bug "Fix that."
+queue 5 2026-11-03T10:00:00Z five.txt 5
+queue 4 2026-11-03T11:00:00Z four.txt 4
+manage
+[[ "$(origin log --format=%s main | head -n 2 | paste -sd'|')" == "fix 4|fix 5" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(landed four.txt)" == 4 && "$(landed five.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+lacks "$(origin show main --stat)" ".looper/"
+[[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
+[[ "$(labels alpha 4)" == approved,bug && "$(labels alpha 5)" == approved,bug ]] || fail "labels $(labels alpha 4) / $(labels alpha 5)"
+pass
+
+# A code conflict is sent back: nothing merges, the branch stays with its work,
+# the issue says which files and is no longer held, and the report's --land
+# says so and exits 3.
+scenario manager-sends-back
 cat > "$FIX/claude.sh" <<'EOS'
-ls "$FIX"/running-* >/dev/null 2>&1 && echo "overlap at #$ISSUE" >> "$FIX/overlap"
-touch "$FIX/running-$ISSUE"; sleep 2
-echo "$ISSUE" >> shared.txt && git add -A && git commit -qm "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true
-rm -f "$FIX/running-$ISSUE"
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+echo mine > a.txt && git add -A && git commit -qm "fix 4"
+printf 'theirs\n' > "$FIX/seed/a.txt"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm "main: a.txt"; git -C "$FIX/seed" push -q origin main
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
-drain "${ROOM[@]}"
-[[ ! -e "$FIX/overlap" ]] || fail "$(cat "$FIX/overlap")"
-[[ "$(landed shared.txt)" == $'4\n5' ]] || fail "shared.txt: $(landed shared.txt)"
-closed 4; closed 5
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 waits: both touch shared.txt (#4, starting)"
-has "$(cat "$FIX/comments")" "alpha#5 The looper of alpha holds this issue back for now: both touch shared.txt (#4, starting)"
+run
+has "$(cat "$FIX/land-4")" "The manager sent [\`looper/alpha-4\`]"; has "$(cat "$FIX/land-4")" "conflicts in \`a.txt\`"; has "$(cat "$FIX/land-4")" "rc 3"
+[[ "$(landed a.txt)" == theirs ]] || fail "main's a.txt: $(landed a.txt)"
+has "$(grep '^alpha#4 The manager sent' "$FIX/comments")" "it never merges by hand"
+branch || fail "the branch is gone"
+[[ "$(origin show looper/alpha-4^:a.txt 2>/dev/null || origin show looper/alpha-4:a.txt)" == mine ]] || fail "the branch lost its work"
+lacks "$(labels alpha 4)" "looper:landing"
 pass
 
-# The same for a contract both change, a conflict the plan names, an issue
-# whose areas it does not tell, and a runner with room for one.
-scenario parallel-held-back
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-echo 'echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true' > "$FIX/claude.sh"
-areas "touches 4 a.go" "contract 4 the alpha CLI" "touches 5 b.go" "contract 5 the alpha CLI"
-drain "${ROOM[@]}"
-has "$OUT" "plan: #5 waits: both change the alpha CLI (#4, starting)"
-issue alpha 4 OPEN approved,bug "Fix it."; issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.go" "touches 5 b.go" "conflict #5 #4 both need the one test database"
-drain "${ROOM[@]}"
-has "$OUT" "plan: #5 waits: the plan: both need the one test database (#4, starting)"
-issue alpha 4 OPEN approved,bug "Fix it."; issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.go"
-drain "${ROOM[@]}"
-has "$OUT" "plan: #5 waits: the plan does not tell what #5 touches (#4, starting)"
-issue alpha 4 OPEN approved,bug "Fix it."; issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.go" "touches 5 b.go"
-drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MAX_CHILDREN=1
-has "$OUT" "plan: #5 waits: no free slot (capacity 1: "
-has "$OUT" "ceiling 1)"
-[[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+# A conflict only in generated files is the manager's to resolve: it takes
+# main's side and regenerates them (generated.yaml's command), never a hand
+# merge, then runs the gates and merges.
+scenario manager-regenerates-lock
+mkdir -p "$FIX/seed/deps"; echo base > "$FIX/seed/deps/base"
+printf '#!/usr/bin/env bash\nls deps | sort > app.lock\n' > "$FIX/seed/gen.sh"; chmod +x "$FIX/seed/gen.sh"
+printf '# The generated files.\napp-lock:\n  run: ./gen.sh\n  paths: [app.lock]\n' > "$FIX/seed/generated.yaml"
+(cd "$FIX/seed" && ./gen.sh); git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm "lock"; git -C "$FIX/seed" push -q origin main
+cat > "$FIX/claude.sh" <<'EOS'
+echo x > deps/mine && ./gen.sh && git add -A && git commit -qm "fix 4"
+(cd "$FIX/seed" && git pull -q && echo y > deps/theirs && ./gen.sh && git add -A && git commit -qm "main: theirs" && git push -q origin main)
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'test -f deps/mine && test -f deps/theirs && diff <(ls deps | sort) app.lock' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run
+has "$(cat "$FIX/land-4")" "rc 0"; has "$(cat "$FIX/land-4")" "by regenerating them, never by hand: \`app.lock (./gen.sh)\`"
+[[ "$(landed app.lock)" == $'base\nmine\ntheirs' ]] || fail "main's app.lock: $(landed app.lock)"
+lacks "$(landed app.lock)" "<<<<<<<"
+has "$(grep '^alpha#4 The manager merged' "$FIX/comments")" "app.lock (./gen.sh)"
+has "$(cat "$FIX/manager.log")" "#4: deleted looper/alpha-4"
 pass
 
-# A child's containers get the plan's memory for it (looper#41, tacplus#196):
-# the model's docker is looper-docker, with the child's LOOPER_CHILD_MEMORY,
-# and the prompt says so; a repository whose gates run Kani gets
-# LOOPER_KANI_MEMORY_GB a child, and the plan sizes the children by it.
-scenario child-memory
+# Nothing merges on red: the gates fail, main stays, the branch stays, and
+# the verdict, with the gates' end, is on the issue and in --land's output.
+scenario manager-red
+cat > "$FIX/claude.sh" <<'EOS'
+echo x > x.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'echo the-gates-say-no; false' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run
+main_unchanged
+has "$(cat "$FIX/land-4")" "did not merge [\`looper/alpha-4\`]"; has "$(cat "$FIX/land-4")" "red, nothing merges without green gates"
+has "$(cat "$FIX/land-4")" "the-gates-say-no"; has "$(cat "$FIX/land-4")" "rc 4"
+branch || fail "the branch is gone"
+lacks "$(labels alpha 4)" "looper:landing"
+pass
+
+# A report whose time runs out while its land is queued: the manager merges it
+# after the report ended, and its verdict frees the issue for its next report.
+scenario land-after-report-ended
+echo 'echo x > x.txt && git add -A && git commit -qm "fix 4"' > "$FIX/claude.sh"
+step "x.txt fixed; left: comment and close"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true' >> "$FIX/claude.sh"
+OUT="$(looper LOOPER_TIMEOUT=20 LOOPER_STOP_EARLY=0 -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "the report exited non-zero"; }
+main_unchanged
+has "$(labels alpha 4)" "looper:landing"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "Its commits are queued with the manager of alpha"
+has "$OUT" "#4: land-pending"
+approved="$(LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" FIX="$FIX" bash -c 'source "$LOOPER_LIB"; approved_issues alpha')"
+[[ -z "$approved" ]] || fail "a queued issue is ready: $approved"
+manage
+[[ "$(landed x.txt)" == x ]] || fail "main: $(origin log --oneline main)"
+has "$(grep -A4 '^alpha#4 The manager merged' "$FIX/comments")" "Its report's last checkpoint"
+has "$(grep -A4 '^alpha#4 The manager merged' "$FIX/comments")" "> x.txt fixed; left: comment and close"
+lacks "$(labels alpha 4)" "looper:landing"
+branch && fail "the merged branch is left"
+pass
+
+# The manager's job too short for a land (looper#38): it merges nothing, leaves
+# the branch queued for the next manager and ends.
+scenario manager-job-short
+queue 4 2026-11-03T10:00:00Z x.txt x
+manage CI_JOB_TIMEOUT=600 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_LAND_MINUTES=30
+main_unchanged
+has "$OUT" "#4: left queued for the next manager"; has "$OUT" "the manager stops"
+has "$(labels alpha 4)" "looper:landing"
+branch || fail "the branch is gone"
+pass
+
+# A report's model sees its memory (looper#41): containers it starts are
+# limited to it, through looper-docker; in a repository whose gates run Kani,
+# to LOOPER_KANI_MEMORY_GB.
+scenario report-memory
 echo 'echo "$LOOPER_CHILD_MEMORY $(readlink -f "$(command -v docker)")" > "$FIX/mem"' > "$FIX/claude.sh"
-drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=2
-[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "the child's docker: $(cat "$FIX/mem")"
-has "$OUT" "plan: plan for alpha: capacity "; has "$OUT" " GB at 2 GB a child, ceiling"
+run LOOPER_CHILD_MEMORY_GB=2
+[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "the report's docker: $(cat "$FIX/mem")"
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$p" "Containers you start (\`docker run\`, \`tacplus\`) are limited to 2048m of memory"
 has "$p" "leave Kani to the land's gates"
 printf 'gates:\n    cargo kani --tests\n' > "$FIX/seed/justfile"
 git -C "$FIX/seed" add justfile && git -C "$FIX/seed" commit -qm kani && git -C "$FIX/seed" push -q origin main
 issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
-drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=2 LOOPER_KANI_MEMORY_GB=3
-[[ "$(cat "$FIX/mem")" == "3072m $ROOT/looper-docker" ]] || fail "the Kani child's docker: $(cat "$FIX/mem")"
-has "$OUT" " GB at 3 GB a child (its gates run Kani), ceiling"
+run LOOPER_CHILD_MEMORY_GB=2 LOOPER_KANI_MEMORY_GB=3
+[[ "$(cat "$FIX/mem")" == "3072m $ROOT/looper-docker" ]] || fail "the Kani report's docker: $(cat "$FIX/mem")"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "limited to 3072m of memory"
 pass
 
-# Each model as its own user (looper#68): two children at once, each model
-# as its own user (LOOPER_USER_PREFIX, this test's own). Neither can signal
-# the other's processes or the lander, kill or pkill them, read
-# /proc/<pid>/environ of the other or of the lander, find a withheld
+# Each model as its own user (looper#68): two reports at once, each model as
+# its own user (LOOPER_USER_PREFIX, this test's own). Neither can signal the
+# other's processes or the manager, kill or pkill them, read
+# /proc/<pid>/environ of the other or of the manager, find a withheld
 # credential (GITLAB_TOKEN) in any process it can read, read the other's
-# worktree or run record, reach the Docker socket, or stop the lander or
-# answer for the other's land by planting files in the landing queue. Its docker goes through
-# the broker, as the broker's user, for its worktree and not /etc. Both
-# checkpoint and land as before. Root only. The scripts run from a copy anyone
-# reads: this checkout may be a model's own (0750).
+# clone or run record, or reach the Docker socket. Its docker goes through the
+# broker, as the broker's user, for its clone and not /etc. Both checkpoint
+# and land as before. Root only. The scripts run from a copy anyone reads:
+# this checkout may be a model's own (0750).
 #
 # The socket's gid is the next free gid, with no name (looper#69): as on a
 # runner worker, where the host's socket is gid 1002 in the job's container,
@@ -1547,7 +1639,7 @@ else
   trap 'for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do userdel "$u" 2>/dev/null; done
         getent group "${P}dockersock" >/dev/null && groupdel "${P}dockersock"; rm -rf "$TMP"' EXIT
   R="$TMP/root"; mkdir -p "$R" "$TMP/dk"
-  cp "$ROOT"/{repo-looper,looper-lib.sh,looper-docker,looper-docker-broker,looper-pkill} "$R/"
+  cp "$ROOT"/{repo-looper,looper-lib.sh,caps.yaml,looper-docker,looper-docker-broker,looper-pkill} "$R/"
   printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n' "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
   chmod 755 "$TMP" "$TMP/bin" "$TMP/dk/docker"; chmod 666 "$TMP/dk/log"; chmod -R a+rX "$R" "$TMP/bin" "$TMP/dk"
   useradd -M -U "${P}next" && SG="$(id -g "${P}next")" && userdel "${P}next" || fail "useradd -U"
@@ -1555,33 +1647,30 @@ else
   python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMP/docker.sock"
   chgrp "$SG" "$TMP/docker.sock" && chmod 660 "$TMP/docker.sock"
   issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-  areas "touches 4 a.txt" "touches 5 src/b/"
   cat > "$FIX/claude.sh" <<'EOS'
-o=$(( 9 - ISSUE )); p="$FIX/probe-$ISSUE"; wt="$FIX/work/alpha/worktrees"
+o=$(( 9 - ISSUE )); p="$FIX/probe-$ISSUE"; wt="$FIX/work/alpha/issues"; mp="$(cat "$FIX/manager-pid")"
 id -un > "$p"
 bash -c 'exec -a "lt-sleep-$0" sleep 120' "$ISSUE" & echo $! > "$FIX/pid-$ISSUE.new"; mv "$FIX/pid-$ISSUE.new" "$FIX/pid-$ISSUE"
 for i in $(seq 300); do [[ -s "$FIX/pid-$o" ]] && break; sleep 0.1; done
 op="$(cat "$FIX/pid-$o")"
 [[ -e "/proc/$op" ]] || echo "the other's process is gone before the probe" >> "$p"
-! kill -0 "$op" 2>/dev/null || echo "signalled the other child" >> "$p"
-! pkill -f "lt-sleep-$o" 2>/dev/null || echo "pkilled the other child" >> "$p"
-! kill -0 "$LOOPER_LANDER_PID" 2>/dev/null || echo "signalled the lander" >> "$p"
-! cat "/proc/$LOOPER_LANDER_PID/environ" >/dev/null 2>&1 || echo "read the lander's environ" >> "$p"
+! kill -0 "$op" 2>/dev/null || echo "signalled the other report" >> "$p"
+! pkill -f "lt-sleep-$o" 2>/dev/null || echo "pkilled the other report" >> "$p"
+! kill -0 "$mp" 2>/dev/null || echo "signalled the manager" >> "$p"
+! cat "/proc/$mp/environ" >/dev/null 2>&1 || echo "read the manager's environ" >> "$p"
 ! cat "/proc/$op/environ" >/dev/null 2>&1 || echo "read the other's environ" >> "$p"
 ! grep -qs s3cret-withheld /proc/[0-9]*/environ || echo "read a withheld credential" >> "$p"
 ! env | grep -q s3cret-withheld || echo "holds a withheld credential" >> "$p"
-! ls "$wt/$o" >/dev/null 2>&1 || echo "read the other's worktree" >> "$p"
+! ls "$wt/$o" >/dev/null 2>&1 || echo "read the other's clone" >> "$p"
 ! cat "$FIX"/project/looper-runs/*-issue-"$o"/prompt.md >/dev/null 2>&1 || echo "read the other's run record" >> "$p"
 for s in /var/run/docker.sock "${DOCKER_HOST#unix://}"; do
   if [[ -S "$s" ]]; then ! [[ -r "$s" || -w "$s" ]] || echo "reaches the docker socket $s" >> "$p"; fi
 done
 [[ " $(id -G) " != *" $(stat -c %g "${DOCKER_HOST#unix://}") "* ]] || echo "holds the docker socket's gid" >> "$p"
-docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused its worktree" >> "$p"
+docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused its clone" >> "$p"
 ! docker run --rm -v /etc:/e img true 2>> "$p.docker" || echo "docker mounted /etc" >> "$p"
 touch "$FIX/probed-$ISSUE"
 for i in $(seq 300); do [[ -e "$FIX/probed-$o" ]] && break; sleep 0.1; done
-# The landing queue is every model's to write: what #4 plants for the lander or for #5 is not the looper's.
-[[ "$ISSUE" != 4 ]] || touch "$LOOPER_LANDER/.stop" "$LOOPER_LANDER/.done" "$LOOPER_LANDER/5.rc" "$LOOPER_LANDER/5.orphan"
 kill "$(cat "$FIX/pid-$ISSUE")" || echo "could not stop its own process" >> "$p"
 echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" &&
   "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "committed" &&
@@ -1590,15 +1679,18 @@ jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv
 EOS
   git -C "$FIX/origin.git" config core.sharedRepository 0777; chmod -R a+rwX "$FIX"
   T="$ROOT"; ROOT="$R"
-  drain "${ROOM[@]}" LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH" \
-    DOCKER_HOST="unix://$TMP/docker.sock"
+  U=(LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock")
+  manager_start "${U[@]}"; echo "$MANAGER" > "$FIX/manager-pid"; chmod 644 "$FIX/manager-pid"
+  for n in 4 5; do looper "${U[@]}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & eval "RP$n=\$!"; done
+  wait "$RP4" && wait "$RP5" || { cat "$FIX"/report-*.log; fail "a report exited non-zero"; }
+  manager_wait; OUT="$(cat "$FIX"/report-*.log "$FIX/manager.log")"
   ROOT="$T"; LOOPER_MEM="$(sed -n 's/.*limited to \([0-9]*m\) of memory.*/\1/p' "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
   for n in 4 5; do
     [[ "$(cat "$FIX/probe-$n")" == "$P$n" ]] || fail "#$n's model: $(cat "$FIX/probe-$n" "$FIX/probe-$n.docker" 2>&1)"
     grep -q "outside this child's own directories" "$FIX/probe-$n.docker" || fail "#$n's docker: $(cat "$FIX/probe-$n.docker")"
-    grep -qxF "${P}docker run --memory $LOOPER_MEM --memory-swap $LOOPER_MEM --label io.tacplus.looper.owner=$P$n --rm -v $FIX/work/alpha/worktrees/$n:/w img true" "$TMP/dk/log" ||
+    grep -qxF "${P}docker run --memory $LOOPER_MEM --memory-swap $LOOPER_MEM --label io.tacplus.looper.owner=$P$n --rm -v $FIX/work/alpha/issues/$n:/w img true" "$TMP/dk/log" ||
       fail "#$n's docker ran: $(cat "$TMP/dk/log")"
-    [[ "$(stat -c %U "$FIX/work/alpha/worktrees/$n")" == "$P$n" ]] || fail "#$n's worktree is $(stat -c %U "$FIX/work/alpha/worktrees/$n")'s"
+    [[ "$(stat -c %U "$FIX/work/alpha/issues/$n")" == "$P$n" ]] || fail "#$n's clone is $(stat -c %U "$FIX/work/alpha/issues/$n")'s"
   done
   for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do
     i="$(id -u "$u")"
@@ -1609,447 +1701,35 @@ EOS
   [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main); $OUT"
   closed 4; closed 5
   has "$OUT" "#4: closed"; has "$OUT" "#5: closed"
-  ! getent passwd "${P}plan" >/dev/null || [[ "$(stat -c %U "$(ls -d "$FIX"/project/looper-runs/*-plan | head -1)")" == "${P}plan" ]] || fail "the plan's model"
   groupadd -g "$SG" "${P}dockersock" && useradd -M -N -G "${P}dockersock" "${P}6" || fail "#6's user"
-  issue alpha 6 OPEN approved,bug "Fix the other."; areas "touches 6 c.txt"
+  issue alpha 6 OPEN approved,bug "Fix the other."
   ROOT="$R"
-  drain "${ROOM[@]}" LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock"
+  OUT="$(looper LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock" -- --repo alpha --issue 6 2>&1)" || { echo "$OUT"; fail "#6's report exited non-zero"; }
   ROOT="$T"
   [[ ! -e "$FIX/probe-6" ]] || fail "#6's model ran as $(cat "$FIX/probe-6")"
   has "$OUT" "the user ${P}6 is in the Docker socket's group ($SG): no model runs as it"
   pass
 fi
 
-# Between conflicting issues the plan ranks (looper#39, tacplus#215): a
-# land-pending issue first, then a bug before a feature, then priority, then
-# age. A land-pending bug and an older, ready feature that conflict: the bug
-# starts and lands first, and the feature starts after it, from the bug's main.
-scenario parallel-rank-land-pending
-issue alpha 4 OPEN approved,feature,priority:high "Add a thing."
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-platform "- A thing (tacplus-dev/alpha#4)"
-git -C "$FIX/seed" checkout -q -b looper/alpha-5
-echo 5 > "$FIX/seed/shared.txt" && git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "fix 5"
-mkdir "$FIX/seed/.looper" && printf 'gates=true\nstate=deferred\n' > "$FIX/seed/.looper/land"
-git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "looper: work in progress on #5 (land deferred to the next job)"
-git -C "$FIX/seed" push -q origin looper/alpha-5
-areas "touches 4 shared.txt" "touches 5 shared.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-ls "$FIX"/running-* >/dev/null 2>&1 && echo "overlap at #$ISSUE" >> "$FIX/overlap"
-touch "$FIX/running-$ISSUE"
-if [[ "$ISSUE" == 4 ]]; then
-  cat shared.txt > "$FIX/saw-4"; echo 4 >> shared.txt && git add -A && git commit -qm "add 4" && "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
-fi
-rm -f "$FIX/running-$ISSUE"
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-EOS
-drain "${ROOM[@]}"
-[[ ! -e "$FIX/overlap" ]] || fail "$(cat "$FIX/overlap")"
-has "$OUT" "plan: #5 starts"; has "$OUT" "plan: #4 waits: both touch shared.txt (#5, starting; it goes first: land-pending)"
-[[ "$(cat "$FIX/saw-4")" == 5 ]] || fail "#4 started before #5 landed: it saw $(cat "$FIX/saw-4" 2>/dev/null)"
-[[ "$(landed shared.txt)" == $'5\n4' ]] || fail "shared.txt: $(landed shared.txt)"
-closed 4; closed 5
-has "$(grep '^alpha#4 ' "$FIX/comments")" "holds this issue back for now: both touch shared.txt (#5, starting; it goes first: land-pending)"
-pass
-
-# A bug before a conflicting feature, even an older priority:high one; a
-# priority:high issue still before an unlabelled one that conflicts with it.
-scenario parallel-rank-bug
-issue alpha 4 OPEN approved,feature,priority:high "Add a thing."
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-issue alpha 6 OPEN approved,bug,priority:high "Fix the other."; created alpha 6 2026-10-27T00:00:02Z
-platform "- A thing (tacplus-dev/alpha#4)"
-areas "touches 4 a.txt" "touches 5 a.txt b.txt" "touches 6 b.txt"
-echo 'echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true' > "$FIX/claude.sh"
-close_all() { echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"' >> "$FIX/claude.sh"; }
-close_all
-drain "${ROOM[@]}"
-has "$OUT" "plan: #6 starts"; has "$OUT" "plan: #5 waits: both touch b.txt (#6, starting)"
-has "$OUT" "plan: #4 waits: both touch a.txt (#5, waiting too; it goes first: a bug)"
-[[ "$(origin log --reverse --format=%s main | grep '^fix')" == $'fix 6\nfix 5\nfix 4' ]] || fail "landed: $(origin log --oneline main)"
-closed 4; closed 5; closed 6
-pass
-
-# A landing that conflicts with what another child landed meanwhile lands
-# nothing and names the paths; the child rebases, resolves and lands again.
-scenario landing-conflict
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.txt" "touches 5 b.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-echo "line $ISSUE" > shared.txt && git add -A && git commit -qm "fix $ISSUE"
-if [ "$ISSUE" = 5 ]; then for i in $(seq 150); do git -C "$FIX/origin.git" cat-file -e main:shared.txt 2>/dev/null && break; sleep 0.1; done; fi
-if ! "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true 2> "$FIX/land-$ISSUE"; then
-  git fetch -q origin
-  if ! git rebase -q origin/main >/dev/null 2>&1; then
-    printf 'line 4\nline 5\n' > shared.txt && git add shared.txt && GIT_EDITOR=true git rebase --continue >/dev/null
-  fi
-  "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true
-fi
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-EOS
-drain "${ROOM[@]}"
-has "$(cat "$FIX/land-5")" "nothing landed: rebasing looper/alpha-5 onto main conflicts in: shared.txt"
-[[ "$(landed shared.txt)" == $'line 4\nline 5' ]] || fail "shared.txt: $(landed shared.txt)"
-closed 4; closed 5
-pass
-
-# Main moving while the gates run (a push rejected): rebased again, the gates
-# run again, then it lands on top.
-scenario landing-push-rejected
-cat > "$FIX/claude.sh" <<'EOS'
-echo x > x.txt && git add -A && git commit -qm fix
-"$ROOT/repo-looper" --repo alpha --issue 4 --land \
-  --gates '[ -e "$FIX/moved" ] || { touch "$FIX/moved"; git -C "$FIX/seed" commit -q --allow-empty -m meanwhile && git -C "$FIX/seed" push -q origin main; }' > "$FIX/land" 2>&1
-EOS
-close_it
-run
-has "$(cat "$FIX/land")" "rejected"; has "$(cat "$FIX/land")" "landed on main"
-[[ "$(origin log --format=%s main | grep -v '^HISTORY.md' | head -n 2 | paste -sd' ' -)" == "fix meanwhile" ]] || fail "main: $(origin log --oneline main)"
-pass
-
-# Broken work never lands: gates that fail, or that change a tracked file, land
-# nothing; nor does a change that is not committed. A push to main from a
-# child's worktree other than through --land is refused.
-scenario landing-refused
-cat > "$FIX/claude.sh" <<'EOS'
-echo x > x.txt && git add -A && git commit -qm fix
-L=("$ROOT/repo-looper" --repo alpha --issue 4 --land)
-"${L[@]}" --gates 'echo broken; exit 3' > /dev/null 2>> "$FIX/land" && echo LANDED >> "$FIX/land"
-"${L[@]}" --gates 'echo changed >> x.txt' > /dev/null 2>> "$FIX/land" && echo LANDED >> "$FIX/land"
-git checkout -q -- x.txt; echo y > y.txt; git add y.txt
-"${L[@]}" --gates true > /dev/null 2>> "$FIX/land" && echo LANDED >> "$FIX/land"
-git reset -q; rm y.txt
-git push -q origin HEAD:main 2>> "$FIX/land" && echo LANDED >> "$FIX/land"
-EOS
-run
-l="$(cat "$FIX/land")"
-lacks "$l" "LANDED"
-has "$l" "the gates failed (exit 3)"; has "$l" "broken"
-has "$l" "the gates changed tracked files (x.txt)"
-has "$l" "uncommitted changes"
-has "$l" "land it with repo-looper --land"
-main_unchanged
-pass
-
-# A child's time limit is its own: one that reaches it does not stop the
-# others, and the parent goes on planning (#6 ends, #5 takes its slot and
-# outlives #4).
-scenario child-timeout
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:02Z
-issue alpha 6 OPEN approved,bug "And this."; created alpha 6 2026-10-27T00:00:01Z
-areas "touches 4 a" "touches 5 b" "touches 6 c"
-cat > "$FIX/claude.sh" <<'EOS'
-case "$ISSUE" in
-  4) sleep 60 ;;
-  6) sleep 4 ;;
-  5) for i in $(seq 150); do grep -q "^alpha#4 The run reached its time limit" "$FIX/comments" && break; sleep 0.1; done
-     grep -c "^alpha#4 The run reached its time limit" "$FIX/comments" > "$FIX/saw" ;;
-esac
-[ "$ISSUE" = 4 ] && exit 0
-git commit -q --allow-empty -m "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-EOS
-drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MAX_CHILDREN=2 LOOPER_TIMEOUT=14 LOOPER_STOP_EARLY=2
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #6 starts"; has "$OUT" "plan: #5 waits: no free slot"
-has "$OUT" "#4: timeout"; has "$OUT" "#6: closed"; has "$OUT" "#5: closed"
-[[ "$(cat "$FIX/saw")" == 1 ]] || fail "#5 did not outlive #4's time limit: $OUT"
-closed 5; closed 6
-[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
-pass
-
-# The parent plans again while children run (looper#59): every
-# LOOPER_REPLAN_INTERVAL, when the ready issues or the free slots changed, not
-# only as a child ends. Capacity 2 and one long-running child (#4): #5,
-# approved mid-run, starts within an interval while #4 still runs; the
-# intervals before, when nothing changed, plan nothing. The re-plan is logged
-# and recorded like the start plan.
-scenario replan-interval
-issue alpha 5 OPEN bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.txt" "touches 5 b.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-if [ "$ISSUE" = 4 ]; then
-  sleep 3
-  jq '.labels += [{name: "approved"}]' "$FIX/issues/alpha-5.json" > "$FIX/x-4" && mv "$FIX/x-4" "$FIX/issues/alpha-5.json"
-  for i in $(seq 200); do [ -e "$FIX/ran-5" ] && { touch "$FIX/saw-5"; break; }; sleep 0.1; done
-else touch "$FIX/ran-5"; fi
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-EOS
-drain "${ROOM[@]}" LOOPER_MAX_CHILDREN=2 LOOPER_REPLAN_INTERVAL=1
-[[ -e "$FIX/saw-5" ]] || fail "#5 did not start while #4 ran: $OUT"
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 starts"; closed 4; closed 5
-plans=("$FIX"/project/looper-runs/*-plan*/plan.md)
-(( ${#plans[@]} == 2 )) || fail "${#plans[@]} plans: $(cat "${plans[@]}")"
-has "$(cat "${plans[0]}")" "running: none; planned: at the job's start"
-has "$(cat "${plans[1]}")" "running: #4; planned again: the ready issues or the free slots changed"
-has "$(cat "${plans[1]}")" "#5 starts"
-has "$(cat "$FIX/comments")" "alpha#5 The looper of alpha starts this issue alongside #4"
-pass
-
-# The parent owns a child's land (looper#34): --land queues it with the
-# parent, which lands one at a time. A child whose limit fires while its land
-# is running (#4) or still queued behind another (#5) is not stuck: the parent
-# still lands its commits after it, says so on the issue, and the issue stays
-# approved for the next run to comment and close.
-scenario land-after-limit
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.txt" "touches 5 b.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
-"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "fixed; left: land, comment, close"
-"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates 'sleep 4' > "$FIX/land-$ISSUE" 2>&1
-touch "$FIX/saw-$ISSUE"
-EOS
-drain "${ROOM[@]}" LOOPER_TIMEOUT=6 LOOPER_STOP_EARLY=3
-[[ ! -e "$FIX/saw-4" && ! -e "$FIX/saw-5" ]] || fail "a model outlived its limit: $OUT"
-[[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "not landed: $(origin log --oneline main); $OUT"
-has "$OUT" "#4: land-pending"; has "$OUT" "#5: land-pending"
-for i in 4 5; do [[ "$(labels alpha $i)" == approved,bug ]] || fail "labels of #$i: $(labels alpha $i)"; done
-c="$(cat "$FIX/comments")"
-has "$c" "alpha#4 The looper landed this issue's commits on main"; has "$c" "alpha#5 The looper landed this issue's commits on main"
-lacks "$c" "looper:stuck"
-has "$(cat "$FIX/land-5")" "queued"
-# The branch is main and the record: the next run resumes to an empty change.
-[[ "$(origin rev-parse looper/alpha-4^)" == "$(origin log --format=%H -1 --grep='^fix 4$' main)" ]] || fail "branch: $(origin log --oneline -2 looper/alpha-4)"
-pass
-
-# A model waiting on its land is not idle, however long the land's gates run.
+# The watchdog does not stop a model that waits on its queued land.
 scenario land-wait-not-idle
-echo "git commit -q --allow-empty -m fix && \"\$ROOT/repo-looper\" --repo alpha --issue 4 --land --gates 'sleep 6'" >> "$FIX/claude.sh"
-close_it
+cat > "$FIX/claude.sh" <<'EOS'
+echo x > x.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'sleep 6' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
 run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
-closed 4
-[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
-[[ ! -s "$FIX/comments" ]] || fail "unexpected comment"
+has "$(cat "$FIX/land-4")" "rc 0"
+[[ "$(landed x.txt)" == x ]] || fail "main: $(origin log --oneline main)"
+lacks "$OUT" "idle (no output, no change)"
 pass
 
-# Nor is a land an earlier job left land-pending, which the run lands before
-# its model starts, however long its gates run (looper#61).
-scenario land-prior-not-idle
-git -C "$FIX/seed" checkout -q -b looper/alpha-4
-echo 4 > "$FIX/seed/f-4.txt" && git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "fix 4"
-mkdir "$FIX/seed/.looper" && printf 'gates=sleep 6\nstate=queued\n' > "$FIX/seed/.looper/land"
-git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "looper: work in progress on #4 (land queued)"
-git -C "$FIX/seed" push -q origin looper/alpha-4
-close_it
-drain "${ROOM[@]}" LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
-[[ "$(landed f-4.txt)" == 4 ]] || fail "not landed: $(origin log --oneline main); $OUT"
-has "$(cat "$FIX/comments")" "The looper landed it first, before this run's model"
-closed 4
-pass
-
-# A model stopping its own processes by a pattern (pkill -f) stops only its
-# run's (looper#61, tacplus#222): another child's land, its gates running in the
-# lander under the same pattern, lands all the same.
-scenario pkill-spares-the-land
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 f-4.txt" "touches 5 f-5.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
-if [[ "$ISSUE" == 4 ]]; then
-  "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'sleep 4; : looper61-gates' > "$FIX/land-4" 2>&1 || true
-else
-  until [[ -e "$FIX/work/alpha/lands/4.running" ]]; do sleep 0.1; done; sleep 1
-  bash -c 'exec -a looper61-gates-own sleep 60' & own=$!
-  sleep 0.5; pkill -f looper61-gates 2> "$FIX/pkill-5" || true
-  sleep 0.5; kill -0 "$own" 2>/dev/null && [[ "$(ps -o stat= -p "$own")" != Z* ]] && echo alive > "$FIX/own-alive"
-  "$ROOT/repo-looper" --repo alpha --issue 5 --land --gates true
-fi
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-EOS
-drain "${ROOM[@]}"
-[[ "$(landed f-4.txt)" == 4 ]] || fail "#4's land was stopped: $(cat "$FIX/land-4"); $OUT"
-[[ "$(landed f-5.txt)" == 5 ]] || fail "#5 not landed: $OUT"
-[[ ! -e "$FIX/own-alive" ]] || fail "the model's own process was spared"
-has "$(cat "$FIX/pkill-5")" "spared"; has "$(cat "$FIX/pkill-5")" "looper61-gates"
-p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"; has "$p" "never by a pattern"
-pass
-
-# A model that lands detached, ends its turn waiting on it and goes quiet
-# (looper#37, seen on #36) went idle after its fix landed: not stuck. The issue
-# says what landed and stays approved, and the next run comments and closes.
-scenario idle-after-landed
-cat > "$FIX/claude.sh" <<'EOS'
-echo 4 > f-4.txt && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "fixed; left: land, comment, close"
-nohup "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'sleep 2' > "$FIX/land-4" 2>&1 &
-echo "The land is queued; waiting on it."
-until grep -q "landed on main" "$FIX/land-4"; do sleep 0.2; done
-sleep 60; touch "$FIX/outlived"
-EOS
-start=$SECONDS
-run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 30 )) || fail "the idle model was not stopped"
-[[ ! -e "$FIX/outlived" ]] || fail "the model outlived its idle stop"
-[[ "$(landed f-4.txt)" == 4 ]] || fail "not landed: $(origin log --oneline main)"
-[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
-c="$(cat "$FIX/comments")"
-has "$c" "after its fix landed"; has "$c" "It landed main "; has "$c" "the next run resumes"
-lacks "$c" "looper:stuck"
-has "$OUT" "#4: landed"
-: > "$FIX/claude.sh"; close_it
-run
-closed 4
-has "$(history)" "looper issue Issue 4 (#4)"
-pass
-
-# A model that queues its land and goes quiet while the land has no outcome
-# yet (looper#44, seen on tacplus#200) is land-pending, not stuck, however the
-# request left the parent's queue: here its --land does not see the lander and
-# lands it from the model's own process, its gates still running at the idle stop.
-scenario idle-land-queued
-cat > "$FIX/claude.sh" <<'EOS'
-echo 4 > f-4.txt && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "fixed; left: land, comment, close"
-LOOPER_LANDER_PID=999999999 nohup "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates '[ -e "$FIX/go" ] || sleep 60' > "$FIX/land-4" 2>&1 &
-echo "The land is queued; waiting on it."
-until grep -q "queued" "$FIX/land-4"; do sleep 0.2; done
-sleep 60; touch "$FIX/outlived"
-EOS
-start=$SECONDS
-drain "${ROOM[@]}" LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 30 )) || fail "the idle model was not stopped"
-touch "$FIX/go"
-has "$OUT" "#4: land-pending"
-[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
-c="$(cat "$FIX/comments")"
-has "$c" "went idle"; has "$c" "queued to land"; has "$c" "the next run lands them first"
-lacks "$c" "looper:stuck"
-has "$(origin show looper/alpha-4:.looper/land)" "state=queued"
-for i in $(seq 100); do [[ -n "$(landed f-4.txt)" ]] && break; sleep 0.2; done
-pass
-
-# In a GitLab job no other child starts that would outlast the job, less the
-# hour it keeps for itself, counted from the job's start: its own issue always
-# does (the job was sized for it). With the default limits, the job the plan
-# sizes (--job-timeout) runs two independent issues together (looper#33).
-scenario parallel-job-time
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a" "touches 5 b"
-echo "git commit -q --allow-empty -m \"fix \$ISSUE\" && $LAND" >> "$FIX/claude.sh"
-t="$(looper -- --repo alpha --job-timeout 4)"
-[[ "$t" == 6h ]] || fail "job timeout $t"
-drain "${ROOM[@]}" CI_JOB_TIMEOUT=$(( ${t%h} * 3600 )) CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 starts"
-# One whose limit does not fit the job's remaining time still waits: a longer
-# limit, or a job that started earlier.
-issue alpha 4 OPEN approved,bug "Fix it."
-issue alpha 5 OPEN approved,bug "Timeout: 6h"; created alpha 5 2026-10-27T00:00:01Z
-drain "${ROOM[@]}" CI_JOB_TIMEOUT=21600
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 waits: its limit (6h) would outlast this job"
-for i in 4 5; do issue alpha "$i" OPEN approved,bug "Fix it."; done
-created alpha 5 2026-10-27T00:00:01Z
-drain "${ROOM[@]}" CI_JOB_TIMEOUT=21600 CI_JOB_STARTED_AT="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
-has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 waits: its limit (4h) would outlast this job"
-pass
-
-# A child whose issue asks for more time than the job has left (looper#35: a
-# `Timeout:` line added after the job was sized) is capped at the parent's
-# deadline, the job's end less its hour, and says so: it stops by itself, its
-# work checkpointed and its timeout outcome commented, before GitLab kills it.
-scenario child-capped-by-job
-issue alpha 4 OPEN approved,bug "Fix it.
-Timeout: 8h"
-echo 'echo y > c.txt' >> "$FIX/claude.sh"
-step "c.txt written; left: the tests"
-echo 'sleep 60; touch "$FIX/outlived"' >> "$FIX/claude.sh"
-start=$SECONDS
-run LOOPER_STOP_EARLY=3 CI_JOB_TIMEOUT=3608 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-(( SECONDS - start < 30 )) || fail "the model was not stopped by the job's deadline"
-[[ ! -e "$FIX/outlived" ]] || fail "the model outlived the job's deadline"
-c="$(cat "$FIX/comments")"
-has "$c" "limit 8h capped at "; has "$c" " by this job"
-has "$c" "The run reached its time limit"
-has "$c" "c.txt written; left: the tests"
-lacks "$c" "looper:stuck"
-has "$OUT" "#4: timeout"
-[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
-[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md c.txt " ]] || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
-lacks "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 8h"
-pass
-
-# A job with time enough leaves the limit as asked, and says nothing of it.
-scenario child-fits-job
-issue alpha 4 OPEN approved,bug "Fix it.
-Timeout: 2h"
-push_fix
-run CI_JOB_TIMEOUT=21600 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Your time limit is 2h"
-lacks "$(cat "$FIX/comments")" "capped"
-pass
-
-# The lander budgets against the job's end (looper#38, tacplus#215): a queued
-# land is started only if the repository's last land (else LOOPER_LAND_MINUTES)
-# fits the job's time left, less LOOPER_LAND_MARGIN. With room for one land,
-# the second is deferred: its issue says so and stays approved, its branch
-# keeps the land, and the next job lands it first, before its model runs.
-scenario land-deferred
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 a.txt" "touches 5 b.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
-"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "fixed; left: land, comment, close"
-if "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates 'sleep 25' > "$FIX/land-$ISSUE" 2>&1; then
-  jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-fi
-EOS
-# The job's end is 40 seconds past the margin: the first land fits, the second
-# (25 seconds, as the first took) no longer does.
-drain "${ROOM[@]}" CI_JOB_TIMEOUT=3660 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_TIMEOUT=50 LOOPER_LAND_MARGIN=3620 LOOPER_LAND_MINUTES=0
-[[ "$(landed f-4.txt)" == 4 ]] || fail "#4 not landed: $(origin log --oneline main); $OUT"
-[[ -z "$(landed f-5.txt)" ]] || fail "#5 landed past the job's budget: $OUT"
-closed 4
-has "$OUT" "#5: deferred to the next job"; has "$OUT" "#5: land-deferred"
-[[ "$(labels alpha 5)" == approved,bug ]] || fail "labels of #5: $(labels alpha 5)"
-c="$(grep '^alpha#5 ' "$FIX/comments")"
-has "$c" "land deferred to the next job: not enough time left in this one"
-lacks "$c" "looper:stuck"
-has "$(cat "$FIX/land-5")" "deferred to the next job"
-has "$(origin show looper/alpha-5:.looper/land)" "state=deferred"
-# The next job (a fresh runner) lands it first; its model then closes the issue.
-rm -rf "$FIX/work"
-cat > "$FIX/claude.sh" <<'EOS'
-git fetch -q origin && git show origin/main:f-5.txt > "$FIX/saw-5"
-jq ".state = \"CLOSED\"" "$FIX/issues/alpha-5.json" > "$FIX/x-5" && mv "$FIX/x-5" "$FIX/issues/alpha-5.json"
-EOS
-drain "${ROOM[@]}"
-[[ "$(landed f-5.txt)" == 5 ]] || fail "#5 not landed by the next job: $(origin log --oneline main); $OUT"
-[[ "$(cat "$FIX/saw-5")" == 5 ]] || fail "#5 was not landed before its model ran"
-closed 5
-has "$(grep '^alpha#5 ' "$FIX/comments")" "landed it first"
-has "$(history)" "looper issue Issue 5 (#5, "
-pass
-
-# A land cut off anyway (the job killed while its gates run) leaves its branch
-# land-pending: the next job lands it first and says on the issue what came of
-# the land the killed job never reported.
-scenario land-cut-off
-cat > "$FIX/claude.sh" <<'EOS'
-echo 4 > f-4.txt && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "fixed; left: land, comment, close"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates '[ -e "$FIX/cut" ] || sleep 60'
-EOS
-FIX="$FIX" TMP="$TMP" ROOT="$ROOT" setsid bash -c "$(declare -f looper); looper -- --repo alpha" > "$FIX/job1" 2>&1 & job=$!
-for i in $(seq 300); do grep -q "landing #4 (" "$FIX/job1" && break; sleep 0.1; done
-has "$(cat "$FIX/job1")" "landing #4 ("
-sleep 1
-while pkill -KILL -s "$job" 2>/dev/null; do sleep 0.2; done
-wait "$job" 2>/dev/null || true
-touch "$FIX/cut"
-[[ -z "$(landed f-4.txt)" ]] || fail "landed before the kill"
-has "$(origin show looper/alpha-4:.looper/land)" "state=queued"
-# The next job, on a fresh runner, with the label cleared (looper#20).
-rm -rf "$FIX/work"
-jq '.labels |= map(select(.name != "looper:in-progress"))' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
-cat > "$FIX/claude.sh" <<'EOS'
-git fetch -q origin && git show origin/main:f-4.txt > "$FIX/saw-4"
-EOS
-close_it
-drain
-[[ "$(landed f-4.txt)" == 4 ]] || fail "not landed by the next job: $(origin log --oneline main); $OUT"
-[[ "$(cat "$FIX/saw-4")" == 4 ]] || fail "not landed before the model ran"
-closed 4
-c="$(cat "$FIX/comments")"
-has "$c" "was cut off"; has "$c" "landed it first"
+# A limit that outlasts the report's job is capped at its deadline (looper#35),
+# and the issue is told.
+scenario report-capped-by-job
+echo 'sleep 30' > "$FIX/claude.sh"
+run CI_JOB_TIMEOUT=3620 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_STOP_EARLY=0
+has "$OUT" "limit 4h capped at "
+has "$(grep '^alpha#4 ' "$FIX/comments")" "capped at"
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------
@@ -2144,25 +1824,19 @@ has "$(cat "$FIX/land-4")" "nothing landed: gates.yaml cannot be read: line 4: n
 main_unchanged
 pass
 
-# The budget is the chosen set's (looper#38): with 11 minutes left, a docs land
-# (1 minute) starts and one on the full gates (180 minutes) is deferred.
+# The budget is the chosen set's (looper#38): with 11 minutes left in the
+# manager's job, a docs land (1 minute) merges and one on the full gates (180
+# minutes) is left queued for the next manager.
 scenario gates-budget
 gate_map
-issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
-areas "touches 4 README.md" "touches 5 x.txt"
-cat > "$FIX/claude.sh" <<'EOS'
-if [ "$ISSUE" = 4 ]; then echo more >> README.md; else echo x > x.txt; fi
-git add -A && git commit -qm "fix $ISSUE"
-if "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land > "$FIX/land-$ISSUE" 2>&1; then
-  jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
-fi
-EOS
-drain "${ROOM[@]}" CI_JOB_TIMEOUT=3660 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_TIMEOUT=50 LOOPER_LAND_MARGIN=3000
-closed 4
+issue alpha 5 OPEN approved,bug "Fix that."
+queue 4 2026-11-03T10:00:00Z README.md more
+queue 5 2026-11-03T11:00:00Z x.txt x
+manage CI_JOB_TIMEOUT=3660 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_LAND_MARGIN=3000
 has "$(origin show main:README.md)" "more"
 [[ -z "$(landed x.txt)" ]] || fail "#5 landed past the job's budget: $OUT"
-has "$OUT" "#5: deferred to the next job: the job ends in "; has "$OUT" "a land on the gates full takes about 3h"
-has "$(grep '^alpha#5 ' "$FIX/comments")" "a land of alpha on the gates full takes about 3h"
+has "$OUT" "#5: left queued for the next manager: this job ends in "; has "$OUT" "a land on the gates full takes about 3h"
+has "$(labels alpha 5)" "looper:landing"
 pass
 
 # The prompts name the full gates: gates.yaml's full, for verifying, the
@@ -2206,7 +1880,7 @@ outcome() { cat "$FIX/think/outcome"; }
 untouched() { # nothing written to GitHub: no branch, main, the issue as it was
   main_unchanged
   [[ -z "$(origin for-each-ref refs/heads/looper)" ]] || fail "pushed a branch"
-  [[ ! -s "$FIX/comments" ]] || fail "commented"
+  [[ -z "$(others)" ]] || fail "commented"
   [[ "$(labels alpha 4)" == "$1" ]] || fail "labels $(labels alpha 4)"
 }
 says() { # what the model writes: a change, its comment and its outcome

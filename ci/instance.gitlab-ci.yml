@@ -21,9 +21,9 @@
 #   schedule "kicker" (hourly)  looper-kick: looper-dispatch run --for 3420, a pass every 3
 #                               minutes; when a repository has a ready issue and no looper job
 #                               of its own, it starts this pipeline through its trigger
-#   trigger, web or api         looper-plan writes one job per such repository
-#                               (looper-dispatch plan), and looper-run runs them as a child
-#                               pipeline: each is that repository's parent looper (repo-looper)
+#   trigger, web or api         looper-plan writes a report job per ready issue, up to each
+#                               repository's cap, and its manager (looper-dispatch plan, looper#70),
+#                               and looper-run runs them as a child pipeline
 #   schedule "nightly"          looper-scan: repo-looper --scan of each of LOOPER_SCAN_REPOS
 workflow:
   rules:

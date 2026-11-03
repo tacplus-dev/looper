@@ -353,7 +353,7 @@ Blocked-by: #2"' || fail "edit body"
   else [[ "$cmd" == "glab issue close 3 --repo seabeam/alpha" ]] || fail "cmd: $cmd"; fi
   pass
 
-  # looper-dispatch: the plan (one job per free repository with a ready issue) and the orphan release.
+  # looper-dispatch: the plan (a report per ready issue with none active, and its manager, looper#70) and the orphan release.
   scenario dispatch "$FORGE"
   issue alpha 1 OPEN "Go." approved
   issue beta 2 OPEN "Go." approved
@@ -366,10 +366,11 @@ Blocked-by: #2"' || fail "edit body"
   scans="$(SOURCE=schedule dispatch plan 2>"$FIX/plan.err")" || fail "scheduled plan: $(cat "$FIX/plan.err")"
   [[ "$(grep -E '^looper-' <<<"$scans" | paste -sd' ')" == "looper-scan-alpha: looper-scan-beta:${SUB:+ looper-scan-$SUB:}" ]] || fail "scans: $scans"
   grep -qx '    - repo-looper --repo beta --scan' <<<"$scans" || fail "beta's scan: $scans"
-  ! grep -q '^looper-alpha-' <<<"$out" || fail "alpha planned while busy: $out"
-  grep -qx 'looper-beta-2:' <<<"$out" || fail "beta not planned: $out"
+  # alpha#9's report does not hold alpha#1: one job per issue.
+  [[ "$(grep -E '^looper-' <<<"$out" | paste -sd' ')" == "looper-alpha-1: looper-beta-2: looper-alpha-manager: looper-beta-manager:" ]] || fail "planned: $out"
   grep -qx '    - repo-looper --repo beta --issue 2' <<<"$out" || fail "beta's script: $out"
-  grep -qx '  resource_group: looper-beta' <<<"$out" || fail "beta's resource_group: $out"
+  grep -qx '  resource_group: looper-beta-2' <<<"$out" || fail "beta's resource_group: $out"
+  grep -qx '  resource_group: looper-beta-main' <<<"$out" || fail "beta's manager's resource_group: $out"
   grep -qE '^  timeout: [0-9]+h$' <<<"$out" || fail "no timeout: $out"
   dispatch run >/dev/null 2>&1 || true   # starts nothing it can (no trigger stubbed), but releases beta#3 first
   [[ "$(store beta 3 '[.labels[].name] | join(",")')" == approved ]] || fail "beta#3 still held: $(store beta 3 '[.labels[].name] | join(",")')"
@@ -380,7 +381,8 @@ done
 
 # One SeaBeam issue worked end to end (gitlab, a subgroup's project): taken
 # (looper:in-progress), the model closes it, the label goes and HISTORY.md's
-# line is pushed to gitlab.com through the forge's credentials. The model runs
+# line is queued on the issue's branch and pushed to gitlab.com by the
+# manager, through the forge's credentials. The model runs
 # as the job's user (LOOPER_MODEL_USERS=0), to read this test's files: the
 # models' own users are repo-looper.test.sh's (looper#68).
 scenario end-to-end gitlab
@@ -394,13 +396,15 @@ jq '.labels' "$f" > "$FIX/labels-during"
 t="$(jq '.state = "CLOSED"' "$f")"; printf '%s\n' "$t" > "$f"
 EOF
 chmod +x "$TMP/bin/claude"
-env -u GITLAB_TOKEN -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_LANDER -u LOOPER_LANDER_PID -u LOOPER_CHILD_MEMORY \
+E2E=(env -u GITLAB_TOKEN -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_CHILD_MEMORY \
   -u LOOPER_RUNS -u LOOPER_TIMEOUT -u LOOPER_GATES -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_ID -u CI_JOB_URL -u CI_PROJECT_DIR \
   -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT -u LOOPER_ROADMAP_REPO -u LOOPER_FORGE_URL \
   PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" ORG=seabeam PIPELINE=seabeam/tools/looper TOKEN="$TOKEN" \
   LOOPER_FORGE=gitlab LOOPER_ORG=seabeam LOOPER_FORGE_TOKEN="$TOKEN" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
-  LOOPER_MODEL_USERS=0 LOOPER_WATCH_INTERVAL=1 LOOPER_DONE_GRACE=1 HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem" \
-  "$ROOT/repo-looper" --repo tools/looper --issue 21 > "$FIX/out" 2>&1 || fail "repo-looper: $(tail -n 20 "$FIX/out")"
+  LOOPER_MODEL_USERS=0 LOOPER_WATCH_INTERVAL=1 LOOPER_DONE_GRACE=1 HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem")
+"${E2E[@]}" "$ROOT/repo-looper" --repo tools/looper --issue 21 > "$FIX/out" 2>&1 || fail "repo-looper: $(tail -n 20 "$FIX/out")"
+# Its HISTORY.md line is queued for the manager (looper#70), which adds it.
+"${E2E[@]}" LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 "$ROOT/repo-looper" --repo tools/looper --manage >> "$FIX/out" 2>&1 || fail "the manager: $(tail -n 20 "$FIX/out")"
 grep -q 'looper:in-progress' "$FIX/labels-during" || fail "not taken: $(cat "$FIX/labels-during")"
 [[ "$(store "$SUB" 21 '[.labels[].name] | join(",")')" == approved,bug ]] || fail "labels after: $(store "$SUB" 21 '[.labels[].name] | join(",")')"
 grep -qF 'glab issue close 21 --repo seabeam/tools/looper' "$FIX/prompt" || fail "the prompt's close: $(grep -n close "$FIX/prompt")"
