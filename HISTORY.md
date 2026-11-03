@@ -46,3 +46,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue OSV-Scanner 2.7.0's release binary in the image (go1.27.0) has 16 reachable vulnerabilities; no newer release, clean when built from source (#63, 42dc8d4; gates: full)
 - 2026-11-03 looper issue Trivy 0.76.1's release binary in the image has x/net GO-2026-6860/6866 and x/crypto openpgp; no newer release, clean when built from source (#64, a6e8c83; gates: full)
 - 2026-11-03 looper issue gitleaks 8.30.1's release binary in the image (go1.24.11) has 70 reachable vulnerabilities; no newer release since March (#65, 77908e4; gates: full)
+- 2026-11-03 looper issue looper-trace: a trace_id passed as its own parameter is reported as dropped (a row taken by value is read as the inbound request) (#66, 696b0fd; gates: docs+trace)
