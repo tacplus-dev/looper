@@ -40,3 +40,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue The parent re-plans only when a child ends: free slots sit idle while a newly ready issue waits hours (#59, c757480; gates: full)
 - 2026-11-03 looper issue Nightly recap: deterministic performance data (queue, prepare, run, slots, lands, holds) → actionable suggestions; transient noted only; recap file for Jody's daily report (#57, fc4273b; gates: full)
 - 2026-11-03 looper-port retired 2026-11-03: SeaBeam is retired on cutover, not ported (Jody; #60)
+- 2026-11-03 looper issue Retire looper-port (the SeaBeam port scan): remove the tool, ports.yaml, tests, CI job and docs (#60, 7edf753; gates: full)
