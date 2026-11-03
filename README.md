@@ -729,7 +729,7 @@ status. A release's `publish` makes the SBOM of the image it pushed.
 | [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | 1.1.4 | module checksum (`go install`, sum.golang.org) | each Go module: the vulnerable code it calls |
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | 0.20.2 | release sha256 | each Cargo workspace: advisories, licenses, sources, bans |
 | [Semgrep CE](https://github.com/semgrep/semgrep) | 1.183.0 | every wheel's hash (`scanners/requirements.txt`; mcp and OpenTelemetry overridden to fixed versions, #53, smoke-scanned at the image build) | the tree, rules `p/default` |
-| [gitleaks](https://github.com/gitleaks/gitleaks) | 8.30.1 | release sha256 | the tree's files (its `.gitleaks.toml`, `.gitleaksignore`) |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | 8.30.1 | module checksums (a build module, its go.sum from sum.golang.org), built with Go 1.27.3 and `github.com/ulikunitz/xz` replaced with v0.5.15 (GO-2025-3922): the release binary (go1.24.11) has 70 reachable vulnerabilities, and upstream has not released since March (looper#65); smoke-tested at the image build (a planted secret, its exit codes) | the tree's files (its `.gitleaks.toml`, `.gitleaksignore`) |
 | [gosec](https://github.com/securego/gosec) | 2.30.0 | release sha256 | each Go module |
 | clippy | the image's Rust | the build image | each Cargo workspace: `-A clippy::all -D clippy::correctness -D clippy::suspicious` |
 | [Bandit](https://github.com/PyCQA/bandit) | 1.9.4 | wheel hashes (`scanners/requirements.txt`) | Python files |

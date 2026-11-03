@@ -14,6 +14,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   needs an exception for it. A binary stripped of its symbol table (`-s`, as most releases are) is read less
   precisely: Trivy's source build stripped so reports x/net GO-2026-6860/6866 and openpgp GO-2026-5932 again,
   unstripped none of them (#64); such a step should say which binaries it could read only so.
+- **Drop gitleaks' xz replace** (2026-11-03, #65): the image builds gitleaks 8.30.1 from source with
+  `github.com/ulikunitz/xz` replaced with v0.5.15 (`GITLEAKS_XZ_VERSION`, Dockerfile; 8.30.1 pins v0.5.12, GO-2025-3922),
+  a combination upstream did not test, smoke-tested only by a planted AWS key. When gitleaks releases with xz >= 0.5.15
+  (or drops it), move `GITLEAKS_VERSION`, remove the replace and its README note; a release whose own binary
+  `govulncheck -mode=binary` reads clean could go back to its release sha256.
 - **`child-timeout` is load-sensitive** (2026-11-03, #64): `tests/repo-looper.test.sh`'s scenario failed once
   (`expected "#5: closed" in: stub gh: HTTP 404`) while a Go build ran on the same machine, and passed alone right
   after. Its children's time limits are wall-clock; a margin scaled to the load, or limits the stub clock drives,

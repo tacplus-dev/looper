@@ -57,6 +57,11 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # reachable vulnerabilities (looper#63: its Go's stdlib; looper#64: x/net
 # GO-2026-6860/6866, x/crypto's openpgp GO-2026-5932): they are built here with
 # GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum.
+# gitleaks too (looper#65: its 8.30.1 release binary, go1.24.11, has 70 reachable
+# vulnerabilities, and upstream has not released since): built in a module made
+# here, its go.sum from sum.golang.org, which replaces github.com/ulikunitz/xz
+# with GITLEAKS_XZ_VERSION (gitleaks pins v0.5.12, GO-2025-3922), a version
+# upstream did not test: the smoke below proves it still finds a secret.
 # Trivy built so reports GO-2026-4919 alone, not applicable: the compromised
 # v0.69.4 release (CVE-2026-33634), whose range has no fix event and so matches
 # every later version. Trivy is a long build: its own layer, before the others,
@@ -75,7 +80,7 @@ RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod g
 ARG OSV_SCANNER_VERSION=2.7.0
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
 ARG SYFT_VERSION=1.56.0 SYFT_SHA256=ace61b9397ae28189c674ae332d67a8074dafd71e87724dfb8b22412d8253bb5
-ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15
 ARG GOSEC_VERSION=2.30.0 GOSEC_SHA256=0867994920453070a5d6a713e35921a3058473e5c3bf777fdd5a2d6f95313fda
 ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc47824faf662f4fad005343d96007e
 ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8
@@ -86,8 +91,6 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     tar -xzf "$d/deny.tgz" -C "$d"; install -m 0755 "$d/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny; \
     get syft.tgz "$gh/anchore/syft/releases/download/v$SYFT_VERSION/syft_${SYFT_VERSION}_linux_arm64.tar.gz" "$SYFT_SHA256"; \
     tar -xzf "$d/syft.tgz" -C "$d" syft; install -m 0755 "$d/syft" /usr/local/bin/syft; \
-    get gitleaks.tgz "$gh/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_arm64.tar.gz" "$GITLEAKS_SHA256"; \
-    tar -xzf "$d/gitleaks.tgz" -C "$d" gitleaks; install -m 0755 "$d/gitleaks" /usr/local/bin/gitleaks; \
     get gosec.tgz "$gh/securego/gosec/releases/download/v$GOSEC_VERSION/gosec_${GOSEC_VERSION}_linux_arm64.tar.gz" "$GOSEC_SHA256"; \
     tar -xzf "$d/gosec.tgz" -C "$d" gosec; install -m 0755 "$d/gosec" /usr/local/bin/gosec; \
     get spotbugs.tgz "$gh/spotbugs/spotbugs/releases/download/$SPOTBUGS_VERSION/spotbugs-$SPOTBUGS_VERSION.tgz" "$SPOTBUGS_SHA256"; \
@@ -96,6 +99,11 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     install -m 0644 "$d/findsecbugs-plugin.jar" /opt/scanners/findsecbugs-plugin.jar; \
     GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
     GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
+    mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
+      go mod init looper.local/gitleaks 2>/dev/null; \
+      go mod edit -require "$gl@v$GITLEAKS_VERSION" -tool "$gl" -replace "github.com/ulikunitz/xz=github.com/ulikunitz/xz@v$GITLEAKS_XZ_VERSION"; \
+      go mod tidy; go build -ldflags "-w -X $gl/version.Version=$GITLEAKS_VERSION" -o /usr/local/bin/gitleaks "$gl"); \
+    gitleaks version | grep -qx "$GITLEAKS_VERSION"; \
     go clean -cache -modcache; \
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.
@@ -107,6 +115,10 @@ RUN rustup component add clippy && cargo clippy --version
 # from source (looper#64), the same one in the SBOM scanners/smoke/trivy-smoke.json
 # (its database fetched into a cache of its own and removed: the scans fetch theirs;
 # the file's name keeps it out of the tree scans, which read SBOMs named *.cdx.json).
+# gitleaks, built from source with xz replaced (looper#65), must find the AWS key
+# planted in a repository made here (the key put together at run time: the tree's
+# own scan finds no secret in this file), in its history and in its files, and
+# exit as the release does: 1 on a leak, 0 with --exit-code 0 and on a clean file.
 COPY scanners/requirements.txt /opt/scanners/requirements.txt
 COPY scanners/smoke/ /opt/scanners/smoke/
 RUN set -eu; python3 -m venv /opt/scanners/venv; \
@@ -121,7 +133,16 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
       { echo "osv-scanner: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; \
     trivy sbom -q --cache-dir /tmp/trivy-smoke --scanners vuln --format json -o /tmp/smoke.json "$s/trivy-smoke.json"; rm -rf /tmp/trivy-smoke; \
     jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "urllib3")] | length > 0' /tmp/smoke.json >/dev/null || \
-      { echo "trivy: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; rm -f /tmp/smoke.json
+      { echo "trivy: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; \
+    g="$(mktemp -d)"; git -C "$g" init -q; printf 'aws_access_key_id = %s%s\n' AKIA QYLPMN5HHHFPZAM2 > "$g/env.txt"; \
+    git -C "$g" add env.txt; git -C "$g" -c user.name=smoke -c user.email=smoke@localhost commit -qm smoke; \
+    for m in git dir; do rc=0; gitleaks "$m" --no-banner --redact -f json -r /tmp/smoke.json "$g" 2>/dev/null || rc=$?; \
+      jq -e --argjson rc "$rc" '$rc == 1 and ([.[] | [.RuleID, (.File | sub(".*/"; "")), .StartLine]] == [["aws-access-token", "env.txt", 1]])' /tmp/smoke.json >/dev/null || \
+        { echo "gitleaks $m: exited $rc, the planted AWS key is not found" >&2; cat /tmp/smoke.json >&2; exit 1; }; done; \
+    gitleaks dir --no-banner --exit-code 0 "$g" 2>/dev/null || { echo "gitleaks: --exit-code 0 exited $?" >&2; exit 1; }; \
+    rm "$g/env.txt"; echo clean > "$g/ok.txt"; \
+    gitleaks dir --no-banner "$g/ok.txt" 2>/dev/null || { echo "gitleaks: a clean file exited $?" >&2; exit 1; }; \
+    rm -rf "$g" /tmp/smoke.json
 COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
