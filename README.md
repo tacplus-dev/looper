@@ -210,14 +210,17 @@ function taking a request message (Go: a pointer to a struct; Rust: a struct or 
 downstream call one on a generated client (Go `…Clients()…<X>Client()`, Rust `.s2s()`/`.grpc()…<x>_client()`,
 directly, kept in a variable or field, or through an accessor method). A call carries the trace when its message
 is built from the inbound `trace_id` (a field set from it, directly or through a variable, or a request builder
-handed it) or is the inbound request itself, forwarded. A test covers a handler when it calls it and names the
-`trace_id`. It prints each handler, its causal and unrelated calls and the tests covering it, then a `FINDING
+handed it) or is the inbound request itself, forwarded. A handler that also takes the trace as its own parameter
+(Go `traceID string`, Rust `trace_id: &str`) is a seam its caller hands the trace to (#66: a store taking a row by
+value): its trace is that parameter, never the row's own `trace_id`. A test covers a handler when it calls it and
+names the `trace_id`, and a seam also when it calls a function that reaches the seam, by name. It prints each handler
+(and seam), its causal and unrelated calls and the tests covering it, then a `FINDING
 dropped-trace` or `FINDING untested` line per defect and the verdict; it exits 1 on a finding. A call through a
 helper of the handler's is not seen: the model reads those.
 
 ```sh
 looper-trace check .           # at a service's root
-tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal and one unrelated call, a background loop, a propagation test): passes when right; flags a dropped trace_id on the causal call and never the unrelated one, a marker without a reason, a handler with no propagation test; the trace_id through a variable, a builder, a forwarded tonic request, a client in a variable or behind an accessor; generated code, other libraries' clients and functions taking only references not read as handlers; Java named, not read
+tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal and one unrelated call, a background loop, a propagation test): passes when right; flags a dropped trace_id on the causal call and never the unrelated one, a marker without a reason, a handler with no propagation test; a seam taking a row by value and its trace_id as a parameter (carried, the row's trace_id dropped, covered through the handler's test); the trace_id through a variable, a builder, a forwarded tonic request, a client in a variable or behind an accessor; generated code, other libraries' clients and functions taking only references not read as handlers; Java named, not read
 tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work and think prompts, the scan's check on main and its item 5
 ```
 

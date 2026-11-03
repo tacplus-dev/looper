@@ -30,7 +30,9 @@
 # Rust: a struct or tonic::Request<...> taken by value), a downstream call is a call on a
 # generated client (Go: ...Clients()...<X>Client(); Rust: .s2s()|.grpc()...<x>_client(),
 # directly, kept in a variable or field, or through an accessor method), and a call made
-# through a helper of the handler's is not seen: the model reads those.
+# through a helper of the handler's is not seen: the model reads those. A handler that also
+# takes the trace as its own parameter (Go traceID string, Rust trace_id: &str) is a seam
+# (looper#66): its trace is that parameter, and a test reaching it through its callers covers it.
 # Python, standard library only (the looper image's python3), isolated (-I):
 # it reads repositories' code and runs none of it.
 import os
@@ -202,6 +204,29 @@ def inbound_params(params, lang):
     return names
 
 
+def trace_params(params, lang):
+    """The parameters that are the causing request's trace_id, handed over on its own
+    (Go: trace_id|traceID|traceId string; Rust: trace_id: &str|String|&String): a handler
+    taking one is a seam its caller passes the trace to (looper#66)."""
+    names = []
+    if lang == "go":
+        pending = []
+        for p in split_top(params):
+            parts = p.split(None, 1)
+            if len(parts) == 1:
+                pending.append(parts[0]); continue
+            group = pending + [parts[0]]; pending = []
+            if parts[1].strip() == "string":
+                names += [n for n in group if n in ("trace_id", "traceID", "traceId")]
+    else:
+        for p in split_top(params):
+            if ":" in p:
+                name, typ = p.split(":", 1)
+                if re.sub(r"^mut\s+", "", name.strip()) == "trace_id" and re.fullmatch(r"&\s*(?:'\w+\s+)?(?:str|String)|String", typ.strip()):
+                    names.append("trace_id")
+    return names
+
+
 # --- the check of one handler ----------------------------------------------------
 
 def trace_ref(names, aliases):
@@ -209,7 +234,8 @@ def trace_ref(names, aliases):
     if names:
         alts.append(r"\b(?:%s)\s*\.\s*(?:TraceId\b|GetTraceId\s*\(\s*\)|trace_id\b)" % "|".join(map(re.escape, names)))
     if aliases:
-        alts.append(r"\b(?:%s)\b" % "|".join(map(re.escape, sorted(aliases))))
+        # the variable, not a field of that name (row.trace_id) nor a literal's key (trace_id: ...)
+        alts.append(r"(?<![\w.])(?:%s)\b(?!\s*:(?![:=]))" % "|".join(map(re.escape, sorted(aliases))))
     return "(?:%s)" % "|".join(alts)
 
 
@@ -284,11 +310,14 @@ def clients_of(code, lang, funcs):
 
 def check_handler(f, code, src, lang, clients):
     body = code[f.body_start:f.body_end]
-    names = inbound_params(f.params, lang)
+    # A seam's trace is its trace_id parameter; a message it takes too is a row, not
+    # the request, and the row's own trace_id would be the wrong one to forward.
+    seam = trace_params(f.params, lang)
+    aliases = set(seam)
+    names = [] if seam else inbound_params(f.params, lang)
     for n, s, e in bindings(body):
-        if re.match(r"(?:%s)\s*\.\s*(?:into_inner|get_ref)\s*\(\s*\)" % "|".join(map(re.escape, names)), body[e:]) and n not in names:
+        if names and re.match(r"(?:%s)\s*\.\s*(?:into_inner|get_ref)\s*\(\s*\)" % "|".join(map(re.escape, names)), body[e:]) and n not in names:
             names.append(n)
-    aliases = set()
     for _ in range(3):
         ref = trace_ref(names, aliases)
         for n, s, e in bindings(body):
@@ -313,6 +342,8 @@ def check_handler(f, code, src, lang, clients):
                 a = re.sub(r"\.clone\(\)$", "", a)
                 if a in names:
                     ok = True  # the inbound request itself, forwarded: its trace_id with it
+                elif carries(a, ref):
+                    ok = True  # the trace_id itself, handed on
                 elif re.fullmatch(r"\w+", a):
                     a = resolve(body, m.start(), a, lang)
                 if carries(a, ref):
@@ -320,7 +351,7 @@ def check_handler(f, code, src, lang, clients):
             line = line_of(code, f.body_start + m.start(1))
             calls.append((line, m.group(1), ok))
     calls.sort()
-    return names, [(line, name, ok, *marker(src_lines, code_lines, line)) for line, name, ok in calls]
+    return names or seam, [(line, name, ok, *marker(src_lines, code_lines, line)) for line, name, ok in calls]
 
 
 # --- the checkout -----------------------------------------------------------------
@@ -364,17 +395,31 @@ def sources(root):
     return files, java
 
 
+def callers(name, funcs):
+    """The names of the functions that call name, directly or through one another."""
+    reach, found = {name}, []
+    while True:
+        pat = re.compile(r"\b(?:%s)\s*\(" % "|".join(map(re.escape, sorted(reach))))
+        new = [n for n, body in funcs if n not in reach and pat.search(body)]
+        if not new:
+            return found
+        for n in dict.fromkeys(new):
+            reach.add(n); found.append(n)
+
+
 def check(root):
     files, java = sources(root)
     parsed = []
     for rel, lang, src in files:
         code = blank(src, lang)
         parsed.append((rel, lang, src, code, functions(code, lang, rel)))
-    tests = []
+    tests, others = [], []
     for rel, lang, src, code, funcs in parsed:
         for f in funcs:
             if f.is_test:
                 tests.append((rel, f, code[f.body_start:f.body_end]))
+            else:
+                others.append((f.name, code[f.body_start:f.body_end]))
     report, findings, handlers = [], [], 0
     for rel, lang, src, code, funcs in parsed:
         if lang == "go" and rel.endswith("_test.go"):
@@ -384,11 +429,15 @@ def check(root):
         for f in funcs:
             if f.is_test or any(a <= f.body_start < b for a, b in spans) or not inbound_params(f.params, lang):
                 continue
+            seam = trace_params(f.params, lang)
             names, calls = check_handler(f, code, src, lang, clients)
             if not calls:
                 continue
             handlers += 1
-            report.append("handler %s:%d %s (inbound: %s)" % (rel, f.line, f.name, ", ".join(names)))
+            if seam:
+                report.append("seam %s:%d %s (trace: %s)" % (rel, f.line, f.name, ", ".join(names)))
+            else:
+                report.append("handler %s:%d %s (inbound: %s)" % (rel, f.line, f.name, ", ".join(names)))
             causal = []
             for line, name, ok, marked, reason in calls:
                 if marked and reason:
@@ -405,11 +454,18 @@ def check(root):
                                        " (its `trace: unrelated` marker gives no reason)" if marked else ""))
             if not causal:
                 continue
-            call = re.compile(r"\b%s\s*\(" % re.escape(f.name))
-            covering = [(t_rel, t) for t_rel, t, t_body in tests
-                        if call.search(t_body) and re.search(r"\b(?:TraceId|GetTraceId|trace_id)\b", t_body)]
-            for t_rel, t in covering:
-                report.append("  tested by %s:%d %s" % (t_rel, t.line, t.name))
+            # A seam is driven by the handler that hands it the trace: a test of any
+            # function that reaches it, by name, covers it.
+            reach = [f.name] + (callers(f.name, others) if seam else [])
+            covering = []
+            for t_rel, t, t_body in tests:
+                if not re.search(r"\b(?:TraceId|GetTraceId|trace_id)\b", t_body):
+                    continue
+                via = next((n for n in reach if re.search(r"\b%s\s*\(" % re.escape(n), t_body)), None)
+                if via:
+                    covering.append((t_rel, t, via))
+            for t_rel, t, via in covering:
+                report.append("  tested by %s:%d %s%s" % (t_rel, t.line, t.name, "" if via == f.name else " (through %s)" % via))
             if not covering:
                 findings.append("FINDING untested %s:%d: %s makes causal downstream calls (%s) but no test asserts that its trace_id arrives on them"
                                 % (rel, f.line, f.name, ", ".join(dict.fromkeys(causal))))

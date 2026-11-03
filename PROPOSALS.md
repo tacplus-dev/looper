@@ -353,6 +353,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   handler's own body; a helper it calls with the request (mailbox's `RecordPlaneStore`, which the check flags as
   handlers of their own) is read by the model. Following one level of same-file helper calls, the inbound message
   or its `trace_id` passed in, would name the real handler in the finding.
+- **Seams that take only references and a trace_id** (2026-11-03, #66): `looper-trace` reads a function taking a
+  `trace_id` parameter as a seam only when it also takes a message by value (mailbox's `insert_if_absent`); one
+  taking only references (mailbox's `get`, oauth's `exchange_token`) is still not read, so a dropped trace in it
+  is not seen. Reading every function with a `trace_id` parameter and a client call would flag oauth's
+  `exchange_token` (no test reaches it with a `trace_id`; its one caller passes `""`). Its coverage lookup also
+  follows callers by name only, so a seam named like a common method (`get`) is credited by almost any test.
 - **USER.md's propagation test example per language** (2026-11-02, #51): the rule points at USER.md's pattern for
   the test, but USER.md's Distributed Tracing section shows only the propagation, not the test; tacplus#265 adds a
   test example per language, and is parked until the trace huddle with Jody. Until then the fixture in

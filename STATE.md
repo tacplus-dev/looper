@@ -83,7 +83,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   (#51, README: Trace propagation) is a standing rule of every work and think prompt: causal downstream calls carry the
   inbound `trace_id`, unrelated ones say so (`// trace: unrelated: <why>`), each such handler has a propagation test,
   and the outcome comment names the handlers checked and their tests; `looper-trace check` (in the image) reads Go
-  and Rust handlers and flags a dropped `trace_id` and a missing test; the nightly scan runs it on main for the model
+  and Rust handlers and flags a dropped `trace_id` and a missing test (a seam handed the `trace_id` as its own parameter, a row by value beside it, is credited through its callers' tests, #66); the nightly scan runs it on main for the model
   to verify and file as bugs (run by hand on tacplus-dev's services, 2026-11-02: gateway, oauth and mailbox flagged). Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
   holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The looper identity pilot (#28), built and tested, not yet
   deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
