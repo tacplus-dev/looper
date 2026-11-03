@@ -209,13 +209,16 @@ pass
 # The broker for real (root, as repo-looper runs it): a model's user calls it;
 # the stub docker runs as the broker's user, with the model's stdin and
 # output, and its exit status comes back. A user the broker was not told of
-# is refused, and so is the socket itself to a model's user.
+# is refused, and so is the socket itself to a model's user. The scripts run
+# from a copy anyone reads: this checkout may be a model's own (0750, looper#69).
 NAME=broker-users
 if [[ "$(id -u)" != 0 ]] || ! command -v setpriv useradd python3 >/dev/null; then echo "skip $NAME: not root, or no setpriv, useradd or python3"
 else
   u_m="lpdt-m$$" u_x="lpdt-x$$" u_b="lpdt-b$$"
   for u in "$u_m" "$u_x" "$u_b"; do useradd -M -N -s /bin/bash -d / "$u"; done
   trap '[[ -z "${BROKER:-}" ]] || kill "$BROKER" 2>/dev/null; for u in "$u_m" "$u_x" "$u_b"; do userdel "$u" 2>/dev/null; done; rm -rf "$TMP"' EXIT
+  mkdir "$TMP/scripts"; cp "$ROOT"/{looper-docker,looper-docker-broker} "$TMP/scripts/"; ROOT="$TMP/scripts"
+  ln -sf "$ROOT/looper-docker" "$TMP/shim/docker"; chmod -R a+rX "$ROOT"
   chmod 755 "$TMP" "$TMP/shim" "$TMP/real"; mkdir -p "$TMP/conf" "$TMP/sock"; chown "$u_m" "$TMP/wt"; chown "$u_b" "$TMP/sock"
   cat > "$TMP/real/docker" <<'EOF2'
 #!/usr/bin/env bash
