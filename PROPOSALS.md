@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A cheaper re-plan check** (2026-11-03, #59): every `LOOPER_REPLAN_INTERVAL` the parent reads the ready set
+  again (`candidates`: the approved list and each issue's `ready`, a few GitHub requests an issue), and asks the
+  plan's model again whenever the set changed, even when only a running issue's areas were judged before. It could
+  read the set the kicker already reads for the whole org each pass, and keep each issue's areas from its last plan,
+  asking the model only about issues it has not judged.
+- **A newly ready issue in a job with no free slot** (2026-11-03, #59): a re-plan fills free slots only; an issue
+  that becomes ready while every slot is taken waits for a child's end, and one ready after the job's last child
+  ended waits for the kicker's next job. Both are as intended (no pre-emption); the recap (#57) measures them.
 - **The image workflow runs the full gate set from gates.yaml** (2026-11-03, #58): `.github/workflows/image.yml`'s
   Test step lists the tests by hand and has drifted from gates.yaml's `full` (no `looper-suggest`, `looper-trace`
   nor `image-failed` tests). Reading `full.run` from gates.yaml there would keep the image's tests the land's.

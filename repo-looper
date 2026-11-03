@@ -52,8 +52,10 @@
 # The gates a land runs are the set its diff calls for (looper#48): the
 # repository's gates.yaml maps paths to gate sets, and anything in doubt (a
 # path it does not map, a change to the map) runs the full gates.
-# As each child ends the parent logs its outcome and plans again, so a newly
-# ready issue starts while the others run; a child's time limit is its own.
+# As each child ends the parent logs its outcome and plans again; while children
+# run it also plans again every LOOPER_REPLAN_INTERVAL when the ready issues or
+# the free slots changed (looper#59), so a newly ready issue starts in a free
+# slot while the others run, never pre-empting one; a child's time limit is its own.
 #
 # Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
 # needs-decision), and every `Blocked-by:` issue in its body closed.
@@ -169,6 +171,7 @@
 # default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_LAND_MINUTES (a land's
 # time before one is recorded), LOOPER_LAND_MARGIN (seconds kept after a land, default 600), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
+# LOOPER_REPLAN_INTERVAL (the parent's re-plan while children run, seconds, default 300),
 # LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_KANI_MEMORY_GB, LOOPER_MAX_CHILDREN, LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
 # roadmap's suggestion pass), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
@@ -2443,10 +2446,17 @@ goes_first() { # rank-a rank-b
 # Issues as "#3 #5", or "none".
 issue_list() { if (( $# )); then printf '#%s ' "$@" | sed 's/ $//'; else echo none; fi; }
 
+# Issues as a set: sorted, space-separated.
+issue_set() { printf '%s\n' "$@" | sort -n | paste -sd' ' -; }
+
 # The parent: plans, starts each planned issue as a child, and plans again
-# whenever one ends, until no child runs and nothing more can start.
+# whenever one ends and, while they run, every LOOPER_REPLAN_INTERVAL (looper#59),
+# until no child runs and nothing more can start.
 parent() { # [issue first]
   local first="${1:-}" started=" " stop="" deadline tags_seen n pid rc res t
+  # What the last plan left: the ready issues it did not start and the free
+  # slots, so a re-plan on the interval runs only when either changed.
+  local planned="" interval="${LOOPER_REPLAN_INTERVAL:-300}" timer=""
   local -A pids=() told=()
   # In a GitLab job no child starts that would outlast it: the others must end
   # an hour before the job does, counted from the job's start. The first child
@@ -2465,11 +2475,18 @@ parent() { # [issue first]
   lander > >(sed -u 's/^/[lander] /') 2>&1 & lander_pid=$!
   export LOOPER_LANDER="$LANDS" LOOPER_LANDER_PID="$lander_pid"
 
-  # One plan: which candidates start now, and why the others wait.
-  plan() {
-    local cands cap why free plan_dir chosen=() c o r limit reasons=() others beside=() pending ranked st fw
+  # One plan: which candidates start now, and why the others wait. Its
+  # occasion: the job's start, a child's end, or the interval.
+  plan() { # occasion
+    local occasion="$1" cands cap why free plan_dir chosen=() c o r limit reasons=() others beside=() pending ranked st fw i
     local -A rank=() held=() by=() conflicted=()
     read -r -a cands <<<"$(candidates "$first" "$started")"
+    read -r cap why <<<"$(capacity)"
+    free=$(( cap - ${#pids[@]} ))
+    # On the interval, a plan only when the ready issues or the free slots
+    # changed since the last one (looper#59).
+    [[ "$occasion" != interval || "$(issue_set "${cands[@]}")|$free" != "$planned" ]] || return 0
+    planned="$(issue_set "${cands[@]}")|$free"
     if (( ${#cands[@]} == 0 )); then
       if [[ "$started" == " " ]]; then
         if [[ -n "$first" ]]; then log "#$first is no longer ready, nor is any other issue; nothing to do"
@@ -2478,11 +2495,12 @@ parent() { # [issue first]
       return 0
     fi
     [[ "$started" != " " || -z "$first" || "${cands[0]}" == "$first" ]] || log "#$first is no longer ready; working #${cands[0]}, the next ready issue"
-    read -r cap why <<<"$(capacity)"
     # Each child's containers are limited to its share (looper#41).
     LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
-    free=$(( cap - ${#pids[@]} ))
-    plan_dir="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-plan"; mkdir -p "$plan_dir"
+    # One record a plan, even two in the same second.
+    plan_dir="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-plan"; i=1
+    while [[ -e "$plan_dir" ]]; do i=$(( i + 1 )); plan_dir="${plan_dir%-plan*}-plan-$i"; done
+    mkdir -p "$plan_dir"
     # The model judges the areas only when there is something to decide.
     if (( free > 0 && ${#pids[@]} + ${#cands[@]} > 1 )); then
       plan_areas "$plan_dir" "${pids[@]}" "${cands[@]}"
@@ -2531,7 +2549,12 @@ parent() { # [issue first]
       fi
       reasons[$r]+=" (#$o, $st${fw:+; it goes first: $fw})"
     done
-    { echo "plan for $REPO: capacity $cap ($why); running: $(issue_list "${pids[@]}")"
+    case "$occasion" in
+      start) occasion="planned: at the job's start" ;;
+      interval) occasion="planned again: the ready issues or the free slots changed" ;;
+      *) occasion="planned again: $occasion" ;;
+    esac
+    { echo "plan for $REPO: capacity $cap ($why); running: $(issue_list "${pids[@]}"); $occasion"
       printf '%s\n' "${reasons[@]}"; } > "$plan_dir/plan.md"
     sed 's/^/plan: /' "$plan_dir/plan.md"
     # On each issue, when there was a decision to make: why it starts beside
@@ -2550,7 +2573,7 @@ $(sed 's/^/- /' "$plan_dir/plan.md")
 
 Plan record: $(run_record "$plan_dir")." >/dev/null || true
         else
-          forge_issue_comment "$REPO" "$c" "The looper of $REPO holds this issue back for now: ${r#* waits: }. It plans again as each running issue ends. Plan record: $(run_record "$plan_dir")." >/dev/null || true
+          forge_issue_comment "$REPO" "$c" "The looper of $REPO holds this issue back for now: ${r#* waits: }. It plans again as each running issue ends, and every $(hours "$interval") while they run. Plan record: $(run_record "$plan_dir")." >/dev/null || true
         fi
       done
     fi
@@ -2560,12 +2583,19 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
       rm -f "$WORK/results/$c"
       bash "${LOOPER_RUNNING_COPY:-$LOOPER_SELF}" --repo "$REPO" --child "$c" > >(sed -u "s/^/[#$c] /") 2>&1 & pids[$!]="$c"
     done
+    # What is left after the starts, for the next interval's check.
+    planned="$(for c in "${cands[@]}"; do [[ " ${chosen[*]} " == *" $c "* ]] || echo "$c"; done | sort -n | paste -sd' ' -)|$(( free - ${#chosen[@]} ))"
   }
 
-  plan
+  plan start
   while (( ${#pids[@]} )); do
-    rc=0; pid=""; wait -n -p pid "${!pids[@]}" || rc=$?
+    # While children run, the interval's timer is waited for beside them: an
+    # issue that became ready meanwhile starts in a free slot without waiting
+    # for a child's end (looper#59). A running child is never pre-empted.
+    [[ -n "$timer" ]] || { sleep "$interval" & timer=$!; }
+    rc=0; pid=""; wait -n -p pid "${!pids[@]}" "$timer" || rc=$?
     [[ -n "$pid" ]] || { log "lost track of the children ($(issue_list "${pids[@]}")); exiting"; break; }
+    if [[ "$pid" == "$timer" ]]; then timer=""; [[ -n "$stop" ]] || plan interval; continue; fi
     n="${pids[$pid]}"; unset "pids[$pid]"
     res="$(cat "$WORK/results/$n" 2>/dev/null || echo "ended without an outcome (exit $rc)")"
     log "#$n: $res; still running: $(issue_list "${pids[@]}")"
@@ -2579,8 +2609,9 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
       tags_seen+=$'\n'"$t"
     done
     if (( ${#new[@]} )); then land "HISTORY.md: releases (looper)" append_history "${new[@]}"; fi
-    [[ -n "$stop" ]] || plan
+    [[ -n "$stop" ]] || plan "#$n ended"
   done
+  [[ -z "$timer" ]] || kill "$timer" 2>/dev/null || true
   # The lands the children left queued: the lander lands them before the job
   # ends. A job GitLab no longer runs lands no more: its retry resumes them.
   touch "$LANDS/.done"

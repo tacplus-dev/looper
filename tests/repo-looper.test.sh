@@ -167,7 +167,7 @@ report() { echo "gh issue comment 4 --repo tacplus-dev/alpha --body \"$1\"" >> "
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
-      -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN \
+      -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
@@ -1632,6 +1632,34 @@ has "$OUT" "#4: timeout"; has "$OUT" "#6: closed"; has "$OUT" "#5: closed"
 [[ "$(cat "$FIX/saw")" == 1 ]] || fail "#5 did not outlive #4's time limit: $OUT"
 closed 5; closed 6
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+pass
+
+# The parent plans again while children run (looper#59): every
+# LOOPER_REPLAN_INTERVAL, when the ready issues or the free slots changed, not
+# only as a child ends. Capacity 2 and one long-running child (#4): #5,
+# approved mid-run, starts within an interval while #4 still runs; the
+# intervals before, when nothing changed, plan nothing. The re-plan is logged
+# and recorded like the start plan.
+scenario replan-interval
+issue alpha 5 OPEN bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+areas "touches 4 a.txt" "touches 5 b.txt"
+cat > "$FIX/claude.sh" <<'EOS'
+if [ "$ISSUE" = 4 ]; then
+  sleep 3
+  jq '.labels += [{name: "approved"}]' "$FIX/issues/alpha-5.json" > "$FIX/x-4" && mv "$FIX/x-4" "$FIX/issues/alpha-5.json"
+  for i in $(seq 200); do [ -e "$FIX/ran-5" ] && { touch "$FIX/saw-5"; break; }; sleep 0.1; done
+else touch "$FIX/ran-5"; fi
+jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+EOS
+drain "${ROOM[@]}" LOOPER_MAX_CHILDREN=2 LOOPER_REPLAN_INTERVAL=1
+[[ -e "$FIX/saw-5" ]] || fail "#5 did not start while #4 ran: $OUT"
+has "$OUT" "plan: #4 starts"; has "$OUT" "plan: #5 starts"; closed 4; closed 5
+plans=("$FIX"/project/looper-runs/*-plan*/plan.md)
+(( ${#plans[@]} == 2 )) || fail "${#plans[@]} plans: $(cat "${plans[@]}")"
+has "$(cat "${plans[0]}")" "running: none; planned: at the job's start"
+has "$(cat "${plans[1]}")" "running: #4; planned again: the ready issues or the free slots changed"
+has "$(cat "${plans[1]}")" "#5 starts"
+has "$(cat "$FIX/comments")" "alpha#5 The looper of alpha starts this issue alongside #4"
 pass
 
 # The parent owns a child's land (looper#34): --land queues it with the

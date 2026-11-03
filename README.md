@@ -260,11 +260,15 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   - **the job's time:** in a GitLab job no child starts that would outlast it (`CI_JOB_TIMEOUT` from the job's
     start, `CI_JOB_STARTED_AT`, less the hour the job keeps for itself); the job's own issue always does, and the
     job is sized for the others that are ready with it. When a child ends, the parent plans again and fills its
-    slot if an issue's limit still fits.
+    slot if an issue's limit still fits. It also plans again while children run (looper#59): every
+    `LOOPER_REPLAN_INTERVAL` (300 seconds), when the ready issues or the free slots changed since its last plan, so
+    an issue approved, unblocked or filed mid-job starts in a free slot within minutes, not at the next child's end.
+    A running child is never pre-empted.
 
   Higher priority goes first, but an issue that conflicts with a running one waits while a lower one that does
   not starts. The plan and its reasons are in the job's log (`plan: ...`), in its record (`looper-runs/<time>-plan/`:
-  `plan.md`, and the model's `prompt.md` and `claude.log`), and on each issue when there was a choice to make: a
+  `plan.md`, whose first line names its occasion: the job's start, `#N ended`, or the interval; the model's
+  `prompt.md` and `claude.log`; a second plan in the same second is `<time>-plan-2/`), and on each issue when there was a choice to make: a
   comment when it starts beside others, or why it is held back (once per reason).
 - **Children:** one per issue, each in its own git worktree (`LOOPER_WORK/<repo>/worktrees/N`) on its own branch
   (`looper/<repo>-N`, the name its checkpoints have on origin), running the per-issue flow below unchanged:
@@ -298,7 +302,7 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
   is `land-deferred` when the land was deferred.
 - **The parent supervises:** as each child ends it logs its outcome (`#N: closed`, `blocked`, `needs-decision`,
   `proposed`, `timeout`, `land-pending`, `land-deferred`, `landed`, `ended`, `stuck`, `job-gone`), appends `HISTORY.md`'s line for any release the children made, and
-  plans again, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
+  plans again, as it does on the interval, so a newly ready issue starts while the others run. Each child labels and comments on its own issue
   as below, and its time limit, idle watchdog and outcome are its own: one that times out or sticks does not stop the
   others. A child whose job GitLab no longer runs (looper#21) stops the planning: the job's retry resumes the rest.
 
