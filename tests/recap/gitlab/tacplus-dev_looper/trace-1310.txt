@@ -1,0 +1,4 @@
+[0Ksection_start:1793585220:prepare_executor[0KPreparing the "docker-autoscaler" executor
+[0Ksection_start:1793585280:prepare_script[0KRunning on runner-vm-1310 via gitlab-runner-mgr...
+[2026-11-02T02:08:00Z] plan: plan for tacplus: capacity 1 (16 CPUs at 2 a child); running: none
+[2026-11-02T02:50:00Z] disk at the end: 60% used of 100G (/builds)

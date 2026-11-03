@@ -1,0 +1,35 @@
+[
+ {
+  "id": 2002,
+  "name": "gates",
+  "status": "failed",
+  "failure_reason": "script_failure",
+  "created_at": "2026-11-01T11:01:00.000Z",
+  "started_at": "2026-11-01T11:01:30.000Z",
+  "finished_at": "2026-11-01T11:31:30.000Z",
+  "pipeline": {
+   "id": 77
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/build/-/jobs/2002"
+ },
+ {
+  "id": 2001,
+  "name": "plan",
+  "status": "success",
+  "created_at": "2026-11-01T11:00:00.000Z",
+  "started_at": "2026-11-01T11:00:20.000Z",
+  "finished_at": "2026-11-01T11:01:00.000Z",
+  "pipeline": {
+   "id": 77
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/build/-/jobs/2001"
+ }
+]

@@ -203,6 +203,43 @@ printf 'Suggestion: x\nType: Cost\n' > "$R/suggestions/2026-11-02-x.md"; passes 
 refused check "$R" HEAD; has "$OUT" "line 3 is not \`Summary: <text>\`"; has "$OUT" "it has no \`## Cost\`"; has "$OUT" "Status is not one of"
 pass
 
+# Advice from the nightly recap (looper#57): a Performance, Operability or
+# Cost suggestion with its cause, change and gain, and numbers in its
+# evidence: no advice without numbers. check refuses the same written by hand,
+# and lets the night's recap files (suggestions/recap/<date>.md and .json) in.
+scenario advice-needs-numbers
+adv=(--suggestion "Fresh VM image" --type Operability --summary "Apply the baked runner image" --why "fresh VMs fail their first job"
+     --cost "an hour of the hub's" --touches "looper#43" --reuse "runner-image build exists" --date 2026-11-02
+     --recap "2026-11-02 failures/tacplus-dev/looper/image_pull" --cause "Docker installed at boot under the first job"
+     --change "the hub applies README's A fresh VM is ready (tacplus-dev/looper#43)" --gain "6 failed jobs and 6 retries a night")
+refused file --dir "$R" "${adv[@]}" --evidence "suggestions/recap/2026-11-02.md (tacplus-dev/looper#43, 2026-11-02)"
+has "$OUT" "no numeric evidence"
+refused file --dir "$R" "${adv[@]}" --type Documentation --evidence "6 image-pull failures (suggestions/recap/2026-11-02.md)"
+has "$OUT" "its type is Performance, Operability or Cost, not Documentation"
+refused file --dir "$R" "${adv[@]/--gain/--why}" --evidence "6 image-pull failures (suggestions/recap/2026-11-02.md)"
+has "$OUT" "--recap needs --cause, --change and --gain"
+[[ -z "$(git -C "$R" status --porcelain)" ]] || fail "a refused advice changed the checkout"
+passes file --dir "$R" "${adv[@]}" --evidence "6 image-pull failures before a VM was ready, on 2 of 7 nights (suggestions/recap/2026-11-02.md)"
+has "$(cat "$R/suggestions/2026-11-02-fresh-vm-image.md")" "## Advice
+Recap: 2026-11-02 failures/tacplus-dev/looper/image_pull
+Cause: Docker installed at boot under the first job
+Change: the hub applies README's A fresh VM is ready (tacplus-dev/looper#43)
+Gain: 6 failed jobs and 6 retries a night"
+mkdir -p "$R/suggestions/recap"; echo '# Recap of 2026-11-02' > "$R/suggestions/recap/2026-11-02.md"; echo '{}' > "$R/suggestions/recap/2026-11-02.json"
+passes check "$R" HEAD
+echo x > "$R/suggestions/recap/notes.txt"; refused check "$R" HEAD; has "$OUT" "suggestions/recap/notes.txt: not a suggestion"
+rm "$R/suggestions/recap/notes.txt"
+commit advice
+echo more >> "$R/suggestions/recap/2026-11-02.md"; refused check "$R" HEAD; has "$OUT" "suggestions/recap/2026-11-02.md: a filed suggestion"
+git -C "$R" checkout -q -- .
+# By hand: a suggestion citing the recap without its Advice, and one without numbers.
+printf 'Suggestion: Lands\nType: Performance\nSummary: s\nWhy: w\n\n## Evidence\n- suggestions/recap/2026-11-02.json\n\n## Cost\nc\n\n## Touches\nt\n\n## Reuse considered\nr\n\n## Status\nopen\nRank: 2\nFiled: 2026-11-03 by hand\n' \
+  > "$R/suggestions/2026-11-03-lands.md"
+passes index "$R"; refused check "$R" HEAD
+has "$OUT" "suggestions/2026-11-03-lands.md: its \`## Advice\` has no \`Recap: <night> <item>\`"
+has "$OUT" "suggestions/2026-11-03-lands.md: it is advice from the nightly recap with no numeric evidence"
+pass
+
 scenario decide-needs-reason
 file_it "${chaos[@]}" --evidence "https://github.com/tacplus-dev/looper/issues/42" || fail "$OUT"
 refused decide "$R" 2026-11-01-chaos.md rejected

@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#59).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#57).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -74,7 +74,14 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   commit touching `suggestions/` only (and `suggestions/TEMPLATE.md` where it is missing), each checked: the four
   leading fields, a type from `suggestions/TYPES.md`, linked evidence, a rejected or deferred one never raised again
   without citing it and new evidence, the index Security first; `looper-suggest file` files one from another
-  repository's job (pushed alone), `looper-suggest decide` records Jody's decision for the hub. Trace propagation
+  repository's job (pushed alone), `looper-suggest decide` records Jody's decision for the hub. The nightly recap
+  (#57, README: Nightly recap), in the same pass: `looper-recap` (in the image) gathers the last 24 hours with no
+  model (each job's queue, prepare and run times and failure class; per repository slot use, the hours each ready
+  issue waited and why, lands by gate set, scans; runner pools, Actions workflows, Cloud Build, the image against
+  main's head) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
+  would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
+  suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the
+  looper commits `suggestions/recap/<night>.md` and `.json` with them, for Jody's daily report. Trace propagation
   (#51, README: Trace propagation) is a standing rule of every work and think prompt: causal downstream calls carry the
   inbound `trace_id`, unrelated ones say so (`// trace: unrelated: <why>`), each such handler has a propagation test,
   and the outcome comment names the handlers checked and their tests; `looper-trace check` (in the image) reads Go
@@ -105,7 +112,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
-- **Known gaps:** gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
+- **Known gaps:** the recap has not run against the live APIs yet (its first night does); it reads Cloud Build only
+  where the scan job's `gcloud` is logged in, and the image's revision only where it has `docker buildx`: otherwise
+  its `sources` says so; it reads lands' queue waits from the lander's `queued since`, logged from #57 on;
+  gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
   `looper-plan` runs `looper-dispatch plan` (#56, tested against the hub's former inline plan), but it takes effect
   when the hub copies it there; until then that pipeline plans with its inline script (tacplus's jobs on the 16-CPU
   pool, #55, through its own `LOOPER_JOB_TAGS_tacplus`); until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service

@@ -1,0 +1,32 @@
+{
+ "total_count": 3,
+ "workflow_runs": [
+  {
+   "id": 30,
+   "name": "CI",
+   "status": "completed",
+   "conclusion": "success",
+   "run_started_at": "2026-11-01T08:00:00Z",
+   "updated_at": "2026-11-01T08:10:00Z",
+   "html_url": "https://github.com/tacplus-dev/tacplus/actions/runs/30"
+  },
+  {
+   "id": 22,
+   "name": "nightly",
+   "status": "completed",
+   "conclusion": "success",
+   "run_started_at": "2026-11-01T09:00:00Z",
+   "updated_at": "2026-11-01T09:42:00Z",
+   "html_url": "https://github.com/tacplus-dev/tacplus/actions/runs/22"
+  },
+  {
+   "id": 21,
+   "name": "nightly",
+   "status": "completed",
+   "conclusion": "failure",
+   "run_started_at": "2026-11-01T04:00:00Z",
+   "updated_at": "2026-11-01T04:12:00Z",
+   "html_url": "https://github.com/tacplus-dev/tacplus/actions/runs/21"
+  }
+ ]
+}

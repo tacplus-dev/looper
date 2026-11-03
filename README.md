@@ -526,8 +526,56 @@ derived.
 looper-suggest file --suggestion Chaos --type Resiliency --summary "..." --why "..." --evidence "<link>" \
   --cost "a week" --touches "<decisions>" --reuse "<what exists>" [--dir CHECKOUT] [--rank N] [--by WHO]
 looper-suggest check DIR [BASE] | index DIR | decide DIR FILE STATUS --reason TEXT | template
-tests/looper-suggest.test.sh   # the format, types from TYPES.md, evidence required, a rejected or deferred suggestion not raised again without new evidence (by the command and by check), open ones not duplicated, the index's order (Security first), check's limits (5, suggestions/ only, filed ones unchanged, the index current), a decision recorded, the template, another job's suggestion pushed as one commit and retried
-tests/repo-looper.test.sh      # scan-suggestions: the roadmap's scan commits the template where it is missing, then the model's suggestions as one commit (suggestions/ only, best ranked 5, a re-raise without new evidence dropped, other changes left out), the prompt's rules and context (failed jobs, security reports), an empty night commits nothing
+tests/looper-suggest.test.sh   # the format, types from TYPES.md, evidence required, a rejected or deferred suggestion not raised again without new evidence (by the command and by check), open ones not duplicated, the index's order (Security first), check's limits (5, suggestions/ only, filed ones unchanged, the index current), a decision recorded, the template, another job's suggestion pushed as one commit and retried, advice from the recap (its type, its Advice, its numbers; the recap files let in)
+tests/repo-looper.test.sh      # scan-suggestions: the roadmap's scan commits the template where it is missing, then the model's suggestions as one commit (suggestions/ only, best ranked 5, a re-raise without new evidence dropped, other changes left out), the prompt's rules and context (failed jobs, security reports, the recap), the recap's files with them, an empty night commits nothing
+```
+
+### Nightly recap
+
+Jody, 2026-11-02 (looper#57): "Each night we should run a daily recap and identify if there is anything that can be
+done to improve performance, eliminate bottle necks, etc. This should be provided to me in the daily report. If
+something is just transient then we just note it and move on. I am looking for actionalbe advice"; and, 2026-11-03: "I
+just want stuff to go faster and my gut instinct is much of this can be done in parallel". The recap is part of the
+roadmap's nightly pass above, not a job of its own: its advice is suggestions, reviewed the same way, under the same
+rule for rejected ones.
+
+**Collection, with no model** (`looper-recap collect`): before the model runs, the looper gathers the 24 hours to now
+into the run's `context/recap.json`; the same inputs give the same file. For every finished job of
+`LOOPER_SUGGEST_PROJECTS` plus `tacplus-dev/cluster` (or `LOOPER_RECAP_PROJECTS`): its queue (created to started),
+prepare (started to "Running on", runner-image measure's method) and run times, its status, a failure's class
+(`runner_system_failure`, `image_pull`, `timeout`, `gate_failure`, `script_failure`) and whether a retry recovered it.
+From the looper jobs' logs, per repository: slot use (each plan's children against its capacity), the lands' minutes
+by gate set and the deferred lands, how long each scan held the repository, and **the hours each ready issue waited,
+and why**: no free slot, a conflict (and the plan's overlapping paths), the job's time left (its limit would outlast
+the job), queued behind a land (the lander logs each land's `queued since`), a scan holding the repository (its job
+queued while the scan ran); each reason with what would have let the work run in parallel. The runner pools (VMs,
+first-job failures before a VM was ready, boot to ready, the disk each job logs at its end: `disk at the end: N% used`),
+GitHub Actions' nightly, release and image workflows of every repository, Cloud Build's builds
+(`LOOPER_RECAP_CLOUDBUILD_PROJECT`), and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
+`org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
+catches a stale image when no run failed. A source it cannot read is named in `sources`, never guessed.
+
+**Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
+`suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3
+failures of a class, a queue or prepare p90 over 15 or 5 minutes, an issue held an hour, a land or scan over 60
+minutes, a disk over 85%, an image stale 2 hours) gets advice, ranked by the hours of waiting it would remove;
+**transient** (once, under every threshold, recovered on retry) and **once** (not recovered; recurring if it comes back)
+are one line each, no advice.
+
+**Advice, by the model**: for each recurring item a Performance, Operability or Cost suggestion with `looper-suggest
+file ... --recap "<night> <item>" --cause ... --change <which file, setting or issue> --gain ...`, its cost in `## Cost`
+and the numbers from recap.json in its evidence: `looper-suggest check` refuses advice without numbers. It counts
+toward the night's 5, ranked with the rest, Security first; an item an open issue already covers gets no suggestion:
+the model names the issue instead.
+
+**The recap file**, `suggestions/recap/<YYYY-MM-DD>.md` (`looper-recap report`), committed with the night's
+suggestions and its `.json`: the one-screen summary (jobs, failures by class, slot use, the hours waited and why, the
+longest queues, lands and holds, the image), the recurring items with links to their advice or the issue that covers
+them, and the transient list. The hub reads it into Jody's daily report. A night already recorded is left as it is.
+
+```sh
+looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links
 ```
 
 ## Port scan

@@ -1,0 +1,872 @@
+#!/usr/bin/env -S python3 -I
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-recap: the nightly recap (looper#57; README: Nightly recap). Jody,
+# 2026-11-02: "Each night we should run a daily recap and identify if there is
+# anything that can be done to improve performance, eliminate bottle necks, etc.
+# ... If something is just transient then we just note it and move on. I am
+# looking for actionalbe advice". The roadmap's nightly scan (the suggestion
+# pass, looper#50) runs it: the data is gathered and classified here, with no
+# model; the model only writes the advice, as suggestions, from the numbers.
+#
+#   looper-recap collect [--until TIME] [--out FILE]
+#       the 24 hours to TIME (default: now, to the minute), as one JSON file
+#       (stdout without --out): the same inputs give the same file. For every
+#       finished job of LOOPER_RECAP_PROJECTS (default LOOPER_SUGGEST_PROJECTS,
+#       else tacplus-dev/looper tacplus-dev/build, plus tacplus-dev/cluster):
+#       its queue (created to started), prepare (started to "Running on", the
+#       method of runner-image measure) and run times, its status and a failed
+#       one's class (runner_system_failure, image_pull, timeout, gate_failure,
+#       script_failure, or other:<GitLab's reason>), and whether a retry of it
+#       succeeded. From the looper jobs' logs, per repository: slot use (each
+#       plan's children against its capacity), the held reasons with their
+#       counts and hours, the lands' times by gate set and the deferred lands,
+#       and how long each scan held the repository; and the hours each ready
+#       issue waited, and why: no free slot, a conflict (and what overlaps), the
+#       job's time left (its limit would outlast the job), queued behind a land
+#       (the lander's "queued since"), a scan holding the repository (its job
+#       queued while the scan ran), each with what would have let it run in
+#       parallel. The looper image (LOOPER_RECAP_IMAGE, ghcr.io/tacplus-dev/
+#       looper:main) against main's head (looper#58): its revision label, the
+#       commits of main not in it and the latest image workflow run; stale for
+#       LOOPER_RECAP_IMAGE_HOURS (2) is over. Per runner: the VMs its jobs
+#       ran on, the jobs that failed before one was ready, the prepare times
+#       (boot to ready: every job has a fresh VM, looper#42) and the disk use the
+#       jobs logged at their end. GitHub Actions runs of the workflows named like
+#       LOOPER_RECAP_WORKFLOWS (default nightly|release|image) in every
+#       repository of LOOPER_ORG, and the Cloud Build builds of
+#       LOOPER_RECAP_CLOUDBUILD_PROJECT (default jody1-328023). A source it
+#       cannot read is named in `sources`, never guessed. Then its `items`: what
+#       went wrong or crossed a threshold, each with a key the nights share.
+#   looper-recap classify NIGHT.json [--history DIR]
+#       the night's items against the 6 nights before it (DIR/<YYYY-MM-DD>.json,
+#       the roadmap's suggestions/recap/): recurring (seen on 2 or more of the 7
+#       nights, or over a threshold tonight: advice, ranked by the hours of
+#       waiting each would remove), transient (seen once, under
+#       every threshold, and recovered on retry: one line, no advice), or once
+#       (seen once, under every threshold, not recovered: one line, no advice;
+#       recurring if it comes back). JSON on stdout.
+#   looper-recap report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
+#       the night's recap for Jody's daily report, suggestions/recap/<night>.md,
+#       on stdout: the one-screen summary, the recurring items with links to the
+#       night's advice suggestions in DIR (their `## Advice` names the night and
+#       the item) or the issue that covers them (FILE: `<key> <issue> <why>`
+#       lines), the transient and once-only items one line each.
+#
+# Thresholds (environment): LOOPER_RECAP_COUNT (3: failures of a class, in a
+# night), LOOPER_RECAP_QUEUE_P90 (900 s), LOOPER_RECAP_PREPARE_P90 (300 s),
+# LOOPER_RECAP_HOLD_HOURS (1: an issue held back that long), LOOPER_RECAP_LAND_MINUTES
+# (60), LOOPER_RECAP_SCAN_MINUTES (60), LOOPER_RECAP_DISK_PCT (85).
+# Environment: GITLAB_TOKEN (read_api; sent on stdin, never on a command line),
+# LOOPER_BUILD_API (https://gitlab.com/api/v4), LOOPER_RECAP_PAGES (10 pages of
+# 100 jobs a project at most), LOOPER_ORG (tacplus-dev), GH_TOKEN for gh,
+# LOOPER_RECAP_ACTIONS_REPOS (default: every repository of LOOPER_ORG), gcloud's
+# own login for Cloud Build.
+import datetime as dt
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+
+DAY = dt.timedelta(days=1)
+ENV = os.environ
+
+
+def num(name, default):
+    try:
+        return float(ENV.get(name, default))
+    except ValueError:
+        return float(default)
+
+
+T = {
+    "count": int(num("LOOPER_RECAP_COUNT", 3)),
+    "queue_p90_s": int(num("LOOPER_RECAP_QUEUE_P90", 900)),
+    "prepare_p90_s": int(num("LOOPER_RECAP_PREPARE_P90", 300)),
+    "hold_hours": num("LOOPER_RECAP_HOLD_HOURS", 1),
+    "land_minutes": int(num("LOOPER_RECAP_LAND_MINUTES", 60)),
+    "scan_minutes": int(num("LOOPER_RECAP_SCAN_MINUTES", 60)),
+    "disk_pct": int(num("LOOPER_RECAP_DISK_PCT", 85)),
+    "image_hours": num("LOOPER_RECAP_IMAGE_HOURS", 2),
+}
+
+
+def die(msg, code=2):
+    print(f"looper-recap: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def warn(msg):
+    print(f"looper-recap: {msg}", file=sys.stderr)
+
+
+def when(s):
+    """A timestamp of the APIs (ISO 8601, Z or an offset, with or without a fraction), as UTC."""
+    if not s:
+        return None
+    s = re.sub(r"\.\d+", "", str(s)).replace("Z", "+00:00")
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    return t.astimezone(dt.timezone.utc)
+
+
+def stamp(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def secs(a, b):
+    return None if a is None or b is None else int((b - a).total_seconds())
+
+
+def pct(values, p):
+    """The p-th percentile, nearest rank; None for none."""
+    v = sorted(x for x in values if x is not None)
+    if not v:
+        return None
+    return v[max(0, math.ceil(p / 100 * len(v)) - 1)]
+
+
+def dist(values):
+    v = [x for x in values if x is not None]
+    if not v:
+        return None
+    return {"n": len(v), "p50": pct(v, 50), "p90": pct(v, 90), "max": max(v)}
+
+
+def whole(x):
+    return int(x) if x == int(x) else x
+
+
+def hours(s):
+    return whole(round(s / 3600, 2))
+
+
+def minutes(s):
+    return whole(round(s / 60, 1))
+
+
+# --- sources ------------------------------------------------------------------
+
+
+class Unreadable(Exception):
+    pass
+
+
+def run(cmd, stdin=None):
+    try:
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Unreadable(f"{cmd[0]}: {e}") from None
+    if p.returncode != 0:
+        err = (p.stderr or "").strip()[:200]
+        raise Unreadable(f"{cmd[0]} exit {p.returncode}{': ' + err if err else ''}")
+    return p.stdout
+
+
+def gitlab(path):
+    """A GET of the GitLab API, its body; the token goes on stdin."""
+    tok = ENV.get("GITLAB_TOKEN", "")
+    if not tok:
+        raise Unreadable("no GITLAB_TOKEN")
+    api = ENV.get("LOOPER_BUILD_API", "https://gitlab.com/api/v4").rstrip("/")
+    try:
+        return run(["curl", "-fsS", "--retry", "2", "-H", "@-", f"{api}/{path}"], stdin=f"PRIVATE-TOKEN: {tok}\n")
+    except Unreadable as e:
+        raise Unreadable(f"GET {path.split('?')[0]}: {e}") from None
+
+
+def enc(p):
+    return p.replace("/", "%2F")
+
+
+def project_jobs(project, start, until):
+    """The finished jobs of a project in the window (finished in it), oldest first."""
+    jobs, pages = {}, int(num("LOOPER_RECAP_PAGES", 10))
+    for page in range(1, pages + 1):
+        body = gitlab(f"projects/{enc(project)}/jobs?scope[]=success&scope[]=failed&scope[]=canceled&per_page=100&page={page}")
+        try:
+            got = json.loads(body)
+        except ValueError:
+            raise Unreadable(f"the jobs of {project}: not JSON") from None
+        if not isinstance(got, list):
+            raise Unreadable(f"the jobs of {project}: not a list")
+        for j in got:
+            f = when(j.get("finished_at"))
+            if f is not None and start <= f < until:
+                jobs[j["id"]] = j
+        created = [when(j.get("created_at")) for j in got]
+        # Newest first: a page whose jobs were all created a day before the
+        # window (no job runs 11 hours and more) ends it.
+        if len(got) < 100 or all(c is not None and c < start - DAY for c in created):
+            break
+    return [jobs[k] for k in sorted(jobs)]
+
+
+# --- a job's log --------------------------------------------------------------
+
+LOG_TS = re.compile(r"\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]")
+PULL = re.compile(r"failed to pull image|error pulling image|pull access denied|manifest unknown|toomanyrequests|ErrImagePull|image pull failed", re.I)
+PLAN = re.compile(r"plan: plan for (\S+): capacity (\d+) .*; running: (.*)$")
+STARTS = re.compile(r"plan: #(\d+) starts\b")
+WAITS = re.compile(r"plan: #(\d+) waits: (.*)$")
+LANDING = re.compile(r"\[lander\] \[[^]]+\] landing #(\d+) ")
+LANDED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): landed on main: .*on the gates (\S+)")
+NOT_LANDED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): nothing landed")
+DEFERRED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): deferred to the next job")
+DISK = re.compile(r"disk at the end: (\d+)% used")
+
+
+QUEUED = re.compile(r"queued since (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
+
+
+def held_reason(r):
+    """A plan's reason an issue waits: its key, and for a conflict what overlaps."""
+    if r.startswith("no free slot"):
+        return "no_free_slot", None
+    if "would outlast this job" in r:
+        return "limit_outlasts_job", None
+    return "conflict", re.sub(r" \(#\d+, [^()]*\)$", "", re.sub(r"^the plan: ", "", r)).strip()[:300]
+
+
+# What would have let the work a reason serialized run in parallel, and what
+# makes that safe: for the advice (Jody, on looper#57: "much of this can be
+# done in parallel").
+PARALLEL = {
+    "no_free_slot": "more slots: a larger runner or a second job of the repository (each child its own worktree)",
+    "limit_outlasts_job": "a fresh job for the issue instead of idling until this one ends",
+    "conflict": "file-level conflicts instead of areas, when the issues touch different files of the area",
+    "behind_a_land": "parallel lands of disjoint diffs (no file in common), each on its own gate set",
+    "scan_holds_repo": "a scan that does not hold the repository's lock, or a shorter one",
+    "image_stale": "an image build that is not cancelled by newer pushes, or one per push",
+}
+
+
+def read_log(text, started, finished):
+    """What a job's log says: its prepare time and VM, a pull or gate failure,
+    and for a looper job its plans, holds, lands and disk."""
+    out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False,
+           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None}
+    now = started
+    waiting = {}   # issue -> (reason, since)
+    landing = {}   # issue -> since
+
+    def hold(n, t):
+        if n in waiting:
+            r, since = waiting.pop(n)
+            if since is not None and t is not None:
+                out["holds"].setdefault(r, {})
+                out["holds"][r][n] = out["holds"][r].get(n, 0) + max(0, secs(since, t))
+
+    def queued(n, line, t):
+        # A child's land behind the others' (looper#34): the lander says since when.
+        q = QUEUED.search(line)
+        if q and when(q.group(1)) is not None and t is not None:
+            per = out["holds"].setdefault("behind_a_land", {})
+            per[n] = per.get(n, 0) + max(0, secs(when(q.group(1)), t))
+
+    for line in re.split(r"[\r\n]+", text):
+        line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line)
+        m = LOG_TS.search(line)
+        if m:
+            now = when(m.group(1)) or now
+        m = re.search(r"section_start:(\d+):prepare_script", line)
+        if m and out["prepare_at"] is None:
+            out["prepare_at"] = dt.datetime.fromtimestamp(int(m.group(1)), dt.timezone.utc)
+        m = re.search(r"Running on (\S+)", line)
+        if m and out["host"] is None:
+            out["host"] = m.group(1)
+        if PULL.search(line):
+            out["pull"] = True
+        if "nothing landed: the gates failed" in line or "verdict: FAIL" in line:
+            out["gate_fail"] = True
+        m = PLAN.search(line)
+        if m:
+            running = [x for x in m.group(3).split() if x.startswith("#")]
+            out["plans"].append({"capacity": int(m.group(2)), "running": len(running)})
+            continue
+        m = STARTS.search(line)
+        if m:
+            hold(m.group(1), now)
+            if out["plans"]:
+                out["plans"][-1]["running"] += 1
+            continue
+        m = WAITS.search(line)
+        if m:
+            n, (r, overlap) = m.group(1), held_reason(m.group(2))
+            if n in waiting and waiting[n][0] != r:
+                hold(n, now)
+            waiting.setdefault(n, (r, now))
+            out["holds"].setdefault(r, {}).setdefault(n, 0)
+            if overlap:
+                out["overlaps"].setdefault(overlap, set()).add(int(n))
+            continue
+        m = LANDING.search(line)
+        if m:
+            landing[m.group(1)] = now
+            queued(m.group(1), line, now)
+            continue
+        m = LANDED.search(line) or NOT_LANDED.search(line)
+        if m:
+            since = landing.pop(m.group(1), None)
+            if since is not None:
+                out["lands"].append({"issue": int(m.group(1)), "set": m.group(2) if m.re is LANDED else None,
+                                     "landed": m.re is LANDED, "s": secs(since, now)})
+            continue
+        m = DEFERRED.search(line)
+        if m:
+            out["deferred"] += 1
+            queued(m.group(1), line, now)
+            continue
+        m = DISK.search(line)
+        if m:
+            out["disk_pct"] = int(m.group(1))
+    for n in list(waiting):
+        hold(n, finished)
+    return out
+
+
+def failure_class(job, log):
+    r = job.get("failure_reason") or ""
+    if log["pull"] and log["prepare_at"] is None or r == "image_pull_failure":
+        return "image_pull"
+    if r in ("runner_system_failure", "scheduler_failure"):
+        return "runner_system_failure"
+    if r in ("job_execution_timeout", "stuck_or_timeout_failure"):
+        return "timeout"
+    if r == "script_failure":
+        return "gate_failure" if log["gate_fail"] or job.get("name") == "gates" else "script_failure"
+    return f"other:{r or 'unknown'}"
+
+
+def looper_repo(name):
+    """A looper job's (kind, repository): looper-<repo>-<n>, looper-scan-<repo>."""
+    m = re.fullmatch(r"looper-scan-(.+)", name or "")
+    if m:
+        return "scan", m.group(1)
+    m = re.fullmatch(r"looper-(.+)-(\d+)", name or "")
+    if m:
+        return "work", m.group(1)
+    return None, None
+
+
+# --- collect -----------------------------------------------------------------
+
+
+def collect(until):
+    start = until - DAY
+    night = until.strftime("%Y-%m-%d")
+    projects = ENV.get("LOOPER_RECAP_PROJECTS", "").split() or \
+        (ENV.get("LOOPER_SUGGEST_PROJECTS", "").split() or ["tacplus-dev/looper", "tacplus-dev/build"]) + ["tacplus-dev/cluster"]
+    projects = list(dict.fromkeys(projects))
+    sources, items = {}, []
+    out = {"night": night, "window": {"from": stamp(start), "until": stamp(until)}, "thresholds": T,
+           "sources": sources, "projects": {}, "failed_jobs": [], "loopers": {}, "runner_pools": {},
+           "longest": {"queues": [], "lands": [], "scans": [], "holds": []}}
+    queues, lands, scans, holdl = [], [], [], []
+
+    for project in projects:
+        try:
+            jobs = project_jobs(project, start, until)
+        except Unreadable as e:
+            sources[f"gitlab:{project}"] = f"unavailable: {e}"
+            continue
+        sources[f"gitlab:{project}"] = "ok"
+        rows = []
+        for j in jobs:
+            try:
+                text = gitlab(f"projects/{enc(project)}/jobs/{j['id']}/trace")
+            except Unreadable:
+                text = ""
+            c, s, f = when(j.get("created_at")), when(j.get("started_at")), when(j.get("finished_at"))
+            lg = read_log(text, s, f)
+            rows.append((j, lg, c, s, f))
+        by_name = {}
+        for j, lg, c, s, f in rows:
+            by_name.setdefault(((j.get("pipeline") or {}).get("id"), j.get("name")), []).append(j)
+        p = {"jobs": len(rows), "status": {}, "failures": {}, "queue_s": None, "prepare_s": None, "run_s": None}
+        qs, ps, rs = [], [], []
+        fails = {}
+        for j, lg, c, s, f in rows:
+            st = j.get("status") or "?"
+            p["status"][st] = p["status"].get(st, 0) + 1
+            q, pr, rn = secs(c, s), secs(s, lg["prepare_at"]), secs(s, f)
+            qs.append(q); ps.append(pr); rs.append(rn)
+            url = j.get("web_url") or ""
+            if q is not None:
+                queues.append({"project": project, "job": j.get("name"), "s": q, "url": url})
+            # A job no runner took (canceled while pending) is in no pool.
+            if j.get("runner"):
+                runner = j["runner"].get("description") or str(j["runner"].get("id"))
+                pool = out["runner_pools"].setdefault(runner, {"jobs": 0, "vms": set(), "failed_before_ready": 0, "prepare": [], "disk": []})
+                pool["jobs"] += 1
+                if lg["host"]:
+                    pool["vms"].add(lg["host"])
+                if lg["prepare_at"] is None and st == "failed":
+                    pool["failed_before_ready"] += 1
+                pool["prepare"].append(pr)
+                if lg["disk_pct"] is not None:
+                    pool["disk"].append(lg["disk_pct"])
+            if st == "failed":
+                cls = failure_class(j, lg)
+                later = [k for k in by_name[((j.get("pipeline") or {}).get("id"), j.get("name"))] if k["id"] > j["id"]]
+                rec = any(k.get("status") == "success" for k in later)
+                p["failures"][cls] = p["failures"].get(cls, 0) + 1
+                fails.setdefault(cls, []).append((rec, url, rn or 0))
+                out["failed_jobs"].append({"project": project, "id": j["id"], "job": j.get("name"), "class": cls,
+                                           "reason": j.get("failure_reason"), "recovered": rec,
+                                           "before_ready": lg["prepare_at"] is None, "url": url})
+            kind, repo = looper_repo(j.get("name"))
+            if kind is None:
+                continue
+            lp = out["loopers"].setdefault(repo, {"jobs": 0, "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred_lands": 0,
+                                                  "scans": [], "scan_runs": [], "queued": []})
+            lp["jobs"] += 1
+            if kind == "scan" and rn is not None:
+                lp["scans"].append(rn)
+                lp["scan_runs"].append((s, f))
+                scans.append({"repo": repo, "s": rn, "url": url})
+            m = re.fullmatch(r"looper-.+-(\d+)", j.get("name") or "")
+            if kind == "work" and q is not None:
+                lp["queued"].append((int(m.group(1)), c, s, url))
+            lp["plans"] += lg["plans"]
+            for ov, ns in lg["overlaps"].items():
+                lp["overlaps"].setdefault(ov, set()).update(ns)
+            for r, per in lg["holds"].items():
+                h = lp["holds"].setdefault(r, {"count": 0, "issues": set(), "s": []})
+                for n, held in per.items():
+                    h["count"] += 1
+                    h["issues"].add(int(n))
+                    h["s"].append(held)
+                    holdl.append({"repo": repo, "issue": int(n), "reason": r, "s": held, "url": url})
+            for ld in lg["lands"]:
+                lp["lands"].append(ld)
+                lands.append({"repo": repo, "issue": ld["issue"], "set": ld["set"] or "failed", "s": ld["s"], "url": url})
+            lp["deferred_lands"] += lg["deferred"]
+        p["queue_s"], p["prepare_s"], p["run_s"] = dist(qs), dist(ps), dist(rs)
+        out["projects"][project] = p
+        for cls, fl in sorted(fails.items()):
+            n, rec = len(fl), all(r for r, _, _ in fl)
+            # The hours its failed jobs ran before failing: lost, then waited again on the retry.
+            items.append({"key": f"failures/{project}/{cls}", "count": n, "over": n >= T["count"], "recovered": rec,
+                          "wait_hours": hours(sum(x for _, _, x in fl)),
+                          "summary": f"gitlab.com/{project}: {n} job{'s' * (n != 1)} failed with {cls}, "
+                                     f"{sum(1 for r, _, _ in fl if r)} recovered on retry",
+                          "evidence": sorted(u for _, u, _ in fl)[:5]})
+        for what, d, lim in (("queue", p["queue_s"], T["queue_p90_s"]), ("prepare", p["prepare_s"], T["prepare_p90_s"])):
+            if d and d["p90"] > lim:
+                items.append({"key": f"{what}/{project}", "count": d["n"], "over": True, "recovered": False,
+                              "summary": f"gitlab.com/{project}: {what} time p90 {minutes(d['p90'])} min over {d['n']} jobs "
+                                         f"(p50 {minutes(d['p50'])}, max {minutes(d['max'])}; threshold {minutes(lim)} min)",
+                              "evidence": [f"https://gitlab.com/{project}/-/jobs"]})
+
+    # The looper jobs, per repository.
+    for repo, lp in sorted(out["loopers"].items()):
+        # A job of an issue queued while the repository's scan ran: the scan
+        # held it (GitLab runs one job of a repository at a time).
+        runs, held = lp.pop("scan_runs"), {}
+        for n, c, s, url in lp.pop("queued"):
+            for a, b in runs:
+                o = secs(max(a, c), min(b, s))
+                if o and o > 0:
+                    held[n] = held.get(n, 0) + o
+                    holdl.append({"repo": repo, "issue": n, "reason": "scan_holds_repo", "s": o, "url": url})
+        if held:
+            lp["holds"]["scan_holds_repo"] = {"count": len(held), "issues": set(held), "s": [held[n] for n in sorted(held)]}
+        plans = lp.pop("plans")
+        lp["slots"] = None if not plans else {
+            "plans": len(plans), "capacity": max(x["capacity"] for x in plans),
+            "peak": max(x["running"] for x in plans),
+            "mean_use": round(sum(x["running"] / max(1, x["capacity"]) for x in plans) / len(plans), 2)}
+        ovs = lp.pop("overlaps")
+        for r, h in sorted(lp["holds"].items()):
+            mx = max(h["s"]) if h["s"] else 0
+            lp["holds"][r] = {"count": h["count"], "issues": sorted(h["issues"]), "max_hours": hours(mx), "total_hours": hours(sum(h["s"]))}
+            if r == "conflict":
+                lp["holds"][r]["overlaps"] = [{"issues": sorted(ns), "what": ov} for ov, ns in sorted(ovs.items())][:10]
+            if mx >= T["hold_hours"] * 3600:
+                items.append({"key": f"held/{repo}/{r}", "count": h["count"], "over": True, "recovered": False,
+                              "wait_hours": hours(sum(h["s"])), "parallel": PARALLEL[r],
+                              "summary": f"{repo}: issues held back by {r} {h['count']} time{'s' * (h['count'] != 1)} "
+                                         f"({', '.join('#%d' % i for i in sorted(h['issues']))}), up to {hours(mx)} h, {hours(sum(h['s']))} h in all"
+                                         + (f"; overlapping: {'; '.join(ov for ov in sorted(ovs))[:300]}" if r == "conflict" and ovs else ""),
+                              "evidence": sorted({x["url"] for x in holdl if x["repo"] == repo and x["reason"] == r})[:5]})
+        lp["waits"] = {"hours": hours(sum(x["s"] for x in holdl if x["repo"] == repo)),
+                       "by_reason": {r: h["total_hours"] for r, h in sorted(lp["holds"].items())}, "by_issue": {}}
+        per = {}
+        for x in holdl:
+            if x["repo"] == repo and x["s"]:
+                per.setdefault(x["issue"], {}).setdefault(x["reason"], 0)
+                per[x["issue"]][x["reason"]] += x["s"]
+        lp["waits"]["by_issue"] = {str(n): {"hours": hours(sum(per[n].values())), "why": {r: hours(v) for r, v in sorted(per[n].items())}}
+                                   for n in sorted(per)}
+        sets = {}
+        for ld in lp["lands"]:
+            sets.setdefault(ld["set"] or "failed", []).append(ld["s"])
+        lp["lands"] = {k: {"count": len(v), "minutes": {kk: minutes(vv) if kk != "n" else vv for kk, vv in dist(v).items()}}
+                       for k, v in sorted(sets.items())}
+        for k, v in sorted(sets.items()):
+            if k != "failed" and max(v) >= T["land_minutes"] * 60:
+                items.append({"key": f"land/{repo}/{k}", "count": len(v), "over": True, "recovered": False,
+                              "summary": f"{repo}: {len(v)} land{'s' * (len(v) != 1)} on the gates {k}, up to {minutes(max(v))} min "
+                                         f"(p50 {minutes(pct(v, 50))}; threshold {T['land_minutes']} min)",
+                              "evidence": sorted({x['url'] for x in lands if x['repo'] == repo and x['set'] == k})[:5]})
+        if lp["deferred_lands"]:
+            n = lp["deferred_lands"]
+            items.append({"key": f"deferred/{repo}", "count": n, "over": n >= T["count"], "recovered": True,
+                          "summary": f"{repo}: {n} land{'s' * (n != 1)} deferred to the next job (not enough time left in the job)",
+                          "evidence": [f"https://gitlab.com/{ENV.get('LOOPER_ORG', 'tacplus-dev')}/looper/-/jobs"]})
+        sc = lp.pop("scans")
+        lp["scan_minutes"] = [minutes(s) for s in sorted(sc)]
+        if sc and max(sc) >= T["scan_minutes"] * 60:
+            items.append({"key": f"scan/{repo}", "count": len(sc), "over": True, "recovered": False,
+                          "summary": f"{repo}: its nightly scan held the repository {minutes(max(sc))} min (threshold {T['scan_minutes']} min)",
+                          "evidence": sorted({x['url'] for x in scans if x['repo'] == repo})[:5]})
+
+    for runner, pool in sorted(out["runner_pools"].items()):
+        disk = pool.pop("disk")
+        out["runner_pools"][runner] = {"jobs": pool["jobs"], "vms": len(pool["vms"]), "failed_before_ready": pool["failed_before_ready"],
+                                       "boot_to_ready_s": dist(pool["prepare"]),
+                                       "disk_pct": None if not disk else {"jobs": len(disk), "max": max(disk), "p50": pct(disk, 50)}}
+        if disk and max(disk) >= T["disk_pct"]:
+            items.append({"key": f"disk/{runner}", "count": sum(1 for x in disk if x >= T["disk_pct"]), "over": True, "recovered": False,
+                          "summary": f"runner {runner}: disk {max(disk)}% used at a job's end (threshold {T['disk_pct']}%)",
+                          "evidence": [f"https://gitlab.com/{ENV.get('LOOPER_ORG', 'tacplus-dev')}/looper/-/jobs"]})
+
+    out["actions"] = actions(start, until, sources, items)
+    out["image"] = image_check(until, sources, items)
+    out["cloud_build"] = cloud_build(start, until, sources, items)
+
+    out["failed_jobs"].sort(key=lambda x: (x["project"], x["id"]))
+    top = lambda xs: sorted(xs, key=lambda x: (-(x["s"] or 0), x["url"]))[:5]
+    out["longest"] = {"queues": [dict(x, minutes=minutes(x.pop("s"))) for x in top(queues)],
+                      "lands": [dict(x, minutes=minutes(x.pop("s"))) for x in top(lands)],
+                      "scans": [dict(x, minutes=minutes(x.pop("s"))) for x in top(scans)],
+                      "holds": [dict(x, hours=hours(x.pop("s"))) for x in top(holdl)]}
+    out["items"] = sorted(items, key=lambda x: x["key"])
+    return out
+
+
+def actions(start, until, sources, items):
+    org = ENV.get("LOOPER_ORG", "tacplus-dev")
+    pat = re.compile(ENV.get("LOOPER_RECAP_WORKFLOWS", "nightly|release|image"), re.I)
+    try:
+        repos = ENV.get("LOOPER_RECAP_ACTIONS_REPOS", "").split() or sorted(
+            r["name"] for r in json.loads(run(["gh", "repo", "list", org, "--no-archived", "--limit", "200", "--json", "name"])))
+    except (Unreadable, ValueError, KeyError, TypeError) as e:
+        sources["github-actions"] = f"unavailable: {e}"
+        return None
+    runs, bad = [], []
+    for r in repos:
+        try:
+            got = json.loads(run(["gh", "api", "-X", "GET", f"repos/{org}/{r}/actions/runs",
+                                  "-f", f"created={stamp(start)}..{stamp(until)}", "-f", "per_page=100"]))
+        except (Unreadable, ValueError) as e:
+            bad.append(f"{r} ({e})")
+            continue
+        for w in got.get("workflow_runs") or []:
+            if not pat.search(w.get("name") or ""):
+                continue
+            runs.append({"repo": r, "workflow": w.get("name"), "id": w.get("id"), "conclusion": w.get("conclusion") or w.get("status"),
+                         "minutes": None if secs(when(w.get("run_started_at")), when(w.get("updated_at"))) is None
+                         else minutes(secs(when(w.get("run_started_at")), when(w.get("updated_at")))),
+                         "url": w.get("html_url")})
+    sources["github-actions"] = "ok" if not bad else "partial: " + "; ".join(sorted(bad))
+    runs.sort(key=lambda x: (x["repo"], x["workflow"], x["id"] or 0))
+    by = {}
+    for x in runs:
+        b = by.setdefault(f"{x['repo']}/{x['workflow']}", {"runs": 0, "failed": 0, "minutes": []})
+        b["runs"] += 1
+        b["failed"] += x["conclusion"] in ("failure", "timed_out", "startup_failure")
+        b["minutes"].append(x["minutes"])
+    for k, b in sorted(by.items()):
+        fl = [x for x in runs if f"{x['repo']}/{x['workflow']}" == k and x["conclusion"] in ("failure", "timed_out", "startup_failure")]
+        if fl:
+            last_fail = max(x["id"] for x in fl)
+            rec = any(x["conclusion"] == "success" and x["id"] > last_fail for x in runs if f"{x['repo']}/{x['workflow']}" == k)
+            items.append({"key": f"actions/{k}", "count": len(fl), "over": len(fl) >= T["count"], "recovered": rec,
+                          "summary": f"GitHub Actions {k}: {len(fl)} of {b['runs']} runs failed" + (", a later run succeeded" if rec else ""),
+                          "evidence": [x["url"] for x in fl][:5]})
+        b["minutes"] = dist(b["minutes"])
+    return {"by_workflow": by, "runs": runs}
+
+
+def image_check(until, sources, items):
+    """The looper image's revision against main's head (looper#58): a stale
+    image, its missing commits and the latest image workflow run."""
+    ref = ENV.get("LOOPER_RECAP_IMAGE", "ghcr.io/tacplus-dev/looper:main")
+    repo = ENV.get("LOOPER_RECAP_IMAGE_REPO", "tacplus-dev/looper")
+    if not ref:
+        sources["image"] = "not configured"
+        return None
+    try:
+        got = json.loads(run(["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Image}}"]))
+        # One platform's image, or a map of the platforms' (the same revision each).
+        imgs = [got] if "config" in got else [got[k] for k in sorted(got)]
+        revs = sorted({((i.get("config") or {}).get("Labels") or {}).get("org.opencontainers.image.revision") or "" for i in imgs})
+        rev = revs[0] if len(revs) == 1 else ""
+        head = json.loads(run(["gh", "api", f"repos/{repo}/commits/main"]))["sha"]
+    except (Unreadable, ValueError, KeyError, TypeError, AttributeError) as e:
+        sources["image"] = f"unavailable: {e}"
+        return None
+    sources["image"] = "ok"
+    out = {"ref": ref, "revision": rev or None, "main": head, "current": rev == head, "missing": [], "latest_run": None}
+    if rev == head:
+        return out
+    try:
+        if rev:
+            cmp = json.loads(run(["gh", "api", f"repos/{repo}/compare/{rev}...{head}"]))
+            out["missing"] = [{"sha": c["sha"][:12], "date": stamp(when(c["commit"]["committer"]["date"])),
+                               "title": (c["commit"]["message"].splitlines() or [""])[0][:120]} for c in cmp.get("commits") or []]
+        wr = (json.loads(run(["gh", "api", "-X", "GET", f"repos/{repo}/actions/workflows/image.yml/runs",
+                              "-f", "branch=main", "-f", "per_page=1"])).get("workflow_runs") or [None])[0]
+        if wr:
+            out["latest_run"] = {"id": wr.get("id"), "sha": (wr.get("head_sha") or "")[:12], "status": wr.get("status"),
+                                 "conclusion": wr.get("conclusion"), "url": wr.get("html_url")}
+    except (Unreadable, ValueError, KeyError, TypeError) as e:
+        sources["image"] = f"partial: {e}"
+    oldest = min((when(c["date"]) for c in out["missing"]), default=None)
+    lag = secs(oldest, until) if oldest else None
+    lim = T["image_hours"] * 3600
+    run_s = out["latest_run"]
+    items.append({"key": f"image/{repo}", "count": len(out["missing"]), "over": lag is None or lag >= lim, "recovered": False,
+                  "wait_hours": hours(min(lag, DAY.total_seconds())) if lag else 0, "parallel": PARALLEL["image_stale"],
+                  "summary": f"{ref} is at {(rev or 'no revision')[:12]}, main at {head[:12]}: {len(out['missing'])} commit"
+                             f"{'s' * (len(out['missing']) != 1)} of main not in it"
+                             + (f", the oldest {hours(lag)} h old" if lag else "")
+                             + (f"; the latest image run: {run_s['conclusion'] or run_s['status']} at {run_s['sha']}" if run_s else ""),
+                  "evidence": [x for x in [run_s and run_s["url"]] if x]})
+    return out
+
+
+def cloud_build(start, until, sources, items):
+    proj = ENV.get("LOOPER_RECAP_CLOUDBUILD_PROJECT", "jody1-328023")
+    if not proj:
+        sources["cloud-build"] = "not configured"
+        return None
+    try:
+        got = json.loads(run(["gcloud", "builds", "list", f"--project={proj}", "--format=json", "--limit=500",
+                              f"--filter=createTime>=\"{stamp(start)}\" AND createTime<\"{stamp(until)}\""]) or "[]")
+    except (Unreadable, ValueError) as e:
+        sources["cloud-build"] = f"unavailable: {e}"
+        return None
+    sources["cloud-build"] = "ok"
+    builds = sorted(({"id": b.get("id"), "status": b.get("status"), "images": sorted(b.get("images") or []),
+                      "minutes": None if secs(when(b.get("startTime")), when(b.get("finishTime"))) is None
+                      else minutes(secs(when(b.get("startTime")), when(b.get("finishTime")))),
+                      "created": stamp(when(b.get("createTime"))) if when(b.get("createTime")) else None,
+                      "url": b.get("logUrl")} for b in got), key=lambda x: (x["created"] or "", x["id"] or ""))
+    fl = [b for b in builds if b["status"] in ("FAILURE", "TIMEOUT", "INTERNAL_ERROR")]
+    if fl:
+        rec = any(b["status"] == "SUCCESS" and b["created"] > fl[-1]["created"] and b["images"] == fl[-1]["images"] for b in builds)
+        items.append({"key": f"cloud-build/{proj}", "count": len(fl), "over": len(fl) >= T["count"], "recovered": rec,
+                      "summary": f"Cloud Build {proj}: {len(fl)} of {len(builds)} builds failed" + (", a later build succeeded" if rec else ""),
+                      "evidence": [b["url"] for b in fl if b["url"]][:5]})
+    return {"builds": len(builds), "failed": len(fl), "minutes": dist([b["minutes"] for b in builds]), "list": builds}
+
+
+# --- classify ----------------------------------------------------------------
+
+
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        die(f"cannot read {path}: {e}")
+
+
+def classify(night, history):
+    d = dt.date.fromisoformat(night["night"])
+    before = {}
+    for k in range(1, 7):
+        day = (d - dt.timedelta(days=k)).isoformat()
+        p = os.path.join(history, f"{day}.json") if history else ""
+        if p and os.path.isfile(p):
+            before[day] = {x["key"] for x in load(p).get("items", [])}
+    out = {"night": night["night"], "history": sorted(before), "recurring": [], "transient": [], "once": []}
+    for it in night.get("items", []):
+        seen = sorted([day for day, keys in before.items() if it["key"] in keys] + [night["night"]])
+        row = {"key": it["key"], "summary": it["summary"], "nights": len(seen), "seen": seen, "over": it["over"],
+               "recovered": it["recovered"], "evidence": it.get("evidence", []), "wait_hours": it.get("wait_hours", 0)}
+        if it.get("parallel"):
+            row["parallel"] = it["parallel"]
+        if len(seen) >= 2 or it["over"]:
+            out["recurring"].append(row)
+        elif it["recovered"]:
+            out["transient"].append(row)
+        else:
+            out["once"].append(row)
+    # The advice ranks by the hours of waiting it would remove (Jody, on looper#57).
+    out["recurring"].sort(key=lambda x: (-x["wait_hours"], x["key"]))
+    return out
+
+
+# --- report ------------------------------------------------------------------
+
+
+def section(text, head):
+    m = re.search(rf"^## {re.escape(head)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return m.group(1) if m else ""
+
+
+def advice(sdir, night):
+    """The suggestions of DIR that give advice on the night's items: key -> [(name, file)]."""
+    found = {}
+    if not sdir or not os.path.isdir(sdir):
+        return found
+    for f in sorted(os.listdir(sdir)):
+        if not re.fullmatch(r"\d{4}-\d\d-\d\d-[a-z0-9-]+\.md", f):
+            continue
+        with open(os.path.join(sdir, f)) as h:
+            text = h.read()
+        name = (re.match(r"Suggestion: (.*)", text) or [None, f])[1].strip()
+        for line in section(text, "Advice").splitlines():
+            m = re.match(r"Recap:\s*(\d{4}-\d\d-\d\d)\s+(.*)", line.strip())
+            if m and m.group(1) == night:
+                for k in re.split(r"[,\s]+", m.group(2).strip()):
+                    if k:
+                        found.setdefault(k, []).append((name, f))
+    return found
+
+
+def covered(path, keys):
+    out = {}
+    if not path or not os.path.isfile(path):
+        return out
+    with open(path) as h:
+        for line in h:
+            parts = line.strip().split(None, 2)
+            if len(parts) >= 2 and parts[0] in keys and re.fullmatch(r"([\w.-]+/)?[\w.-]+#\d+|https://\S+/(issues|-/issues)/\d+", parts[1]):
+                why = re.sub(r"[<>\[\]`]", "", parts[2] if len(parts) > 2 else "")[:200]
+                out.setdefault(parts[0], []).append(parts[1] + (f": {why}" if why else ""))
+    return out
+
+
+def fmt(d, unit=60):
+    return "-" if not d else f"{whole(round(d['p90'] / unit, 1))}"
+
+
+def report(night, classes, sdir, cov):
+    n = night["night"]
+    adv = advice(sdir, n)
+    cv = covered(cov, {x["key"] for x in classes["recurring"]})
+    L = [f"# Recap of {n}", "",
+         f"The 24 hours to {night['window']['until']}, gathered by `looper-recap collect` and classified against "
+         f"{len(classes['history'])} earlier night{'s' * (len(classes['history']) != 1)} (tacplus-dev/looper#57). "
+         f"The data: [{n}.json]({n}.json).", "", "## Summary", "",
+         "| Project | Jobs | Failed | Queue p90 (min) | Prepare p90 (min) | Run p90 (min) |", "|---|---|---|---|---|---|"]
+    for p, d in sorted(night["projects"].items()):
+        L.append(f"| {p} | {d['jobs']} | {d['status'].get('failed', 0)} | {fmt(d['queue_s'])} | {fmt(d['prepare_s'])} | {fmt(d['run_s'])} |")
+    fails = {}
+    for d in night["projects"].values():
+        for c, k in d["failures"].items():
+            fails[c] = fails.get(c, 0) + k
+    L += ["", "Failures by class: " + (", ".join(f"{c} {k}" for c, k in sorted(fails.items(), key=lambda x: (-x[1], x[0]))) or "none") + "."]
+    slots = [f"{r} peak {lp['slots']['peak']} of {lp['slots']['capacity']} (mean use {lp['slots']['mean_use']}, {lp['slots']['plans']} plans)"
+             for r, lp in sorted(night["loopers"].items()) if lp.get("slots")]
+    L.append("Slot use: " + ("; ".join(slots) or "no plan") + ".")
+    for what, k, unit in (("queues", "job", "min"), ("lands", "set", "min"), ("holds", "reason", "h")):
+        xs = night["longest"][what][:3]
+        if xs:
+            val = "hours" if unit == "h" else "minutes"
+            L.append(f"Longest {what}: " + "; ".join(
+                f"[{x.get('repo') or x.get('project')} {('#%d ' % x['issue']) if 'issue' in x else ''}{x[k]}]({x['url']}) {x[val]} {unit}" for x in xs) + ".")
+    waits = [f"{r} {lp['waits']['hours']} h (" + ", ".join(f"{k} {v}" for k, v in sorted(lp["waits"]["by_reason"].items(), key=lambda x: (-x[1], x[0])) if v) + ")"
+             for r, lp in sorted(night["loopers"].items(), key=lambda x: (-x[1]["waits"]["hours"], x[0])) if lp.get("waits", {}).get("hours")]
+    L.append("Hours ready issues waited: " + ("; ".join(waits) or "none") + ".")
+    im = night.get("image")
+    if im:
+        L.append(f"Image: {im['ref']} " + ("is at main's head." if im["current"] else
+                 f"is {len(im['missing'])} commit{'s' * (len(im['missing']) != 1)} behind main ({(im['revision'] or 'no revision')[:12]} against {im['main'][:12]})"
+                 + (f"; the latest image run: [{im['latest_run']['conclusion'] or im['latest_run']['status']}]({im['latest_run']['url']})" if im.get("latest_run") else "") + "."))
+    gone = [f"{k} ({v})" for k, v in sorted(night["sources"].items()) if v != "ok"]
+    if gone:
+        L.append("Not read: " + "; ".join(gone) + ".")
+    L += ["", "## Recurring: advice", "", "Ranked by the hours of waiting each would remove.", ""]
+    for x in classes["recurring"]:
+        why = f"{x['nights']} of 7 nights" + (", over its threshold tonight" if x["over"] else "") + \
+            (f", {x['wait_hours']} h of waiting" if x.get("wait_hours") else "")
+        links = [f"[{nm}](../{f})" for nm, f in adv.get(x["key"], [])] + [f"covered by {c}" for c in cv.get(x["key"], [])]
+        L.append(f"- `{x['key']}`: {x['summary']} ({why}). " + ("Advice: " + "; ".join(links) if links else "No advice tonight."))
+    if not classes["recurring"]:
+        L.append("Nothing recurring.")
+    L += ["", "## Transient: noted", ""]
+    L += [f"- `{x['key']}`: {x['summary']} (once in 7 nights, recovered on retry)." for x in classes["transient"]] or ["None."]
+    L += ["", "## Once, not recovered: noted", ""]
+    L += [f"- `{x['key']}`: {x['summary']} (once in 7 nights; recurring if it comes back)." for x in classes["once"]] or ["None."]
+    return "\n".join(L) + "\n"
+
+
+# --- main --------------------------------------------------------------------
+
+
+def opts(args, names):
+    got, rest = {}, []
+    while args:
+        a = args.pop(0)
+        if a in names:
+            if not args:
+                die(f"{a} needs a value (see --help)")
+            got[a] = args.pop(0)
+        elif a.startswith("--"):
+            die(f"unknown option: {a} (see --help)")
+        else:
+            rest.append(a)
+    return got, rest
+
+
+def usage():
+    with open(__file__) as f:
+        lines = f.read().splitlines()
+    for ln in lines[3:]:
+        if not ln.startswith("#"):
+            break
+        print(ln[2:])
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        usage()
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd == "collect":
+        o, rest = opts(args, {"--until", "--out"})
+        if rest:
+            die(f"unexpected: {' '.join(rest)}")
+        if "--until" in o:
+            until = when(o["--until"])
+            if until is None:
+                die(f"--until {o['--until']} is not a time (YYYY-MM-DDTHH:MM:SSZ)")
+        else:
+            until = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+        text = json.dumps(collect(until), indent=1, sort_keys=True, default=sorted) + "\n"
+        if "--out" in o:
+            with open(o["--out"], "w") as f:
+                f.write(text)
+        else:
+            sys.stdout.write(text)
+        return 0
+    if cmd == "classify":
+        o, rest = opts(args, {"--history"})
+        if len(rest) != 1:
+            die("classify NIGHT.json [--history DIR]")
+        sys.stdout.write(json.dumps(classify(load(rest[0]), o.get("--history")), indent=1, sort_keys=True) + "\n")
+        return 0
+    if cmd == "report":
+        o, rest = opts(args, {"--suggestions", "--covered"})
+        if len(rest) != 2:
+            die("report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]")
+        sys.stdout.write(report(load(rest[0]), load(rest[1]), o.get("--suggestions"), o.get("--covered")))
+        return 0
+    die(f"unknown command: {cmd} (see --help)")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

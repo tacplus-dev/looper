@@ -1,0 +1,3 @@
+[0Ksection_start:1793512860:prepare_executor[0KPreparing the "docker-autoscaler" executor
+ERROR: Preparation failed: failed to pull image "ghcr.io/tacplus-dev/looper:main" with specified policies [always]: Error response from daemon: Get "https://ghcr.io/v2/": dial tcp: lookup ghcr.io: no such host
+ERROR: Job failed (system failure): failed to pull image

@@ -1,0 +1,2 @@
+{"linux/amd64": {"config": {"Labels": {"org.opencontainers.image.revision": "aaaaaaaaaaaa1111111111111111111111111111"}}},
+ "linux/arm64": {"config": {"Labels": {"org.opencontainers.image.revision": "aaaaaaaaaaaa1111111111111111111111111111"}}}}

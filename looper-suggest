@@ -13,12 +13,14 @@
 #                       --evidence TEXT [--evidence TEXT...] --cost TEXT --touches TEXT --reuse TEXT
 #                       [--rank N] [--slug SLUG] [--date YYYY-MM-DD] [--by WHO]
 #                       [--earlier FILE --what-changed TEXT]
+#                       [--recap "NIGHT ITEM" --cause TEXT --change TEXT --gain TEXT]
 #       writes one suggestion and the index. With --dir, in that checkout of the
 #       roadmap repository, committing nothing (the roadmap scan's way); without,
 #       in a fresh clone, committed alone (suggestions/ only) and pushed to its
 #       main, made again on the new main if the push is rejected
 #   looper-suggest check DIR [BASE]   every suggestion's format; with BASE (a commit of DIR), what
-#       changed since it: only suggestions/, no filed suggestion changed, at most
+#       changed since it: only suggestions/ (and the night's recap files,
+#       suggestions/recap/<YYYY-MM-DD>.md and .json), no filed suggestion changed, at most
 #       LOOPER_SUGGEST_MAX (5) new ones, none raising again a rejected or deferred
 #       one without new evidence, nor one open or accepted, and the index current
 #   looper-suggest index DIR          rewrites suggestions/INDEX.md from the files
@@ -35,6 +37,13 @@
 # considered`, and `## Status`: its first line open, accepted, rejected or
 # deferred, then `Rank: N`, `Filed: <date> by <who>` and, once decided,
 # `Decided: <date> by <who>: <their words>`.
+#
+# Advice from the nightly recap (looper#57; looper-recap) is a suggestion of
+# type Performance, Operability or Cost with a section `## Advice`: `Recap:
+# <night> <item>` (the recap's item key), `Cause:`, `Change:` (which file,
+# setting or issue) and `Gain:` (the expected gain; its cost is `## Cost`).
+# One whose evidence cites the recap is advice too. No advice without numbers:
+# an item of its Evidence gives one, beside the links and dates.
 #
 # Rejected and deferred suggestions are kept. One that names such a suggestion
 # again (the same slug, or the same name) is refused unless it says so, in a
@@ -60,6 +69,7 @@ source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
 DIR_S=suggestions
 MAX="${LOOPER_SUGGEST_MAX:-5}"
 STATUSES="open accepted rejected deferred"
+ADVICE_TYPES="Performance Operability Cost"
 
 err() { echo "looper-suggest: $*" >&2; }
 
@@ -116,6 +126,26 @@ form_errors() { # dir file
   elif [[ "$s" != open && -z "$(value_of "$f" Decided)" ]]; then echo "it is $s with no \`Decided: <date> by <who>: <words>\`"
   fi
   [[ "$(value_of "$f" Rank)" =~ ^[0-9]+$ ]] || echo "its Status has no \`Rank: <n>\`"
+  advice_errors "$f" "$t"
+}
+
+# What is wrong with a suggestion as advice from the nightly recap (looper#57);
+# nothing when it is right, or not advice.
+advice_errors() { # file type
+  local a k
+  a="$(section "$1" Advice)"
+  [[ -n "$a" ]] || evidence "$1" | grep -qE '(^|[^A-Za-z])recap(/[0-9]{4}-[0-9]{2}-[0-9]{2})?\.(md|json)' || return 0
+  [[ " $ADVICE_TYPES " == *" $2 "* ]] || echo "it is advice from the nightly recap: its type is Performance, Operability or Cost, not ${2:-none}"
+  grep -qE '^Recap:[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]+[^[:space:]]' <<<"$a" ||
+    echo "its \`## Advice\` has no \`Recap: <night> <item>\` (the recap's night and its item's key)"
+  for k in Cause Change Gain; do
+    grep -qE "^$k:[[:space:]]*[^[:space:]]" <<<"$a" || echo "its \`## Advice\` has no \`$k: <text>\`"
+  done
+  # The numbers: what is left of an item without its links, references, dates and file names.
+  evidence "$1" | sed -E -e 's#https?://[^[:space:])>]+##g' -e 's#[A-Za-z0-9_.-]*(/[A-Za-z0-9_.-]+)+(\#[0-9]+)?##g' \
+      -e 's/#[0-9]+//g' -e 's/@[0-9a-f]{7,}//g' -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9:]+Z?)?//g' \
+      -e 's/[A-Za-z0-9_-]*\.(md|ya?ml|sh|json)//g' -e 's/(^|[^A-Za-z0-9])p[0-9]{2}([^0-9]|$)/\1\2/g' | grep -q '[0-9]' ||
+    echo "it is advice from the nightly recap with no numeric evidence: an item of its Evidence gives the numbers (from recap.json) that show the problem; no advice without numbers"
 }
 
 # Why a new suggestion may not go in beside the earlier ones (the files of
@@ -193,6 +223,7 @@ check() { # dir [base]
       elif git -C "$d" cat-file -e "$base:$p" 2>/dev/null; then
         [[ "$p" == "$DIR_S/INDEX.md" ]] || { err "$p: a filed suggestion or $DIR_S's own file is changed (only the hub records a decision, at Jody's request)"; bad=1; }
       elif [[ ! -e "$d/$p" ]]; then :
+      elif [[ "$p" =~ ^$DIR_S/recap/[0-9]{4}-[0-9]{2}-[0-9]{2}\.(md|json)$ ]]; then :
       elif [[ "$p" == "$DIR_S/"*/* || "$p" != *.md ]]; then err "$p: not a suggestion ($DIR_S/<YYYY-MM-DD>-<slug>.md)"; bad=1
       else added+=("${p#"$DIR_S/"}"); fi
     done < <( { git -C "$d" diff --name-only "$base" --; git -C "$d" ls-files --others --exclude-standard; } | sort -u)
@@ -251,6 +282,7 @@ write() { # dir (and the options, in the globals below)
   { printf 'Suggestion: %s\nType: %s\nSummary: %s\nWhy: %s\n\n## Evidence\n' "$O_NAME" "$O_TYPE" "$O_SUMMARY" "$O_WHY"
     for e in "${O_EVIDENCE[@]+"${O_EVIDENCE[@]}"}"; do printf -- '- %s\n' "$e"; done
     printf '\n## Cost\n%s\n\n## Touches\n%s\n\n## Reuse considered\n%s\n\n' "$O_COST" "$O_TOUCHES" "$O_REUSE"
+    if [[ -n "$O_RECAP" ]]; then printf '## Advice\nRecap: %s\nCause: %s\nChange: %s\nGain: %s\n\n' "$O_RECAP" "$O_CAUSE" "$O_CHANGE" "$O_GAIN"; fi
     if [[ -n "$O_EARLIER" ]]; then printf '## Raised again\nEarlier: %s\nWhat changed: %s\n\n' "${O_EARLIER##*/}" "$O_CHANGED"; fi
     printf '## Status\nopen\nRank: %s\nFiled: %s by %s\n' "$O_RANK" "$O_DATE" "$O_BY"
   } > "$p"
@@ -265,6 +297,7 @@ write() { # dir (and the options, in the globals below)
 file_cmd() {
   O_NAME=""; O_TYPE=""; O_SUMMARY=""; O_WHY=""; O_EVIDENCE=(); O_COST=""; O_TOUCHES=""; O_REUSE=""
   O_RANK=1; O_SLUG=""; O_DATE=""; O_BY="looper-suggest"; O_EARLIER=""; O_CHANGED=""
+  O_RECAP=""; O_CAUSE=""; O_CHANGE=""; O_GAIN=""
   local dir="" k
   while [[ $# -gt 0 ]]; do
     [[ $# -ge 2 ]] || die "$1 needs a value (see --help)"
@@ -273,6 +306,7 @@ file_cmd() {
       --why) O_WHY="$2" ;; --evidence) O_EVIDENCE+=("$2") ;; --cost) O_COST="$2" ;; --touches) O_TOUCHES="$2" ;;
       --reuse) O_REUSE="$2" ;; --rank) O_RANK="$2" ;; --slug) O_SLUG="$2" ;; --date) O_DATE="$2" ;; --by) O_BY="$2" ;;
       --earlier) O_EARLIER="$2" ;; --what-changed) O_CHANGED="$2" ;;
+      --recap) O_RECAP="$2" ;; --cause) O_CAUSE="$2" ;; --change) O_CHANGE="$2" ;; --gain) O_GAIN="$2" ;;
       *) die "unknown argument: $1 (see --help)" ;;
     esac
     shift 2
@@ -283,6 +317,8 @@ file_cmd() {
   (( ${#O_EVIDENCE[@]} )) || die "--evidence is required: nothing goes in without evidence"
   [[ "$O_RANK" =~ ^[0-9]+$ ]] || die "--rank $O_RANK is not a number"
   [[ -z "$O_EARLIER" || -n "$O_CHANGED" ]] || die "--earlier needs --what-changed"
+  [[ -z "$O_RECAP" || ( -n "$O_CAUSE" && -n "$O_CHANGE" && -n "$O_GAIN" ) ]] || die "--recap needs --cause, --change and --gain: advice says why, what to change and what it gains"
+  for k in "$O_RECAP" "$O_CAUSE" "$O_CHANGE" "$O_GAIN"; do [[ "$k" != *$'\n'* ]] || die "the advice's lines are one line each"; done
   for k in "$O_NAME" "$O_TYPE" "$O_SUMMARY" "$O_WHY"; do [[ "$k" != *$'\n'* ]] || die "the four fields are one line each"; done
   if [[ -n "$dir" ]]; then write "$dir"; return; fi
 

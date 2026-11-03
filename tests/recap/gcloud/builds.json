@@ -1,0 +1,24 @@
+[
+ {
+  "id": "b2",
+  "status": "SUCCESS",
+  "createTime": "2026-11-01T14:00:00.123Z",
+  "startTime": "2026-11-01T14:00:05Z",
+  "finishTime": "2026-11-01T14:21:05Z",
+  "images": [
+   "us-docker.pkg.dev/jody1-328023/fleet/gateway:1"
+  ],
+  "logUrl": "https://console.cloud.google.com/cloud-build/builds/b2"
+ },
+ {
+  "id": "b1",
+  "status": "FAILURE",
+  "createTime": "2026-11-01T13:00:00.123Z",
+  "startTime": "2026-11-01T13:00:05Z",
+  "finishTime": "2026-11-01T13:09:05Z",
+  "images": [
+   "us-docker.pkg.dev/jody1-328023/fleet/mailbox:1"
+  ],
+  "logUrl": "https://console.cloud.google.com/cloud-build/builds/b1"
+ }
+]

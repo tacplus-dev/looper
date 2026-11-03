@@ -1,0 +1,365 @@
+[
+ {
+  "id": 1310,
+  "name": "looper-tacplus-16",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-02T00:30:00.000Z",
+  "started_at": "2026-11-02T02:07:00.000Z",
+  "finished_at": "2026-11-02T02:50:00.000Z",
+  "pipeline": {
+   "id": 710
+  },
+  "runner": {
+   "id": 58307468,
+   "description": "tacplus-dev arm64 autoscale-16"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1310"
+ },
+ {
+  "id": 1600,
+  "name": "looper-plan",
+  "stage": "run",
+  "status": "canceled",
+  "created_at": "2026-11-01T23:00:00.000Z",
+  "started_at": null,
+  "finished_at": "2026-11-01T23:01:00.000Z",
+  "pipeline": {
+   "id": 901
+  },
+  "runner": null,
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1600"
+ },
+ {
+  "id": 1501,
+  "name": "looper-kick",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T23:15:30.000Z",
+  "started_at": "2026-11-01T23:16:00.000Z",
+  "finished_at": "2026-11-01T23:59:00.000Z",
+  "pipeline": {
+   "id": 900
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1501"
+ },
+ {
+  "id": 1500,
+  "name": "looper-kick",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T22:00:00.000Z",
+  "started_at": "2026-11-01T22:00:30.000Z",
+  "finished_at": "2026-11-01T23:15:30.000Z",
+  "pipeline": {
+   "id": 900
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1500",
+  "failure_reason": "job_execution_timeout"
+ },
+ {
+  "id": 1401,
+  "name": "looper-kernel-3",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T20:30:00.000Z",
+  "started_at": "2026-11-01T20:31:00.000Z",
+  "finished_at": "2026-11-01T21:30:00.000Z",
+  "pipeline": {
+   "id": 800
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1401"
+ },
+ {
+  "id": 1400,
+  "name": "looper-kernel-3",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T20:00:00.000Z",
+  "started_at": "2026-11-01T20:01:00.000Z",
+  "finished_at": "2026-11-01T20:30:00.000Z",
+  "pipeline": {
+   "id": 800
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1400",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 1300,
+  "name": "looper-scan-tacplus",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-02T00:00:00.000Z",
+  "started_at": "2026-11-02T00:01:00.000Z",
+  "finished_at": "2026-11-02T02:06:00.000Z",
+  "pipeline": {
+   "id": 700
+  },
+  "runner": {
+   "id": 58307468,
+   "description": "tacplus-dev arm64 autoscale-16"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1300"
+ },
+ {
+  "id": 1200,
+  "name": "looper-tacplus-12",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T05:00:00.000Z",
+  "started_at": "2026-11-01T05:20:00.000Z",
+  "finished_at": "2026-11-01T15:00:00.000Z",
+  "pipeline": {
+   "id": 600
+  },
+  "runner": {
+   "id": 58307468,
+   "description": "tacplus-dev arm64 autoscale-16"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1200"
+ },
+ {
+  "id": 1106,
+  "name": "looper-alpha-10",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T16:04:00.000Z",
+  "started_at": "2026-11-01T16:05:00.000Z",
+  "finished_at": "2026-11-01T16:40:00.000Z",
+  "pipeline": {
+   "id": 506
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1106"
+ },
+ {
+  "id": 1105,
+  "name": "looper-alpha-9",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T14:04:00.000Z",
+  "started_at": "2026-11-01T14:05:00.000Z",
+  "finished_at": "2026-11-01T14:40:00.000Z",
+  "pipeline": {
+   "id": 505
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1105"
+ },
+ {
+  "id": 1104,
+  "name": "looper-alpha-8",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T12:04:00.000Z",
+  "started_at": "2026-11-01T12:05:00.000Z",
+  "finished_at": "2026-11-01T12:40:00.000Z",
+  "pipeline": {
+   "id": 504
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1104"
+ },
+ {
+  "id": 1103,
+  "name": "looper-alpha-7",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T10:04:00.000Z",
+  "started_at": "2026-11-01T10:05:00.000Z",
+  "finished_at": "2026-11-01T10:40:00.000Z",
+  "pipeline": {
+   "id": 503
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1103"
+ },
+ {
+  "id": 1102,
+  "name": "looper-alpha-6",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T08:04:00.000Z",
+  "started_at": "2026-11-01T08:05:00.000Z",
+  "finished_at": "2026-11-01T08:40:00.000Z",
+  "pipeline": {
+   "id": 502
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1102"
+ },
+ {
+  "id": 1101,
+  "name": "looper-alpha-5",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T06:04:00.000Z",
+  "started_at": "2026-11-01T06:05:00.000Z",
+  "finished_at": "2026-11-01T06:40:00.000Z",
+  "pipeline": {
+   "id": 501
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1101"
+ },
+ {
+  "id": 1006,
+  "name": "looper-alpha-10",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T16:00:00.000Z",
+  "started_at": "2026-11-01T16:01:00.000Z",
+  "finished_at": "2026-11-01T16:04:00.000Z",
+  "pipeline": {
+   "id": 506
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1006",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 1005,
+  "name": "looper-alpha-9",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T14:00:00.000Z",
+  "started_at": "2026-11-01T14:01:00.000Z",
+  "finished_at": "2026-11-01T14:04:00.000Z",
+  "pipeline": {
+   "id": 505
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1005",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 1004,
+  "name": "looper-alpha-8",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T12:00:00.000Z",
+  "started_at": "2026-11-01T12:01:00.000Z",
+  "finished_at": "2026-11-01T12:04:00.000Z",
+  "pipeline": {
+   "id": 504
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1004",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 1003,
+  "name": "looper-alpha-7",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T10:00:00.000Z",
+  "started_at": "2026-11-01T10:01:00.000Z",
+  "finished_at": "2026-11-01T10:04:00.000Z",
+  "pipeline": {
+   "id": 503
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1003",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 1002,
+  "name": "looper-alpha-6",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T08:00:00.000Z",
+  "started_at": "2026-11-01T08:01:00.000Z",
+  "finished_at": "2026-11-01T08:04:00.000Z",
+  "pipeline": {
+   "id": 502
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1002",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 1001,
+  "name": "looper-alpha-5",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-11-01T06:00:00.000Z",
+  "started_at": "2026-11-01T06:01:00.000Z",
+  "finished_at": "2026-11-01T06:04:00.000Z",
+  "pipeline": {
+   "id": 501
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1001",
+  "failure_reason": "runner_system_failure"
+ },
+ {
+  "id": 900,
+  "name": "looper-alpha-1",
+  "stage": "run",
+  "status": "failed",
+  "created_at": "2026-10-30T01:00:00.000Z",
+  "started_at": "2026-10-30T01:01:00.000Z",
+  "finished_at": "2026-10-30T02:00:00.000Z",
+  "pipeline": {
+   "id": 400
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/900",
+  "failure_reason": "script_failure"
+ }
+]

@@ -777,7 +777,7 @@ land_wait() { # gates
   if [[ -e "$LANDS/$n.rc" ]]; then log "a land of $BRANCH ended unread; its result:"
   elif land_pending "$n"; then log "a land of $BRANCH is already queued; waiting for it"
   else
-    printf 'run=%s\ngates=%s\n' "${LOOPER_RUN:-}" "$gates" > "$LANDS/$n.req.new" && mv "$LANDS/$n.req.new" "$LANDS/$n.req"
+    printf 'run=%s\ngates=%s\nqueued=%s\n' "${LOOPER_RUN:-}" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LANDS/$n.req.new" && mv "$LANDS/$n.req.new" "$LANDS/$n.req"
     log "queued: the looper lands $BRANCH after the lands queued before it, one at a time; waiting for it. If your time runs out first, it still lands it after you and says so on the issue."
   fi
   until [[ -e "$LANDS/$n.rc" ]]; do
@@ -796,7 +796,7 @@ land_wait() { # gates
 # its child's worktree, until the parent says it is done (LANDS/.done: the
 # queue drained first) or must stop (LANDS/.stop: after the land under way).
 lander() {
-  local f n run gates rc
+  local f n run gates rc q
   while :; do
     [[ -e "$LANDS/.stop" ]] && return 0
     f="$(ls -tr "$LANDS"/*.req 2>/dev/null | head -n 1)" || true
@@ -804,13 +804,15 @@ lander() {
     n="$(basename "$f" .req)"
     mv "$f" "$LANDS/$n.running" 2>/dev/null || continue
     run="$(sed -n 's/^run=//p' "$LANDS/$n.running")"; gates="$(sed -n 's/^gates=//p' "$LANDS/$n.running")"
+    # Since when it waited behind the other lands, for the nightly recap (looper#57).
+    q="$(sed -n 's/^queued=//p' "$LANDS/$n.running")"; q="${q:+, queued since $q}"
     rc=0
     land_set "$(child_dir "$n")"
     if ! land_fits "$GATES_SET"; then
-      log "#$n: deferred to the next job: the job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")")"
+      log "#$n: deferred to the next job: the job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")")$q"
       land_defer "$n" "$run" "$GATES_SET" > "$LANDS/$n.out" 2> "$LANDS/$n.err"; rc=$LAND_DEFERRED
     else
-      log "landing #$n ($(wip_branch "$n"))"
+      log "landing #$n ($(wip_branch "$n")$q)"
       ( CHECKOUT="$(child_dir "$n")"; BRANCH="$(wip_branch "$n")"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$run"; land_work ) \
         > "$LANDS/$n.out" 2> "$LANDS/$n.err" || rc=$?
       if (( rc == 0 )); then log "#$n: $(tail -n 1 "$LANDS/$n.out" | cut -c24-)"; else log "#$n: nothing landed (exit $rc)"; fi
@@ -2102,6 +2104,10 @@ IT
 # Jody reviews them daily through the hub. README: Suggestions.
 SUGGEST="$(dirname "$LOOPER_SELF")/looper-suggest"
 SUGGEST_MAX="${LOOPER_SUGGEST_MAX:-5}"
+# The nightly recap (looper#57; README: Nightly recap), gathered and classified
+# by looper-recap before the model runs, its advice written by the model as
+# suggestions, its files committed with them in suggestions/recap/.
+RECAP="$(dirname "$LOOPER_SELF")/looper-recap"
 
 # What the model cannot read itself, into the run's context/ (it holds no
 # GitLab credential, looper#25): the failed jobs of the last week of the looper
@@ -2132,6 +2138,48 @@ suggest_context() { # run-dir
   done
 }
 
+# The night's recap into the run's context/: recap.json (looper-recap collect,
+# the 24 hours to now) and recap-classes.json (against the nights before it in
+# the roadmap's suggestions/recap/). Prints what it gathered, as context lines.
+recap_context() { # run-dir
+  local ctx="$1/context"
+  mkdir -p "$ctx"
+  if ! "$RECAP" collect --out "$ctx/recap.json" 2> "$ctx/recap.err"; then
+    rm -f "$ctx/recap.json"; log "scan: the recap could not be gathered: $(tail -n 1 "$ctx/recap.err")" >&2; return 0
+  fi
+  if ! "$RECAP" classify "$ctx/recap.json" --history "$CHECKOUT/suggestions/recap" > "$ctx/recap-classes.json" 2>> "$ctx/recap.err"; then
+    rm -f "$ctx/recap.json" "$ctx/recap-classes.json"; log "scan: the recap could not be classified: $(tail -n 1 "$ctx/recap.err")" >&2; return 0
+  fi
+  echo "- the nightly recap of $(jq -r .night "$ctx/recap.json"), the last 24 hours' performance data: $ctx/recap.json; its items classified against the 7 nights: $ctx/recap-classes.json ($(jq -r '"\(.recurring | length) recurring, \(.transient | length) transient, \(.once | length) once"' "$ctx/recap-classes.json"))"
+}
+
+# The prompt's part on the recap's advice, when there is a recap.
+recap_prompt() { # run-dir
+  local ctx="$1/context" night
+  [[ -f "$ctx/recap-classes.json" ]] || return 0
+  night="$(jq -r .night "$ctx/recap.json")"
+  cat <<PR
+The nightly recap (tacplus-dev/looper#57; Jody: "I am looking for actionable advice"; "I just want stuff to go faster
+and my gut instinct is much of this can be done in parallel"): $ctx/recap.json is the night's data, gathered by the
+looper with no model: every job's queue, prepare and run times and failure class, each repository's slot use, the
+hours each ready issue waited and why (no free slot, a conflict and what overlaps, the job's time left, queued behind
+a land, a scan holding the repository), the lands by gate set, the scans, the runner pools, the Actions workflows, the
+Cloud Build builds and the looper image against main. $ctx/recap-classes.json classifies its items: \`transient\` and
+\`once\` are only noted (no advice); each \`recurring\` item (seen on 2 of 7 nights, or over a threshold tonight),
+ranked by \`wait_hours\`, the hours of waiting it would remove, gets advice: a Performance, Operability or Cost
+suggestion, written with the options above plus
+    --recap "$night <the item's key>" --cause <its cause> --change <the concrete change: which file, setting or issue> \\
+    --gain <the expected gain, in hours or failures a night>
+its \`--cost\` the cost, and an \`--evidence\` with the numbers from recap.json (no advice without numbers). Say where
+work that was serialized could have run in parallel and what would make it safe (the item's \`parallel\`: file-level
+conflicts instead of areas, a fresh job instead of idling, parallel lands of disjoint diffs). Advice counts toward
+the night's $SUGGEST_MAX, ranked with the rest, Security first, then the hours of waiting removed. When an open
+issue already covers a cause, file nothing for it: write the line \`<the item's key> <owner/repo#n> <why it covers
+it>\` to $1/covered instead. The looper writes the recap file itself (suggestions/recap/$night.md, for Jody's daily
+report): do not write it.
+PR
+}
+
 suggest_prompt() { # run-dir context
   local types; types="$(sed -n 's/^|[[:space:]]*\*\*\([^*]*\)\*\*.*/\1/p' "$CHECKOUT/suggestions/TYPES.md" 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
   cat <<PR
@@ -2160,6 +2208,7 @@ linked piece of evidence, one already open or accepted, and one rejected or defe
 only with new evidence, citing it: \`--earlier <its file> --what-changed <what is new since Jody's decision>\` and an
 \`--evidence\` it did not have. Never suggest what a ROADMAP.md (this one or a repository's) or an open issue already
 holds. Pick the type for the suggestion's main benefit; Security matters most in the review.
+$(recap_prompt "$1")
 Change nothing else: no other file, no commit, no push, no issue, no comment, no label. The looper checks your
 suggestions and commits them to main as one commit (suggestions/ only), the best ranked first, at most $SUGGEST_MAX.
 $(provenance_rule)
@@ -2201,6 +2250,25 @@ suggest_apply() { # run-dir file...
     fi
   done
   (( n > 0 )) || git checkout -q -- suggestions/INDEX.md 2>/dev/null || true
+  recap_files "$run"
+}
+
+# The night's recap files, beside its suggestions (looper#57): its data,
+# suggestions/recap/<night>.json (the history the next nights classify
+# against), and suggestions/recap/<night>.md for Jody's daily report, linking
+# the advice just filed and the issues the model said cover an item. A night
+# already recorded is left as it is.
+recap_files() { # run-dir
+  local ctx="$1/context" night
+  [[ -f "$ctx/recap-classes.json" ]] || return 0
+  night="$(jq -r .night "$ctx/recap.json")"
+  if [[ -e "suggestions/recap/$night.md" || -e "suggestions/recap/$night.json" ]]; then
+    echo "suggestions/recap/$night.md: on main already" >> "$1/dropped"; return 0
+  fi
+  mkdir -p suggestions/recap
+  cp "$ctx/recap.json" "suggestions/recap/$night.json"
+  "$RECAP" report "$ctx/recap.json" "$ctx/recap-classes.json" --suggestions suggestions --covered "$1/covered" > "suggestions/recap/$night.md"
+  echo "recap/$night.md" >> "$1/filed"
 }
 
 # A suggestion's template, suggestions/TEMPLATE.md, where it is missing.
@@ -2215,13 +2283,14 @@ suggest_scan() { # run-dir
     land "suggestions/TEMPLATE.md: a suggestion's template (looper-suggest template, looper#50)" suggest_template
     sync_checkout
   fi
-  ctx="$(suggest_context "$run")"
+  ctx="$( { suggest_context "$run"; recap_context "$run"; } )"
   suggest_prompt "$run" "$ctx" > "$run/prompt.md"
   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
   mapfile -t new < <(suggest_new)
-  if (( ${#new[@]} == 0 )); then log "scan: no new suggestion tonight"
+  if (( ${#new[@]} == 0 )) && [[ ! -f "$run/context/recap-classes.json" ]]; then log "scan: no new suggestion tonight"
   else
-    land "Suggestions of $(date -u +%F) (the roadmap scan, looper#50)" suggest_apply "$run" "${new[@]}"
+    (( ${#new[@]} )) || log "scan: no new suggestion tonight; the recap only"
+    land "Suggestions of $(date -u +%F) (the roadmap scan, looper#50; the nightly recap, looper#57)" suggest_apply "$run" "${new[@]+"${new[@]}"}"
     [[ ! -s "$run/dropped" ]] || { log "scan: suggestions dropped:"; sed 's/^/  /' "$run/dropped"; }
     [[ ! -s "$run/filed" ]] || log "scan: suggestions filed: $(paste -sd' ' "$run/filed")"
   fi
@@ -2621,6 +2690,12 @@ Plan record: $(run_record "$plan_dir")." >/dev/null || true
   wait "$lander_pid" || true
 }
 
+# The disk a job leaves, for the nightly recap's runner pools (looper#57).
+disk_log() {
+  local u; u="$(df -Ph "${CI_BUILDS_DIR:-$WORK}" 2>/dev/null | awk 'NR == 2 { print $5 " used of " $2 " (" $6 ")" }')" || u=""
+  [[ -z "$u" ]] || log "disk at the end: $u"
+}
+
 case "$MODE" in
   # From a child of a parent, the parent lands it (looper#34).
   land) if [[ -n "${LOOPER_LANDER:-}" && -d "$LOOPER_LANDER" && "$CHECKOUT" != "$MAIN_CHECKOUT" ]]; then land_request; else land_work; fi ;;
@@ -2631,7 +2706,7 @@ case "$MODE" in
     [[ -n "${LOOPER_RUN:-}" ]] && printf '%s\n' "$STEP" > "$LOOPER_RUN/step"
     # A think job pushes nothing: its commit job keeps the work on the branch.
     [[ -n "${LOOPER_THINK:-}" ]] || checkpoint "$ISSUE" "a step" "${LOOPER_RUN:-}" ;;
-  scan) scan ;;
+  scan) trap disk_log EXIT; scan ;;
   think) think_issue "$ISSUE" ;;
   one)
     forge_issue_view "$REPO" "$ISSUE" labels '.labels[].name' | grep -qx "$LABEL_APPROVED" \
@@ -2639,8 +2714,8 @@ case "$MODE" in
     # A job planned for an issue another run took or finished meanwhile takes
     # the next ready issue at run time instead (looper#16; priority first, #31);
     # either way the parent goes on with the others it can plan (looper#32).
-    parent "$ISSUE" ;;
+    trap disk_log EXIT; parent "$ISSUE" ;;
   # One pass over each issue per run: an issue the parent started is never
   # taken again, even if a label write failed.
-  drain) parent ;;
+  drain) trap disk_log EXIT; parent ;;
 esac

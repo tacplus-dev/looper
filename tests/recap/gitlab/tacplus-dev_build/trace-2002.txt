@@ -1,0 +1,2 @@
+[0Ksection_start:1793530920:prepare_script[0KRunning on runner-vm-2002 via gitlab-runner-mgr...
+[2026-11-01T11:31:00Z] verdict: FAIL: the gates failed (exit 1)

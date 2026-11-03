@@ -1,0 +1,17 @@
+[0Ksection_start:1793510400:prepare_executor
+[0KPreparing
+[0Ksection_start:1793510520:prepare_script
+[0KRunning on runner-vm-1200 via gitlab-runner-mgr...
+[2026-11-01T05:23:00Z] pushed to main: Planning files from the template (looper)
+plan: plan for tacplus: capacity 1 (16 CPUs at 2 a child, 63 GB at 12 GB a child (Kani gates), ceiling 6); running: none
+plan: #12 starts
+plan: #14 waits: no free slot (capacity 1: 16 CPUs at 2 a child, 63 GB at 12 GB a child (Kani gates), ceiling 6)
+plan: #15 waits: the plan: both edit src/codec.rs and its tests (#12, running)
+[#12] [2026-11-01T09:00:00Z] the model works
+[lander] [2026-11-01T10:00:00Z] landing #12 (looper/tacplus-12, queued since 2026-11-01T09:30:00Z)
+[lander] [2026-11-01T12:30:00Z] #12: landed on main: abc1234..def5678, on the gates full (a path no set names: src/x.rs)
+[2026-11-01T12:35:00Z] #12: closed; still running: none
+plan: plan for tacplus: capacity 1 (16 CPUs at 2 a child, 63 GB at 12 GB a child (Kani gates), ceiling 6); running: none
+plan: #15 starts
+plan: #14 waits: its limit (4h) would outlast this job
+[2026-11-01T15:00:00Z] disk at the end: 72% used of 100G (/builds)

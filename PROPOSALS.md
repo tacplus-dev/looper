@@ -15,9 +15,17 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The image workflow runs the full gate set from gates.yaml** (2026-11-03, #58): `.github/workflows/image.yml`'s
   Test step lists the tests by hand and has drifted from gates.yaml's `full` (no `looper-suggest`, `looper-trace`
   nor `image-failed` tests). Reading `full.run` from gates.yaml there would keep the image's tests the land's.
-- **Report the image's revision against main's head** (2026-11-03, #58): the nightly recap (#57) should say whether
-  `ghcr.io/tacplus-dev/looper:main`'s `org.opencontainers.image.revision` is main's head, so a stale image is seen
-  even when no run failed (cancelled runs open no issue); asked on #57.
+- **The recap's job logs without fetching them all** (2026-11-03, #57): `looper-recap collect` reads every finished
+  job's log of the night (`/jobs/:id/trace`) for its prepare time, VM, plans, holds and lands: a few hundred requests
+  a night today. The plan records (`looper-runs/*-plan/plan.md`, job artifacts) and a per-job summary line the
+  parent logs at its end would let it read the looper jobs' logs only, and the others' first lines.
+- **Waits the recap cannot see yet** (2026-11-03, #57): an issue ready while no looper job of its repository runs
+  (waiting for the kicker's next pass or GitLab's queue) shows only as its job's queue time, and the image's
+  staleness (#58) as hours behind main, not per issue. The kicker could log when it first saw each issue ready, so
+  the recap counts every hour from ready to started.
+- **The recap's thresholds from the history** (2026-11-03, #57): the thresholds are fixed (environment
+  `LOOPER_RECAP_*`); once a few weeks of `suggestions/recap/*.json` exist, a p90 against the 7 nights' own p90
+  would flag a regression the fixed numbers miss.
 - **A suggestion's sameness beyond its name** (2026-11-01, #50): `looper-suggest` refuses a rejected or deferred
   suggestion raised again by its slug or its name; one reworded under another name passes the check, and only the
   prompt (read every rejected one first) guards it. The doppelganger panel's pre-screen (doppelganger#10), or a
@@ -343,6 +351,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   them as bugs once this lands; nothing was filed by hand.
 
 ## Promoted / declined
+- **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap
+  compares `ghcr.io/tacplus-dev/looper:main`'s `org.opencontainers.image.revision` with main's head.
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`
   boolean input (default false) and a workflow rule for a web run on `main` with it set, whose pipeline holds only a
   manual `macos-smoke` job (tag `macos`, the Tart image `macos-tahoe-xcode:27.1`, no credentials) checking arm64,

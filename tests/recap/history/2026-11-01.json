@@ -1,0 +1,19 @@
+{
+ "night": "2026-11-01",
+ "items": [
+  {
+   "key": "failures/tacplus-dev/looper/runner_system_failure",
+   "count": 1,
+   "over": false,
+   "recovered": true,
+   "summary": "x"
+  },
+  {
+   "key": "failures/tacplus-dev/looper/image_pull",
+   "count": 1,
+   "over": false,
+   "recovered": true,
+   "summary": "x"
+  }
+ ]
+}
