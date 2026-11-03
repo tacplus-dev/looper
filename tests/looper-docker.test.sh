@@ -142,6 +142,9 @@ brefused "outside this child's own directories" run -v "$TMP/wt/escape:/x" img
 brefused "outside this child's own directories" run -v "$TMP/wt/../elsewhere:/x" img
 brefused "outside this child's own directories" run -it -v/var/run/docker.sock:/s img
 brefused "outside this child's own directories" run --mount type=bind,source=/etc,target=/e img
+brefused "outside this child's own directories" run --mount Type=Bind,SRC=/etc,dst=/e img
+brefused "a quoted field" run --mount 'type=bind,"src=/etc",dst=/e' img
+brefused "a named volume" run --mount TYPE=volume,Source=cache,dst=/c img
 brefused "outside this child's own directories" create --volume=/root:/r img
 brefused "a named volume" run -v cache:/c img
 brefused "outside this child's own directories" run --env-file /etc/shadow img
@@ -181,6 +184,7 @@ bargv "exec -it mine sh -c ps" exec -it mine sh -c ps
 bargv "cp mine:/out $TMP/wt/out" cp mine:/out "$TMP/wt/out"
 bargv "inspect mine alpine" inspect mine alpine
 bargv "ps --filter label=io.tacplus.looper.owner=m1 -a" ps -a
+bargv "container ls --filter label=io.tacplus.looper.owner=m1" container ls
 brefused "not this child's container" kill theirs
 brefused "not this child's container" rm -f mine theirs
 brefused "not this child's container" exec theirs sh

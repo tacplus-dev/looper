@@ -121,10 +121,16 @@ volume() { # -v value
     *) refuse "-v $1: a named volume is shared with every run on this runner; mount a directory of your worktree instead (looper#68)" ;;
   esac
 }
-mount_opt() { # --mount value
+mount_opt() { # --mount value: its keys and type in any case, as docker reads them
   local type=volume src="" kv k
+  [[ "$1" != *[\"\']* ]] || refuse "--mount $1: a quoted field is not for a looper's model (looper#68)"
   IFS=, read -ra kv <<< "$1"
-  for k in "${kv[@]}"; do case "$k" in type=*) type="${k#type=}" ;; source=*|src=*) src="${k#*=}" ;; esac; done
+  for k in "${kv[@]}"; do
+    case "${k%%=*}" in
+      [Tt][Yy][Pp][Ee]) type="${k#*=}"; type="${type,,}" ;;
+      [Ss][Oo][Uu][Rr][Cc][Ee]|[Ss][Rr][Cc]) src="${k#*=}" ;;
+    esac
+  done
   case "$type" in
     bind) host_path --mount "${src:-.}" ;;
     volume) [[ -z "$src" ]] || refuse "--mount $1: a named volume is shared with every run on this runner (looper#68)" ;;
@@ -219,7 +225,7 @@ if [[ -n "$brokered" ]]; then
         if "$real" container inspect -- "$p" >/dev/null 2>&1; then own "$p"; fi
       done
       exec "$real" "$@" ;;
-    ps) exec "$real" "${args[@]:0:at}" --filter "label=$LABEL=$owner" "${rest[@]+"${rest[@]}"}" ;;
+    ps|ls|list) exec "$real" "${args[@]:0:at}" --filter "label=$LABEL=$owner" "${rest[@]+"${rest[@]}"}" ;;
     images|pull|history|tag|search|version|info|"image ls"|"image list"|"image inspect"|"image pull"|"image history"|"image tag")
       exec "$real" "$@" ;;
     build)
