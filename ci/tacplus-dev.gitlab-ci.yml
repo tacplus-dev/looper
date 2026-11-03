@@ -4,7 +4,10 @@
 # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub
 # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper:main); this project only runs them, on the
 # autoscaled runner registered to the tacplus-dev group. `looper-plan` lists the ready issues across
-# tacplus-dev and writes a child pipeline with one job per repository; `looper-run` triggers it.
+# tacplus-dev and writes a child pipeline with one job per repository (`looper-dispatch plan`, the
+# code github.com/tacplus-dev/looper tests: looper#56); `looper-run` triggers it.
+# This file is kept in github.com/tacplus-dev/looper as ci/tacplus-dev.gitlab-ci.yml and copied into
+# this project as is, on its protected main, by the hub (README, Credentials).
 # `looper-port` is the hourly port scan, `looper-kick` the kicker. Moved here from seabeam/tools/looper on 2026-10-27 (Jody: tacplus-dev
 # must work by itself).
 stages:
@@ -61,65 +64,20 @@ looper-plan:
     when: [runner_system_failure, scheduler_failure, unknown_failure]
   needs: []
   <<: *looper-rules
+  # The plan's settings, reviewed with this file (looper#56): looper-dispatch
+  # plan reads them, and gives the child's jobs the git identity.
   variables:
     GIT_STRATEGY: none
     LOOPER_ORG: tacplus-dev
     # Per-repository runner tags (looper#55): tacplus on the 16-CPU pool (runner 58307468).
     LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"
+    GIT_AUTHOR_NAME: jodydadescott
+    GIT_AUTHOR_EMAIL: jody@thescottsweb.com
+    GIT_COMMITTER_NAME: jodydadescott
+    GIT_COMMITTER_EMAIL: jody@thescottsweb.com
   script:
-    - |
-      set -eux
-      out=looper-jobs.yml
-      cat > "$out" <<HEAD
-      variables:
-        GIT_STRATEGY: none
-        LOOPER_WORK: /builds/looper
-        GIT_AUTHOR_NAME: jodydadescott
-        GIT_AUTHOR_EMAIL: jody@thescottsweb.com
-        GIT_COMMITTER_NAME: jodydadescott
-        GIT_COMMITTER_EMAIL: jody@thescottsweb.com
-      HEAD
-      job() { # name, repo-looper args
-        name="$1"; shift
-        tv="LOOPER_JOB_TAGS_${repo//-/_}"; tags="${!tv:-arm64, autoscale}"
-        cat >> "$out" <<JOB
-      $name:
-        image: ghcr.io/tacplus-dev/looper:main
-        tags: [$tags]
-        retry:
-          max: 2
-          when: [runner_system_failure, scheduler_failure, unknown_failure]
-        resource_group: looper-$repo
-        timeout: $timeout
-        variables:
-          LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs
-        script:
-          - repo-looper $*
-        artifacts:
-          when: always
-          expire_in: 30 days
-          paths: [looper-runs/]
-      JOB
-      }
-      n=0; timeout=5h
-      if [ "$CI_PIPELINE_SOURCE" = schedule ]; then
-        for repo in $(gh repo list "$LOOPER_ORG" --no-archived --limit 200 --json name --jq '.[].name'); do
-          job "looper-scan-$repo" --repo "$repo" --scan; n=$((n+1))
-        done
-      else
-        for repo in $(gh search issues --owner "$LOOPER_ORG" --state open --label approved --limit 200 \
-                        --json repository --jq '.[].repository.name' | sort -u); do
-          issue="$(repo-looper --repo "$repo" --list)"; issue="${issue%%[!0-9]*}"
-          [ -n "$issue" ] || continue
-          timeout="$(repo-looper --repo "$repo" --job-timeout "$issue")" || timeout=5h
-          case "$timeout" in [0-9]h|[0-9][0-9]h) ;; *) timeout=5h ;; esac
-          job "looper-$repo-$issue" --repo "$repo" --issue "$issue"; n=$((n+1))
-        done
-      fi
-      if [ "$n" = 0 ]; then
-        printf 'looper-nothing-waiting:\n  image: alpine:3.20\n  tags: [arm64, autoscale]\n  script:\n    - echo "no issue is waiting on the looper"\n' >> "$out"
-      fi
-      echo "planned $n job(s)"; cat "$out"
+    - looper-dispatch plan > looper-jobs.yml
+    - cat looper-jobs.yml
   artifacts:
     paths: [looper-jobs.yml]
     expire_in: 1 week

@@ -53,6 +53,7 @@ case "$cmd" in
   "search issues") jq -s --arg l "$label" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})' "$FIX"/issues/*.json | jq -r "$q" ;;
   "issue list") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")))' "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
   "issue view") jq -r "$q" "$f" ;;
+  "repo list") jq -R '{name: .}' "$FIX/repos" | jq -s . | jq -r "$q" ;;   # $FIX/repos: the org's, one a line
   "issue edit") t="$(jq --arg l "$rm" '.labels |= map(select(.name != $l))' "$f")"; printf '%s\n' "$t" > "$f" ;;
   "issue comment") printf '%s#%s %s\n' "$repo" "$n" "$body" >> "$FIX/comments" ;;
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
@@ -93,7 +94,7 @@ scenario() { # name: alpha has a ready issue #4
 }
 jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
 run_dispatch() {
-  OUT="$(env -u CI_API_V4_URL -u LOOPER_TRIGGER_TOKEN ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
+  OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u LOOPER_TRIGGER_TOKEN ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
     "$ROOT/looper-dispatch" "$@" 2>&1)"
 }
 dispatch() { run_dispatch "$@" || { echo "$OUT"; fail "looper-dispatch exited non-zero"; }; }
@@ -325,7 +326,7 @@ scenario plan-tags
 issue tacplus 5 OPEN "Go." approved
 issue fleet-lab 6 OPEN "Go." approved
 tags_of() { awk -v j="looper-$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  tags:/ {sub(/^  tags: /, ""); print}' <<<"$PLAN"; }
-plan_with() { PLAN="$(env "$@" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+plan_with() { PLAN="$(env -u CI_PIPELINE_SOURCE "$@" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
   "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed"; }
 plan_with -u LOOPER_JOB_TAGS LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16"
 [[ "$(tags_of tacplus-5)" == "[arm64, autoscale-16]" ]] || fail "tacplus: $(tags_of tacplus-5): $PLAN"
@@ -335,6 +336,73 @@ plan_with LOOPER_JOB_TAGS="arm64, other" LOOPER_JOB_TAGS_fleet_lab="arm64, lab"
 [[ "$(tags_of fleet-lab-6)" == "[arm64, lab]" ]] || fail "fleet-lab's override: $(tags_of fleet-lab-6)"
 [[ "$(tags_of tacplus-5)" == "[arm64, other]" ]] || fail "tacplus without its override: $(tags_of tacplus-5)"
 [[ "$(tags_of alpha-4)" == "[arm64, other]" ]] || fail "alpha: $(tags_of alpha-4)"
+pass
+
+# tacplus-dev's pipeline (looper#56): ci/tacplus-dev.gitlab-ci.yml's
+# looper-plan runs `looper-dispatch plan` with its job's variables, and plans
+# what the hub's inline script (tests/tacplus-dev-plan.inline.sh) planned for
+# the same org: on a schedule a scan job per repository, otherwise a job per
+# repository with a ready issue, each with its timeout, tags, resource_group,
+# retry, artifacts, LOOPER_WORK and the git identity. The fixture's ready
+# issues are in the same order both ways (oldest first is alphabetical here;
+# the plan puts priority:high first, looper#31).
+scenario tacplus-dev-plan
+issue beta 2 OPEN $'Blocked.\nBlocked-by: #3' approved
+issue beta 3 OPEN "Not approved."
+issue gamma 1 OPEN "Held." approved looper:in-progress
+issue fleet-lab 8 OPEN "Go." approved
+issue tacplus 9 OPEN $'Go.\nTimeout: 7h' approved
+printf '%s\n' alpha beta fleet-lab gamma tacplus > "$FIX/repos"
+cat > "$TMP/bin/repo-looper" <<EOF
+#!/usr/bin/env bash
+exec "$ROOT/repo-looper" "\$@"
+EOF
+chmod +x "$TMP/bin/repo-looper"
+# looper-plan's variables in the pipeline file, as KEY=value.
+mapfile -t plan_vars < <(awk '/^looper-plan:/ {j=1; next} /^[^ #]/ {j=0} j && /^  [a-z]/ {v=0} j && /^  variables:/ {v=1; next}
+  j && v && /^    [A-Za-z_]+: / {k=$1; sub(/:$/, "", k); sub(/^    [A-Za-z_]+: /, ""); gsub(/^"|"$/, ""); print k "=" $0}' "$ROOT/ci/tacplus-dev.gitlab-ci.yml")
+printf '%s\n' "${plan_vars[@]}" | grep -qx 'LOOPER_JOB_TAGS_tacplus=arm64, autoscale-16' || fail "looper-plan's variables: ${plan_vars[*]}"
+grep -qx '    - looper-dispatch plan > looper-jobs.yml' "$ROOT/ci/tacplus-dev.gitlab-ci.yml" || fail "looper-plan does not run looper-dispatch plan"
+CLEAN=(-u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_ID -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_JOB_TAGS -u LOOPER_JOB_IMAGE
+       -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL)
+for source in schedule api; do
+  mkdir -p "$FIX/inline-$source"
+  (cd "$FIX/inline-$source" && env "${CLEAN[@]}" LOOPER_ORG=tacplus-dev LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" CI_PIPELINE_SOURCE="$source" \
+     LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" bash "$ROOT/tests/tacplus-dev-plan.inline.sh" >/dev/null 2>&1) \
+    || fail "the inline plan failed ($source)"
+  got="$(env "${CLEAN[@]}" "${plan_vars[@]}" CI_PIPELINE_SOURCE="$source" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" \
+           HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed ($source)"
+  diff -u "$FIX/inline-$source/looper-jobs.yml" <(printf '%s\n' "$got") >&2 || fail "the plan ($source) is not the inline one's"
+done
+[[ "$(grep -c '^looper-scan-' "$FIX/inline-schedule/looper-jobs.yml")" == 5 ]] || fail "scheduled: $(cat "$FIX/inline-schedule/looper-jobs.yml")"
+[[ "$(grep -E '^looper-' "$FIX/inline-api/looper-jobs.yml" | paste -sd' ')" == "looper-alpha-4: looper-fleet-lab-8: looper-tacplus-9:" ]] \
+  || fail "kicked: $(cat "$FIX/inline-api/looper-jobs.yml")"
+grep -qx '  tags: \[arm64, autoscale-16\]' <<<"$got" || fail "tacplus's tags: $got"
+pass
+
+# The plan when GitLab's jobs cannot be read: every repository with a ready
+# issue, as before looper#16, not none.
+scenario plan-gitlab-down
+rm "$FIX/jobs.json"
+PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"
+grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "alpha not planned: $PLAN"
+grep -q 'could not read' "$FIX/err" || fail "log: $(cat "$FIX/err")"
+pass
+
+# Without a git identity in its environment (SeaBeam's instance: project CI
+# variables, the child's too), the plan sets none; with no repository the
+# schedule plans the one job that says so.
+scenario plan-no-identity
+: > "$FIX/repos"
+PLAN="$(env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL CI_PIPELINE_SOURCE=schedule \
+  LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)" \
+  || fail "plan failed"
+! grep -qE 'GIT_(AUTHOR|COMMITTER)' <<<"$PLAN" || fail "an identity: $PLAN"
+[[ "$(grep -c '^[a-z]' <<<"$PLAN")" == 2 ]] && grep -qx 'looper-none:' <<<"$PLAN" || fail "no repository: $PLAN"
+rm "$FIX/repos"
+! env CI_PIPELINE_SOURCE=schedule LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan >/dev/null 2>&1 || fail "planned a schedule with the org's repositories unread"
 pass
 
 # Nothing runs on the Mac any more: there is no launchd install.

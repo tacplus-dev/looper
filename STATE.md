@@ -96,15 +96,17 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by lo
   `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
   credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, a reference to another org held and
-  never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, #55), and
-  `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
+  never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, #55) and the plan's git identity, on a schedule a scan per repository (#56),
+  `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43)
-- **Known gaps:** tacplus's jobs run on the 16-CPU pool, five children a job (#55), but through the hub's inline
-  `looper-plan` in gitlab.com/tacplus-dev/looper's pipeline file, not `looper-dispatch plan` (#56); until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
+- **Known gaps:** gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
+  `looper-plan` runs `looper-dispatch plan` (#56, tested against the hub's former inline plan), but it takes effect
+  when the hub copies it there; until then that pipeline plans with its inline script (tacplus's jobs on the 16-CPU
+  pool, #55, through its own `LOOPER_JOB_TAGS_tacplus`); until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
   account and WIF binding, the first image, the templates, `instance_ready_command`), a fresh worker installs and
   restarts Docker at boot under its first job, which fails in preparation and is retried; the bake's IAM role and
   `runner-image build` have not run against GCP (no looper may change IAM or create VMs), and #43's acceptance (twenty
@@ -119,8 +121,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by lo
   bots, variables, schedules and runner) is not set up: parked by Jody until tacplus.dev's functional suite is green
   (fleet-seatrials#17), so no SeaBeam issue has been worked end to end on the real GitLab yet, and on GitLab a
   Reporter may set `approved`, and a SeaBeam repository that runs tacplus needs GitHub access it does not have
-  (PROPOSALS.md); the GitLab plan (`looper-plan` in gitlab.com/tacplus-dev/looper) still plans
-  repositories in name order until the hub makes it iterate `looper-dispatch ready` (#31, PROPOSALS.md); parallel
+  (PROPOSALS.md); the GitLab plan plans repositories in name order, not priority:high first (#31),
+  until the hub copies `ci/tacplus-dev.gitlab-ci.yml` (#56); parallel
   children (#32) are tested against a stub repository but not yet seen end to end on a real repository (they run
   once the image from main is published and a repository has two independent ready issues); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies

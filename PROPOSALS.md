@@ -50,12 +50,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   private tacplus-dev/registry with `GH_TOKEN` (#11, #27). A SeaBeam repository that builds with tacplus needs either a
   read-only token of tacplus-dev's (a coupling Jody decides) or the releases and registry mirrored to SeaBeam's GitLab.
   Until then, SeaBeam repositories that run tacplus are not ready for the instance.
-- **One pipeline file for both instances** (2026-11-01, #29): `ci/instance.gitlab-ci.yml` and `looper-dispatch plan`
-  put SeaBeam's plan under this repository's tests. tacplus-dev's pipeline (gitlab.com/tacplus-dev/looper's
-  `.gitlab-ci.yml`, outside this repository) still plans with its own `gh search issues` script (see "The plan's
-  script in this repository" and "The plan in priority order" below). Moving it onto the same file, with its
-  nightly scan's repositories and the port scan as extra jobs, would retire both proposals and keep the two
-  instances on one plan.
+- **One pipeline file for both instances** (2026-11-01, #29; 2026-11-03, #56): both pipelines now plan with
+  `looper-dispatch plan`, but from two files: `ci/tacplus-dev.gitlab-ci.yml` (with the port scan, and its nightly
+  scan planned as a job per repository) and `ci/instance.gitlab-ci.yml` (its nightly scan one job over
+  `LOOPER_SCAN_REPOS`). The instance's scan could be the plan's too (a `LOOPER_SCAN_REPOS` filter on `forge_repos`),
+  and the two files one, with the port scan's job ruled by a variable. Neither file is linted by a test yet ("Check
+  the CI files' rules in a test" below).
 - **Fewer GitLab requests for the blockers' states** (2026-11-01, #29): on GitLab `forge_issue_states` asks once per
   distinct blocker (REST), where GitHub's is one GraphQL query. gitlab.com allows 2000 authenticated requests a
   minute, far above a pass's, but one aliased GraphQL query (`project(fullPath:) { issue(iid:) { state } }`) would
@@ -125,17 +125,6 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The scan's label guard by issue number** (2026-10-27, #14): after the nightly scan, issues numbered after the
   newest one before it are taken for the scan's; one a person opens during the scan would get `bug` or lose
   `approved` too. Filing through a wrapper that records what the scan filed would make it exact.
-- **The plan's script in this repository** (2026-10-27, #16): `looper-plan` is a script in
-  gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`, outside this repository and its tests; #16's busy check lives in
-  `repo-looper --list` so it ships with the image. A `repo-looper --plan` that writes `looper-jobs.yml` would put the
-  whole plan under test here and leave the GitLab file one line. Its comment also still says the Mac starts the
-  pipeline "when no looper pipeline is running", where it is now per repository.
-- **The plan in priority order** (2026-10-30, #31): `looper-plan` (gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`)
-  writes one job per repository in the order of `gh search issues ... | sort -u`, by name, so when runners are short
-  GitLab starts them in that order whatever their priority. Its loop over
-  `$(looper-dispatch ready | cut -d' ' -f1)` instead plans a repository whose next ready issue is `priority:high`
-  first (keeping `repo-looper --list` for the busy check), and saves the search; the hub changes that file. A
-  `repo-looper --plan` (above) would put that order under this repository's tests.
 - **Priority within a capacity-short pipeline** (2026-10-30, #31): the order holds only as far as GitLab starts
   pending jobs in creation order. A `priority:high` issue whose repository's job is already pending behind its
   `resource_group` waits for it; a separate high-priority runner tag or GitLab job priorities would make it firm.
@@ -243,8 +232,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   longest limit among the issues ready at planning time, so they can all start together; an issue that becomes ready
   later, or one that waits for a free slot and then needs the whole limit, starts only if it still fits the job's
   remaining time. Sizing for a second round (the longest limit plus the next one's, at most 11h) would trade that for
-  a job held longer when a run hangs. Also: `looper-plan` (gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`) takes
-  the timeout from `--job-timeout` as before, so it needs no change, but it is still outside this repository's tests.
+  a job held longer when a run hangs. `looper-dispatch plan` takes the timeout from `--job-timeout`, so it needs no change.
 - **The plan's areas, kept** (2026-10-30, #32): each plan asks the model about every running and candidate issue
   again (tokens are not the concern, but a plan takes minutes). The parent could keep each issue's areas from its
   first plan and ask only about the new ones, and the record could show how well the areas matched what landed

@@ -964,8 +964,25 @@ commit Verified on main), and a follow-up issue for every other repository; Jody
 looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL seconds for 57 minutes
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
-tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, else the default); a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
+tests/looper-dispatch.test.sh    # a repository with a job created, pending, waiting or running is busy; a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, else the default); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh), scheduled and kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
+
+**The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is
+[`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml) here, reviewed and landed like the code, and copied into
+that project as is, on its protected `main`, by the hub (like `ci/build.gitlab-ci.yml` and `ci/instance.gitlab-ci.yml`):
+
+```sh
+curl -sfH "PRIVATE-TOKEN: <the hub's token>" -X PUT https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/repository/files/.gitlab-ci.yml -d branch=main \
+  -d commit_message="ci/tacplus-dev.gitlab-ci.yml at <commit> (looper#56)" --data-urlencode content@ci/tacplus-dev.gitlab-ci.yml
+```
+
+Its `looper-plan` is `looper-dispatch plan > looper-jobs.yml`, nothing inline, so a change to the plan here reaches
+the pipeline with the next image. The plan's settings are `looper-plan`'s `variables` in the file: `LOOPER_ORG`, the
+per-repository tags (`LOOPER_JOB_TAGS_tacplus`, [Infrastructure](#infrastructure)) and the git identity
+(`GIT_AUTHOR_*`, `GIT_COMMITTER_*`), which the plan gives every child job; the credentials stay project CI variables
+(below). On a schedule the plan is the nightly scan, a job per repository of the org; otherwise a job per repository
+with a ready issue and no looper job active, priority:high first.
 
 The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/looper, masked and protected,
 never baked into the image nor on a laptop ([Credentials](#credentials)). They are no group variables (moved
@@ -1001,7 +1018,7 @@ Jody, each a member of its one project or group).
 **Setting them up** (Jody; the values go from GitLab straight into the variables, no agent handles them).
 `G=https://gitlab.com/api/v4`, `H="PRIVATE-TOKEN: <Jody's token>"`, `L=tacplus-dev%2Flooper`:
 
-1. The pipeline file of gitlab.com/tacplus-dev/looper (its `.gitlab-ci.yml`, outside this repository): `looper-kick`
+1. The pipeline file of gitlab.com/tacplus-dev/looper (its `.gitlab-ci.yml`, `ci/tacplus-dev.gitlab-ci.yml` here): `looper-kick`
    gets `environment: {name: kicker, action: prepare}` and `looper-port` gets `environment: {name: port-scan,
    action: prepare}`, so only those jobs receive their variables; their comments' "the group GITLAB_TOKEN (api
    scope)" becomes this section's tokens.
@@ -1075,8 +1092,8 @@ gets two children; every other repository fits four. tacplus's jobs therefore ru
 | tacplus | 58307468 (group runner, protected refs only) | `arm64, autoscale-16` | `runner-arm64-tacplus-big`, `runner-arm64-t2a16-v7` (t2a-standard-16, 64 GB, `looper-runner`, 400 GB pd-standard) | up to 2 VMs; 5 children a job (64 GB / 12; the CPUs allow 8) |
 
 `looper-dispatch plan` gives a repository's job the tags of `LOOPER_JOB_TAGS_<repo>` (its name, `-` as `_`), else
-`LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper (outside this
-repository; the hub changes it) sets, among its `variables`:
+`LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper
+([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml), copied there by the hub) sets, among `looper-plan`'s `variables`:
 
 ```yaml
   LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"

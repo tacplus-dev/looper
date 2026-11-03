@@ -169,6 +169,16 @@ forge_search_issues() { # label limit fields [jq]
   esac
 }
 
+# The org's repositories that are not archived, one name (the path under
+# LOOPER_ORG) a line: what the nightly scan reads (looper#56).
+forge_repos() {
+  case "$LOOPER_FORGE" in
+    github) gh repo list "$LOOPER_ORG" --no-archived --limit 200 --json name --jq '.[].name' ;;
+    gitlab) local p; p="$(gl_all "groups/$(gl_enc "$LOOPER_ORG")/projects?include_subgroups=true&archived=false" 200)" || return 1
+            jq -r --arg org "$LOOPER_ORG" '.[].path_with_namespace | ltrimstr($org + "/")' <<<"$p" ;;
+  esac
+}
+
 # Labels and body, as gh issue edit takes them: --add-label L, --remove-label L, --body B.
 forge_issue_edit() { # repo n [--add-label L]... [--remove-label L]... [--body B]
   local r="$1" n="$2"; shift 2

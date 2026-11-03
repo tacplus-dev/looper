@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
     --state) state="$2"; shift 2 ;;
     --limit) limit="$2"; shift 2 ;;
     --json|--color|--description|-H) shift 2 ;;
-    --paginate) shift ;;
+    --paginate|--no-archived) shift ;;
     *) n="$1"; shift ;;
   esac
 done
@@ -83,6 +83,7 @@ case "$cmd" in
     if [[ "$p" == */comments ]]; then jq '[.comments[] | {body, user: {login: .author}, author_association: (.association // "MEMBER")}]' "$f"
     else jq '{number, title, body, comments: ([.comments[]? | select(.system | not)] | length), user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}' "$f"; fi | jq -r "$q" ;;
   "label create") echo "$repo $n" >> "$FIX/labels-created" ;;
+  "repo list") [[ "$n" == "$ORG" ]] || exit 1; jq -R '{name: .}' "$FIX/repos" | jq -s . | jq -r "$q" ;;
   "search issues")
     [[ "$owner" == "$ORG" ]] || exit 1
     all | jq --argjson l "$limit" '.[:$l] | map(. + {repository: {name: .repo}})' | jq -r "$q" ;;
@@ -148,6 +149,7 @@ list() { # repo or "" (the group): state, labels from the query
 path="$(dec "$p")"
 case "$m $path" in
   "GET groups/$ORG/issues") reply 200 "$(list "")" ;;
+  "GET groups/$ORG/projects") reply 200 "$(jq -R --arg org "$ORG" '{path_with_namespace: ($org + "/" + .)}' "$FIX/repos" | jq -s .)" ;;
   "GET projects/$ORG/"*) ;; "PUT projects/$ORG/"*) ;; "POST projects/$ORG/"*) ;;
   *) reply 404 '{"message":"404 Not found"}' ;;
 esac
@@ -220,7 +222,7 @@ lib() { # snippet
 }
 dispatch() { # args...
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_ROADMAP_REPO -u LOOPER_FORGE_URL -u CI_PROJECT_ID -u CI_JOB_ID \
-    PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" ORG="$ORG" PIPELINE="$ORG/tools/looper" TOKEN="$TOKEN" \
+    PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" ORG="$ORG" PIPELINE="$ORG/tools/looper" TOKEN="$TOKEN" CI_PIPELINE_SOURCE="${SOURCE:-}" \
     LOOPER_FORGE="$FORGE" LOOPER_ORG="$ORG" LOOPER_FORGE_TOKEN="$TOKEN" GH_TOKEN="$TOKEN" GITLAB_TOKEN=pipeline-token \
     LOOPER_PIPELINE="$ORG/tools/looper" LOOPER_LIB="$ROOT/looper-lib.sh" CI_API_V4_URL=https://gitlab.com/api/v4 \
     "$ROOT/looper-dispatch" "$@"
@@ -358,9 +360,15 @@ Blocked-by: #2"' || fail "edit body"
   issue beta 3 OPEN "Held by a run that is gone." approved looper:in-progress
   jq -n '[{name: "looper-alpha-9", status: "running"}]' > "$FIX/jobs.json"
   out="$(dispatch plan 2>"$FIX/plan.err")" || fail "plan: $(cat "$FIX/plan.err")"
+  # The schedule's plan (looper#56): a scan of each of the org's repositories, subgroups' too.
+  printf '%s\n' alpha beta ${SUB:+"$SUB"} > "$FIX/repos"
+  [[ "$(lib forge_repos | paste -sd' ')" == "alpha beta${SUB:+ $SUB}" ]] || fail "forge_repos: $(lib forge_repos | paste -sd' ')"
+  scans="$(SOURCE=schedule dispatch plan 2>"$FIX/plan.err")" || fail "scheduled plan: $(cat "$FIX/plan.err")"
+  [[ "$(grep -E '^looper-' <<<"$scans" | paste -sd' ')" == "looper-scan-alpha: looper-scan-beta:${SUB:+ looper-scan-$SUB:}" ]] || fail "scans: $scans"
+  grep -qx '    - repo-looper --repo beta --scan' <<<"$scans" || fail "beta's scan: $scans"
   ! grep -q '^looper-alpha-' <<<"$out" || fail "alpha planned while busy: $out"
   grep -qx 'looper-beta-2:' <<<"$out" || fail "beta not planned: $out"
-  grep -qx '    - repo-looper --repo "beta" --issue 2' <<<"$out" || fail "beta's script: $out"
+  grep -qx '    - repo-looper --repo beta --issue 2' <<<"$out" || fail "beta's script: $out"
   grep -qx '  resource_group: looper-beta' <<<"$out" || fail "beta's resource_group: $out"
   grep -qE '^  timeout: [0-9]+h$' <<<"$out" || fail "no timeout: $out"
   dispatch run >/dev/null 2>&1 || true   # starts nothing it can (no trigger stubbed), but releases beta#3 first
