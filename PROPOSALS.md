@@ -11,7 +11,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   SBOM) running `govulncheck -mode=binary` on each Go binary under `/usr/local/bin` that the base image does not
   have, or `trivy image` on the built image, would put them under the same policy as the tree. Trivy built from
   source reports GO-2026-4919 (the compromised v0.69.4 release, an open range: not applicable, #64): such a step
-  needs an exception for it.
+  needs an exception for it. A binary stripped of its symbol table (`-s`, as most releases are) is read less
+  precisely: Trivy's source build stripped so reports x/net GO-2026-6860/6866 and openpgp GO-2026-5932 again,
+  unstripped none of them (#64); such a step should say which binaries it could read only so.
 - **`child-timeout` is load-sensitive** (2026-11-03, #64): `tests/repo-looper.test.sh`'s scenario failed once
   (`expected "#5: closed" in: stub gh: HTTP 404`) while a Go build ran on the same machine, and passed alone right
   after. Its children's time limits are wall-clock; a margin scaled to the load, or limits the stub clock drives,

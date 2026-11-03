@@ -61,13 +61,15 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # v0.69.4 release (CVE-2026-33634), whose range has no fix event and so matches
 # every later version. Trivy is a long build: its own layer, before the others,
 # so that moving another scanner does not rebuild it. Its version as the release
-# sets it (goreleaser.yml), else it reads "dev".
+# sets it (goreleaser.yml), else it reads "dev"; -w without the release's -s: its
+# symbol table kept, which govulncheck -mode=binary reads to tell the vulnerable
+# code it calls (stripped, the same build reports the x/net and openpgp ones).
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
 ARG GO_TOOLCHAIN=go1.27.3 TRIVY_VERSION=0.76.1
 RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
-      -ldflags "-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=$TRIVY_VERSION" \
+      -ldflags "-w -X github.com/aquasecurity/trivy/pkg/version/app.ver=$TRIVY_VERSION" \
       "github.com/aquasecurity/trivy/cmd/trivy@v$TRIVY_VERSION"; \
     go clean -cache -modcache; trivy --version | grep -qx "Version: $TRIVY_VERSION"
 ARG OSV_SCANNER_VERSION=2.7.0
