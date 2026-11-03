@@ -42,3 +42,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper-port retired 2026-11-03: SeaBeam is retired on cutover, not ported (Jody; #60)
 - 2026-11-03 looper issue Retire looper-port (the SeaBeam port scan): remove the tool, ports.yaml, tests, CI job and docs (#60, 7edf753; gates: full)
 - 2026-11-03 looper issue A land's full gates are killed by SIGTERM after ~76 min (not by a gate failure): tacplus#222 can't land (#61, 0fc9a81; gates: full)
+- 2026-11-03 looper issue Syft 1.55.0 in the image carries 13 stdlib vulnerabilities fixed in Syft 1.56.0 (govulncheck -mode=binary) (#62, 055e25d; gates: full)
