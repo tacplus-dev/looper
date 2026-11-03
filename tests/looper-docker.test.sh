@@ -152,7 +152,7 @@ pass
 
 NAME=broker-privilege
 for o in --privileged "--cap-add SYS_ADMIN" "--device /dev/sda" "--security-opt seccomp=unconfined" --use-api-socket \
-         "--volumes-from c" "--cgroup-parent /" "--runtime runc" "--sysctl a=b"; do
+         "--volumes-from c" "--cgroup-parent /" "--runtime runc" "--sysctl a=b" "--oom-score-adj -1000" "--cpu-rt-runtime 950000"; do
   # shellcheck disable=SC2086
   brefused "is not for a looper's model" run $o img
 done

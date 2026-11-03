@@ -32,8 +32,9 @@
 # child's own containers is refused, exit 125:
 #   run|create
 #       --privileged, --cap-add, --device, --security-opt, --cgroup-parent,
-#       --runtime, --sysctl, --volumes-from, --gpus, --use-api-socket and the
-#       like; a host's or another container's namespace (--pid, --ipc,
+#       --runtime, --sysctl, --volumes-from, --gpus, --use-api-socket,
+#       --oom-score-adj (the host's OOM killer would pick the looper first)
+#       and the like; a host's or another container's namespace (--pid, --ipc,
 #       --network, --uts, --userns, --cgroupns host or container:); a mount
 #       (-v, --mount) of a host path outside LOOPER_DOCKER_ROOTS (the child's
 #       worktree and home), symlinks resolved, or of a named volume. Each
@@ -266,7 +267,7 @@ opt() { # flag value
   esac
   [[ -n "$brokered" ]] || return 0
   case "$1" in
-    --privileged|--cap-add|--device|--device-cgroup-rule|--security-opt|--cgroup-parent|--runtime|--sysctl|--volumes-from|--use-api-socket|--gpus|--volume-driver|--storage-opt|--oom-kill-disable|--link)
+    --privileged|--cap-add|--device|--device-cgroup-rule|--security-opt|--cgroup-parent|--runtime|--sysctl|--volumes-from|--use-api-socket|--gpus|--volume-driver|--storage-opt|--oom-kill-disable|--oom-score-adj|--cpu-rt-runtime|--cpu-rt-period|--link)
       nope "$1" "it reaches beyond the container" ;;
     --pid|--ipc|--network|--net|--cgroupns|--uts|--userns) ns "$1" "$2" ;;
     -v|--volume) volume "$2" ;;
