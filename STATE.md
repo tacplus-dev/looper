@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#57).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#68).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -20,7 +20,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   generated outputs, contracts, other conflicts), between issues that conflict the rank, not the order taken (#39): a land-pending one first (landed before any conflicting issue starts), then a bug before a feature, then priority, then age, the other waiting even for one that waits too; the runner's CPU and memory (4 GB a child, 12 in a repository whose gates run Kani, #41) and the job's remaining time (from the job's start; the job sized by
   `--job-timeout` for the longest limit among the ready issues, 6h with the defaults, so two 4h children start together, #33); a child's limit is capped at the job's deadline, its end less an hour, so an issue's `Timeout:` grown after the job was sized stops by itself, checkpointed, not killed by GitLab, and the issue is told, #35, each container a child's model starts (`docker run`, `tacplus`) limited to the child's memory without swap by
   `looper-docker`, the model's `docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone, not the VM (#41); every model's `pkill` is `looper-pkill`, which signals only its
-  run's own processes, so a model stopping its gates by a pattern no longer stops another child's land under way (tacplus#222, #61); logs
+  run's own processes, so a model stopping its gates by a pattern no longer stops another child's land under way (tacplus#222, #61); each child's model runs as its own unprivileged user (`looper-<issue>`, the plan's `looper-plan`), owning its worktree (a clone of its own), home and run directory, so it cannot signal or read another run's or the lander's processes (`/proc/<pid>/environ`) or files, and its `docker` goes through `looper-docker-broker`, which serves it only its own containers, unprivileged, mounting only its worktree and home (#68); logs
   the plan and its reasons (job log, `looper-runs/<time>-plan/`, the issues), runs each child in its own worktree and
   branch, serializes landing (`repo-looper --land`: lock, rebase, gates, push; a direct push to main from a
   worktree is refused), which the parent owns (#34): `--land` queues with the parent's lander, so a land still
@@ -110,7 +110,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
-- **Known gaps:** the recap has not run against the live APIs yet (its first night does); it reads Cloud Build only
+- **Known gaps:** the model's own user (#68) takes effect with the image built after its land (the broker,
+  `looper-docker-broker`, is in it); the land's gates still run a child's commits as the job's user, and the
+  broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads Cloud Build only
   where the scan job's `gcloud` is logged in, and the image's revision only where it has `docker buildx`: otherwise
   its `sources` says so; it reads lands' queue waits from the lander's `queued since`, logged from #57 on;
   gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose

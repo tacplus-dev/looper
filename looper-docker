@@ -21,12 +21,46 @@
 #       passed through as it is.
 #
 # The limit is per container, not per child: a child running two at once can
-# use twice its share. Nor is it a boundary: the model can run the real docker
-# by its path, `docker compose` and the containers of `docker build` are not
-# limited, and what runs in the job's own container is not (PROPOSALS.md).
+# use twice its share. The containers of `docker build` are not limited.
+#
+# The broker (looper#68): a model that runs as its own unprivileged user has
+# no access to the Docker socket, which is root on the runner. Its `docker` is
+# this script with LOOPER_DOCKER_BROKER, the socket of looper-docker-broker,
+# which runs it again as the looper-docker user (LOOPER_DOCKER_BROKERED), for
+# that model alone (LOOPER_DOCKER_OWNER, LOOPER_DOCKER_ROOTS, its own
+# LOOPER_CHILD_MEMORY). There, besides the limit, what reaches beyond the
+# child's own containers is refused, exit 125:
+#   run|create
+#       --privileged, --cap-add, --device, --security-opt, --cgroup-parent,
+#       --runtime, --sysctl, --volumes-from, --gpus, --use-api-socket and the
+#       like; a host's or another container's namespace (--pid, --ipc,
+#       --network, --uts, --userns, --cgroupns host or container:); a mount
+#       (-v, --mount) of a host path outside LOOPER_DOCKER_ROOTS (the child's
+#       worktree and home), symlinks resolved, or of a named volume. Each
+#       container gets the label io.tacplus.looper.owner=<owner>. A `-e NAME`
+#       with no value takes it from the model's environment, through an
+#       env file, never a command line.
+#   start, stop, kill, rm, logs, exec, attach, wait, restart, top, port, pause,
+#   unpause, update, stats, cp, inspect
+#       only on its own containers (that label); cp's host path within the
+#       roots.
+#   ps  only its own containers.
+#   build
+#       a context and Dockerfile within the roots (or stdin, or a URL), without
+#       --secret, --ssh, --output, --build-context, --allow and the like.
+#   images, pull, history, tag, search, version, info, image ls|inspect|pull|history|tag
+#       as they are.
+#   anything else (compose, buildx, volume, network, system, login, rmi,
+#   prune, a global --host, --context or --config)
+#       refused.
 set -euo pipefail
 
 me="$(readlink -f "${BASH_SOURCE[0]}")"
+# A model's docker (looper#68): the broker runs it, as its own user.
+if [[ -n "${LOOPER_DOCKER_BROKER:-}" && -z "${LOOPER_DOCKER_BROKERED:-}" ]]; then
+  exec python3 -I "$(dirname "$me")/looper-docker-broker" call "$LOOPER_DOCKER_BROKER" "$@"
+fi
+brokered="${LOOPER_DOCKER_BROKERED:-}" owner="${LOOPER_DOCKER_OWNER:-}" LABEL=io.tacplus.looper.owner
 real="${LOOPER_REAL_DOCKER:-}"
 if [[ -z "$real" ]]; then
   # The next docker on the PATH that is not this script.
@@ -36,9 +70,10 @@ if [[ -z "$real" ]]; then
 fi
 [[ -n "$real" ]] || { echo "docker: not found (looper-docker stands in front of it)" >&2; exit 127; }
 limit="${LOOPER_CHILD_MEMORY:-}"
-[[ -n "$limit" ]] || exec "$real" "$@"
+[[ -n "$limit" || -n "$brokered" ]] || exec "$real" "$@"
 
 refuse() { echo "docker (looper): $*" >&2; exit 125; }
+nope() { refuse "$1 is not for a looper's model: $2 (looper#68)"; }
 
 # A docker size in bytes (docker's RAMInBytes: 1024 multiples, b k m g t p,
 # an optional i and b), else nothing.
@@ -52,64 +87,243 @@ bytes() {
     printf "%.0f\n", n * m
   }'
 }
-max="$(bytes "$limit")" || refuse "LOOPER_CHILD_MEMORY=$limit is not a memory size"
+max=""; [[ -z "$limit" ]] || max="$(bytes "$limit")" || refuse "LOOPER_CHILD_MEMORY=$limit is not a memory size"
 
 # A --memory or --memory-swap value: refused above the limit or unlimited.
 check() { # flag value
   local b
+  [[ -n "$limit" ]] || return 0
   [[ "$2" != -1 ]] || refuse "$1 -1 (unlimited swap) is above this child's limit, $limit: a container is limited to $limit, without swap (looper#41)"
   b="$(bytes "$2")" || refuse "$1 $2 is not a memory size"
   (( b > 0 )) || refuse "$1 $2 (no limit) is above this child's limit, $limit (looper#41)"
   (( b <= max )) || refuse "$1 $2 is above this child's limit, $limit: a container is limited to $limit, without swap; leave a step that needs more (Kani, say) to the land's gates (looper#41)"
 }
 
+# A host path the broker's docker reads, writes or mounts: within the roots,
+# symlinks resolved.
+host_path() { # flag path
+  local p r rs
+  p="$(realpath -m -- "$2")"
+  IFS=: read -ra rs <<< "${LOOPER_DOCKER_ROOTS:-}"
+  for r in "${rs[@]}"; do
+    [[ -n "$r" ]] || continue
+    r="$(realpath -m -- "$r")"
+    [[ "$p" != "$r" && "$p" != "$r"/* ]] || return 0
+  done
+  refuse "$1 $2 is outside this child's own directories (${LOOPER_DOCKER_ROOTS:-none}): its containers mount only its worktree and home (looper#68)"
+}
+volume() { # -v value
+  local src
+  [[ "$1" == *:* ]] || return 0   # an anonymous volume: a path in the container alone
+  src="${1%%:*}"
+  case "$src" in
+    /*|.*) host_path -v "$src" ;;
+    *) refuse "-v $1: a named volume is shared with every run on this runner; mount a directory of your worktree instead (looper#68)" ;;
+  esac
+}
+mount_opt() { # --mount value
+  local type=volume src="" kv k
+  IFS=, read -ra kv <<< "$1"
+  for k in "${kv[@]}"; do case "$k" in type=*) type="${k#type=}" ;; source=*|src=*) src="${k#*=}" ;; esac; done
+  case "$type" in
+    bind) host_path --mount "${src:-.}" ;;
+    volume) [[ -z "$src" ]] || refuse "--mount $1: a named volume is shared with every run on this runner (looper#68)" ;;
+    tmpfs|image) ;;
+    *) refuse "--mount $1: type $type is not for a looper's model (looper#68)" ;;
+  esac
+}
+ns() { # flag value
+  case "$2" in host|container:*|service:*) refuse "$1 $2 shares a namespace beyond this child's own containers (looper#68)" ;; esac
+}
+# A container this child's model started: its owner label is the model's.
+own() { # container...
+  local t l
+  for t; do
+    l="$("$real" container inspect -f "{{index .Config.Labels \"$LABEL\"}}" -- "$t" 2>/dev/null)" ||
+      refuse "no container $t of this child's (looper#68)"
+    [[ "$l" == "$owner" ]] || refuse "$t is not this child's container: another run's or the looper's are not for its model (looper#68)"
+  done
+}
+
 # The global options before the command, and those of them that take a value.
 args=("$@"); i=0
 while (( i < ${#args[@]} )); do
   case "${args[i]}" in
-    --config|-c|--context|-H|--host|-l|--log-level|--tlscacert|--tlscert|--tlskey) i=$(( i + 2 )) ;;
+    --config|-c|--context|-H|--host|--tlscacert|--tlscert|--tlskey|--config=*|--context=*|--host=*|-H?*|--tls*)
+      [[ -z "$brokered" ]] || nope "${args[i]}" "the looper's docker is the runner's own"
+      case "${args[i]}" in *=*|-H?*|--tls|--tlsverify) i=$(( i + 1 )) ;; *) i=$(( i + 2 )) ;; esac ;;
+    -l|--log-level) i=$(( i + 2 )) ;;
     -*) i=$(( i + 1 )) ;;
     *) break ;;
   esac
 done
 cmd="${args[i]:-}"; at=$(( i + 1 ))
-if [[ "$cmd" == container ]]; then cmd="${args[at]:-}"; at=$(( at + 1 )); fi
-case "$cmd" in run|create|update) ;; *) exec "$real" "$@" ;; esac
+if [[ "$cmd" == container ]]; then cmd="${args[at]:-}"; at=$(( at + 1 ))
+elif [[ "$cmd" == image && -n "$brokered" ]]; then
+  cmd="image ${args[at]:-}"; at=$(( at + 1 ))
+  [[ "$cmd" != "image build" ]] || cmd=build
+fi
+rest=("${args[@]:at}")
+
+# A command's own options, up to its first argument, by the options that take
+# a value: OPTS (flag value pairs, a bool's value empty), POS (the arguments).
+split() { # value-options bool-short args...
+  local vals=" $1 " bs="$2" a s c; shift 2
+  OPTS=(); POS=()
+  while (( $# )); do
+    a="$1"; shift
+    case "$a" in
+      --) POS+=("$@"); return ;;
+      --*=*) OPTS+=("${a%%=*}" "${a#*=}") ;;
+      --*) if [[ "$vals" == *" $a "* ]]; then OPTS+=("$a" "${1:-}"); shift || true; else OPTS+=("$a" ""); fi ;;
+      -?*)
+        s="${a#-}"
+        while [[ -n "$s" ]]; do
+          c="${s:0:1}"; s="${s:1}"
+          if [[ "$bs" == *"$c"* || "$vals" != *" -$c "* ]]; then OPTS+=("-$c" ""); continue; fi
+          if [[ -n "$s" ]]; then OPTS+=("-$c" "${s#=}"); s=""; else OPTS+=("-$c" "${1:-}"); shift || true; fi
+        done ;;
+      *) POS+=("$a" "$@"); return ;;
+    esac
+  done
+}
+
+if [[ -n "$brokered" ]]; then
+  case "$cmd" in
+    run|create|update) ;;
+    start|stop|kill|rm|wait|restart|pause|unpause|stats)
+      split "--detach-keys -t --time -s --signal --timeout --format" "" "${rest[@]+"${rest[@]}"}"; own "${POS[@]+"${POS[@]}"}"
+      exec "$real" "$@" ;;
+    logs|attach|top|port)
+      split "--since --until -n --tail --detach-keys" "" "${rest[@]+"${rest[@]}"}"
+      (( ${#POS[@]} )) || refuse "docker $cmd: which container?"
+      own "${POS[0]}"; exec "$real" "$@" ;;
+    exec)
+      split "-e --env --env-file -u --user -w --workdir --detach-keys" "ditP" "${rest[@]+"${rest[@]}"}"
+      for (( k = 0; k < ${#OPTS[@]}; k += 2 )); do
+        case "${OPTS[k]}" in --privileged) nope --privileged "it reaches beyond the container" ;; --env-file) host_path --env-file "${OPTS[k+1]}" ;; esac
+      done
+      (( ${#POS[@]} )) || refuse "docker exec: which container?"
+      own "${POS[0]}"; exec "$real" "$@" ;;
+    cp)
+      split "" "aLq" "${rest[@]+"${rest[@]}"}"
+      (( ${#POS[@]} == 2 )) || refuse "docker cp: a source and a destination"
+      for p in "${POS[@]}"; do
+        if [[ "$p" == [!/.]*:* ]]; then own "${p%%:*}"; elif [[ "$p" != - ]]; then host_path cp "$p"; fi
+      done
+      exec "$real" "$@" ;;
+    inspect)
+      split "-f --format --type" "s" "${rest[@]+"${rest[@]}"}"
+      for p in "${POS[@]+"${POS[@]}"}"; do
+        # A container must be its own; an image or another object is anyone's.
+        if "$real" container inspect -- "$p" >/dev/null 2>&1; then own "$p"; fi
+      done
+      exec "$real" "$@" ;;
+    ps) exec "$real" "${args[@]:0:at}" --filter "label=$LABEL=$owner" "${rest[@]+"${rest[@]}"}" ;;
+    images|pull|history|tag|search|version|info|"image ls"|"image list"|"image inspect"|"image pull"|"image history"|"image tag")
+      exec "$real" "$@" ;;
+    build)
+      split "-t --tag --build-arg --target --label --platform --progress -f --file --iidfile --network --add-host --cache-from --shm-size --ulimit -m --memory --memory-swap --cpu-shares -c --cpuset-cpus --cpuset-mems --cpu-quota --cpu-period --provenance --sbom --no-cache-filter --secret --ssh -o --output --build-context --allow --cache-to --builder --metadata-file --attest --cgroup-parent --annotation --call --check" "q" "${rest[@]+"${rest[@]}"}"
+      for (( k = 0; k < ${#OPTS[@]}; k += 2 )); do
+        f="${OPTS[k]}" v="${OPTS[k+1]}"
+        case "$f" in
+          -t|--tag|--build-arg|--target|--label|--platform|--progress|--add-host|--shm-size|--ulimit|-m|--memory|--memory-swap|--cpu-shares|-c|--cpuset-cpus|--cpuset-mems|--cpu-quota|--cpu-period|--provenance|--sbom|--no-cache-filter|--annotation|-q|--quiet|--no-cache|--pull|--rm|--force-rm|--load|--compress|--help) ;;
+          -f|--file) [[ "$v" == - ]] || host_path "$f" "$v" ;;
+          --iidfile) host_path "$f" "$v" ;;
+          --network) ns "$f" "$v" ;;
+          --cache-from) [[ "$v" != *type=local* ]] || nope "$f $v" "it reads a host path" ;;
+          *) nope "docker build $f" "it reaches beyond the build's own context" ;;
+        esac
+      done
+      (( ${#POS[@]} == 1 )) || refuse "docker build: one context"
+      case "${POS[0]}" in -|*://*|git@*) ;; *) host_path build "${POS[0]}" ;; esac
+      exec "$real" "$@" ;;
+    *) nope "docker ${cmd:-(no command)}" "its model runs, builds and manages only its own containers: run, create, start, stop, kill, rm, logs, exec, attach, wait, cp, inspect, ps, build, images, pull, tag" ;;
+  esac
+else
+  case "$cmd" in run|create|update) ;; *) exec "$real" "$@" ;; esac
+fi
 
 # The command's options, up to its first argument (the image, or for update a
-# container): --memory and --memory-swap checked. The options that take no
-# value are listed; every other one takes one (docker run --help).
+# container): --memory and --memory-swap checked, and with the broker every
+# other option too. The options that take no value are listed; every other one
+# takes one (docker run --help). KEPT is the options as given, less the
+# `-e NAME`s the broker passes in ENVS.
 bool_long=" --detach --interactive --tty --rm --privileged --init --publish-all --read-only --oom-kill-disable
   --no-healthcheck --sig-proxy --disable-content-trust --quiet --help --use-api-socket "
 bool_short="ditPq"
-mem="" swap="" j="$at"
+mem="" swap="" j="$at" kept=() envs=()
+opt() { # flag value
+  case "$1" in
+    --memory|-m) mem="${2#=}"; check "$1" "$mem" ;;
+    --memory-swap) swap="$2"; check "$1" "$2" ;;
+  esac
+  [[ -n "$brokered" ]] || return 0
+  case "$1" in
+    --privileged|--cap-add|--device|--device-cgroup-rule|--security-opt|--cgroup-parent|--runtime|--sysctl|--volumes-from|--use-api-socket|--gpus|--volume-driver|--storage-opt|--oom-kill-disable|--link)
+      nope "$1" "it reaches beyond the container" ;;
+    --pid|--ipc|--network|--net|--cgroupns|--uts|--userns) ns "$1" "$2" ;;
+    -v|--volume) volume "$2" ;;
+    --mount) mount_opt "$2" ;;
+    --env-file|--label-file|--cidfile) host_path "$1" "$2" ;;
+    -l|--label) [[ "$2" != "$LABEL"* ]] || refuse "the label $LABEL is the looper's (looper#68)" ;;
+  esac
+}
+# A `-e NAME` the broker passes from the model's environment: not kept.
+from_env() { # flag value: true when it is one
+  [[ -n "$brokered" && ( "$1" == -e || "$1" == --env ) && "$2" != *=* ]] || return 1
+  envs+=("$2")
+}
 while (( j < ${#args[@]} )); do
   a="${args[j]}"; j=$(( j + 1 ))
   case "$a" in
-    --) break ;;
-    --memory=*) mem="${a#*=}"; check --memory "$mem" ;;
-    --memory-swap=*) swap="${a#*=}"; check --memory-swap "$swap" ;;
-    --memory|--memory-swap)
-      v="${args[j]:-}"; j=$(( j + 1 ))
-      if [[ "$a" == --memory ]]; then mem="$v"; else swap="$v"; fi
-      check "$a" "$v" ;;
-    --*=*) ;;
-    --*) [[ "$bool_long" == *" $a "* ]] || j=$(( j + 1 )) ;;
+    --) kept+=("$a"); break ;;
+    --*=*) opt "${a%%=*}" "${a#*=}"; from_env "${a%%=*}" "${a#*=}" || kept+=("$a") ;;
+    --*)
+      if [[ "$bool_long" == *" $a "* ]]; then opt "$a" ""; kept+=("$a")
+      else
+        v="${args[j]:-}"; j=$(( j + 1 ))
+        opt "$a" "$v"; from_env "$a" "$v" || kept+=("$a" "$v")
+      fi ;;
     -?*)
       # A cluster of short options: -it, -m1g, -dm 1g.
-      s="${a#-}"
+      s="${a#-}" took=""
       while [[ -n "$s" ]]; do
         c="${s:0:1}"; s="${s:1}"
-        [[ "$bool_short" == *"$c"* ]] && continue
-        if [[ -n "$s" ]]; then v="$s"; s=""; else v="${args[j]:-}"; j=$(( j + 1 )); fi
-        if [[ "$c" == m ]]; then mem="${v#=}"; check -m "$mem"; fi
-      done ;;
-    *) break ;;
+        if [[ "$bool_short" == *"$c"* ]]; then opt "-$c" ""; continue; fi
+        if [[ -n "$s" ]]; then v="$s"; s=""; kept+=("$a")
+        else v="${args[j]:-}"; j=$(( j + 1 ))
+          pre="${a%"$c"}"
+          if from_env "-$c" "$v"; then [[ "$pre" == - ]] || kept+=("$pre")
+          else kept+=("$a" "$v"); fi
+        fi
+        opt "-$c" "$v"; took=1
+      done
+      [[ -n "$took" ]] || kept+=("$a") ;;
+    *) j=$(( j - 1 )); break ;;
   esac
 done
 
-[[ "$cmd" != update ]] || exec "$real" "$@"
+if [[ "$cmd" == update ]]; then
+  [[ -z "$brokered" ]] || own "${args[@]:j}"
+  exec "$real" "$@"
+fi
 add=()
-[[ -n "$mem" ]] || { mem="${swap:-$limit}"; add+=(--memory "$mem"); }
-[[ -n "$swap" ]] || add+=(--memory-swap "$mem")
-exec "$real" "${args[@]:0:at}" "${add[@]+"${add[@]}"}" "${args[@]:at}"
+if [[ -n "$limit" ]]; then
+  [[ -n "$mem" ]] || { mem="${swap:-$limit}"; add+=(--memory "$mem"); }
+  [[ -n "$swap" ]] || add+=(--memory-swap "$mem")
+fi
+[[ -n "$brokered" ]] || exec "$real" "${args[@]:0:at}" "${add[@]+"${add[@]}"}" "${args[@]:at}"
+
+# The broker's: the owner's label, and the model's `-e NAME`s through an env
+# file on a pipe (a command line is anyone's to read, /proc/<pid>/cmdline).
+add+=(--label "$LABEL=$owner")
+envf=""
+for e in "${envs[@]+"${envs[@]}"}"; do
+  [[ "$e" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || refuse "-e $e: not a variable's name"
+  v="LOOPER_DOCKER_ENV_$e"; [[ -n "${!v+x}" ]] || continue
+  [[ "${!v}" != *$'\n'* ]] || refuse "-e $e: its value spans lines, which an env file cannot carry"
+  envf+="$e=${!v}"$'\n'
+done
+(( ${#envs[@]} )) || exec "$real" "${args[@]:0:at}" "${add[@]}" "${kept[@]+"${kept[@]}"}" "${args[@]:j}"
+exec "$real" "${args[@]:0:at}" "${add[@]}" --env-file /dev/fd/3 "${kept[@]+"${kept[@]}"}" "${args[@]:j}" 3< <(printf '%s' "$envf")

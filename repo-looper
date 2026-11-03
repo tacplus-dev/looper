@@ -174,7 +174,9 @@
 # LOOPER_REPLAN_INTERVAL (the parent's re-plan while children run, seconds, default 300),
 # LOOPER_CHILD_CPUS, LOOPER_CHILD_MEMORY_GB, LOOPER_KANI_MEMORY_GB, LOOPER_MAX_CHILDREN, LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
-# roadmap's suggestion pass), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
+# roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
+# job's user, not each as its own, looper#68) and LOOPER_USER_PREFIX (their
+# names, default looper-), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
 # job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
@@ -242,7 +244,7 @@ gitlab_auth() {
 # in this GitLab job's project. Outside a GitLab job, none.
 project_jobs() {
   [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 0
-  curl -fsS --retry 2 -H "$(gitlab_auth)" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
+  curl -fsS --retry 2 -H @<(gitlab_auth) "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
     | jq -r --arg me "${CI_JOB_ID:-}" '.[] | select((.id | tostring) != $me) | .name'
 }
 
@@ -253,7 +255,7 @@ job_status() {
   local out code st url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/$CI_JOB_ID"
   [[ -n "${GITLAB_TOKEN:-}" ]] || url="$CI_API_V4_URL/job"   # what a job token may read: its own job
   out="$(mktemp)"
-  code="$(curl -sS --retry 2 -H "$(gitlab_auth)" -o "$out" -w '%{http_code}' "$url")" || code=""
+  code="$(curl -sS --retry 2 -H @<(gitlab_auth) -o "$out" -w '%{http_code}' "$url")" || code=""
   st="$(jq -r '.status // empty' "$out" 2>/dev/null)" || st=""
   rm -f "$out"
   case "$code" in
@@ -306,6 +308,8 @@ child_dir() { echo "$WORK/worktrees/$1"; } # issue
 if [[ "$MODE" == child ]] || [[ "$MODE" =~ ^(checkpoint|land)$ && -e "$(child_dir "$ISSUE")/.git" ]]; then
   CHECKOUT="$(child_dir "$ISSUE")"; BRANCH="looper/$REPO-$ISSUE"
 fi
+# A child's models run as its own user (looper#68).
+MODEL_USER=""; [[ "$MODE" != child ]] || MODEL_USER="${LOOPER_USER_PREFIX:-looper-}$ISSUE"
 MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
 TIMEOUT="${LOOPER_TIMEOUT:-14400}"
 MAX_LIMIT=36000   # 10h: what a `Timeout:` line may ask for
@@ -446,22 +450,29 @@ sync_checkout() {
 }
 
 # A child's worktree (looper#32), made by the parent before the child starts:
-# a worktree of the checkout at origin/main, on the issue's own branch. One a
-# killed run left is replaced, anything unpushed in it kept on a local branch
-# first, as sync_checkout does.
+# a clone of the checkout at origin/main (its objects shared, its .git its own,
+# so that its model's user owns all of it: looper#68), on the issue's own
+# branch, with the checkout's origin. One a killed run left is replaced,
+# anything unpushed in it kept on a local branch of the checkout first, as
+# sync_checkout does.
 prepare_worktree() { # issue
   local wt b keep; wt="$(child_dir "$1")"; b="looper/$REPO-$1"
   if [[ -e "$wt/.git" ]]; then
     if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" || "$(git -C "$wt" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)" != 0 ]]; then
       keep="looper/left-$(date -u +%Y%m%dT%H%M%SZ)-$1"
       git -C "$wt" add -A && git -C "$wt" commit -q --no-verify -m "left by an unfinished looper run" || true
-      git -C "$wt" branch -q "$keep" && log "kept unpushed work of #$1 on local branch $keep"
+      git -C "$MAIN_CHECKOUT" fetch -q "$wt" "HEAD:refs/heads/$keep" && log "kept unpushed work of #$1 on local branch $keep"
     fi
   fi
   git -C "$MAIN_CHECKOUT" worktree remove -f "$wt" >/dev/null 2>&1 || rm -rf "$wt"
   git -C "$MAIN_CHECKOUT" worktree prune
   mkdir -p "$(dirname "$wt")"
-  git -C "$MAIN_CHECKOUT" worktree add -q -f -B "$b" "$wt" origin/main
+  git clone -q --shared --no-checkout "$MAIN_CHECKOUT" "$wt"
+  git -C "$wt" remote set-url origin "$(git -C "$MAIN_CHECKOUT" remote get-url origin)"
+  git -C "$wt" fetch -q "$MAIN_CHECKOUT" "+refs/remotes/origin/*:refs/remotes/origin/*"
+  git -C "$wt" config looper.child true
+  git -C "$wt" checkout -q -f -B "$b" origin/main
+  ( CHECKOUT="$wt"; guard_roadmap )
 }
 
 # The planning files every repository carries (tacplus-dev/roadmap
@@ -484,9 +495,10 @@ template() { # file
 # ROADMAP.md: the model's pushes and this script's alike. The issue's own
 # branch (looper/*) is exempt, so a checkpoint still keeps all the work.
 # Commits already on origin (an agent's, at Jody's request) are not this push's.
-# The hook is the checkout's and every worktree's (the common git dir). From a
-# worktree it also refuses a push to main that is not a landing (looper#32):
-# --land, or this script's own commits, under the landing lock.
+# The hook is the checkout's and every worktree's (the common git dir), and
+# each child's clone's. From a worktree or a child's clone (looper.child) it
+# also refuses a push to main that is not a landing (looper#32): --land, or
+# this script's own commits, under the landing lock.
 guard_roadmap() {
   local hook; hook="$(cd "$CHECKOUT" && cd "$(git rev-parse --git-common-dir)" && pwd)/hooks/pre-push"
   mkdir -p "$(dirname "$hook")"
@@ -495,6 +507,7 @@ guard_roadmap() {
 # Installed by repo-looper (looper#13): a looper never pushes a commit that touches ROADMAP.md.
 z=0000000000000000000000000000000000000000
 worktree=""; [[ "$(git rev-parse --absolute-git-dir)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd)" ]] && worktree=1
+[[ "$(git config --bool looper.child)" == true ]] && worktree=1
 while read -r _ lsha rref rsha; do
   [[ "$lsha" == "$z" || "$rref" == refs/heads/looper/* ]] && continue
   # Not the issues' branches (looper/*): a checkpoint carries a commit there before it lands (looper#38).
@@ -781,7 +794,8 @@ land_wait() { # gates
     log "queued: the looper lands $BRANCH after the lands queued before it, one at a time; waiting for it. If your time runs out first, it still lands it after you and says so on the issue."
   fi
   until [[ -e "$LANDS/$n.rc" ]]; do
-    if ! kill -0 "${LOOPER_LANDER_PID:-0}" 2>/dev/null && mv "$LANDS/$n.req" "$LANDS/$n.taken" 2>/dev/null; then
+    # The lander's process, by /proc: another user's (looper#68) refuses kill -0.
+    if [[ ! -e "/proc/${LOOPER_LANDER_PID:-0}" ]] && mv "$LANDS/$n.req" "$LANDS/$n.taken" 2>/dev/null; then
       rm -f "$LANDS/$n.taken"; log "the looper's lander is gone; landing here"; land_work; return
     fi
     sleep 1
@@ -796,7 +810,7 @@ land_wait() { # gates
 # its child's worktree, until the parent says it is done (LANDS/.done: the
 # queue drained first) or must stop (LANDS/.stop: after the land under way).
 lander() {
-  local f n run gates rc q
+  local f n run gates rc q o
   while :; do
     [[ -e "$LANDS/.stop" ]] && return 0
     f="$(ls -tr "$LANDS"/*.req 2>/dev/null | head -n 1)" || true
@@ -808,7 +822,11 @@ lander() {
     q="$(sed -n 's/^queued=//p' "$LANDS/$n.running")"; q="${q:+, queued since $q}"
     rc=0
     land_set "$(child_dir "$n")"
-    if ! land_fits "$GATES_SET"; then
+    o="$(stat -c %U "$LANDS/$n.running")"
+    if model_users && [[ "$o" != "$(id -un)" && "$o" != "$(model_user "$n")" ]]; then
+      log "#$n: refused a land request by $o, not this issue's model (looper#68)"
+      echo "refused: the request was $o's, not this issue's model's" > "$LANDS/$n.err"; : > "$LANDS/$n.out"; rc=1
+    elif ! land_fits "$GATES_SET"; then
       log "#$n: deferred to the next job: the job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")")$q"
       land_defer "$n" "$run" "$GATES_SET" > "$LANDS/$n.out" 2> "$LANDS/$n.err"; rc=$LAND_DEFERRED
     else
@@ -818,9 +836,15 @@ lander() {
       if (( rc == 0 )); then log "#$n: $(tail -n 1 "$LANDS/$n.out" | cut -c24-)"; else log "#$n: nothing landed (exit $rc)"; fi
       # It has an outcome now: the branch is no longer land-pending.
       [[ -z "$run" ]] || rm -f "$run/land"
+      child_reown "$n"
     fi
     mv "$LANDS/$n.running" "$LANDS/$n.ran"
-    echo "$rc" > "$LANDS/$n.rc.new" && mv "$LANDS/$n.rc.new" "$LANDS/$n.rc"
+    echo "$rc" > "$LANDS/$n.rc.new"
+    # The result is the issue's model's to read and clear (looper#68).
+    if model_users && id -u "$(model_user "$n")" >/dev/null 2>&1; then
+      chown "$(model_user "$n")" "$LANDS/$n".{ran,out,err,rc.new} 2>/dev/null || true; chmod 0600 "$LANDS/$n".{ran,out,err,rc.new} 2>/dev/null || true
+    fi
+    mv "$LANDS/$n.rc.new" "$LANDS/$n.rc"
     if [[ -e "$LANDS/$n.orphan" ]] && mkdir "$LANDS/$n.claimed" 2>/dev/null; then orphan_land "$n"; fi
   done
 }
@@ -1006,6 +1030,82 @@ model_forge_env() {
   export GITLAB_TOKEN="${LOOPER_FORGE_TOKEN:-}" GITLAB_HOST="$LOOPER_FORGE_URL"
 }
 
+# Each model as its own unprivileged user (looper#68): a child's model runs
+# as looper-<issue>, the plan's as looper-plan, never as the job's user (root),
+# which the looper, its lander and the land's gates keep. So a model cannot
+# signal another run's processes or the lander's, nor read /proc/<pid>/environ
+# of any of them (the withheld credentials, looper#25), nor another child's
+# worktree, home or run record. It owns its worktree (a clone of its own, not
+# a worktree sharing the checkout's .git), its home (LOOPER_WORK/homes/<user>,
+# its git credentials, TMPDIR and tacplus cache) and its run directory. It has
+# no access to the Docker socket: its `docker` is looper-docker through
+# looper-docker-broker, run for it by the looper-docker user, which serves it
+# only its own containers and mounts only its worktree and home. On whenever the looper
+# runs as root with setpriv and useradd; LOOPER_MODEL_USERS=0 turns it off
+# (the model then runs as the job's user, as before); LOOPER_USER_PREFIX
+# (default looper-) names the users.
+model_users() { [[ "${LOOPER_MODEL_USERS:-1}" != 0 && "$(id -u)" == 0 ]] && command -v setpriv useradd >/dev/null; }
+model_user() { echo "${LOOPER_USER_PREFIX:-looper-}$1"; } # issue, plan or docker (the broker's)
+# useradd, tried again: two children starting at once each lock /etc/passwd.
+user_add() { # name useradd-options...
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    id -u "$1" >/dev/null 2>&1 && return 0
+    useradd "${@:2}" "$1" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  id -u "$1" >/dev/null 2>&1
+}
+if model_users; then
+  # The looper's own git in a model's clone, which that user owns.
+  export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }'safe.directory=*'"
+fi
+
+# The user and its home; it owns the run directory, and a child's worktree.
+# MODEL_UID, MODEL_GID, MODEL_HOME and MODEL_ROOTS (what its containers may
+# mount) for run_claude.
+model_user_up() { # user run-dir
+  local u="$1" run="$2" home="$WORK/homes/$1"
+  user_add "$u" -M -U -s /bin/bash -d "$home" || { log "could not make the user $u"; return 1; }
+  MODEL_UID="$(id -u "$u")" MODEL_GID="$(id -g "$u")" MODEL_HOME="$home"
+  mkdir -p "$home/tmp"
+  # Its git's credentials for the forge, in its own global config.
+  ( export HOME="$home"; forge_setup_git )
+  chown -R "$u:$u" "$home" "$run"; chmod 0750 "$home"; chmod 0700 "$run"
+  MODEL_ROOTS="$home"
+  if [[ "$CHECKOUT" != "$MAIN_CHECKOUT" ]]; then
+    chown -R "$u:$u" "$CHECKOUT"; chmod 0750 "$CHECKOUT"; MODEL_ROOTS="$CHECKOUT:$home"
+  fi
+}
+
+# What the looper wrote as root in a child's worktree (a checkpoint, a land)
+# goes back to the child's user, so its model's git and build go on.
+child_reown() { # issue
+  local u wt; u="$(model_user "$1")"; wt="$(child_dir "$1")"
+  model_users && [[ -d "$wt" ]] && id -u "$u" >/dev/null 2>&1 || return 0
+  chown -R "$u:$u" "$wt" || true
+}
+
+# The broker of a model's run (looper#68): the looper-docker user, in the
+# group of the Docker socket and the model's own (to read a build's context in
+# its worktree), serving that model's uid alone on DIR/broker/sock. None
+# without a docker. BROKER_PID.
+broker_start() { # dir
+  local real bu sock groups i; bu="$(model_user docker)"
+  real="$(command -v docker)" || return 1
+  user_add "$bu" -M -r -U -s /usr/sbin/nologin -d / || return 1
+  groups="$MODEL_GID"; sock="${DOCKER_HOST:-unix:///var/run/docker.sock}"; sock="${sock#unix://}"
+  [[ ! -S "$sock" ]] || groups+=",$(stat -c %g "$sock")"
+  mkdir -p "$1/broker/conf"; chown "$bu:" "$1/broker"
+  printf 'owner=%s\nroots=%s\nmemory=%s\n' "$MODEL_USER" "$MODEL_ROOTS" "${LOOPER_CHILD_MEMORY:-}" > "$1/broker/conf/$MODEL_UID"
+  setpriv --reuid "$bu" --regid "$(id -g "$bu")" --groups "$groups" \
+    env -i PATH="$PATH" HOME=/ ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
+    python3 -I "$(dirname "$LOOPER_SELF")/looper-docker-broker" serve "$1/broker/sock" "$1/broker/conf" "$real" &
+  BROKER_PID=$!
+  for i in $(seq 50); do [[ -S "$1/broker/sock" ]] && return 0; sleep 0.1; done
+  log "the docker broker did not start: this model has no docker"; kill "$BROKER_PID" 2>/dev/null; BROKER_PID=""; return 1
+}
+
 # Runs the model with the watchdog beside it. A run dir with an issue is an
 # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the
 # watchdog also ends it once the issue is done.
@@ -1019,24 +1119,40 @@ model_forge_env() {
 # model's `pkill -f 'just gates'` stopped another child's land under way
 # (tacplus#222). It signals only the run's own processes, those with the run's
 # LOOPER_MODEL_RUN in their environment.
+#
+# With MODEL_USER (looper#68) the model runs as that user (setpriv), with its
+# own HOME, TMPDIR and tacplus cache, and its docker through the broker.
 run_claude() { # prompt-file log-file seconds run-dir [issue]
-  local rc=0 dir pid fmt watcher k withheld limited=()
+  local rc=0 dir pid fmt watcher k withheld limited=() as=() BROKER_PID=""
   mapfile -t withheld < <(model_env)
   dir="$(mktemp -d)"; mkfifo "$dir/out"
   mkdir "$dir/bin"; ln -s "$(dirname "$LOOPER_SELF")/looper-pkill" "$dir/bin/pkill"
   limited=(PATH="$dir/bin:$PATH" LOOPER_MODEL_RUN="$4")
-  if [[ -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
+  if [[ -n "${MODEL_USER:-}" ]] && model_users; then
+    model_user_up "$MODEL_USER" "$4" || { rm -rf "$dir"; return 1; }
+    chmod 0755 "$dir"
+    as=(setpriv --reuid "$MODEL_UID" --regid "$MODEL_GID" --init-groups)
+    # Its own caches: cargo's registry (CARGO_HOME, else the image's, shared and root's), tacplus's.
+    limited+=(HOME="$MODEL_HOME" USER="$MODEL_USER" LOGNAME="$MODEL_USER" TMPDIR="$MODEL_HOME/tmp"
+              LOOPER_TACPLUS_HOME="$MODEL_HOME/.tacplus-home" CARGO_HOME="$MODEL_HOME/.cargo")
+    withheld+=(-u GIT_CONFIG_PARAMETERS -u LOOPER_REAL_DOCKER)
+    if [[ -n "${LOOPER_CHILD_MEMORY:-}" ]] && broker_start "$dir"; then
+      ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
+      limited+=(LOOPER_DOCKER_BROKER="$dir/broker/sock")
+    fi
+  elif [[ -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
     ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
     limited+=(LOOPER_REAL_DOCKER="$(command -v docker || true)")
   fi
   jq -R -r --unbuffered "$RENDER" < "$dir/out" > "$2" & fmt=$!
-  ( cd "$CHECKOUT" && model_forge_env && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" "${limited[@]+"${limited[@]}"}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
+  ( cd "$CHECKOUT" && model_forge_env && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" "${limited[@]+"${limited[@]}"}" "${as[@]+"${as[@]}"}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
       --model "$MODEL" --permission-mode acceptEdits \
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!
   watch_run "$pid" "$2" "$4" "${5:-}" & watcher=$!
   wait "$pid" || rc=$?
   kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null || true
+  [[ -z "$BROKER_PID" ]] || { kill "$BROKER_PID" 2>/dev/null; wait "$BROKER_PID" 2>/dev/null || true; }
   # The log is complete when the model's output closes; a process the model
   # left holding that output does not hold the run.
   ( sleep 10; kill "$fmt" 2>/dev/null ) & k=$!
@@ -1185,6 +1301,7 @@ checkpoint() { # issue why [run-dir]
     git update-ref "refs/looper/$b" "$c"
     log "checkpoint of #$n ($why) pushed to $b: $(git diff --shortstat origin/main "$c")"
   ) 9>"$WORK/.checkpoint.lock" || log "checkpoint of #$n ($why) failed"
+  [[ "$CHECKOUT" != "$(child_dir "$n")" ]] || child_reown "$n"
 }
 
 # Checkpoints every LOOPER_CHECKPOINT_INTERVAL until killed.
@@ -1541,6 +1658,11 @@ memory_rule() {
     "Containers you start (\`docker run\`, \`tacplus\`) are limited to $LOOPER_CHILD_MEMORY of memory, without swap: your" \
     "share of the runner, beside the other children. One over it is OOM-killed (exit 137), and a larger --memory is" \
     "refused. Never run a step that needs more ad hoc (\`cargo kani\`, say): leave Kani to the land's gates."
+  if [[ -n "${MODEL_USER:-}" ]] && model_users; then
+    printf '\n   %s\n   %s' \
+      "You run as your own user, $MODEL_USER (looper#68): you own your worktree, your home and your run directory, and no" \
+      "other run's processes or files. \`docker\` is the looper's broker: your own containers only, unprivileged, mounting only those two."
+  fi
 }
 
 # A child's outcome, for its parent (looper#32): closed, blocked,
@@ -2078,7 +2200,7 @@ security_report() { # run-dir [repo, into run-dir/security-<repo>]
   [[ -n "${GITLAB_TOKEN:-}" ]] || { log "scan: no GITLAB_TOKEN: the build's security report is not read" >&2; return 0; }
   mkdir -p "$out"
   for f in findings.json summary.md; do
-    if ! curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" -o "$out/$f" \
+    if ! curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") -o "$out/$f" \
            "$api/projects/$project/packages/generic/security-$repo/latest/$f" 2>/dev/null; then
       log "scan: no security report of $repo from the build pipeline" >&2; rm -rf "$out"; return 0
     fi
@@ -2130,7 +2252,7 @@ suggest_context() { # run-dir
   [[ -n "${GITLAB_TOKEN:-}" ]] || { log "scan: no GITLAB_TOKEN: no pipeline failures nor security reports read" >&2; return 0; }
   since="$(date -u -d '7 days ago' +%FT%TZ 2>/dev/null || true)"
   for p in ${LOOPER_SUGGEST_PROJECTS:-tacplus-dev/looper tacplus-dev/build}; do
-    if curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" -o "$ctx/jobs.raw" \
+    if curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") -o "$ctx/jobs.raw" \
          "$api/projects/$(gl_enc "$p")/jobs?scope[]=failed&per_page=100" 2>/dev/null &&
        jq --arg since "$since" '[.[] | select(($since == "") or ((.finished_at // .created_at // "") >= $since))
             | {name, stage, status, failure_reason, ref, web_url, finished_at}]' "$ctx/jobs.raw" > "$ctx/failed-jobs-${p//\//_}.json" 2>/dev/null; then
@@ -2140,7 +2262,7 @@ suggest_context() { # run-dir
     fi
     rm -f "$ctx/jobs.raw"
   done
-  repos="$(curl -fsS --retry 2 -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  repos="$(curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") \
              "$api/projects/${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}/packages?package_type=generic&package_name=security-&per_page=100" 2>/dev/null \
            | jq -r '.[].name | select(startswith("security-")) | ltrimstr("security-")' 2>/dev/null | sort -u)" || repos=""
   for r in $repos; do
@@ -2459,7 +2581,7 @@ $(provenance_rule)
 Each issue's text (its title and body, then each comment, oldest first):
 $texts
 PR
-  ( CHECKOUT="$MAIN_CHECKOUT"; run_claude "$dir/prompt.md" "$dir/claude.log" "$PLAN_TIMEOUT" "$dir" ) \
+  ( CHECKOUT="$MAIN_CHECKOUT"; MODEL_USER="$(model_user plan)"; run_claude "$dir/prompt.md" "$dir/claude.log" "$PLAN_TIMEOUT" "$dir" ) \
     || log "the plan's model exited non-zero"
   touch "$dir/areas"
 }
@@ -2552,6 +2674,22 @@ parent() { # [issue first]
   # The lander (looper#34): the children's lands, one at a time, in the parent.
   local lander_pid
   rm -rf "$LANDS"; mkdir -p "$LANDS"
+  # The models' users (looper#68) queue their lands and take the locks too;
+  # the lander serves a request only to the issue's own user. GitLab's file
+  # variables (CI_PROJECT_DIR.tmp, world-readable) are the job's alone.
+  if model_users; then
+    chmod 1777 "$LANDS"; touch "$LAND_LOCK" "$WORK/.checkpoint.lock"; chmod 0666 "$LAND_LOCK" "$WORK/.checkpoint.lock"
+    [[ -z "${CI_PROJECT_DIR:-}" || ! -d "$CI_PROJECT_DIR.tmp" ]] || chmod -R go-rwx "$CI_PROJECT_DIR.tmp"
+    # The image's tools under the job's home (tacplus's openjml, on the PATH) stay
+    # the models' to run: the home is theirs to pass through, not to list, and
+    # what in it is private stays the job's.
+    if [[ -d "$HOME" && "$HOME" != / ]]; then
+      chmod 0711 "$HOME"
+      for d in .claude .claude.json .config .local .cache/gh .docker .ssh .gnupg .netrc .git-credentials; do
+        [[ ! -e "$HOME/$d" ]] || chmod go-rwx "$HOME/$d"
+      done
+    fi
+  fi
   lander > >(sed -u 's/^/[lander] /') 2>&1 & lander_pid=$!
   export LOOPER_LANDER="$LANDS" LOOPER_LANDER_PID="$lander_pid"
 

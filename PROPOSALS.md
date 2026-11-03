@@ -133,7 +133,29 @@ the looper then marks it `promoted` or `declined` here with the date.
   `--land` finding the lander by a file rather than `kill -0 $LOOPER_LANDER_PID` (see tacplus#200's land, above),
   or each model as its own non-root user, with the docker socket, its worktree and its credentials made its own.
   Seen twice on tacplus#222 (tacplus#256's and tacplus#283's models, 2026-11-03), whose land passed its gates when
-  they were cut off.
+  they were cut off. Done in #68 (2026-11-03): each child's model as its own user, docker through a broker
+  (README, Credentials).
+- **The land's gates as a user of their own** (2026-11-03, #68): a model runs as its own user, but the land's
+  gates run its commits (its tests, its gate map's commands, `--gates CMD`) as the job's user, which holds the
+  withheld credentials and the Docker socket: what a model cannot read itself, a test it lands can. The gates
+  could run as a gates user per land (its clone, no socket but a broker of its own, the credentials out of its
+  environment), as the model does; the push and the comments after them stay the lander's.
+- **The broker's path checks are check, then use** (2026-11-03, #68): `looper-docker` resolves a mount's source
+  (symlinks too) and refuses one outside the child's worktree and home, but the daemon resolves it again on the
+  host when it mounts, and the model owns the directories on the way: one swapped for a symlink between the two
+  reaches the host. Passing the resolved path narrows it; closing it needs the daemon to mount what the broker
+  opened (a bind of an `O_PATH` descriptor through `/proc/<broker>/fd/N`), or the worktree on a filesystem the
+  model cannot add symlinks to.
+- **The model's users across jobs** (2026-11-03, #68): `repo-looper` makes `looper-<issue>` when the child starts
+  (`useradd`, its uid whatever is free) and chowns its worktree and home each time, so a worker reused by a later
+  job, whose container numbers the users afresh, cannot hand one issue's files to another's model; nothing deletes
+  the users, which end with the job's container. A fixed uid per issue (a range above the image's) would make
+  that independent of the order the children start in.
+- **Warm caches for the models' users** (2026-11-03, #68): a model's home is its own, so its Go module and build
+  caches, cargo's registry (`CARGO_HOME` in its home), npm's, Maven's and tacplus's start empty each run, where the
+  job's user had one cache for every child: more downloads and longer first builds. A seed each home starts
+  from (a copy of the job's caches, or a module proxy and a registry mirror on the runner) would keep the runs
+  apart without the cost.
 - **Room for the land's gates** (2026-10-31, #41): the lander runs a land's gates in the parent, unlimited, while
   the children go on; the child whose land it is waits meanwhile, so its share is mostly free, but a gate heavier
   than a child (Kani) can still press the VM. The capacity could keep one child's memory for the lander, or the
@@ -200,7 +222,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   the model's environment, but the model runs as the job's user, so `/proc/<parent>/environ` still holds them; and
   every `curl -H "PRIVATE-TOKEN: ..."` puts its token on a command line any process of the job can read. Running the
   model as another user (or in a sandbox without the job's processes), and headers from a file (`-H @file`), would make
-  the withholding a boundary; until then the tokens' reach is (README, Credentials).
+  the withholding a boundary; until then the tokens' reach is (README, Credentials). Done in #68 (2026-11-03): the
+  model as its own user, `repo-looper`'s GitLab reads with `-H @<(...)`. Still open: `looper-dispatch`'s
+  `curl -H "PRIVATE-TOKEN: ..."` (the kicker's and the plan's jobs, no model beside them).
 - **Rotate the bots' tokens** (2026-10-30, #25): `tacplus-looper-bot`'s token and
   membership expire within a year; nothing reminds anyone. A scheduled check of `GET /personal_access_tokens/self`
   (`expires_at`) filing an issue a month ahead would.

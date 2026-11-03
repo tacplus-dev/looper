@@ -15,7 +15,8 @@
 # The binary is downloaded once, checked against its release's checksums.txt
 # (a mismatch is refused and nothing is cached) and cached where the build
 # image's own launcher keeps it ($HOME/.cache/tacplus/<version>/tacplus, HOME
-# being LOOPER_WORK/.tacplus-home). The newest patch and the image are looked
+# being LOOPER_TACPLUS_HOME, else LOOPER_WORK/.tacplus-home: a model's own,
+# in its home, when it runs as its own user, looper#68). The newest patch and the image are looked
 # up at most every ten minutes per line. TACPLUS_RELEASES_URL,
 # TACPLUS_DOWNLOAD_URL and TACPLUS_IMAGE_REPO override where they come from.
 #
@@ -46,7 +47,7 @@ done
 
 releases_url="${TACPLUS_RELEASES_URL:-https://api.github.com/repos/tacplus-dev/tacplus/releases?per_page=100}"
 download_url="${TACPLUS_DOWNLOAD_URL:-https://github.com/tacplus-dev/tacplus/releases/download}"
-cache="${LOOPER_WORK:-/work}/.tacplus-home"
+cache="${LOOPER_TACPLUS_HOME:-${LOOPER_WORK:-/work}/.tacplus-home}"
 bins="$cache/.cache/tacplus"
 stamps="${TMPDIR:-/tmp}"
 fresh() { [[ -f "$1" && -z "$(find "$1" -mmin +10 2>/dev/null)" ]]; }

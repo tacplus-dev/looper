@@ -105,12 +105,14 @@ EOF
 # or this job, CI_JOB_ID, for its own token (/job). $FIX/revoked refuses the
 # job's token (HTTP 401), as GitLab does once the job ended; no file answers
 # HTTP 500. With -f a failure exits 22; -w prints the HTTP status. Each
-# request's auth header and URL are appended to $FIX/gitlab.
+# request's auth header (given, or from a file: -H @file) and URL are appended
+# to $FIX/gitlab, and its command line to $FIX/curl-argv.
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 url=""; auth=""; out=""; w=""; f=""
+printf '%s\n' "$*" >> "$FIX/curl-argv"
 while [[ $# -gt 0 ]]; do case "$1" in
-  -H) auth="${2%%:*}"; shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
+  -H) h="$2"; [[ "$h" != @* ]] || h="$(cat "${h#@}")"; auth="${h%%:*}"; shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
   http*) url="$1"; shift ;; -*f*) f=1; shift ;; *) shift ;;
 esac; done
 echo "$auth $url" >> "$FIX/gitlab"
@@ -169,6 +171,7 @@ looper() { # [VAR=value...] -- repo-looper args
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
+      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS LOOPER_MODEL_USERS=0 \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -1374,15 +1377,17 @@ pass
 
 # The model holds no GitLab credential (looper#25): the job's GITLAB_TOKEN, its
 # job token and the variables that carry it stay with the looper, which still
-# polls with them; the model keeps what it works with (GH_TOKEN).
+# polls with them, never on a command line (anyone's to read in
+# /proc/<pid>/cmdline, looper#68); the model keeps what it works with (GH_TOKEN).
 scenario model-holds-no-gitlab-credential
 jobs "looper-alpha-4 running 77"
 echo 'env > "$FIX/model-env"' >> "$FIX/claude.sh"
 working
 run "${GL[@]}" CI_JOB_ID=77 CI_JOB_TOKEN=j CI_BUILD_TOKEN=j CI_REGISTRY_PASSWORD=j CI_DEPENDENCY_PROXY_PASSWORD=j \
   CI_REPOSITORY_URL=https://gitlab-ci-token:j@gl.test/x.git LOOPER_TRIGGER_TOKEN=x \
-  FLEET_ID_TOKEN=x CI_JOB_JWT_V2=x GH_TOKEN=g "${POLL[@]}"
+  FLEET_ID_TOKEN=x CI_JOB_JWT_V2=x GH_TOKEN=g GITLAB_TOKEN=glpat-poll-secret "${POLL[@]}"
 not_stopped
+! grep -q glpat-poll-secret "$FIX/curl-argv" || fail "a token on curl's command line: $(grep glpat-poll-secret "$FIX/curl-argv")"
 held="$(cut -d= -f1 "$FIX/model-env" | grep -xE 'GITLAB_TOKEN|CI_JOB_TOKEN|CI_BUILD_TOKEN|CI_REGISTRY_PASSWORD|CI_DEPENDENCY_PROXY_PASSWORD|CI_REPOSITORY_URL|LOOPER_TRIGGER_TOKEN|FLEET_ID_TOKEN|CI_JOB_JWT_V2' || true)"
 [[ -z "$held" ]] || fail "the model held: $held"
 grep -qx 'GH_TOKEN=g' "$FIX/model-env" || fail "the model lost GH_TOKEN"
@@ -1518,6 +1523,74 @@ drain LOOPER_CHILD_CPUS=0.01 LOOPER_CHILD_MEMORY_GB=2 LOOPER_KANI_MEMORY_GB=3
 has "$OUT" " GB at 3 GB a child (its gates run Kani), ceiling"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "limited to 3072m of memory"
 pass
+
+# Each model as its own user (looper#68): two children at once, each model
+# as its own user (LOOPER_USER_PREFIX, this test's own). Neither can signal
+# the other's processes or the lander, kill or pkill them, read
+# /proc/<pid>/environ of the other or of the lander, find a withheld
+# credential (GITLAB_TOKEN) in any process it can read, read the other's
+# worktree or run record, or reach the Docker socket. Its docker goes through
+# the broker, as the broker's user, for its worktree and not /etc. Both
+# checkpoint and land as before. Root only. The scripts run from a copy anyone
+# reads: this checkout may be a model's own (0750).
+scenario model-users
+if [[ "$(id -u)" != 0 ]] || ! command -v setpriv useradd python3 >/dev/null; then echo "skip $NAME: not root, or no setpriv, useradd or python3"
+else
+  P="lt$$-"
+  trap 'for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do userdel "$u" 2>/dev/null; done
+        getent group "${P}dockersock" >/dev/null && groupdel "${P}dockersock"; rm -rf "$TMP"' EXIT
+  R="$TMP/root"; mkdir -p "$R" "$TMP/dk"
+  cp "$ROOT"/{repo-looper,looper-lib.sh,looper-docker,looper-docker-broker,looper-pkill} "$R/"
+  printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n' "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
+  chmod 755 "$TMP" "$TMP/bin" "$TMP/dk/docker"; chmod 666 "$TMP/dk/log"; chmod -R a+rX "$R" "$TMP/bin" "$TMP/dk"
+  issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
+  areas "touches 4 a.txt" "touches 5 src/b/"
+  cat > "$FIX/claude.sh" <<'EOS'
+o=$(( 9 - ISSUE )); p="$FIX/probe-$ISSUE"; wt="$FIX/work/alpha/worktrees"
+id -un > "$p"
+bash -c 'exec -a "lt-sleep-$0" sleep 120' "$ISSUE" & echo $! > "$FIX/pid-$ISSUE.new"; mv "$FIX/pid-$ISSUE.new" "$FIX/pid-$ISSUE"
+for i in $(seq 300); do [[ -s "$FIX/pid-$o" ]] && break; sleep 0.1; done
+op="$(cat "$FIX/pid-$o")"
+[[ -e "/proc/$op" ]] || echo "the other's process is gone before the probe" >> "$p"
+! kill -0 "$op" 2>/dev/null || echo "signalled the other child" >> "$p"
+! pkill -f "lt-sleep-$o" 2>/dev/null || echo "pkilled the other child" >> "$p"
+! kill -0 "$LOOPER_LANDER_PID" 2>/dev/null || echo "signalled the lander" >> "$p"
+! cat "/proc/$LOOPER_LANDER_PID/environ" >/dev/null 2>&1 || echo "read the lander's environ" >> "$p"
+! cat "/proc/$op/environ" >/dev/null 2>&1 || echo "read the other's environ" >> "$p"
+! grep -qs s3cret-withheld /proc/[0-9]*/environ || echo "read a withheld credential" >> "$p"
+! env | grep -q s3cret-withheld || echo "holds a withheld credential" >> "$p"
+! ls "$wt/$o" >/dev/null 2>&1 || echo "read the other's worktree" >> "$p"
+! cat "$FIX"/project/looper-runs/*-issue-"$o"/prompt.md >/dev/null 2>&1 || echo "read the other's run record" >> "$p"
+if [[ -S /var/run/docker.sock ]]; then ! [[ -r /var/run/docker.sock || -w /var/run/docker.sock ]] || echo "reaches the docker socket" >> "$p"; fi
+docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused its worktree" >> "$p"
+! docker run --rm -v /etc:/e img true 2>> "$p.docker" || echo "docker mounted /etc" >> "$p"
+touch "$FIX/probed-$ISSUE"
+for i in $(seq 300); do [[ -e "$FIX/probed-$o" ]] && break; sleep 0.1; done
+kill "$(cat "$FIX/pid-$ISSUE")" || echo "could not stop its own process" >> "$p"
+echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" &&
+  "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "committed" &&
+  "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true || echo "land failed" >> "$p"
+jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
+EOS
+  git -C "$FIX/origin.git" config core.sharedRepository 0777; chmod -R a+rwX "$FIX"
+  T="$ROOT"; ROOT="$R"
+  drain "${ROOM[@]}" LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH"
+  ROOT="$T"; LOOPER_MEM="$(sed -n 's/.*limited to \([0-9]*m\) of memory.*/\1/p' "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+  for n in 4 5; do
+    [[ "$(cat "$FIX/probe-$n")" == "$P$n" ]] || fail "#$n's model: $(cat "$FIX/probe-$n" "$FIX/probe-$n.docker" 2>&1)"
+    grep -q "outside this child's own directories" "$FIX/probe-$n.docker" || fail "#$n's docker: $(cat "$FIX/probe-$n.docker")"
+    grep -qxF "${P}docker run --memory $LOOPER_MEM --memory-swap $LOOPER_MEM --label io.tacplus.looper.owner=$P$n --rm -v $FIX/work/alpha/worktrees/$n:/w img true" "$TMP/dk/log" ||
+      fail "#$n's docker ran: $(cat "$TMP/dk/log")"
+    [[ "$(stat -c %U "$FIX/work/alpha/worktrees/$n")" == "$P$n" ]] || fail "#$n's worktree is $(stat -c %U "$FIX/work/alpha/worktrees/$n")'s"
+  done
+  ! grep -q /etc "$TMP/dk/log" || fail "a container mounted /etc: $(cat "$TMP/dk/log")"
+  has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "You run as your own user, ${P}4 (looper#68)"
+  [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main); $OUT"
+  closed 4; closed 5
+  has "$OUT" "#4: closed"; has "$OUT" "#5: closed"
+  ! getent passwd "${P}plan" >/dev/null || [[ "$(stat -c %U "$(ls -d "$FIX"/project/looper-runs/*-plan | head -1)")" == "${P}plan" ]] || fail "the plan's model"
+  pass
+fi
 
 # Between conflicting issues the plan ranks (looper#39, tacplus#215): a
 # land-pending issue first, then a bug before a feature, then priority, then

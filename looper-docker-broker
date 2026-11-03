@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-docker-broker: the only way a looper's model reaches Docker
+# (looper#68). Each child's model runs as its own unprivileged user, with no
+# access to the Docker socket, which is root on the runner: its `docker` is
+# looper-docker, which calls this broker. The broker runs as a user of its own
+# (looper-docker, in the socket's group), and runs looper-docker's checks for
+# the caller, then the real docker, with the caller's stdin, stdout and stderr.
+#
+#   looper-docker-broker serve SOCKET CONF REAL_DOCKER
+#       listens on SOCKET. A caller is told by its uid (SO_PEERCRED, which it
+#       cannot forge), and is served only if CONF/<uid> exists: lines
+#       owner=<user>, roots=<dir>[:<dir>...] (what its containers may mount)
+#       and memory=<docker size> (its containers' limit), written by
+#       repo-looper as root. The checks run as looper-docker in
+#       LOOPER_DOCKER_BROKERED mode, in the caller's working directory, with
+#       an environment of their own: the caller's only as
+#       LOOPER_DOCKER_ENV_<name>, read for a `-e NAME` with no value.
+#   looper-docker-broker call SOCKET ARGS...
+#       the caller's side: sends ARGS, its working directory, its environment
+#       and its stdin, stdout and stderr (SCM_RIGHTS) and exits as docker did.
+#       When it is stopped, the docker it asked for is stopped too.
+import json
+import os
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def refuse(fd, msg):
+    try:
+        os.write(fd, f"docker (looper): {msg}\n".encode())
+    except OSError:
+        pass
+
+
+def recv_exact(conn, n):
+    b = b""
+    while len(b) < n:
+        c = conn.recv(n - len(b))
+        if not c:
+            raise EOFError
+        b += c
+    return b
+
+
+def read_conf(path):
+    conf = {}
+    with open(path) as f:
+        for line in f:
+            k, _, v = line.rstrip("\n").partition("=")
+            conf[k] = v
+    return conf
+
+
+def serve_one(conn, confdir, real, validator):
+    fds = []
+    try:
+        _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+        msg, anc, _, _ = conn.recvmsg(8, socket.CMSG_SPACE(3 * struct.calcsize("i")))
+        for level, kind, data in anc:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                fds += list(struct.unpack(f"{len(data) // 4}i", data[: len(data) - len(data) % 4]))
+        if len(fds) != 3 or len(msg) != 8:
+            return
+        req = json.loads(recv_exact(conn, struct.unpack("!Q", msg)[0]))
+        try:
+            conf = read_conf(os.path.join(confdir, str(uid)))
+        except OSError:
+            refuse(fds[2], f"uid {uid} is no looper model's: the broker serves only the users repo-looper made (looper#68)")
+            conn.sendall(struct.pack("!i", 125))
+            return
+        env = {"PATH": SAFE_PATH, "HOME": os.environ.get("HOME", "/"), "LANG": "C.UTF-8",
+               "LOOPER_DOCKER_BROKERED": "1", "LOOPER_REAL_DOCKER": real,
+               "LOOPER_DOCKER_OWNER": conf.get("owner", ""), "LOOPER_DOCKER_ROOTS": conf.get("roots", ""),
+               "LOOPER_CHILD_MEMORY": conf.get("memory", "")}
+        if os.environ.get("DOCKER_HOST"):
+            env["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
+        for k, v in req.get("env", {}).items():
+            if k.isidentifier() and "\0" not in v:
+                env["LOOPER_DOCKER_ENV_" + k] = v
+        try:
+            p = subprocess.Popen([validator] + [str(a) for a in req["argv"]], stdin=fds[0], stdout=fds[1],
+                                 stderr=fds[2], cwd=req["cwd"], env=env, start_new_session=True)
+        except OSError as e:
+            refuse(fds[2], f"cannot run docker in {req.get('cwd')}: {e.strerror}")
+            conn.sendall(struct.pack("!i", 125))
+            return
+        for fd in fds:
+            os.close(fd)
+        fds = []
+
+        # The caller gone (stopped, killed): its docker is stopped too.
+        def watch():
+            try:
+                conn.recv(1)
+            except OSError:
+                pass
+            if p.poll() is None:
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+        threading.Thread(target=watch, daemon=True).start()
+        rc = p.wait()
+        conn.sendall(struct.pack("!i", rc if rc >= 0 else 128 - rc))
+    except (OSError, EOFError, ValueError, KeyError):
+        pass
+    finally:
+        for fd in fds:
+            os.close(fd)
+        conn.close()
+
+
+def serve(path, confdir, real):
+    validator = os.path.join(os.path.dirname(os.path.realpath(__file__)), "looper-docker")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(path)
+    # Anyone may connect: the uid decides (SO_PEERCRED).
+    os.chmod(path, 0o666)
+    s.listen(64)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    while True:
+        conn, _ = s.accept()
+        threading.Thread(target=serve_one, args=(conn, confdir, real, validator), daemon=True).start()
+
+
+def call(path, argv):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except OSError as e:
+        print(f"docker (looper): the looper's docker broker at {path} does not answer ({e.strerror})", file=sys.stderr)
+        return 125
+    body = json.dumps({"argv": argv, "cwd": os.getcwd(), "env": dict(os.environ)}).encode()
+    s.sendmsg([struct.pack("!Q", len(body))], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("3i", 0, 1, 2))])
+    s.sendall(body)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda n, _: os._exit(128 + n))
+    try:
+        return struct.unpack("!i", recv_exact(s, 4))[0]
+    except (OSError, EOFError):
+        print("docker (looper): the broker ended without an exit status", file=sys.stderr)
+        return 125
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 5 and sys.argv[1] == "serve":
+        serve(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "call":
+        sys.exit(call(sys.argv[2], sys.argv[3:]))
+    else:
+        print(__doc__ or "usage: looper-docker-broker serve SOCKET CONF REAL_DOCKER | call SOCKET ARGS...", file=sys.stderr)
+        sys.exit(2)

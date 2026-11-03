@@ -254,15 +254,16 @@ The kicker still starts one parent per repository (`resource_group`), and reposi
     `tacplus`'s) gets `--memory` and `--memory-swap` of it, from `looper-docker`, the `docker` first on the
     model's PATH (`LOOPER_CHILD_MEMORY`), which refuses a larger `--memory` or none. A container over it is
     OOM-killed alone (exit 137), a failure the child sees, where one unlimited `cargo kani` took the runner VM
-    down with the parent, the lander and every child. The limit is per container, and not a boundary (the real
-    docker by its path, `docker compose`, `docker build`'s containers and what runs in the job's own container are
-    not limited; PROPOSALS.md); the land's gates, in the parent, are not limited either. Nor do the children
-    have processes of their own: the job is one PID namespace and every model runs as root beside the lander, so
-    a model's `pkill -f 'just gates'` stopped another child's land under way (tacplus#222, looper#61). Every model
-    finds `looper-pkill` first on its PATH as `pkill`: it signals only the matching processes with the run's
-    `LOOPER_MODEL_RUN` in their environment (each process the model starts) and names the others it spared, and
-    the prompt's rule 4 says to stop a process by its PID, never by a pattern. It is a guard, not a boundary
-    (`kill <pid>` reaches any process; PROPOSALS.md);
+    down with the parent, the lander and every child. The limit is per container (`docker build`'s containers and
+    what runs in the job's own container are not limited; PROPOSALS.md); the land's gates, in the parent, are not
+    limited either. The job is one PID namespace, and a model's `pkill -f 'just gates'` once stopped another
+    child's land under way (tacplus#222, looper#61), so **each child's model runs as its own unprivileged user**
+    (looper#68; [Credentials](#credentials)): it cannot signal another run's processes or the lander's, nor read
+    their `/proc/<pid>/environ`, and its `docker` is `looper-docker` through `looper-docker-broker`, which serves
+    it only its own containers. Every model also finds `looper-pkill` first on its PATH as `pkill`: it signals
+    only the matching processes with the run's `LOOPER_MODEL_RUN` in their environment (each process the model
+    starts) and names the others it spared, and the prompt's rule 4 says to stop a process by its PID, never by a
+    pattern;
   - **the job's time:** in a GitLab job no child starts that would outlast it (`CI_JOB_TIMEOUT` from the job's
     start, `CI_JOB_STARTED_AT`, less the hour the job keeps for itself); the job's own issue always does, and the
     job is sized for the others that are ready with it. When a child ends, the parent plans again and fills its
@@ -1003,12 +1004,30 @@ builds' too. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
 
 ### Credentials
 
-Every looper job's model runs on the same VM, as the same user, as the job that holds its credentials, so whatever
-a job's token may do, an agent may do (looper#25). The model's environment holds no GitLab credential: `repo-looper`
-withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, GitLab's job token and the variables that
-carry it, and any `*ID_TOKEN` (`MODEL_WITHHELD`), and keeps them for its own reads of GitLab. That is not a boundary
-(the model could read its parent's environment): **the boundary is each token's reach**, which is this project's
-and nothing else's, with only the scopes its job uses.
+Every looper job's model runs on the same VM as the job that holds its credentials (looper#25). The model's
+environment holds no GitLab credential: `repo-looper` withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, GitLab's job
+token and the variables that carry it, and any `*ID_TOKEN` (`MODEL_WITHHELD`), and keeps them for its own reads of
+GitLab. Since looper#68 each model also runs as its own unprivileged user, so it cannot read them from its parent's
+`/proc/<pid>/environ` either. **The boundary is still each token's reach**, which is this project's and nothing
+else's, with only the scopes its job uses: the land's gates run a child's commits as the job's user (below).
+
+**What each user reaches** (looper#68; on whenever `repo-looper` runs as root with `setpriv` and `useradd`, off with
+`LOOPER_MODEL_USERS=0`):
+
+| User | Runs | Reaches |
+|---|---|---|
+| the job's (root) | the parent, each child's `repo-looper`, the lander, the land's gates | everything in the job: the withheld credentials, the Docker socket, every worktree and run record |
+| `looper-<issue>`, one per child | that child's models (classify, propose, work), and what they start | its worktree (`LOOPER_WORK/<repo>/worktrees/<issue>`, a clone of the checkout sharing its objects, its `.git` its own), its home (`LOOPER_WORK/<repo>/homes/looper-<issue>`: git's credential helper, `TMPDIR`, `CARGO_HOME`, the tacplus cache) and its run directory, each `0700`/`0750` and its own; the checkout, read-only; its own environment (`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, not the withheld ones); the landing queue (`lands/`, sticky: the lander serves a request only to its issue's user, and gives the result to it alone) and the two locks. Not another user's processes (no signal, no `/proc/<pid>/environ`), files or containers, nor the Docker socket |
+| `looper-plan` | the parent's plan model | the checkout, read-only, and its plan's record |
+| `looper-docker` | `looper-docker-broker`, one per model run, in the socket's group and that model's | the Docker socket, for that model's uid alone (`SO_PEERCRED`): `docker run`/`create` with its memory limit, no `--privileged`, capabilities, devices, host or other containers' namespaces, and no mount outside its worktree and home (symlinks resolved) nor of a named volume; `start`, `stop`, `exec`, `logs`, `rm`, `cp` and the like on its own containers (label `io.tacplus.looper.owner`); `ps` of its own; `build` of a context in its worktree; `pull`, `images`, `inspect`. `compose`, `buildx`, `volume`, `network`, `system`, `login` and the rest are refused |
+
+The scan and the think job run their one model as the job's user, with no child beside it. GitLab's file variables
+(`$CI_PROJECT_DIR.tmp`, world-readable as the runner writes them) are made the job's alone before a child starts, and
+the job's home (`/root`, where the image keeps tools on the PATH such as tacplus's openjml) the models' to pass
+through, not to list, its private parts (`.claude`, `.config`, `.cache/gh`, `.docker`, ...) the job's alone.
+What the boundary is not: the land's gates run each child's commits (its tests) as the job's user, as they must to
+pass the work, so a model reaches the job's user through what it lands (PROPOSALS.md, "The land's gates as a user
+of their own").
 
 | Variable | What it is | Who uses it |
 |---|---|---|
