@@ -1214,6 +1214,10 @@ before it. `set-instance-template` back to the old template returns to the insta
 `BP` tacplus-dev/build's project id). The order matters. Steps 1 to 4 change no running job; step 5 is the one
 restart, and it brings looper#42's keys in only once the image and the gate are in place.
 
+These steps are not applied by hand on jody1-328023 (the hub, 2026-11-03): the runner pools of tacplus-dev/cloud's
+`ci` stack get the baked image, the readiness gate and one VM per job from the start (tacplus-dev/cloud#4). They
+stay here as what that stack does, and as the way to do it by hand.
+
 1. **The bake's identity.** It gets a service account that can only manage the bake's own VMs, disks and images, and
    that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER`
    is the pool `gitlab-loopers` of [Looper identity](#setting-it-up-the-hub-with-jodys-approval-as-recorded-on-looper28),
