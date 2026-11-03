@@ -103,8 +103,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by lo
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43)
-- **Known gaps:** until the hub sets `LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"` in gitlab.com/tacplus-dev/looper's
-  pipeline file (README, Infrastructure, #55), tacplus's jobs stay on runner 57939705, two children a job; until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
+- **Known gaps:** tacplus's jobs run on the 16-CPU pool, five children a job (#55), but through the hub's inline
+  `looper-plan` in gitlab.com/tacplus-dev/looper's pipeline file, not `looper-dispatch plan` (#56); until the hub applies README's "A fresh VM is ready before its job" (#43: the bake's service
   account and WIF binding, the first image, the templates, `instance_ready_command`), a fresh worker installs and
   restarts Docker at boot under its first job, which fails in preparation and is retried; the bake's IAM role and
   `runner-image build` have not run against GCP (no looper may change IAM or create VMs), and #43's acceptance (twenty
