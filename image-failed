@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# image-failed: what the image workflow does when its run on main fails
+# (looper#58). A land does not wait for the image build, so a failed build
+# would otherwise go unseen while the loopers keep running the last image: it
+# opens a `bug` issue here, or comments on the one already open, with the run,
+# the commit and the tail of the failed step's log.
+#
+#   image-failed   from the workflow's environment: GH_TOKEN (issues: write,
+#                  actions: read), GITHUB_REPOSITORY, GITHUB_SHA, GITHUB_RUN_ID,
+#                  GITHUB_SERVER_URL
+set -euo pipefail
+TITLE="The looper image is not published: the image workflow fails on main"
+REPO="$GITHUB_REPOSITORY"
+RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/$GITHUB_RUN_ID"
+
+if log="$(gh run view "$GITHUB_RUN_ID" --repo "$REPO" --log-failed 2>/dev/null)"; then
+  log="$(tail -n 40 <<<"$log")"
+else
+  log="(the failed step's log could not be read; see the run)"
+fi
+body="The \`image\` run $RUN_URL failed on main at ${GITHUB_SHA::7}, so \`ghcr.io/tacplus-dev/looper:main\` was not published at that commit: the loopers keep running the last image published.
+
+The tail of the failed step's log:
+\`\`\`
+$log
+\`\`\`"
+
+open="$(gh issue list --repo "$REPO" --state open --label bug --search "\"$TITLE\" in:title" --json number,title |
+  jq -r --arg t "$TITLE" '[.[] | select(.title == $t)][0].number // empty')"
+if [[ -n "$open" ]]; then
+  gh issue comment "$open" --repo "$REPO" --body-file - <<<"$body"
+  echo "image-failed: commented on #$open"
+else
+  gh issue create --repo "$REPO" --title "$TITLE" --label bug --body-file - <<<"$body"
+fi

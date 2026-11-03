@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The image workflow runs the full gate set from gates.yaml** (2026-11-03, #58): `.github/workflows/image.yml`'s
+  Test step lists the tests by hand and has drifted from gates.yaml's `full` (no `looper-suggest`, `looper-trace`
+  nor `image-failed` tests). Reading `full.run` from gates.yaml there would keep the image's tests the land's.
+- **Report the image's revision against main's head** (2026-11-03, #58): the nightly recap (#57) should say whether
+  `ghcr.io/tacplus-dev/looper:main`'s `org.opencontainers.image.revision` is main's head, so a stale image is seen
+  even when no run failed (cancelled runs open no issue); asked on #57.
 - **A suggestion's sameness beyond its name** (2026-11-01, #50): `looper-suggest` refuses a rejected or deferred
   suggestion raised again by its slug or its name; one reworded under another name passes the check, and only the
   prompt (read every rejected one first) guards it. The doppelganger panel's pre-screen (doppelganger#10), or a

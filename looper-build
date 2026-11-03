@@ -213,12 +213,15 @@ cmd_plan() {
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"' "$BUILD_REPO")" ||
     verdict fail "no read-only GitHub token (the tacplus-reader app)"
   export BUILD_GITHUB_TOKEN; git_credentials
+  local src="$BUILD_OUT/plan-src" image
   if [[ -z "${BUILD_SHA:-}" ]]; then   # a nightly: the main branch as it is now
-    BUILD_SHA="$(git ls-remote "$(repo_url)" refs/heads/main 2>/dev/null | cut -f1)"
+    # From a repository of its own: the one it runs in (an Actions checkout's
+    # extraheader, looper#58) has no say in what GitHub is sent.
+    rm -rf "$src"; git init -q "$src"
+    BUILD_SHA="$(git -C "$src" ls-remote "$(repo_url)" refs/heads/main 2>/dev/null | cut -f1)" || true
     [[ "$BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || verdict fail "$BUILD_ORG/$BUILD_REPO has no main branch to scan"
     log "nightly: $BUILD_REPO main is $BUILD_SHA"
   fi
-  local src="$BUILD_OUT/plan-src" image
   fetch_commit "$src"
   check_release "$src"
   image="$(read_pin "$src")"

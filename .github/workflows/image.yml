@@ -4,7 +4,8 @@
 # Runs the tests, then builds the looper image on every push to main (main,
 # main-<sha>) and on a vX.Y.Z tag (X.Y.Z, X.Y, latest), smoke-tests it, and
 # pushes it to ghcr. arm64: the build hosts (this Mac under colima, the arm64
-# runner) are arm64.
+# runner) are arm64. A failed run on main opens or updates a bug issue
+# (image-failed, looper#58): a land does not wait for this build.
 name: image
 on:
   push:
@@ -49,3 +50,16 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$W:$W" -e LOOPER_WORK="$W" -e GH_TOKEN \
             "$IMAGE:build" looper-smoke
           for t in $TAGS; do docker tag "$IMAGE:build" "$IMAGE:$t"; docker push "$IMAGE:$t"; done
+  report:
+    needs: image
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open or update the bug issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./image-failed

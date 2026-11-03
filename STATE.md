@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by looper (#51).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#58).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -102,7 +102,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-02 by lo
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
-  runner image and readiness gate (#43)
+  runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
+  not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
 - **Known gaps:** gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
   `looper-plan` runs `looper-dispatch plan` (#56, tested against the hub's former inline plan), but it takes effect
   when the hub copies it there; until then that pipeline plans with its inline script (tacplus's jobs on the 16-CPU

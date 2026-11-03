@@ -307,6 +307,11 @@ NAME=""
 fail() { echo "FAIL $NAME: $*" >&2; for f in "$TMP/err" "$TMP/api.log" "$TMP/docker.log"; do [[ -f "$f" ]] && cat "$f" >&2; done; exit 1; }
 pass() { echo "ok $NAME"; }
 n=0
+# The directory a build runs in is a checkout whose own config sends GitHub
+# another credential, as actions/checkout leaves one (looper#58): looper-build
+# must not read it, whichever directory it is started in.
+cwd="$TMP/checkout"; git init -q "$cwd"
+git -C "$cwd" config http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf x-access-token:ghs_checkout | base64)"
 # looper-build, as a build job runs it: a clean environment (no looper's
 # credentials) with the app's variables, a copy of its key file, the inputs.
 build() { # [VAR=value...] -- args
@@ -314,12 +319,12 @@ build() { # [VAR=value...] -- args
   n=$((n + 1)); OUT="$TMP/out-$n"; KEY="$TMP/key-$n.pem"; mkdir -p "$OUT" "$TMP/home"
   cp "$TMP/app.pem" "$KEY"
   : > "$TMP/api.log"; : > "$TMP/docker.log"; : > "$TMP/gcloud.log"; : > "$TMP/syft.log"; : > "$SRV/log"
-  env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TMPDIR="$TMP" \
+  (cd "$cwd" && env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TMPDIR="$TMP" \
     HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem" \
     GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
     TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" TACPLUS_READER_APP_KEY="$KEY" \
     CI_JOB_TOKEN=glcbt-stub CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1 \
-    BUILD_REPO=demo BUILD_OUT="$OUT" "${e[@]}" "${CMD:-$ROOT/looper-build}" "$@"
+    BUILD_REPO=demo BUILD_OUT="$OUT" "${e[@]}" "${CMD:-$ROOT/looper-build}" "$@")
 }
 verdict_is() { # expected (a prefix)
   [[ -f "$OUT/build-verdict" ]] || fail "no build-verdict"
@@ -558,7 +563,8 @@ grep -qxF '    BUILD_SCAN_KIND: "release"' "$OUT/build-gates.yml" || fail "not a
 pass
 
 NAME="plan: a nightly scans the main branch as it is, and is no release"
-build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+! grep -q ghs_checkout "$SRV/log" || fail "GitHub got the checkout's credential: $(cat "$SRV/log")"
 main_sha="$(git -C "$work" rev-parse main)"
 grep -qxF "    BUILD_SHA: \"$main_sha\"" "$OUT/build-gates.yml" || fail "not main's head $main_sha"
 grep -qxF '    BUILD_SCAN_KIND: "nightly"' "$OUT/build-gates.yml" || fail "not a nightly's checks"

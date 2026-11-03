@@ -69,7 +69,10 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   is checked against its release's `checksums.txt` and cached under the work directory. The work
   directory is under the runner's `/builds` bind mount, the same path on the worker and in every
   container, so sibling containers see the same files. `looper-smoke` (run on every image build with
-  the host's docker socket) generates a Go repository through it.
+  the host's docker socket) generates a Go repository through it. A land does not wait for the image
+  build (GitHub Actions' `image` workflow, after the push to main): when a run on main fails, `image-failed`
+  opens a `bug` issue here, or comments on the one open, with the run, the commit and the failed step's log
+  (looper#58; `tests/image-failed.test.sh`).
 - **GitHub credentials in containers** (looper#11): since tacplus 2.4 a repository's `depends` resolve
   through the private `tacplus-dev/registry`, so tacplus clones from GitHub in its container. The wrapper
   gives it, through its environment alone (`DOCKER_GITHUB_CREDS` in `looper-lib.sh`), a git credential

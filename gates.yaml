@@ -4,7 +4,7 @@
 # full. Each set's run is a shell command at the root of the checkout, with
 # LOOPER_GATES_BASE the main the land is rebased on.
 full:
-  run: tests/looper-port.test.sh && tests/looper-docker.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh
+  run: tests/looper-port.test.sh && tests/looper-docker.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh
   minutes: 30
   paths: [/repo-looper, /looper-lib.sh, /looper-dispatch, /looper-docker, /Dockerfile, tests/git-server.py, tests/forge.test.sh, tests/repo-looper.test.sh, tests/looper-dispatch.test.sh]
 # The planning files and the docs: what CI checks of them.
@@ -46,3 +46,8 @@ trace:
   run: tests/looper-trace.test.sh
   minutes: 1
   paths: [/looper-trace, tests/looper-trace.test.sh]
+# What a failed image build on main does (looper#58); the workflow itself runs only in Actions.
+image:
+  run: tests/image-failed.test.sh
+  minutes: 1
+  paths: [/image-failed, tests/image-failed.test.sh, .github/workflows/image.yml]
