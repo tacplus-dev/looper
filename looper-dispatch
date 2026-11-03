@@ -98,17 +98,41 @@ landing_repos() {
   forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name' | sort -u
 }
 
+# Each repository's reports against its cap, its ready issues with no report
+# waiting at the cap and its lands queued (open issues labelled looper:landing,
+# a line each in LANDING; `?` when GitHub could not say), as one line,
+# `capacity: <repo> reports=N cap=N waiting=<n,...> landing=N; ...`, for every
+# repository with any of them (`capacity: none` for none): the nightly recap
+# reads it from the kicker's log, a pass every LOOPER_INTERVAL (looper#72).
+capacity_line() { # jobs ready landing
+  local repo n k cap w l out=()
+  for repo in $( { grep -E '^looper-.+-[0-9]+$' <<<"$1" | sed -E 's/^looper-(.+)-[0-9]+$/\1/'
+                   cut -d' ' -f1 <<<"$2"; [[ "$3" == "?" ]] || printf '%s\n' "$3"; } | grep . | sort -u); do
+    k="$(busy "$repo" "$1" | grep -c . || true)"; cap="$(repo_cap "$repo")"; w=""
+    if (( k >= cap )); then
+      while read -r _ n; do busy "$repo" "$1" "$n" >/dev/null || w+="${w:+,}$n"; done < <(awk -v r="$repo" '$1 == r' <<<"$2")
+    fi
+    if [[ "$3" == "?" ]]; then l="?"; else l="$(grep -cxF -- "$repo" <<<"$3" || true)"; fi
+    out+=("$repo reports=$k cap=$cap waiting=$w landing=$l")
+  done
+  (( ${#out[@]} )) || out=(none)
+  l="$(printf '%s; ' "${out[@]}")"
+  log "capacity: ${l%; }"
+}
+
 # One pass: release the orphans, then start the pipeline for the first
 # repository with a ready issue no report job holds and a free report (its
 # cap, caps.yaml), in the order of ready_all_by_repo (priority:high first,
 # looper#31), or with commits queued to land and no manager job (looper#70).
 pass() {
-  local jobs ready repo n
+  local jobs ready repo n landing
   jobs="$(active_jobs)"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
   ready="$(ready_all_by_repo)"
+  landing="$(forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name')" || landing="?"
+  capacity_line "$jobs" "$ready" "$landing"
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" "$n" >/dev/null && continue
@@ -117,7 +141,7 @@ pass() {
     log "started the $PIPELINE pipeline ($repo#$n is ready)"
     return 0
   done <<<"$ready"
-  for repo in $(landing_repos); do
+  for repo in $([[ "$landing" == "?" ]] || sort -u <<<"$landing"); do
     grep -qx "$(manager_job "$repo")" <<<"$jobs" && continue
     start_pipeline
     log "started the $PIPELINE pipeline ($repo has commits queued to land and no manager)"

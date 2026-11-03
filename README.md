@@ -230,11 +230,12 @@ lander are gone. One job per issue needs none of them.
   *direct report*, `looper-<repo>-<n>` running `repo-looper --repo <repo> --issue <n>`, in
   [priority](#priority) order, up to the repository's **cap** less its reports already active. The caps are
   committed in `caps.yaml` (in the image beside `looper-lib.sh`): 6 for tacplus, 3 for every other repository
-  (`default`). The nightly recap is to say when one needs adjusting. An issue whose report is created, pending,
+  (`default`). The nightly recap says when one needs adjusting ([Nightly recap](#nightly-recap), looper#72). An issue whose report is created, pending,
   waiting or running gets no other (`resource_group: looper-<repo>-<n>`), and the plan's log says why an issue
   waits (`alpha#7 waits: alpha is at its cap of 3 reports`). The kicker starts the pipeline when a ready issue has
   no report and its repository is under its cap, or when commits are queued to land and the repository has no
-  manager job. Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
+  manager job. Each pass logs a `capacity:` line, for the recap: every repository's active reports against its cap,
+  its ready issues waiting at the cap and its lands queued (`alpha reports=3 cap=3 waiting=5 landing=1; ...`). Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
   tacplus-dev/cloud's pools (whose containers share VMs) once it exists: until then their runner tags are as before.
 - **A report** works its issue alone, in its own clone (`LOOPER_WORK/<repo>/issues/<n>`) on its own branch
   (`looper/<repo>-<n>`), as its own unprivileged user (looper#68), with the per-issue flow below unchanged:
@@ -272,7 +273,7 @@ lander are gone. One job per issue needs none of them.
     ends: the kicker starts the next one.
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group
+tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group, the pass's capacity line
 tests/repo-looper.test.sh       # reports-in-parallel, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short
 ```
 
@@ -526,6 +527,28 @@ GitHub Actions' nightly, release and image workflows of every repository, Cloud 
 `org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
 catches a stale image when no run failed. A source it cannot read is named in `sources`, never guessed.
 
+**Managers, caps and capacity** (looper#72; `tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`; Jody:
+"recap should let us know if we need to adjust", "if builds are backing up somebody tells me"):
+
+- **Per manager** (`managers`, from its job's log, [Managers and direct reports](#managers-and-direct-reports)):
+  report-to-merge time (a land queued to merged, by `merging #N (..., queued T)` and its verdict line), the hours lands
+  waited for it, the conflicts it resolved by regenerating (`#N: resolved its conflicts by regenerating: ...`)
+  against those it sent back, red gates, lands left for the next manager, redone work (a land of an issue again after
+  a send-back or red), and from GitHub each merge's build status (`LOOPER_RECAP_BUILD_CONTEXT`, `tacplus-dev/build`:
+  failure or error is a red main after it) and the reverts on main (`Revert "...`, `This reverts commit ...`). Items:
+  a red main and a revert always; a report-to-merge p90 over `LOOPER_RECAP_MERGE_MINUTES` (120); 3 send-backs.
+- **Per repository's cap** (`caps`, from the kicker's `capacity:` lines, each standing for the time to the next pass of
+  its job, `LOOPER_RECAP_PASS` 180 seconds for the last): the hours its ready issues waited at the cap, by issue, how
+  often (and how long) all its reports were busy, its merge backlog (lands queued, p90 and max over the passes). It
+  advises raising the cap (`cap/<repo>/raise`) when ready issues waited `LOOPER_RECAP_CAP_WAIT_HOURS` (1) at it and
+  the backlog is under `LOOPER_RECAP_BACKLOG` (3), lowering it (`cap/<repo>/lower`) when the backlog is over, the
+  manager the bottleneck; either only after **two nights running** over the threshold (classify's `running`).
+- **Capacity** (`capacity`), the numbers the hub brings Jody for a manual scale-up: the queue p90 of every job, the
+  issues whose report waited for a VM (its queue less any scan's, `LOOPER_RECAP_VM_WAIT` 300 seconds or more; an
+  item over `LOOPER_RECAP_VM_WAIT_HOURS`, 1) and one more VM's cost a day (`LOOPER_RECAP_VM_MACHINE`, t2a-standard-8,
+  at `LOOPER_RECAP_VM_USD_HOUR`, 0.308, its on-demand list price: set it from the billing). Capacity is manual: the
+  advice is a scale-up for Jody to decide, never an autoscaling change.
+
 **Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
 `suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3
 failures of a class, a queue or prepare p90 over 15 or 5 minutes, an issue held an hour, a land or scan over 60
@@ -541,12 +564,12 @@ the model names the issue instead.
 
 **The recap file**, `suggestions/recap/<YYYY-MM-DD>.md` (`looper-recap report`), committed with the night's
 suggestions and its `.json`: the one-screen summary (jobs, failures by class, slot use, the hours waited and why, the
-longest queues, lands and holds, the image), the recurring items with links to their advice or the issue that covers
+longest queues, lands and holds, the managers, the caps, the capacity, the image), the recurring items with links to their advice or the issue that covers
 them, and the transient list. The hub reads it into Jody's daily report. A night already recorded is left as it is.
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the caps from the kicker's passes (raise, lower, advised two nights running only) and the capacity (waits for a VM, one more VM's cost)
 ```
 
 ## Build pipeline

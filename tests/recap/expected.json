@@ -31,6 +31,78 @@
    }
   ]
  },
+ "capacity": {
+  "one_more_vm": {
+   "machine": "t2a-standard-8",
+   "usd_day": 7.39,
+   "usd_hour": 0.308
+  },
+  "queue_minutes": {
+   "max": 97,
+   "n": 24,
+   "p50": 1,
+   "p90": 20
+  },
+  "waiting_for_vm": {
+   "hours": 1.17,
+   "issues": 2,
+   "jobs": [
+    {
+     "issue": 4,
+     "minutes": 50,
+     "repo": "kernel",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
+    },
+    {
+     "issue": 12,
+     "minutes": 20,
+     "repo": "tacplus",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1200"
+    }
+   ]
+  }
+ },
+ "caps": {
+  "alpha": {
+   "all_busy": 0.0,
+   "all_busy_hours": 0,
+   "backlog": {
+    "max": 0,
+    "p90": 0
+   },
+   "cap": 3,
+   "passes": 39,
+   "waiting": {},
+   "waiting_hours": 0
+  },
+  "kernel": {
+   "all_busy": 0.0,
+   "all_busy_hours": 0,
+   "backlog": {
+    "max": 3,
+    "p90": 3
+   },
+   "cap": 3,
+   "passes": 39,
+   "waiting": {},
+   "waiting_hours": 0
+  },
+  "tacplus": {
+   "all_busy": 0.64,
+   "all_busy_hours": 1.25,
+   "backlog": {
+    "max": 2,
+    "p90": 2
+   },
+   "cap": 6,
+   "passes": 39,
+   "waiting": {
+    "25": 1,
+    "26": 1.25
+   },
+   "waiting_hours": 2.25
+  }
+ },
  "cloud_build": {
   "builds": 2,
   "failed": 1,
@@ -192,6 +264,42 @@
    "summary": "GitHub Actions tacplus/nightly: 1 of 2 runs failed, a later run succeeded"
   },
   {
+   "count": 3,
+   "evidence": [
+    "caps.yaml"
+   ],
+   "key": "cap/kernel/lower",
+   "over": true,
+   "recovered": false,
+   "running": 2,
+   "summary": "kernel: lower its cap of 3 in caps.yaml, its manager behind: all its reports busy in 0% of the kicker's 39 passes (0 h); merge backlog p90 3, max 3 lands (threshold 3)",
+   "wait_hours": 0
+  },
+  {
+   "count": 2,
+   "evidence": [
+    "caps.yaml"
+   ],
+   "key": "cap/tacplus/raise",
+   "over": true,
+   "recovered": false,
+   "running": 2,
+   "summary": "tacplus: raise its cap of 6 in caps.yaml: ready issues waited 2.25 h at it (#25 1 h, #26 1.25 h); all its reports busy in 64% of the kicker's 39 passes (1.25 h); merge backlog p90 2, max 2 lands (threshold 1 h)",
+   "wait_hours": 2.25
+  },
+  {
+   "count": 2,
+   "evidence": [
+    "https://gitlab.com/tacplus-dev/looper/-/jobs/1200",
+    "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
+   ],
+   "key": "capacity/vm",
+   "over": true,
+   "recovered": false,
+   "summary": "2 issues waited 1.17 h for a VM (kernel#4 50 min, tacplus#12 20 min); queue p90 20 min; one more t2a-standard-8 is about $7.39 a day (threshold 1 h; the scale-up is Jody's call)",
+   "wait_hours": 1.17
+  },
+  {
    "count": 1,
    "evidence": [
     "https://console.cloud.google.com/cloud-build/builds/b1"
@@ -320,14 +428,55 @@
    "summary": "tacplus: 1 land on the gates full, up to 150 min (p50 150; threshold 60 min)"
   },
   {
-   "count": 19,
+   "count": 3,
+   "evidence": [
+    "https://gitlab.com/tacplus-dev/looper/-/jobs/1700"
+   ],
+   "key": "manager/tacplus/merge-time",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus: report to merge p90 240 min over 3 merges (p50 80, max 240; threshold 120 min); lands waited 2.58 h for the manager",
+   "wait_hours": 2.58
+  },
+  {
+   "count": 1,
+   "evidence": [
+    "https://github.com/tacplus-dev/tacplus/commit/3333333"
+   ],
+   "key": "manager/tacplus/red-main",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus: main red after 1 of the manager's 3 merges (#22 at 3333333; tacplus-dev/build)"
+  },
+  {
+   "count": 1,
+   "evidence": [
+    "https://github.com/tacplus-dev/tacplus/commit/5555555555555555555555555555555555555555"
+   ],
+   "key": "manager/tacplus/reverts",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus: 1 revert on main (Revert \"codec: frames of any size (#22)\")"
+  },
+  {
+   "count": 1,
+   "evidence": [
+    "https://gitlab.com/tacplus-dev/looper/-/jobs/1700"
+   ],
+   "key": "manager/tacplus/sent-back",
+   "over": false,
+   "recovered": true,
+   "summary": "tacplus: the manager sent 1 branch back on a conflict, resolved 1 by regenerating; redone: #21"
+  },
+  {
+   "count": 22,
    "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs"
    ],
    "key": "queue/tacplus-dev/looper",
    "over": true,
    "recovered": false,
-   "summary": "gitlab.com/tacplus-dev/looper: queue time p90 20 min over 19 jobs (p50 1, max 97; threshold 15 min)"
+   "summary": "gitlab.com/tacplus-dev/looper: queue time p90 20 min over 22 jobs (p50 1, max 97; threshold 15 min)"
   },
   {
    "count": 1,
@@ -395,6 +544,12 @@
     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1310"
    },
    {
+    "job": "looper-kernel-4",
+    "minutes": 50,
+    "project": "tacplus-dev/looper",
+    "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
+   },
+   {
     "job": "looper-tacplus-12",
     "minutes": 20,
     "project": "tacplus-dev/looper",
@@ -411,12 +566,6 @@
     "minutes": 1,
     "project": "tacplus-dev/looper",
     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1002"
-   },
-   {
-    "job": "looper-alpha-7",
-    "minutes": 1,
-    "project": "tacplus-dev/looper",
-    "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1003"
    }
   ],
   "scans": [
@@ -431,7 +580,7 @@
   "alpha": {
    "deferred_lands": 0,
    "holds": {},
-   "jobs": 12,
+   "jobs": 13,
    "lands": {},
    "scan_minutes": [],
    "slots": null,
@@ -444,7 +593,7 @@
   "kernel": {
    "deferred_lands": 0,
    "holds": {},
-   "jobs": 2,
+   "jobs": 3,
    "lands": {},
    "scan_minutes": [],
    "slots": null,
@@ -506,7 +655,7 @@
      "total_hours": 1.6
     }
    },
-   "jobs": 3,
+   "jobs": 4,
    "lands": {
     "full": {
      "count": 1,
@@ -566,6 +715,90 @@
    }
   }
  },
+ "managers": {
+  "alpha": {
+   "deferred": 0,
+   "failed": 0,
+   "jobs": 1,
+   "lands": 1,
+   "merged": 1,
+   "merges": [
+    {
+     "after": "aaaa222",
+     "issue": 5,
+     "set": "docs",
+     "status": "none",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1701"
+    }
+   ],
+   "red_gates": 0,
+   "red_main": [],
+   "redone": [],
+   "report_to_merge_minutes": {
+    "max": 7,
+    "n": 1,
+    "p50": 7,
+    "p90": 7
+   },
+   "resolved": 0,
+   "reverts": [],
+   "sent_back": 0,
+   "waited_hours": 0.03
+  },
+  "tacplus": {
+   "deferred": 1,
+   "failed": 0,
+   "jobs": 1,
+   "lands": 5,
+   "merged": 3,
+   "merges": [
+    {
+     "after": "2222222",
+     "issue": 20,
+     "set": "docs",
+     "status": "success",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1700"
+    },
+    {
+     "after": "3333333",
+     "issue": 22,
+     "set": "full",
+     "status": "failure",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1700"
+    },
+    {
+     "after": "4444444",
+     "issue": 21,
+     "set": "full",
+     "status": "success",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1700"
+    }
+   ],
+   "red_gates": 1,
+   "red_main": [
+    "3333333"
+   ],
+   "redone": [
+    21
+   ],
+   "report_to_merge_minutes": {
+    "max": 240,
+    "n": 3,
+    "p50": 80,
+    "p90": 240
+   },
+   "resolved": 1,
+   "reverts": [
+    {
+     "sha": "555555555555",
+     "title": "Revert \"codec: frames of any size (#22)\"",
+     "url": "https://github.com/tacplus-dev/tacplus/commit/5555555555555555555555555555555555555555"
+    }
+   ],
+   "sent_back": 1,
+   "waited_hours": 2.58
+  }
+ },
  "night": "2026-11-02",
  "projects": {
   "tacplus-dev/build": {
@@ -602,29 +835,29 @@
     "runner_system_failure": 1,
     "timeout": 1
    },
-   "jobs": 20,
+   "jobs": 23,
    "prepare_s": {
     "max": 140,
-    "n": 13,
-    "p50": 90,
+    "n": 16,
+    "p50": 60,
     "p90": 130
    },
    "queue_s": {
     "max": 5820,
-    "n": 19,
+    "n": 22,
     "p50": 60,
     "p90": 1200
    },
    "run_s": {
     "max": 34800,
-    "n": 19,
+    "n": 22,
     "p50": 2100,
     "p90": 7500
    },
    "status": {
     "canceled": 1,
     "failed": 8,
-    "success": 11
+    "success": 14
    }
   }
  },
@@ -632,53 +865,59 @@
   "tacplus-dev arm64 autoscale-16": {
    "boot_to_ready_s": {
     "max": 120,
-    "n": 3,
+    "n": 4,
     "p50": 60,
     "p90": 120
    },
    "disk_pct": {
-    "jobs": 3,
+    "jobs": 4,
     "max": 72,
-    "p50": 60
+    "p50": 55
    },
    "failed_before_ready": 0,
-   "jobs": 3,
-   "vms": 3
+   "jobs": 4,
+   "vms": 4
   },
   "tacplus-dev arm64 autoscaler": {
    "boot_to_ready_s": {
     "max": 140,
-    "n": 12,
+    "n": 14,
     "p50": 50,
     "p90": 130
    },
    "disk_pct": {
-    "jobs": 10,
+    "jobs": 12,
     "max": 45,
-    "p50": 40
+    "p50": 33
    },
    "failed_before_ready": 6,
-   "jobs": 18,
-   "vms": 12
+   "jobs": 20,
+   "vms": 14
   }
  },
  "sources": {
   "cloud-build": "ok",
   "github-actions": "ok",
+  "github-main": "ok",
   "gitlab:tacplus-dev/build": "ok",
   "gitlab:tacplus-dev/cluster": "unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22",
   "gitlab:tacplus-dev/looper": "ok",
   "image": "ok"
  },
  "thresholds": {
+  "backlog": 3,
+  "cap_wait_hours": 1.0,
   "count": 3,
   "disk_pct": 85,
   "hold_hours": 1.0,
   "image_hours": 2.0,
   "land_minutes": 60,
+  "merge_minutes": 120,
   "prepare_p90_s": 300,
   "queue_p90_s": 900,
-  "scan_minutes": 60
+  "scan_minutes": 60,
+  "vm_wait_hours": 1.0,
+  "vm_wait_s": 300
  },
  "window": {
   "from": "2026-11-01T03:00:00Z",

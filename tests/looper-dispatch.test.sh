@@ -222,6 +222,9 @@ jobs "looper-alpha-4 running" "looper-alpha-7 running" "looper-alpha-8 pending"
 printf 'default: 3\n' > "$FIX/caps.yaml"
 CAPS="$FIX/caps.yaml" dispatch run
 ! started || fail "started a pipeline at the cap: $OUT"
+# Each pass logs each repository's reports against its cap, the ready issues
+# waiting at it and the lands queued: the nightly recap's numbers (looper#72).
+grep -q 'capacity: alpha reports=3 cap=3 waiting=5 landing=0$' <<<"$OUT" || fail "capacity: $OUT"
 pass
 
 scenario kick-landing
@@ -229,6 +232,7 @@ issue alpha 4 OPEN "Done, its land queued." approved looper:landing
 dispatch run
 started || fail "no pipeline for a queued land without a manager: $OUT"
 grep -q 'queued to land and no manager' <<<"$OUT" || fail "log: $OUT"
+grep -q 'capacity: alpha reports=0 cap=3 waiting= landing=1$' <<<"$OUT" || fail "capacity: $OUT"
 rm "$FIX/started"
 jobs "looper-alpha-manager running"
 dispatch run

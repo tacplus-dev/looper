@@ -1,0 +1,3 @@
+[0Ksection_start:1793573460:prepare_script[0KRunning on runner-vm-1702 via gitlab-runner-mgr...
+[2026-11-01T22:52:00Z] the model works
+[2026-11-01T23:30:00Z] disk at the end: 30% used of 100G (/builds)

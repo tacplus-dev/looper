@@ -1,0 +1,19 @@
+[0Ksection_start:1793548825:prepare_script[0KRunning on runner-vm-1700 via gitlab-runner-mgr...
+[2026-11-01T16:00:30Z] the manager of tacplus: merging its reports' queued branches, one at a time
+[2026-11-01T16:10:00Z] merging #20 (looper/tacplus-20, queued 2026-11-01T15:40:00Z)
+[2026-11-01T16:55:00Z] #20: landed on main: 1111111..2222222, on the gates docs (every path is docs's: README.md)
+[2026-11-01T16:55:05Z] #20: deleted looper/tacplus-20
+[2026-11-01T17:00:00Z] merging #21 (looper/tacplus-21, queued 2026-11-01T16:20:00Z)
+[2026-11-01T17:01:00Z] #21: not merged (exit 3)
+[2026-11-01T17:30:00Z] merging #22 (looper/tacplus-22, queued 2026-11-01T16:30:00Z)
+[2026-11-01T20:30:00Z] #22: resolved its conflicts by regenerating: Cargo.lock (cargo generate-lockfile)
+[2026-11-01T20:30:00Z] #22: landed on main: 2222222..3333333, on the gates full (a path no set names: src/lib.rs)
+[2026-11-01T20:30:05Z] #22: deleted looper/tacplus-22
+[2026-11-01T21:00:00Z] merging #21 (looper/tacplus-21, queued 2026-11-01T20:40:00Z)
+[2026-11-01T22:00:00Z] #21: landed on main: 3333333..4444444, on the gates full (a path no set names: src/codec.rs)
+[2026-11-01T22:00:05Z] #21: deleted looper/tacplus-21
+[2026-11-01T22:10:00Z] merging #23 (looper/tacplus-23, queued 2026-11-01T22:05:00Z)
+[2026-11-01T22:40:00Z] #23: not merged (exit 4)
+[2026-11-01T23:00:00Z] #24: left queued for the next manager: this job ends in 2h, a land on the gates full takes about 3h
+[2026-11-01T23:00:00Z] the manager stops: its job's time is short; the next manager merges what is queued
+[2026-11-02T01:00:00Z] disk at the end: 40% used of 100G (/builds)

@@ -985,6 +985,8 @@ merge_report() { # issue id sha
   else ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; land_work ) > "$rec/out" 2>&1 || rc=$?; fi
   git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
   JUDGED[$id]=1
+  # The nightly recap counts the conflicts it resolved against those it sent back (looper#72).
+  [[ ! -s "$rec/regenerated" ]] || log "#$n: resolved its conflicts by regenerating: $(paste -sd, - < "$rec/regenerated" | sed 's/,/, /g')"
   if (( rc == 0 )); then log "#$n: $(grep 'landed on main\|nothing to land' "$rec/out" | tail -n 1 | cut -c24-)"; else log "#$n: not merged (exit $rc)"; fi
   # A history request has nothing to merge, and is no merge to report.
   [[ -n "$lines" && "$rc" == 0 && ! -s "$rec/landed" ]] || verdict_comment "$n" "$id" "$rc" "$rec" "$sha" || log "#$n: could not comment the verdict"
@@ -2393,15 +2395,24 @@ and my gut instinct is much of this can be done in parallel"): $ctx/recap.json i
 looper with no model: every job's queue, prepare and run times and failure class, each repository's slot use, the
 hours each ready issue waited and why (no free slot, a conflict and what overlaps, the job's time left, queued behind
 a land, a scan holding the repository), the lands by gate set, the scans, the runner pools, the Actions workflows, the
-Cloud Build builds and the looper image against main. $ctx/recap-classes.json classifies its items: \`transient\` and
-\`once\` are only noted (no advice); each \`recurring\` item (seen on 2 of 7 nights, or over a threshold tonight),
-ranked by \`wait_hours\`, the hours of waiting it would remove, gets advice: a Performance, Operability or Cost
-suggestion, written with the options above plus
+Cloud Build builds and the looper image against main; and (tacplus-dev/looper#72; Jody: "recap should let us know if
+we need to adjust", "if builds are backing up somebody tells me") each manager's score (\`managers\`: report to merge
+time, conflicts resolved against sent back, red gates, a red main after its merges, reverts, redone work), each
+repository's cap (\`caps\`: the hours ready issues waited at it, how often all its reports were busy, its merge
+backlog) and the capacity (\`capacity\`: the queue p90, the issues that waited for a VM, one more VM's cost a day).
+$ctx/recap-classes.json classifies its items: \`transient\` and \`once\` are only noted (no advice); each
+\`recurring\` item (seen on 2 of 7 nights, or over a threshold tonight; a cap's, \`cap/<repo>/raise\` or \`lower\`,
+only two nights running), ranked by \`wait_hours\`, the hours of waiting it would remove, gets advice: a
+Performance, Operability or Cost suggestion, written with the options above plus
     --recap "$night <the item's key>" --cause <its cause> --change <the concrete change: which file, setting or issue> \\
     --gain <the expected gain, in hours or failures a night>
 its \`--cost\` the cost, and an \`--evidence\` with the numbers from recap.json (no advice without numbers). Say where
 work that was serialized could have run in parallel and what would make it safe (the item's \`parallel\`: file-level
-conflicts instead of areas, a fresh job instead of idling, parallel lands of disjoint diffs). Advice counts toward
+conflicts instead of areas, a fresh job instead of idling, parallel lands of disjoint diffs). A cap's advice changes
+caps.yaml in tacplus-dev/looper (\`--change "caps.yaml: <repo>: <n>"\`, the new cap from the hours waited and the
+backlog). Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
+for Jody to decide, its \`--cost\` one more VM a day from \`capacity.one_more_vm\`, its gain the hours of waiting for a
+VM; never an autoscaling change. A manager's red main or revert names the merges. Advice counts toward
 the night's $SUGGEST_MAX, ranked with the rest, Security first, then the hours of waiting removed. When an open
 issue already covers a cause, file nothing for it: write the line \`<the item's key> <owner/repo#n> <why it covers
 it>\` to $1/covered instead. The looper writes the recap file itself (suggestions/recap/$night.md, for Jody's daily

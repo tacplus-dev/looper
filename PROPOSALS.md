@@ -27,7 +27,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   `repository_dispatch`-style wake-up, would cut it.
 - **Caps against the VM** (2026-11-03, #70): `caps.yaml` caps each repository's reports (tacplus 6, the others 3),
   not the always-on VM: three busy repositories and tacplus can ask for 15 report containers at once on one VM.
-  The recap (#72) reports at-cap waits and saturation; a cap on the pool's jobs (the runner's `limit`) bounds it.
+  The recap (#72) reports at-cap waits, saturation and the issues that waited for a VM; a cap on the pool's jobs
+  (the runner's `limit`) bounds it.
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47): the build's checks scan the tree and Trivy the
   Dockerfiles' base images, never the tools our Dockerfile downloads (glab, OSV-Scanner, Trivy, Syft, gitleaks,
   gosec, cargo-deny). The nightly scan found reachable vulnerabilities in four of them by running
@@ -66,6 +67,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   (waiting for the kicker's next pass or GitLab's queue) shows only as its job's queue time, and the image's
   staleness (#58) as hours behind main, not per issue. The kicker could log when it first saw each issue ready, so
   the recap counts every hour from ready to started.
+- **The recap without the retired parent's lines** (2026-11-03, #72): `looper-recap` still parses the parent's plan,
+  hold and lander lines (slot use, held reasons, `queued since`), which #70 retired; they matter only for logs from
+  before it. Once the 7 nights' history holds none, drop them and the report's slot-use line, so the summary shows
+  only the managers, caps and capacity.
+- **One more VM's cost from the billing** (2026-11-03, #72): the recap's cost of a VM a day is
+  `LOOPER_RECAP_VM_USD_HOUR` (the t2a-standard-8 on-demand list price, 0.308) times 24, not what jody1-328023 pays.
+  The Cloud Billing catalog API (`gcloud billing` SKUs) or the billing export would give the real price, disk included.
 - **The recap's thresholds from the history** (2026-11-03, #57): the thresholds are fixed (environment
   `LOOPER_RECAP_*`); once a few weeks of `suggestions/recap/*.json` exist, a p90 against the 7 nights' own p90
   would flag a regression the fixed numbers miss.

@@ -27,7 +27,18 @@
 #       job's time left (its limit would outlast the job), queued behind a land
 #       (the lander's "queued since"), a scan holding the repository (its job
 #       queued while the scan ran), each with what would have let it run in
-#       parallel. The looper image (LOOPER_RECAP_IMAGE, ghcr.io/tacplus-dev/
+#       parallel. Per manager (looper#70, looper-<repo>-manager; looper#72):
+#       its report-to-merge time (a land queued to merged), the hours lands
+#       waited for it, the conflicts it resolved by regenerating against those
+#       it sent back, red gates, lands left for the next manager, redone work
+#       (a land again after a send-back or red), and from GitHub each merge's
+#       build status (a red main after it) and the reverts on main. Per
+#       repository's cap (caps.yaml), from the kicker's capacity lines: the
+#       hours ready issues waited at it, how often all its reports were busy,
+#       its merge backlog, with advice to raise or lower it. The capacity: the
+#       queue p90 of every job, the issues whose report waited for a VM and
+#       one more VM's cost a day, the numbers for a manual scale-up. The
+#       looper image (LOOPER_RECAP_IMAGE, ghcr.io/tacplus-dev/
 #       looper:main) against main's head (looper#58): its revision label, the
 #       commits of main not in it and the latest image workflow run; stale for
 #       LOOPER_RECAP_IMAGE_HOURS (2) is over. Per runner: the VMs its jobs
@@ -43,7 +54,8 @@
 #       the night's items against the 6 nights before it (DIR/<YYYY-MM-DD>.json,
 #       the roadmap's suggestions/recap/): recurring (seen on 2 or more of the 7
 #       nights, or over a threshold tonight: advice, ranked by the hours of
-#       waiting each would remove), transient (seen once, under
+#       waiting each would remove; a cap's only once over its threshold its
+#       `running` nights running, 2), transient (seen once, under
 #       every threshold, and recovered on retry: one line, no advice), or once
 #       (seen once, under every threshold, not recovered: one line, no advice;
 #       recurring if it comes back). JSON on stdout.
@@ -57,7 +69,15 @@
 # Thresholds (environment): LOOPER_RECAP_COUNT (3: failures of a class, in a
 # night), LOOPER_RECAP_QUEUE_P90 (900 s), LOOPER_RECAP_PREPARE_P90 (300 s),
 # LOOPER_RECAP_HOLD_HOURS (1: an issue held back that long), LOOPER_RECAP_LAND_MINUTES
-# (60), LOOPER_RECAP_SCAN_MINUTES (60), LOOPER_RECAP_DISK_PCT (85).
+# (60), LOOPER_RECAP_SCAN_MINUTES (60), LOOPER_RECAP_DISK_PCT (85),
+# LOOPER_RECAP_MERGE_MINUTES (120: a manager's report to merge p90),
+# LOOPER_RECAP_CAP_WAIT_HOURS (1: ready issues waiting at a cap: raise it),
+# LOOPER_RECAP_BACKLOG (3: lands queued, p90 of the passes: lower it),
+# LOOPER_RECAP_VM_WAIT (300 s: a report's wait for a VM that counts),
+# LOOPER_RECAP_VM_WAIT_HOURS (1). One more VM: LOOPER_RECAP_VM_MACHINE
+# (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
+# price; set it from the billing). LOOPER_RECAP_PASS (180 s, the kicker's
+# LOOPER_INTERVAL), LOOPER_RECAP_BUILD_CONTEXT (tacplus-dev/build).
 # Environment: GITLAB_TOKEN (read_api; sent on stdin, never on a command line),
 # LOOPER_BUILD_API (https://gitlab.com/api/v4), LOOPER_RECAP_PAGES (10 pages of
 # 100 jobs a project at most), LOOPER_ORG (tacplus-dev), GH_TOKEN for gh,
@@ -91,7 +111,20 @@ T = {
     "scan_minutes": int(num("LOOPER_RECAP_SCAN_MINUTES", 60)),
     "disk_pct": int(num("LOOPER_RECAP_DISK_PCT", 85)),
     "image_hours": num("LOOPER_RECAP_IMAGE_HOURS", 2),
+    "merge_minutes": int(num("LOOPER_RECAP_MERGE_MINUTES", 120)),
+    "cap_wait_hours": num("LOOPER_RECAP_CAP_WAIT_HOURS", 1),
+    "backlog": int(num("LOOPER_RECAP_BACKLOG", 3)),
+    "vm_wait_s": int(num("LOOPER_RECAP_VM_WAIT", 300)),
+    "vm_wait_hours": num("LOOPER_RECAP_VM_WAIT_HOURS", 1),
 }
+# The kicker's pass (looper-dispatch, LOOPER_INTERVAL): how long one capacity
+# line stands for when no later one of its job says otherwise; a gap longer
+# than PASS_GAP (a pass that logged none) counts as PASS_GAP.
+PASS_S = int(num("LOOPER_RECAP_PASS", 180))
+PASS_GAP = 600
+# One more VM, for the manual scale-up (Jody, 2026-11-03: "somebody tells me and
+# we spin up more vms"): its machine and on-demand price an hour.
+VM = {"machine": ENV.get("LOOPER_RECAP_VM_MACHINE", "t2a-standard-8"), "usd_hour": num("LOOPER_RECAP_VM_USD_HOUR", 0.308)}
 
 
 def die(msg, code=2):
@@ -225,6 +258,16 @@ DISK = re.compile(r"disk at the end: (\d+)% used")
 
 QUEUED = re.compile(r"queued since (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
 
+# The manager's log (looper#70, repo-looper --manage) and the kicker's
+# capacity line (looper-dispatch, a pass every LOOPER_INTERVAL), looper#72.
+MERGING = re.compile(r"\] merging #(\d+) \(\S+, queued (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\)")
+M_LANDED = re.compile(r"\] #(\d+): landed on main: ([0-9a-f]+)\.\.([0-9a-f]+), on the gates (\S+)")
+M_NOT = re.compile(r"\] #(\d+): not merged \(exit (\d+)\)")
+M_RESOLVED = re.compile(r"\] #(\d+): resolved its conflicts by regenerating: (.*)$")
+M_DEFERRED = re.compile(r"\] #(\d+): left queued for the next manager")
+CAPACITY = re.compile(r"\] capacity: (.*)$")
+CAP_REPO = re.compile(r"(\S+) reports=(\d+) cap=(\d+) waiting=([\d,]*) landing=(\d+|\?)")
+
 
 def held_reason(r):
     """A plan's reason an issue waits: its key, and for a conflict what overlaps."""
@@ -332,6 +375,64 @@ def read_log(text, started, finished):
     return out
 
 
+def lines_at(text):
+    """A log's lines, each with the time of its last timestamp so far."""
+    now = None
+    for line in re.split(r"[\r\n]+", text):
+        line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line)
+        m = LOG_TS.search(line)
+        if m:
+            now = when(m.group(1)) or now
+        yield now, line
+
+
+def read_manager(text):
+    """A manager's log (looper#70): each land it judged, from `merging #N
+    (..., queued T)` to its verdict (merged, sent back on exit 3, red on 4,
+    else failed), with the conflicts it resolved by regenerating; and the
+    lands it left queued for the next manager."""
+    out = {"lands": [], "deferred": []}
+    cur, resolved = {}, {}
+    for now, line in lines_at(text):
+        m = MERGING.search(line)
+        if m:
+            cur[m.group(1)] = {"issue": int(m.group(1)), "queued": when(m.group(2)), "start": now}
+            continue
+        m = M_RESOLVED.search(line)
+        if m:
+            resolved[m.group(1)] = [f.strip() for f in m.group(2).split(", ") if f.strip()]
+            continue
+        m = M_LANDED.search(line) or M_NOT.search(line)
+        if m:
+            ld = cur.pop(m.group(1), None)
+            if ld is None:
+                continue
+            ld["end"] = now
+            ld["resolved"] = resolved.pop(m.group(1), [])
+            if m.re is M_LANDED:
+                ld.update(outcome="merged", after=m.group(3), set=m.group(4))
+            else:
+                ld["outcome"] = {"3": "sent_back", "4": "red"}.get(m.group(2), "failed")
+            out["lands"].append(ld)
+            continue
+        m = M_DEFERRED.search(line)
+        if m:
+            out["deferred"].append(int(m.group(1)))
+    return out
+
+
+def read_kicker(text):
+    """The kicker's capacity lines (looper#72): (time, {repo: (reports, cap,
+    [issues waiting at the cap], lands queued or None)}) a pass."""
+    out = []
+    for now, line in lines_at(text):
+        m = CAPACITY.search(line)
+        if m and now is not None:
+            out.append((now, {r: (int(k), int(c), [int(x) for x in w.split(",") if x], None if l == "?" else int(l))
+                              for r, k, c, w, l in CAP_REPO.findall(m.group(1))}))
+    return out
+
+
 def failure_class(job, log):
     r = job.get("failure_reason") or ""
     if log["pull"] and log["prepare_at"] is None or r == "image_pull_failure":
@@ -346,10 +447,14 @@ def failure_class(job, log):
 
 
 def looper_repo(name):
-    """A looper job's (kind, repository): looper-<repo>-<n>, looper-scan-<repo>."""
+    """A looper job's (kind, repository): looper-<repo>-<n>, looper-scan-<repo>,
+    looper-<repo>-manager."""
     m = re.fullmatch(r"looper-scan-(.+)", name or "")
     if m:
         return "scan", m.group(1)
+    m = re.fullmatch(r"looper-(.+)-manager", name or "")
+    if m:
+        return "manager", m.group(1)
     m = re.fullmatch(r"looper-(.+)-(\d+)", name or "")
     if m:
         return "work", m.group(1)
@@ -370,6 +475,7 @@ def collect(until):
            "sources": sources, "projects": {}, "failed_jobs": [], "loopers": {}, "runner_pools": {},
            "longest": {"queues": [], "lands": [], "scans": [], "holds": []}}
     queues, lands, scans, holdl = [], [], [], []
+    passes, managers, vmwait = [], {}, []
 
     for project in projects:
         try:
@@ -386,6 +492,10 @@ def collect(until):
                 text = ""
             c, s, f = when(j.get("created_at")), when(j.get("started_at")), when(j.get("finished_at"))
             lg = read_log(text, s, f)
+            if j.get("name") == "looper-kick":
+                passes.append((j["id"], read_kicker(text)))
+            if looper_repo(j.get("name"))[0] == "manager":
+                lg["manager"] = read_manager(text)
             rows.append((j, lg, c, s, f))
         by_name = {}
         for j, lg, c, s, f in rows:
@@ -428,6 +538,12 @@ def collect(until):
             lp = out["loopers"].setdefault(repo, {"jobs": 0, "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred_lands": 0,
                                                   "scans": [], "scan_runs": [], "queued": []})
             lp["jobs"] += 1
+            if kind == "manager":
+                mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "urls": []})
+                mg["jobs"] += 1
+                mg["lands"] += [dict(x, url=url) for x in lg["manager"]["lands"]]
+                mg["deferred"] += lg["manager"]["deferred"]
+                mg["urls"].append(url)
             if kind == "scan" and rn is not None:
                 lp["scans"].append(rn)
                 lp["scan_runs"].append((s, f))
@@ -472,11 +588,16 @@ def collect(until):
         # held it (GitLab runs one job of a repository at a time).
         runs, held = lp.pop("scan_runs"), {}
         for n, c, s, url in lp.pop("queued"):
+            scan = 0
             for a, b in runs:
                 o = secs(max(a, c), min(b, s))
                 if o and o > 0:
+                    scan += o
                     held[n] = held.get(n, 0) + o
                     holdl.append({"repo": repo, "issue": n, "reason": "scan_holds_repo", "s": o, "url": url})
+            # The rest of its queue it waited for a runner's VM (looper#72).
+            if secs(c, s) - scan >= T["vm_wait_s"]:
+                vmwait.append({"repo": repo, "issue": n, "s": secs(c, s) - scan, "url": url})
         if held:
             lp["holds"]["scan_holds_repo"] = {"count": len(held), "issues": set(held), "s": [held[n] for n in sorted(held)]}
         plans = lp.pop("plans")
@@ -539,6 +660,9 @@ def collect(until):
                           "summary": f"runner {runner}: disk {max(disk)}% used at a job's end (threshold {T['disk_pct']}%)",
                           "evidence": [f"https://gitlab.com/{ENV.get('LOOPER_ORG', 'tacplus-dev')}/looper/-/jobs"]})
 
+    out["managers"] = managers_of(managers, start, until, sources, items)
+    out["caps"] = caps_of(passes, out["managers"], items)
+    out["capacity"] = capacity_of(queues, vmwait, items)
     out["actions"] = actions(start, until, sources, items)
     out["image"] = image_check(until, sources, items)
     out["cloud_build"] = cloud_build(start, until, sources, items)
@@ -550,6 +674,169 @@ def collect(until):
                       "scans": [dict(x, minutes=minutes(x.pop("s"))) for x in top(scans)],
                       "holds": [dict(x, hours=hours(x.pop("s"))) for x in top(holdl)]}
     out["items"] = sorted(items, key=lambda x: x["key"])
+    return out
+
+
+def gh_json(*args):
+    try:
+        return json.loads(run(["gh", "api", *args]))
+    except ValueError:
+        raise Unreadable(f"gh api {args[-1] if args else ''}: not JSON") from None
+
+
+REVERTS = re.compile(r"^Revert \"|^This reverts commit [0-9a-f]{7,}", re.M)
+
+
+def managers_of(managers, start, until, sources, items):
+    """Each manager's score (looper#72; Jody, 2026-11-03: "If there is a problem
+    we are going to hold that manager responsible"): its report-to-merge time
+    (a land queued to merged), the hours lands waited for it, the conflicts it
+    resolved by regenerating against those it sent back, red gates, the lands
+    it left for the next manager, the work redone (a land of an issue again
+    after it was sent back or red), and from GitHub its merges' build status
+    (LOOPER_RECAP_BUILD_CONTEXT, tacplus-dev/build: a red main after its merge)
+    and the reverts on its main."""
+    org = ENV.get("LOOPER_ORG", "tacplus-dev")
+    ctx = ENV.get("LOOPER_RECAP_BUILD_CONTEXT", "tacplus-dev/build")
+    out, bad = {}, []
+    for repo, mg in sorted(managers.items()):
+        lands = sorted(mg["lands"], key=lambda x: (x["end"] or x["start"], x["issue"]))
+        merged = [x for x in lands if x["outcome"] == "merged"]
+        by = lambda o: [x for x in lands if x["outcome"] == o]
+        r2m = [secs(x["queued"], x["end"]) for x in merged]
+        waited = sum(max(0, secs(x["queued"], x["start"]) or 0) for x in lands)
+        redone, seen_bad = [], set()
+        for x in lands:
+            if x["issue"] in seen_bad:
+                redone.append(x["issue"])
+            if x["outcome"] in ("sent_back", "red"):
+                seen_bad.add(x["issue"])
+        merges = []
+        for x in merged:
+            st = None
+            try:
+                got = gh_json(f"repos/{org}/{repo}/commits/{x['after']}/status")
+                st = next((y.get("state") for y in got.get("statuses") or [] if y.get("context") == ctx), "none")
+            except (Unreadable, AttributeError) as e:
+                bad.append(f"{repo} {x['after']} ({e})")
+            merges.append({"issue": x["issue"], "after": x["after"], "set": x["set"], "status": st, "url": x["url"]})
+        reverts = None
+        try:
+            got = gh_json("-X", "GET", f"repos/{org}/{repo}/commits", "-f", "sha=main",
+                          "-f", f"since={stamp(start)}", "-f", f"until={stamp(until)}", "-f", "per_page=100")
+            reverts = sorted(({"sha": c["sha"][:12], "title": (c["commit"]["message"].splitlines() or [""])[0][:120], "url": c.get("html_url")}
+                              for c in got if REVERTS.search((c.get("commit") or {}).get("message") or "")), key=lambda c: c["sha"])
+        except (Unreadable, KeyError, TypeError, AttributeError) as e:
+            bad.append(f"{repo} commits ({e})")
+        red_main = [m for m in merges if m["status"] in ("failure", "error")]
+        d = dist(r2m)
+        sc = out[repo] = {
+            "jobs": mg["jobs"], "lands": len(lands), "merged": len(merged), "sent_back": len(by("sent_back")),
+            "resolved": sum(1 for x in lands if x["resolved"]), "red_gates": len(by("red")), "failed": len(by("failed")),
+            "deferred": len(mg["deferred"]), "redone": sorted(redone),
+            "report_to_merge_minutes": d and {k: minutes(v) if k != "n" else v for k, v in d.items()},
+            "waited_hours": hours(waited), "merges": merges, "red_main": [m["after"] for m in red_main],
+            "reverts": reverts}
+        ev = sorted(set(mg["urls"]))[:5]
+        if red_main:
+            items.append({"key": f"manager/{repo}/red-main", "count": len(red_main), "over": True, "recovered": False,
+                          "summary": f"{repo}: main red after {len(red_main)} of the manager's {len(merged)} merge{'s' * (len(merged) != 1)} "
+                                     f"({', '.join('#%d at %s' % (m['issue'], m['after']) for m in red_main)}; {ctx})",
+                          "evidence": [f"https://github.com/{org}/{repo}/commit/{m['after']}" for m in red_main][:5]})
+        if reverts:
+            items.append({"key": f"manager/{repo}/reverts", "count": len(reverts), "over": True, "recovered": False,
+                          "summary": f"{repo}: {len(reverts)} revert{'s' * (len(reverts) != 1)} on main ({'; '.join(c['title'] for c in reverts)[:200]})",
+                          "evidence": [c["url"] for c in reverts if c["url"]][:5]})
+        if sc["sent_back"]:
+            n = sc["sent_back"]
+            items.append({"key": f"manager/{repo}/sent-back", "count": n, "over": n >= T["count"],
+                          "recovered": all(i in redone for i in {x["issue"] for x in by("sent_back")}),
+                          "summary": f"{repo}: the manager sent {n} branch{'es' * (n != 1)} back on a conflict, resolved {sc['resolved']} by regenerating; "
+                                     f"redone: {', '.join('#%d' % i for i in sc['redone']) or 'none'}",
+                          "evidence": ev})
+        if d and d["p90"] >= T["merge_minutes"] * 60:
+            items.append({"key": f"manager/{repo}/merge-time", "count": d["n"], "over": True, "recovered": False,
+                          "wait_hours": hours(waited),
+                          "summary": f"{repo}: report to merge p90 {minutes(d['p90'])} min over {d['n']} merge{'s' * (d['n'] != 1)} "
+                                     f"(p50 {minutes(d['p50'])}, max {minutes(d['max'])}; threshold {T['merge_minutes']} min); lands waited {hours(waited)} h for the manager",
+                          "evidence": ev})
+    if managers:
+        sources["github-main"] = "ok" if not bad else "partial: " + "; ".join(bad)[:500]
+    return out
+
+
+def caps_of(passes, managers, items):
+    """Each repository's cap (looper#72; Jody: "recap should let us know if we
+    need to adjust"), from the kicker's capacity lines: the hours its ready
+    issues waited at the cap, how often all its reports were busy, its merge
+    backlog (lands queued, a pass). Advice to raise the cap when issues waited
+    at it LOOPER_RECAP_CAP_WAIT_HOURS and the backlog is under
+    LOOPER_RECAP_BACKLOG, to lower it when the backlog is over: the manager
+    is the bottleneck and more reports only queue more lands. Either is
+    advised after two nights running (the item's `running`)."""
+    obs = []
+    for _, ps in sorted(passes):
+        for k, (t, per) in enumerate(ps):
+            nxt = ps[k + 1][0] if k + 1 < len(ps) else None
+            obs.append((t, min(secs(t, nxt), PASS_GAP) if nxt else PASS_S, per))
+    obs.sort(key=lambda x: x[0])
+    out = {}
+    for repo in sorted({r for _, _, per in obs for r in per}):
+        at, busy_s, waits, backlog, cap = 0, 0, {}, [], None
+        for _, d, per in obs:
+            if repo not in per:
+                backlog.append(0)   # no line for it: nothing at work, queued or ready
+                continue
+            k, cap, w, l = per[repo]
+            if k >= cap:
+                at, busy_s = at + 1, busy_s + d
+                for n in w:
+                    waits[n] = waits.get(n, 0) + d
+            if l is not None:
+                backlog.append(l)
+        wh = sum(waits.values())
+        b90 = pct(backlog, 90) or 0
+        out[repo] = {"cap": cap, "passes": len(obs), "all_busy": round(at / len(obs), 2), "all_busy_hours": hours(busy_s),
+                     "waiting_hours": hours(wh), "waiting": {str(n): hours(v) for n, v in sorted(waits.items())},
+                     "backlog": {"p90": b90, "max": max(backlog, default=0)}}
+        why = ((f"ready issues waited {hours(wh)} h at it ({', '.join('#%d %s h' % (n, hours(v)) for n, v in sorted(waits.items()))}); " if waits else "")
+               + f"all its reports busy in {round(100 * at / len(obs))}% of the kicker's {len(obs)} passes ({hours(busy_s)} h)"
+               + f"; merge backlog p90 {b90}, max {out[repo]['backlog']['max']} lands")
+        if b90 >= T["backlog"]:
+            items.append({"key": f"cap/{repo}/lower", "count": b90, "over": True, "recovered": False, "running": 2,
+                          "wait_hours": (managers.get(repo) or {}).get("waited_hours", 0),
+                          "summary": f"{repo}: lower its cap of {cap} in caps.yaml, its manager behind: {why} (threshold {T['backlog']})",
+                          "evidence": ["caps.yaml"]})
+        elif wh >= T["cap_wait_hours"] * 3600:
+            items.append({"key": f"cap/{repo}/raise", "count": len(waits), "over": True, "recovered": False, "running": 2,
+                          "wait_hours": hours(wh),
+                          "summary": f"{repo}: raise its cap of {cap} in caps.yaml: {why} (threshold {whole(T['cap_wait_hours'])} h)",
+                          "evidence": ["caps.yaml"]})
+    return out
+
+
+def capacity_of(queues, vmwait, items):
+    """The numbers the hub brings Jody for a manual scale-up (looper#72;
+    decisions/looper-job-per-issue-2026-11-03.md: "Capacity is manual"): the
+    queue p90 of every job, the issues whose report waited for a VM (its queue
+    less a scan's, LOOPER_RECAP_VM_WAIT or more) and what one more VM costs a
+    day (LOOPER_RECAP_VM_MACHINE at LOOPER_RECAP_VM_USD_HOUR)."""
+    q = dist([x["s"] for x in queues])
+    wh = sum(x["s"] for x in vmwait)
+    vm = dict(VM, usd_hour=whole(VM["usd_hour"]), usd_day=whole(round(VM["usd_hour"] * 24, 2)))
+    out = {"queue_minutes": q and {k: minutes(v) if k != "n" else v for k, v in q.items()},
+           "waiting_for_vm": {"issues": len(vmwait), "hours": hours(wh),
+                              "jobs": [{"repo": x["repo"], "issue": x["issue"], "minutes": minutes(x["s"]), "url": x["url"]}
+                                       for x in sorted(vmwait, key=lambda x: (-x["s"], x["url"]))]},
+           "one_more_vm": vm}
+    if vmwait:
+        items.append({"key": "capacity/vm", "count": len(vmwait), "over": wh >= T["vm_wait_hours"] * 3600, "recovered": False,
+                      "wait_hours": hours(wh),
+                      "summary": f"{len(vmwait)} issue{'s' * (len(vmwait) != 1)} waited {hours(wh)} h for a VM "
+                                 f"({', '.join('%s#%d %s min' % (x['repo'], x['issue'], minutes(x['s'])) for x in sorted(vmwait, key=lambda x: -x['s']))}); "
+                                 f"queue p90 {minutes(q['p90']) if q else '-'} min; one more {vm['machine']} is about ${vm['usd_day']} a day "
+                                 f"(threshold {whole(T['vm_wait_hours'])} h; the scale-up is Jody's call)",
+                      "evidence": sorted(x["url"] for x in vmwait)[:5]})
     return out
 
 
@@ -697,7 +984,11 @@ def classify(night, history):
                "recovered": it["recovered"], "evidence": it.get("evidence", []), "wait_hours": it.get("wait_hours", 0)}
         if it.get("parallel"):
             row["parallel"] = it["parallel"]
-        if len(seen) >= 2 or it["over"]:
+        if it.get("running"):
+            # Advice only after so many nights running over its threshold (a cap, looper#72).
+            row["running"] = next((k for k in range(1, 7) if (d - dt.timedelta(days=k)).isoformat() not in seen), 7)
+            (out["recurring"] if row["running"] >= it["running"] else out["once"]).append(dict(row, needs=it["running"]))
+        elif len(seen) >= 2 or it["over"]:
             out["recurring"].append(row)
         elif it["recovered"]:
             out["transient"].append(row)
@@ -781,6 +1072,28 @@ def report(night, classes, sdir, cov):
     waits = [f"{r} {lp['waits']['hours']} h (" + ", ".join(f"{k} {v}" for k, v in sorted(lp["waits"]["by_reason"].items(), key=lambda x: (-x[1], x[0])) if v) + ")"
              for r, lp in sorted(night["loopers"].items(), key=lambda x: (-x[1]["waits"]["hours"], x[0])) if lp.get("waits", {}).get("hours")]
     L.append("Hours ready issues waited: " + ("; ".join(waits) or "none") + ".")
+    mgs = []
+    for r, m in sorted((night.get("managers") or {}).items()):
+        r2m = m["report_to_merge_minutes"]
+        mgs.append(f"{r} {m['merged']} merged" + (f" (report to merge p50 {r2m['p50']}, p90 {r2m['p90']} min)" if r2m else "")
+                   + f", conflicts resolved {m['resolved']} against {m['sent_back']} sent back, red gates {m['red_gates']}"
+                   + f", main red after {len(m['red_main'])}" + (f" ({', '.join(m['red_main'])})" if m["red_main"] else "")
+                   + f", reverts {'?' if m['reverts'] is None else len(m['reverts'])}"
+                   + f", redone {len(m['redone'])}" + (f" ({', '.join('#%d' % i for i in m['redone'])})" if m["redone"] else "")
+                   + (f", {m['deferred']} left for the next" if m["deferred"] else ""))
+    L.append("Managers: " + ("; ".join(mgs) or "none") + ".")
+    cps = [f"{r} cap {c['cap']}: waited at it {c['waiting_hours']} h"
+           + (f" ({', '.join('#%s' % n for n in c['waiting'])})" if c["waiting"] else "")
+           + f", all busy {round(100 * c['all_busy'])}% of {c['passes']} passes, merge backlog p90 {c['backlog']['p90']}"
+           for r, c in sorted((night.get("caps") or {}).items())]
+    L.append("Caps: " + ("; ".join(cps) or "no kicker pass read") + ".")
+    cp = night.get("capacity")
+    if cp:
+        w, vm = cp["waiting_for_vm"], cp["one_more_vm"]
+        L.append(f"Capacity: queue p90 {(cp['queue_minutes'] or {}).get('p90', '-')} min over {(cp['queue_minutes'] or {}).get('n', 0)} jobs; "
+                 f"{w['issues']} issue{'s' * (w['issues'] != 1)} waited {w['hours']} h for a VM"
+                 + (" (" + ", ".join(f"[{x['repo']}#{x['issue']}]({x['url']}) {x['minutes']} min" for x in w["jobs"][:3]) + ")" if w["jobs"] else "")
+                 + f"; one more {vm['machine']} is about ${vm['usd_day']} a day (${vm['usd_hour']} an hour).")
     im = night.get("image")
     if im:
         L.append(f"Image: {im['ref']} " + ("is at main's head." if im["current"] else
@@ -791,7 +1104,7 @@ def report(night, classes, sdir, cov):
         L.append("Not read: " + "; ".join(gone) + ".")
     L += ["", "## Recurring: advice", "", "Ranked by the hours of waiting each would remove.", ""]
     for x in classes["recurring"]:
-        why = f"{x['nights']} of 7 nights" + (", over its threshold tonight" if x["over"] else "") + \
+        why = (f"{x['running']} nights running" if x.get("needs") else f"{x['nights']} of 7 nights") + (", over its threshold tonight" if x["over"] else "") + \
             (f", {x['wait_hours']} h of waiting" if x.get("wait_hours") else "")
         links = [f"[{nm}](../{f})" for nm, f in adv.get(x["key"], [])] + [f"covered by {c}" for c in cv.get(x["key"], [])]
         L.append(f"- `{x['key']}`: {x['summary']} ({why}). " + ("Advice: " + "; ".join(links) if links else "No advice tonight."))
@@ -800,7 +1113,8 @@ def report(night, classes, sdir, cov):
     L += ["", "## Transient: noted", ""]
     L += [f"- `{x['key']}`: {x['summary']} (once in 7 nights, recovered on retry)." for x in classes["transient"]] or ["None."]
     L += ["", "## Once, not recovered: noted", ""]
-    L += [f"- `{x['key']}`: {x['summary']} (once in 7 nights; recurring if it comes back)." for x in classes["once"]] or ["None."]
+    L += [f"- `{x['key']}`: {x['summary']} (" + (f"{x['running']} night{'s' * (x['running'] != 1)} running; advice after {x['needs']}" if x.get("needs")
+          else "once in 7 nights; recurring if it comes back") + ")." for x in classes["once"]] or ["None."]
     return "\n".join(L) + "\n"
 
 

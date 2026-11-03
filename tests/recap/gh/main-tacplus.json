@@ -1,0 +1,8 @@
+[
+ {"sha": "5555555555555555555555555555555555555555", "html_url": "https://github.com/tacplus-dev/tacplus/commit/5555555555555555555555555555555555555555",
+  "commit": {"message": "Revert \"codec: frames of any size (#22)\"\n\nThis reverts commit 3333333333333333333333333333333333333333.", "committer": {"date": "2026-11-01T23:40:00Z"}}},
+ {"sha": "4444444444444444444444444444444444444444", "html_url": "https://github.com/tacplus-dev/tacplus/commit/4444444444444444444444444444444444444444",
+  "commit": {"message": "codec: the trailer (#21)", "committer": {"date": "2026-11-01T22:00:00Z"}}},
+ {"sha": "3333333333333333333333333333333333333333", "html_url": "https://github.com/tacplus-dev/tacplus/commit/3333333333333333333333333333333333333333",
+  "commit": {"message": "codec: frames of any size (#22)\n\nRevert the old framing's limit.", "committer": {"date": "2026-11-01T20:30:00Z"}}}
+]

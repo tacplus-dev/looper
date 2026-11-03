@@ -7,6 +7,14 @@
    "over": false,
    "recovered": true,
    "summary": "x"
+  },
+  {
+   "key": "cap/kernel/lower",
+   "count": 1,
+   "over": true,
+   "recovered": false,
+   "running": 2,
+   "summary": "x"
   }
  ]
 }

@@ -1,0 +1,12 @@
+{
+  "state": "success",
+  "total_count": 1,
+  "sha": "4444444",
+  "statuses": [
+    {
+      "context": "tacplus-dev/build",
+      "state": "success",
+      "target_url": "https://gitlab.com/tacplus-dev/build/-/pipelines/4444444"
+    }
+  ]
+}

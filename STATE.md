@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#70).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#72).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -82,7 +82,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   (#57, README: Nightly recap), in the same pass: `looper-recap` (in the image) gathers the last 24 hours with no
   model (each job's queue, prepare and run times and failure class; per repository slot use, the hours each ready
   issue waited and why, lands by gate set, scans; runner pools, Actions workflows, Cloud Build, the image against
-  main's head) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
+  main's head; per manager its report-to-merge time, conflicts resolved against sent back, red gates, a red main
+  after its merges and reverts from GitHub, redone work; per repository's cap, from the kicker's `capacity:` line a
+  pass, the hours ready issues waited at it, how often all reports were busy and the merge backlog, with advice to
+  raise or lower it after two nights running; the capacity: queue p90, issues waiting for a VM and one more VM's cost
+  a day, for Jody's manual scale-up, #72) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
   would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
   suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the
   looper commits `suggestions/recap/<night>.md` and `.json` with them, for Jody's daily report. Trace propagation
@@ -120,8 +124,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   `looper-docker-broker`, is in it); the manager's gates still run a report's commits as its job's user, and the
   broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads Cloud Build only
   where the scan job's `gcloud` is logged in, and the image's revision only where it has `docker buildx`: otherwise
-  its `sources` says so; it reads lands' queue waits from the lander's `queued since`, logged from #57 to #70, and not yet the manager's
-  logs, caps or per-issue jobs (#72);
+  its `sources` says so; one more VM's cost is the t2a-standard-8 on-demand list price (`LOOPER_RECAP_VM_USD_HOUR`,
+  0.308), not the billing's; a red main is read from the `tacplus-dev/build` commit status, which only a build of the
+  merged commit sets (#71 redefines the build jobs);
   gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
   `looper-plan` runs `looper-dispatch plan` (#56, tested against the hub's former inline plan), but it takes effect
   when the hub copies it there; until then that pipeline plans with its inline script (tacplus's jobs on the 16-CPU

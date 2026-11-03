@@ -1117,6 +1117,9 @@ lacks "$pp" "security report of other"
 has "$pp" "the nightly recap of $d, the last 24 hours' performance data: $run_dir/context/recap.json"
 has "$pp" "(1 recurring, 0 transient, 0 once)"
 has "$pp" "--recap \"$d <the item's key>\" --cause"; has "$pp" "ranked by \`wait_hours\`, the hours of waiting it would remove"
+# The managers, caps and capacity (looper#72): a cap's advice changes caps.yaml after two nights running; a scale-up is Jody's call.
+has "$pp" "each manager's score (\`managers\`"; has "$pp" "only two nights running"; has "$pp" "\`--change \"caps.yaml: <repo>: <n>\"\`"
+has "$pp" "\`capacity/vm\`'s advice is a scale-up"; has "$pp" "never an autoscaling change"
 has "$pp" "to $run_dir/covered instead"; has "$pp" "Security first"
 # A night with nothing to suggest commits nothing.
 : > "$FIX/scan.sh"; before="$(origin rev-parse main)"
@@ -1550,6 +1553,8 @@ has "$(cat "$FIX/land-4")" "rc 0"; has "$(cat "$FIX/land-4")" "by regenerating t
 lacks "$(landed app.lock)" "<<<<<<<"
 has "$(grep '^alpha#4 The manager merged' "$FIX/comments")" "app.lock (./gen.sh)"
 has "$(cat "$FIX/manager.log")" "#4: deleted looper/alpha-4"
+# Its log says so too: the recap counts the conflicts it resolved (looper#72).
+has "$(cat "$FIX/manager.log")" "#4: resolved its conflicts by regenerating: app.lock (./gen.sh)"
 pass
 
 # Nothing merges on red: the gates fail, main stays, the branch stays, and
