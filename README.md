@@ -725,7 +725,7 @@ status. A release's `publish` makes the SBOM of the image it pushed.
 
 | Tool | Version | Pinned by | Runs on |
 |---|---|---|---|
-| [OSV-Scanner](https://github.com/google/osv-scanner) | 2.7.0 | release sha256 (Dockerfile) | every lockfile: go.mod, Cargo.lock, Maven, pip, npm, NuGet |
+| [OSV-Scanner](https://github.com/google/osv-scanner) | 2.7.0 | module checksum (`go install`, sum.golang.org), built with Go 1.27.3: the release binary's Go is vulnerable (looper#63) | every lockfile: go.mod, Cargo.lock, Maven, pip, npm, NuGet |
 | [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | 1.1.4 | module checksum (`go install`, sum.golang.org) | each Go module: the vulnerable code it calls |
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | 0.20.2 | release sha256 | each Cargo workspace: advisories, licenses, sources, bans |
 | [Semgrep CE](https://github.com/semgrep/semgrep) | 1.183.0 | every wheel's hash (`scanners/requirements.txt`; mcp and OpenTelemetry overridden to fixed versions, #53, smoke-scanned at the image build) | the tree, rules `p/default` |

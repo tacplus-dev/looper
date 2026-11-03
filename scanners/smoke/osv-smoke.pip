@@ -1,0 +1,4 @@
+# The image build's OSV-Scanner smoke (looper#63): parsed as a requirements.txt
+# (-L requirements.txt:), urllib3 1.24.1 must be found vulnerable. Its name keeps it
+# out of the tree scans (osv-scanner -r, Trivy), which look for requirements*.txt.
+urllib3==1.24.1

@@ -52,11 +52,14 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
     tar -xzf "$d/$f" -C "$d" bin/glab; install -m 0755 "$d/bin/glab" /usr/local/bin/glab; rm -rf "$d"; glab --version
 # The build pipeline's security checks (looper-scan, looper#49): every scanner
 # pinned, each release archive checked against its sha256 here (linux/arm64,
-# as the image), govulncheck by its module checksum (go install, sum.golang.org),
+# as the image), govulncheck and OSV-Scanner by their module checksums (go install,
+# sum.golang.org). OSV-Scanner's release binary is built with a Go whose stdlib
+# carries reachable vulnerabilities (looper#63): it is built here with
+# GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum.
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
-ARG OSV_SCANNER_VERSION=2.7.0 OSV_SCANNER_SHA256=4061ef4c021ed3c47f203b818f337e351336cc5cd67c0274fc36bd1dfc728dd7
+ARG OSV_SCANNER_VERSION=2.7.0 GO_TOOLCHAIN=go1.27.3
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
 ARG TRIVY_VERSION=0.76.1 TRIVY_SHA256=e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f
 ARG SYFT_VERSION=1.56.0 SYFT_SHA256=ace61b9397ae28189c674ae332d67a8074dafd71e87724dfb8b22412d8253bb5
@@ -67,8 +70,6 @@ ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010
 ARG GOVULNCHECK_VERSION=1.1.4
 RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=https://github.com; \
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
-    get osv-scanner "$gh/google/osv-scanner/releases/download/v$OSV_SCANNER_VERSION/osv-scanner_linux_arm64" "$OSV_SCANNER_SHA256"; \
-    install -m 0755 "$d/osv-scanner" /usr/local/bin/osv-scanner; \
     get deny.tgz "$gh/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl.tar.gz" "$CARGO_DENY_SHA256"; \
     tar -xzf "$d/deny.tgz" -C "$d"; install -m 0755 "$d/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny; \
     get trivy.tgz "$gh/aquasecurity/trivy/releases/download/v$TRIVY_VERSION/trivy_${TRIVY_VERSION}_Linux-ARM64.tar.gz" "$TRIVY_SHA256"; \
@@ -83,12 +84,16 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     mkdir -p /opt/scanners; tar -xzf "$d/spotbugs.tgz" -C /opt/scanners; ln -s "/opt/scanners/spotbugs-$SPOTBUGS_VERSION/bin/spotbugs" /usr/local/bin/spotbugs; \
     get findsecbugs-plugin.jar "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/$FINDSECBUGS_VERSION/findsecbugs-plugin-$FINDSECBUGS_VERSION.jar" "$FINDSECBUGS_SHA256"; \
     install -m 0644 "$d/findsecbugs-plugin.jar" /opt/scanners/findsecbugs-plugin.jar; \
-    GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; go clean -cache -modcache; \
+    GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
+    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
+    go clean -cache -modcache; \
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.
 RUN rustup component add clippy && cargo clippy --version
 # Semgrep runs on dependency versions it does not declare (scanners/requirements.txt,
 # looper#53): it scans scanners/smoke/ here, offline, and must report its one finding.
+# OSV-Scanner, built from source (looper#63), must find the vulnerable dependency
+# planted in scanners/smoke/osv-smoke.pip (OSV's API: the network).
 COPY scanners/requirements.txt /opt/scanners/requirements.txt
 COPY scanners/smoke/ /opt/scanners/smoke/
 RUN set -eu; python3 -m venv /opt/scanners/venv; \
@@ -97,7 +102,10 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
     for t in osv-scanner cargo-deny trivy syft gitleaks gosec spotbugs govulncheck semgrep bandit; do command -v "$t" >/dev/null; done; \
     s=/opt/scanners/smoke; semgrep scan --config "$s/rule.yaml" --metrics=off --disable-version-check --json -q "$s/smoke.py" > /tmp/smoke.json; \
     jq -e '[.results[].check_id | endswith("looper-smoke")] == [true] and .errors == []' /tmp/smoke.json >/dev/null || \
-      { echo "semgrep: the smoke's finding is missing" >&2; cat /tmp/smoke.json >&2; exit 1; }; rm -f /tmp/smoke.json
+      { echo "semgrep: the smoke's finding is missing" >&2; cat /tmp/smoke.json >&2; exit 1; }; \
+    osv-scanner scan source -L "requirements.txt:$s/osv-smoke.pip" --format json --output /tmp/smoke.json >/dev/null || test $? = 1; \
+    jq -e '[.results[].packages[] | select(.package.name == "urllib3") | (.vulnerabilities | length) > 0] == [true]' /tmp/smoke.json >/dev/null || \
+      { echo "osv-scanner: the planted urllib3 1.24.1 is not found vulnerable" >&2; cat /tmp/smoke.json >&2; exit 1; }; rm -f /tmp/smoke.json
 COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
