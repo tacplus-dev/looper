@@ -1012,7 +1012,10 @@ GitLab. Since looper#68 each model also runs as its own unprivileged user, so it
 else's, with only the scopes its job uses: the land's gates run a child's commits as the job's user (below).
 
 **What each user reaches** (looper#68; on whenever `repo-looper` runs as root with `setpriv` and `useradd`, off with
-`LOOPER_MODEL_USERS=0`):
+`LOOPER_MODEL_USERS=0`). Each user's uid and gid are one id, from a reserved range (`LOOPER_MODEL_ID_BASE`, default
+61000, and the 3000 after it), never the Docker socket's gid, and no model runs as a user in the socket's group
+(looper#69): in a job's container the host's socket has a gid with no name (1002 on a runner worker), which
+`useradd -U`'s next free gid gave a model.
 
 | User | Runs | Reaches |
 |---|---|---|

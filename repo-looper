@@ -1050,14 +1050,35 @@ model_forge_env() {
 # runs as root with setpriv and useradd; LOOPER_MODEL_USERS=0 turns it off
 # (the model then runs as the job's user, as before); LOOPER_USER_PREFIX
 # (default looper-) names the users.
-model_users() { [[ "${LOOPER_MODEL_USERS:-1}" != 0 && "$(id -u)" == 0 ]] && command -v setpriv useradd >/dev/null; }
+#
+# Each user's uid and gid are one id, its group its own, from a reserved range
+# (looper#69): LOOPER_MODEL_ID_BASE (default 61000, above useradd's own
+# ranges and below nobody's) and the 3000 after it, never the Docker socket's
+# gid. Never useradd -U's next free gid: in a job's container the host's
+# socket has a gid with no name (1002 on a runner worker), which the next free
+# gid can be, and with it the socket.
+model_users() { [[ "${LOOPER_MODEL_USERS:-1}" != 0 && "$(id -u)" == 0 ]] && command -v setpriv useradd groupadd >/dev/null; }
 model_user() { echo "${LOOPER_USER_PREFIX:-looper-}$1"; } # issue, plan or docker (the broker's)
-# useradd, tried again: two children starting at once each lock /etc/passwd.
-user_add() { # name useradd-options...
-  local i
+docker_sock() { local s="${DOCKER_HOST:-unix:///var/run/docker.sock}"; echo "${s#unix://}"; }
+docker_sock_gid() { local s; s="$(docker_sock)"; [[ ! -S "$s" ]] || stat -c %g "$s"; } # none without a socket
+model_id() { # the first id of the range no user or group has, nor the socket
+  local id base="${LOOPER_MODEL_ID_BASE:-61000}" sock; sock="$(docker_sock_gid)"
+  for (( id = base; id < base + 3000; id++ )); do
+    [[ "$id" != "$sock" ]] && ! getent passwd "$id" >/dev/null && ! getent group "$id" >/dev/null && { echo "$id"; return 0; }
+  done
+  return 1
+}
+# The user and its group, tried again: two children starting at once each
+# lock /etc/passwd, or take the same id.
+user_add() { # name shell home
+  local i id
   for i in 1 2 3 4 5 6 7 8 9 10; do
     id -u "$1" >/dev/null 2>&1 && return 0
-    useradd "${@:2}" "$1" >/dev/null 2>&1 && return 0
+    # Its group already made (a try before this one): the user its gid.
+    id="$(getent group "$1" | cut -d: -f3)"
+    if [[ -n "$id" ]] && ! getent passwd "$id" >/dev/null; then :
+    elif ! id="$(model_id)" || ! groupadd -g "$id" "$1" >/dev/null 2>&1; then sleep 1; continue; fi
+    useradd -u "$id" -g "$1" -N -M -s "$2" -d "$3" "$1" >/dev/null 2>&1 && return 0
     sleep 1
   done
   id -u "$1" >/dev/null 2>&1
@@ -1072,8 +1093,13 @@ fi
 # mount) for run_claude.
 model_user_up() { # user run-dir
   local u="$1" run="$2" home="$WORK/homes/$1"
-  user_add "$u" -M -U -s /bin/bash -d "$home" || { log "could not make the user $u"; return 1; }
+  user_add "$u" /bin/bash "$home" || { log "could not make the user $u"; return 1; }
   MODEL_UID="$(id -u "$u")" MODEL_GID="$(id -g "$u")" MODEL_HOME="$home"
+  # One made before, or by hand, may be in the socket's group: never its model.
+  local sock; sock="$(docker_sock_gid)"
+  if [[ -n "$sock" && " $(id -G "$u") " == *" $sock "* ]]; then
+    log "the user $u is in the Docker socket's group ($sock): no model runs as it"; return 1
+  fi
   mkdir -p "$home/tmp"
   # Its git's credentials for the forge, in its own global config.
   ( export HOME="$home"; forge_setup_git )
@@ -1099,9 +1125,8 @@ child_reown() { # issue
 broker_start() { # dir
   local real bu sock groups i; bu="$(model_user docker)"
   real="$(command -v docker)" || return 1
-  user_add "$bu" -M -r -U -s /usr/sbin/nologin -d / || return 1
-  groups="$MODEL_GID"; sock="${DOCKER_HOST:-unix:///var/run/docker.sock}"; sock="${sock#unix://}"
-  [[ ! -S "$sock" ]] || groups+=",$(stat -c %g "$sock")"
+  user_add "$bu" /usr/sbin/nologin / || return 1
+  groups="$MODEL_GID"; sock="$(docker_sock_gid)"; groups+="${sock:+,$sock}"
   mkdir -p "$1/broker/conf"; chown "$bu:" "$1/broker"
   printf 'owner=%s\nroots=%s\nmemory=%s\n' "$MODEL_USER" "$MODEL_ROOTS" "${LOOPER_CHILD_MEMORY:-}" > "$1/broker/conf/$MODEL_UID"
   setpriv --reuid "$bu" --regid "$(id -g "$bu")" --groups "$groups" \

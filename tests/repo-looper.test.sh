@@ -1534,6 +1534,12 @@ pass
 # the broker, as the broker's user, for its worktree and not /etc. Both
 # checkpoint and land as before. Root only. The scripts run from a copy anyone
 # reads: this checkout may be a model's own (0750).
+#
+# The socket's gid is the next free gid, with no name (looper#69): as on a
+# runner worker, where the host's socket is gid 1002 in the job's container,
+# which useradd -U gave a model. Each model user's uid and gid are one id from
+# the reserved range, never the socket's; a user already in the socket's group
+# (#6's) runs no model.
 scenario model-users
 if [[ "$(id -u)" != 0 ]] || ! command -v setpriv useradd python3 >/dev/null; then echo "skip $NAME: not root, or no setpriv, useradd or python3"
 else
@@ -1544,6 +1550,10 @@ else
   cp "$ROOT"/{repo-looper,looper-lib.sh,looper-docker,looper-docker-broker,looper-pkill} "$R/"
   printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n' "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
   chmod 755 "$TMP" "$TMP/bin" "$TMP/dk/docker"; chmod 666 "$TMP/dk/log"; chmod -R a+rX "$R" "$TMP/bin" "$TMP/dk"
+  useradd -M -U "${P}next" && SG="$(id -g "${P}next")" && userdel "${P}next" || fail "useradd -U"
+  ! getent group "${P}next" >/dev/null || groupdel "${P}next"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMP/docker.sock"
+  chgrp "$SG" "$TMP/docker.sock" && chmod 660 "$TMP/docker.sock"
   issue alpha 5 OPEN approved,bug "Fix that."; created alpha 5 2026-10-27T00:00:01Z
   areas "touches 4 a.txt" "touches 5 src/b/"
   cat > "$FIX/claude.sh" <<'EOS'
@@ -1562,7 +1572,10 @@ op="$(cat "$FIX/pid-$o")"
 ! env | grep -q s3cret-withheld || echo "holds a withheld credential" >> "$p"
 ! ls "$wt/$o" >/dev/null 2>&1 || echo "read the other's worktree" >> "$p"
 ! cat "$FIX"/project/looper-runs/*-issue-"$o"/prompt.md >/dev/null 2>&1 || echo "read the other's run record" >> "$p"
-if [[ -S /var/run/docker.sock ]]; then ! [[ -r /var/run/docker.sock || -w /var/run/docker.sock ]] || echo "reaches the docker socket" >> "$p"; fi
+for s in /var/run/docker.sock "${DOCKER_HOST#unix://}"; do
+  if [[ -S "$s" ]]; then ! [[ -r "$s" || -w "$s" ]] || echo "reaches the docker socket $s" >> "$p"; fi
+done
+[[ " $(id -G) " != *" $(stat -c %g "${DOCKER_HOST#unix://}") "* ]] || echo "holds the docker socket's gid" >> "$p"
 docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused its worktree" >> "$p"
 ! docker run --rm -v /etc:/e img true 2>> "$p.docker" || echo "docker mounted /etc" >> "$p"
 touch "$FIX/probed-$ISSUE"
@@ -1577,7 +1590,8 @@ jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv
 EOS
   git -C "$FIX/origin.git" config core.sharedRepository 0777; chmod -R a+rwX "$FIX"
   T="$ROOT"; ROOT="$R"
-  drain "${ROOM[@]}" LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH"
+  drain "${ROOM[@]}" LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH" \
+    DOCKER_HOST="unix://$TMP/docker.sock"
   ROOT="$T"; LOOPER_MEM="$(sed -n 's/.*limited to \([0-9]*m\) of memory.*/\1/p' "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
   for n in 4 5; do
     [[ "$(cat "$FIX/probe-$n")" == "$P$n" ]] || fail "#$n's model: $(cat "$FIX/probe-$n" "$FIX/probe-$n.docker" 2>&1)"
@@ -1586,12 +1600,23 @@ EOS
       fail "#$n's docker ran: $(cat "$TMP/dk/log")"
     [[ "$(stat -c %U "$FIX/work/alpha/worktrees/$n")" == "$P$n" ]] || fail "#$n's worktree is $(stat -c %U "$FIX/work/alpha/worktrees/$n")'s"
   done
+  for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do
+    i="$(id -u "$u")"
+    [[ "$(id -g "$u")" == "$i" && "$(id -G "$u")" == "$i" && "$i" != "$SG" ]] && (( i >= 61000 && i < 64000 )) || fail "$u: $(id "$u")"
+  done
   ! grep -q /etc "$TMP/dk/log" || fail "a container mounted /etc: $(cat "$TMP/dk/log")"
   has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "You run as your own user, ${P}4 (looper#68)"
   [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main); $OUT"
   closed 4; closed 5
   has "$OUT" "#4: closed"; has "$OUT" "#5: closed"
   ! getent passwd "${P}plan" >/dev/null || [[ "$(stat -c %U "$(ls -d "$FIX"/project/looper-runs/*-plan | head -1)")" == "${P}plan" ]] || fail "the plan's model"
+  groupadd -g "$SG" "${P}dockersock" && useradd -M -N -G "${P}dockersock" "${P}6" || fail "#6's user"
+  issue alpha 6 OPEN approved,bug "Fix the other."; areas "touches 6 c.txt"
+  ROOT="$R"
+  drain "${ROOM[@]}" LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock"
+  ROOT="$T"
+  [[ ! -e "$FIX/probe-6" ]] || fail "#6's model ran as $(cat "$FIX/probe-6")"
+  has "$OUT" "the user ${P}6 is in the Docker socket's group ($SG): no model runs as it"
   pass
 fi
 

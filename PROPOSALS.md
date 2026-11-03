@@ -142,6 +142,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   withheld credentials and the Docker socket: what a model cannot read itself, a test it lands can. The gates
   could run as a gates user per land (its clone, no socket but a broker of its own, the credentials out of its
   environment), as the model does; the push and the comments after them stay the lander's.
+- **The full gates as a model's user** (2026-11-03, #69): a model runs the gates as its own user, its docker the
+  broker, and three fail there on main too, as they do not in the land's gates (the job's user): `looper-docker`
+  (its `docker run img` reaches the real daemon, `pull access denied for img`), `tacplus` (expects `build:2.4`'s run
+  in the log) and `looper-build` (its cleanup cannot remove the Go module cache a container wrote, read-only). The
+  model cannot tell its change's failure from these; each test could take the broker's docker as given.
 - **The broker's path checks are check, then use** (2026-11-03, #68): `looper-docker` resolves a mount's source
   (symlinks too) and refuses one outside the child's worktree and home, but the daemon resolves it again on the
   host when it mounts, and the model owns the directories on the way: one swapped for a symlink between the two
@@ -149,10 +154,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   opened (a bind of an `O_PATH` descriptor through `/proc/<broker>/fd/N`), or the worktree on a filesystem the
   model cannot add symlinks to.
 - **The model's users across jobs** (2026-11-03, #68): `repo-looper` makes `looper-<issue>` when the child starts
-  (`useradd`, its uid whatever is free) and chowns its worktree and home each time, so a worker reused by a later
+  (its uid and gid the first free id of the reserved range, #69) and chowns its worktree and home each time, so a worker reused by a later
   job, whose container numbers the users afresh, cannot hand one issue's files to another's model; nothing deletes
-  the users, which end with the job's container. A fixed uid per issue (a range above the image's) would make
-  that independent of the order the children start in.
+  the users, which end with the job's container. A fixed uid per issue (within that range) would make that
+  independent of the order the children start in.
 - **Warm caches for the models' users** (2026-11-03, #68): a model's home is its own, so its Go module and build
   caches, cargo's registry (`CARGO_HOME` in its home), npm's, Maven's and tacplus's start empty each run, where the
   job's user had one cache for every child: more downloads and longer first builds. A seed each home starts
