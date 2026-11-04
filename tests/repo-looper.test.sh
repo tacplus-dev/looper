@@ -1423,6 +1423,39 @@ not_stopped
 (( $(grep -c '/projects/42/jobs/77$' "$FIX/gitlab") >= 2 )) || fail "polled: $(cat "$FIX/gitlab")"
 pass
 
+# A report started while its repository's manager waits for a runner yields
+# to it (looper#75): a pool's runner starts pending jobs in id order, and a
+# report pending from an earlier pipeline has a lower id than the manager a
+# later plan wrote. It takes nothing and leaves its issue ready, so the
+# manager is the next job the pool starts and the kicker plans the issue again,
+# after it.
+for st in created pending; do
+  scenario "report-yields-to-manager-$st"
+  jobs "looper-alpha-4 running 77" "looper-alpha-manager $st 90" "looper-alpha-5 pending 78"
+  push_fix
+  run_alone "${GL[@]}" CI_JOB_ID=77
+  [[ -z "$(prompts)" ]] || fail "worked: $(prompts)"
+  has "$OUT" "#4 yields to looper-alpha-manager, which waits to start"
+  [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+  [[ -z "$(others)" ]] || fail "commented: $(others)"
+  main_unchanged
+  pass
+done
+
+# A manager already running, or waiting for main's resource behind one that is,
+# is merging: the report works. So it does beside another repository's waiting
+# manager, and when GitLab cannot be read.
+for m in "running:looper-alpha-manager running 70" "waiting:looper-alpha-manager waiting_for_resource 90" \
+         "other-repo:looper-alpha-beta-manager pending 90" "gitlab-down:"; do
+  scenario "report-beside-manager-${m%%:*}"
+  m="${m#*:}"; if [[ -n "$m" ]]; then jobs "looper-alpha-4 running 77" "$m"; fi
+  working
+  run "${GL[@]}" CI_JOB_ID=77
+  lacks "$OUT" "yields"
+  has "$(prompts)" "working issue #4."
+  pass
+done
+
 # The model holds no GitLab credential (looper#25): the job's GITLAB_TOKEN, its
 # job token and the variables that carry it stay with the looper, which still
 # polls with them, never on a command line (anyone's to read in

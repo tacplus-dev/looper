@@ -293,6 +293,13 @@ script_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^    - / {
 jobs "looper-alpha-4 running" "looper-alpha-manager waiting_for_resource"
 plan_jobs
 ! grep -qx 'looper-alpha-manager:' <<<"$PLAN" || fail "a second manager waits: $PLAN"
+# A report that yielded to its pending manager (looper#75) is planned again,
+# after it: the manager is not planned twice.
+jobs "looper-alpha-4 success" "looper-alpha-manager pending"
+plan_jobs
+grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "the yielded report not planned again: $PLAN"
+! grep -qx 'looper-alpha-manager:' <<<"$PLAN" || fail "a second manager waits: $PLAN"
+jobs "looper-alpha-4 running" "looper-alpha-manager waiting_for_resource"
 # A cap from the committed file.
 printf 'default: 1\nalpha: 4\n' > "$FIX/caps.yaml"
 CAPS="$FIX/caps.yaml" plan_jobs

@@ -258,6 +258,17 @@ project_jobs() {
     | jq -r --arg me "${CI_JOB_ID:-}" '.[] | select((.id | tostring) != $me) | .name'
 }
 
+# Whether the repository's manager job waits for a runner (created or pending,
+# looper#75): a report that starts meanwhile, pending from an earlier pipeline
+# with a lower id than the manager a later plan wrote, yields to it. Not one
+# waiting for main's resource_group: the manager holding it merges. Outside a
+# GitLab job, or when GitLab cannot be read, it does not.
+manager_waiting() {
+  [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 1
+  curl -fsS --retry 2 -H @<(gitlab_auth) "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?scope[]=created&scope[]=pending&per_page=100" \
+    | jq -e --arg m "$(manager_job "$REPO")" 'any(.[]; .name == $m and (.status | IN("created", "pending")))' >/dev/null
+}
+
 # This GitLab job's status as GitLab reports it (running, failed, canceled...),
 # or `refused` when GitLab refuses the job's own token (it does once the job has
 # stopped running). Fails when GitLab cannot be read.
@@ -2812,6 +2823,9 @@ child_memory_size() { child_memory | awk '{ m = int($1 * 1024); if (m < 6) m = 6
 # no other issue and never main.
 report_job() { # issue
   local n="$1"
+  # Its manager first (looper#75): this job's slot is the one the manager waits
+  # for. The issue stays ready, and the kicker plans it again, after the manager.
+  if manager_waiting; then log "#$n yields to $(manager_job "$REPO"), which waits to start: the manager merges first; this issue is planned again after it"; return 0; fi
   if ! { approved_issues "$REPO" | grep -qx "$n" && ready "$REPO" "$n"; }; then
     if orphaned "$n"; then log "#$n is $LABEL_IN_PROGRESS, but no other report job of it is active: its run is gone; this job resumes it"
     else log "#$n is no longer ready; nothing to do"; return 0; fi
