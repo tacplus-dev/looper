@@ -587,11 +587,12 @@ first-job failures before a VM was ready, boot to ready, the disk each job logs 
 GitHub Actions' nightly, release and image workflows of every repository, and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
 `org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
 catches a stale image when no run failed. A source it cannot read is named in `sources`, never guessed.
-`tacplus-dev/build`'s jobs (`LOOPER_RECAP_BUILD_PROJECT`) are read with that project's own token (looper#85: GitLab
-will not add the looper project's bot to another project): Reporter, `read_api` only, read from Secret Manager by
-version, `LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/<project>/secrets/<secret>/versions/<version>` (tacplus-dev/cloud#12
-creates and rotates it), with the job's `gcloud` login; unset, `GITLAB_TOKEN`; a secret it cannot read is named in
-`sources` and the project is not read. Cloud Build is not read: nothing builds there
+`tacplus-dev/build`'s jobs (`LOOPER_RECAP_BUILD_PROJECT`) are read with `GITLAB_TOKEN` (looper#85): the cloud gitlab
+stack makes `tacplus-looper-bot` a Reporter of tacplus-dev/build (tacplus-dev/cloud#12, option B), so the scan job
+leaves `LOOPER_RECAP_BUILD_TOKEN_SECRET` unset and needs no `gcloud` login. Should the build's artifacts ever carry
+anything sensitive, the project gets a read-only token of its own (option A), read from Secret Manager by version,
+`LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/<project>/secrets/<secret>/versions/<version>`, with the job's `gcloud`
+login; a secret it cannot read is named in `sources` and the project is not read. Cloud Build is not read: nothing builds there
 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 
 **Managers, caps and capacity** (looper#72; `tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`; Jody:

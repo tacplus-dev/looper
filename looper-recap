@@ -82,11 +82,11 @@
 # LOOPER_BUILD_API (https://gitlab.com/api/v4), LOOPER_RECAP_PAGES (10 pages of
 # 100 jobs a project at most), LOOPER_ORG (tacplus-dev), GH_TOKEN for gh,
 # LOOPER_RECAP_ACTIONS_REPOS (default: every repository of LOOPER_ORG).
-# LOOPER_RECAP_BUILD_PROJECT (tacplus-dev/build) is read with its own token
-# (looper#85: GitLab will not add the looper project's bot to it): Reporter,
-# read_api, read from Secret Manager by version, LOOPER_RECAP_BUILD_TOKEN_SECRET
-# (projects/<project>/secrets/<secret>/versions/<version>; tacplus-dev/cloud#12),
-# with gcloud's own login; unset, GITLAB_TOKEN.
+# LOOPER_RECAP_BUILD_PROJECT (tacplus-dev/build) is read with GITLAB_TOKEN, its
+# bot a Reporter there (looper#85; tacplus-dev/cloud#12, option B), or with a
+# token of its own read from Secret Manager by version when
+# LOOPER_RECAP_BUILD_TOKEN_SECRET (projects/<project>/secrets/<secret>/versions/
+# <version>) is set, with gcloud's own login (option A).
 import datetime as dt
 import json
 import math

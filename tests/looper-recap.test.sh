@@ -12,9 +12,9 @@
 # land); classify puts a once-only, recovered failure in the transient list, a
 # 3-night recurrence and a threshold crossed under advice, and ignores a night
 # older than 7; report writes the recap file with links to the night's advice.
-# tacplus-dev/build's jobs are read with its own read-only token, read from
-# Secret Manager by version (looper#85; tacplus-dev/cloud#12); Cloud Build is
-# not read.
+# tacplus-dev/build's jobs are read with GITLAB_TOKEN, or with its own token
+# read from Secret Manager by version when LOOPER_RECAP_BUILD_TOKEN_SECRET is
+# set (looper#85; tacplus-dev/cloud#12); Cloud Build is not read.
 # The advice's check is looper-suggest's (tests/looper-suggest.test.sh).
 # Run: tests/looper-recap.test.sh   (REGEN=1: rewrite tests/recap/expected.json)
 set -euo pipefail

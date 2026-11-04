@@ -138,8 +138,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
 - **Known gaps:** the model's own user (#68) takes effect with the image built after its land (the broker,
   `looper-docker-broker`, is in it); the manager's gates still run a report's commits as its job's user, and the
   broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads tacplus-dev/build's
-  jobs only with that project's token (#85), whose Secret Manager version the scan job does not name yet
-  (`LOOPER_RECAP_BUILD_TOKEN_SECRET`, tacplus-dev/cloud#12), and the image's revision only where it has `docker buildx`:
+  jobs with `GITLAB_TOKEN` (#85), its bot a Reporter there once tacplus-dev/cloud#12's `apply:gitlab` has run on
+  main (until then `sources` names the 404), and the image's revision only where it has `docker buildx`:
   otherwise its `sources` says so; Cloud Build is not read (#85); one more VM's cost is the t2a-standard-8 on-demand list price (`LOOPER_RECAP_VM_USD_HOUR`,
   0.308), not the billing's; a red main is read from the `tacplus-dev/build` commit status, which only a build of the
   merged commit sets (#71 redefines the build jobs);
