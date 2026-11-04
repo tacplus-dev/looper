@@ -55,3 +55,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-04 looper issue Agents never build: build requests run as build jobs in build containers; no Docker socket in agent containers (#71, 219636c; gates: full)
 - 2026-11-04 looper issue A repository's manager is queued behind its own reports on the same pool, so finished work does not merge (tacplus manager pending 5h+) (#75, b28c83d; gates: full)
 - 2026-11-04 looper issue Flaky test: loop-slow-pass counts passes against wall-clock seconds and fails on a loaded runner (image build b029082) (#78, c954f77; gates: full)
+- 2026-11-04 looper issue A repository's manager is queued behind its own reports on the same pool, so finished work does not merge (tacplus manager pending 5h+) (#75, 4184f25; gates: full)
