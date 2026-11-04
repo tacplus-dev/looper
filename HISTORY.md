@@ -59,3 +59,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-04 looper issue looper:landing label never created in any repo: manager's merge fails (tacplus #284 not merged, exit 3), and the landing holds never applied (#80, b0c075e; gates: full)
 - 2026-11-04 looper issue Manager and reports deadlock on a one-VM pool: the manager lingers for pending reports that need its VM (tacplus manager idle 1h+ after its last merge) (#82, cb226ba; gates: full)
 - 2026-11-04 looper issue Enforce 'only the manager writes main': a ruleset on main in the public repos, a manager App as the only writer, reports on a non-bypass token, Jody's PAT out of every job (#83, fc8b2f9; gates: full)
+- 2026-11-04 looper issue Recap: read tacplus-dev/build's jobs with its read-only token; drop the Cloud Build source (#85, 29593f0; gates: docs+recap)
