@@ -29,6 +29,7 @@ Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 - runner-image build in projects with no default network (RUNNER_IMAGE_SUBNET, --no-address), a pinned Docker, the published image's name printed for pinning (#67; for tacplus-dev/cloud#4). Agent, hub's call under Jody's deterministic-deployments rule, 2026-11-03.
 - Each child's model as its own unprivileged user: no signalling or /proc reads across runs, docker only through the looper-docker broker (#68). Agent, at Jody's request, 2026-11-03 (suggestion accepted).
 - One job per issue (direct reports) and a manager per repo that alone merges to main (#70); agents never build, build requests run as build jobs (#71); the recap reports managers, caps and capacity (#72). Agent, at Jody's request, 2026-11-03 (`tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`).
+- Formal verification in the build pipeline: nightly when changed and on every release tag, a bug on failure, and child sizing by gate set (#74). Hub, splitting tacplus-dev/tacplus#275 (approved), 2026-11-04.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
