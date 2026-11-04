@@ -164,7 +164,10 @@ pass() {
 # planned or commits queued to land (looper:landing), its manager,
 # looper-<repo>-manager running repo-looper --manage, the only job that merges
 # to its main (resource_group looper-<repo>-main), unless one is already
-# waiting to start. LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
+# waiting to start. The managers come first (looper#75): a pool's runner starts
+# its pending jobs in id order, the plan's, and a manager behind its own reports
+# waits for every one of them to get a VM while their work stays unmerged and the
+# later ones start from a stale main. LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
 # jobs' image and runner tags; LOOPER_JOB_TAGS_<repo> (`-` as `_`) overrides the
 # tags for one repository's jobs (looper#55: tacplus's on the 16-CPU pool). The
 # plan's GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL, those it has, are
@@ -180,7 +183,7 @@ plan() {
     ready="$(forge_repos)"   # a forge it cannot read fails the plan: never an empty scan
     for repo in $ready; do plan_job "looper-scan-$repo" 5h "looper-$repo" --repo "$repo" --scan; any=1; done
   else
-    local statuses="" landing free managed=" "; local -A left=()
+    local statuses="" landing free managed=" " reports=""; local -A left=()
     if statuses="$(active_job_statuses)"; then jobs="$(cut -d' ' -f1 <<<"$statuses")"
     else log "could not read $PIPELINE's jobs; planning each repository's ready issues up to its cap" >&2; jobs=""; fi
     ready="$(ready_all_by_repo)"
@@ -192,7 +195,7 @@ plan() {
       left[$repo]=$(( ${left[$repo]} - 1 ))
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
-      plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n"; any=1
+      reports+="$(plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n")"$'\n'; any=1
       [[ "$managed" == *" $repo "* ]] || managed+="$repo "
     done <<<"$ready"
     landing="$(landing_repos)" || landing=""
@@ -204,6 +207,7 @@ plan() {
       fi
       plan_job "$(manager_job "$repo")" "${LOOPER_MANAGER_TIMEOUT:-11h}" "looper-$repo-main" --repo "$repo" --manage; any=1
     done
+    printf '%s' "$reports"
   fi
   [[ -n "$any" ]] || printf 'looper-none:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "no repository with a ready issue is free"\n' \
     "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"

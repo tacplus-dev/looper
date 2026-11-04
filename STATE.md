@@ -10,7 +10,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   queued land with no manager; the pipeline's plan (`looper-dispatch plan`) starts **one report job per ready
   issue**, up to the repository's cap in `caps.yaml` (tacplus 6, the others 3), never a second for an issue whose
   report is created, pending, waiting or running, and the repository's **manager** job, the only one that merges
-  to its main (#70, below; #16); priority labels (#31): ready issues are taken `priority:high`, then unlabelled, then
+  to its main, planned ahead of every report so the runner starts it first (#70, below; #16; #75); priority labels (#31): ready issues are taken `priority:high`, then unlabelled, then
   `priority:low`, oldest first within each, and across repositories `looper-dispatch ready` (the kicker's order)
   puts first a repository whose next ready issue is `priority:high`; a running issue is never pre-empted; a run killed outright no longer leaves `looper:in-progress` behind: the job for its issue
   resumes it when no other looper job of the repository is active, and `looper-dispatch run` clears the label

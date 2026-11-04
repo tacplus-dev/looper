@@ -252,7 +252,10 @@ lander are gone. One job per issue needs none of them.
   the report's time runs out is the manager's all the same; the report says so on the issue.
 - **The manager**, one job per repository with work to merge (`looper-<repo>-manager`, `repo-looper --repo R
   --manage`, `resource_group: looper-<repo>-main`), is **the only merger** of the repository's main. The planner
-  adds it beside the reports it starts (unless one already waits to start) and for any queued land. It takes the
+  adds it beside the reports it starts (unless one already waits to start) and for any queued land, **ahead of
+  every report** in the plan (looper#75): a pool's runner starts its pending jobs in id order, the plan's, and a
+  manager written after its reports waited for every one of them to get a VM (tacplus, a cap of 6 on one 16-CPU
+  VM: 5h+) while their finished work stayed unmerged and the later ones started from a stale main. It takes the
   queued branches oldest first, one at a time under the landing lock: it rebases each on main, runs the gates its
   diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)), pushes **only on green**, and **deletes
   the merged branch**. In a repository that pins its build image the gates are a **build job's verdict** on the
@@ -275,7 +278,7 @@ lander are gone. One job per issue needs none of them.
     ends: the kicker starts the next one.
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group, the pass's capacity line
+tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group and ahead of every report, the pass's capacity line
 tests/repo-looper.test.sh       # reports-in-parallel, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short
 ```
 

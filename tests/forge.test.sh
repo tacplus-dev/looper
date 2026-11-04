@@ -353,7 +353,7 @@ Blocked-by: #2"' || fail "edit body"
   else [[ "$cmd" == "glab issue close 3 --repo seabeam/alpha" ]] || fail "cmd: $cmd"; fi
   pass
 
-  # looper-dispatch: the plan (a report per ready issue with none active, and its manager, looper#70) and the orphan release.
+  # looper-dispatch: the plan (a report per ready issue with none active, and its manager ahead of the reports, looper#70, looper#75) and the orphan release.
   scenario dispatch "$FORGE"
   issue alpha 1 OPEN "Go." approved
   issue beta 2 OPEN "Go." approved
@@ -367,7 +367,7 @@ Blocked-by: #2"' || fail "edit body"
   [[ "$(grep -E '^looper-' <<<"$scans" | paste -sd' ')" == "looper-scan-alpha: looper-scan-beta:${SUB:+ looper-scan-$SUB:}" ]] || fail "scans: $scans"
   grep -qx '    - repo-looper --repo beta --scan' <<<"$scans" || fail "beta's scan: $scans"
   # alpha#9's report does not hold alpha#1: one job per issue.
-  [[ "$(grep -E '^looper-' <<<"$out" | paste -sd' ')" == "looper-alpha-1: looper-beta-2: looper-alpha-manager: looper-beta-manager:" ]] || fail "planned: $out"
+  [[ "$(grep -E '^looper-' <<<"$out" | paste -sd' ')" == "looper-alpha-manager: looper-beta-manager: looper-alpha-1: looper-beta-2:" ]] || fail "planned: $out"
   grep -qx '    - repo-looper --repo beta --issue 2' <<<"$out" || fail "beta's script: $out"
   grep -qx '  resource_group: looper-beta-2' <<<"$out" || fail "beta's resource_group: $out"
   grep -qx '  resource_group: looper-beta-main' <<<"$out" || fail "beta's manager's resource_group: $out"

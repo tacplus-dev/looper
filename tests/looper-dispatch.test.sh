@@ -243,7 +243,9 @@ pass
 # repository's cap less its active reports (caps.yaml: tacplus 6, the others
 # 3), none for an issue whose report is active, each one at a time per issue;
 # and the repository's manager, the only job on its main's resource group,
-# unless one already waits to start.
+# unless one already waits to start, ahead of its reports (looper#75): the
+# runner starts a pool's pending jobs in id order, the plan's order, and a
+# manager behind reports it has no VM for left their work unmerged for hours.
 scenario plan-reports-up-to-cap
 for k in 5 6 7 8; do issue alpha "$k" OPEN "Go." approved; done
 for k in 1 2 3 4 5 6 7; do issue tacplus "$k" OPEN "Go." approved; done
@@ -252,10 +254,15 @@ printf '#!/usr/bin/env bash\nexec "%s/repo-looper" "$@"\n' "$ROOT" > "$TMP/bin/r
 plan_jobs() { PLAN="$(env -u CI_PIPELINE_SOURCE ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
   "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
 plan_jobs
-[[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-5 looper-alpha-6 looper-alpha-manager" ]] \
+[[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-manager looper-alpha-5 looper-alpha-6" ]] \
   || fail "alpha's jobs: $(grep '^looper-' <<<"$PLAN")"
 [[ "$(grep -cE '^looper-tacplus-[0-9]+:' <<<"$PLAN")" == 6 ]] || fail "tacplus's reports: $(grep '^looper-' <<<"$PLAN")"
 grep -qx 'looper-tacplus-manager:' <<<"$PLAN" || fail "no tacplus manager: $PLAN"
+# Its cap (6) above its VMs: the manager is ahead of every report of its repository.
+[[ "$(grep -E '^looper-tacplus-' <<<"$PLAN" | head -1)" == 'looper-tacplus-manager:' ]] || fail "tacplus's manager behind its reports: $(grep '^looper-' <<<"$PLAN")"
+# No manager is behind any report.
+[[ "$(grep -E '^looper-' <<<"$PLAN" | awk '/-manager:$/ {if (r) bad=1; next} {r=1} END {print bad+0}')" == 0 ]] \
+  || fail "a manager behind a report: $(grep '^looper-' <<<"$PLAN")"
 grep -q 'alpha#7 waits: alpha is at its cap of 3 reports' "$FIX/err" || fail "log: $(cat "$FIX/err")"
 group_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  resource_group:/ {print $2}' <<<"$PLAN"; }
 script_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^    - / {sub(/^    - /, ""); print}' <<<"$PLAN"; }
@@ -468,7 +475,7 @@ done
 [[ "$(grep -c '^looper-scan-' "$FIX/inline-schedule/looper-jobs.yml")" == 5 ]] || fail "scheduled: $(cat "$FIX/inline-schedule/looper-jobs.yml")"
 [[ "$(grep -E '^looper-' "$FIX/inline-api/looper-jobs.yml" | paste -sd' ')" == "looper-alpha-4: looper-fleet-lab-8: looper-tacplus-9:" ]] \
   || fail "kicked: $(cat "$FIX/inline-api/looper-jobs.yml")"
-[[ "$(grep -E '^looper-' <<<"$got" | paste -sd' ')" == "looper-alpha-4: looper-fleet-lab-8: looper-tacplus-9: looper-alpha-manager: looper-fleet-lab-manager: looper-tacplus-manager:" ]] \
+[[ "$(grep -E '^looper-' <<<"$got" | paste -sd' ')" == "looper-alpha-manager: looper-fleet-lab-manager: looper-tacplus-manager: looper-alpha-4: looper-fleet-lab-8: looper-tacplus-9:" ]] \
   || fail "planned: $(grep -E '^looper-' <<<"$got")"
 # Each report's job is the inline one's but for its resource group, its issue's own.
 for j in alpha-4 fleet-lab-8 tacplus-9; do
