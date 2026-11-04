@@ -56,3 +56,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-04 looper issue A repository's manager is queued behind its own reports on the same pool, so finished work does not merge (tacplus manager pending 5h+) (#75, b28c83d; gates: full)
 - 2026-11-04 looper issue Flaky test: loop-slow-pass counts passes against wall-clock seconds and fails on a loaded runner (image build b029082) (#78, c954f77; gates: full)
 - 2026-11-04 looper issue A repository's manager is queued behind its own reports on the same pool, so finished work does not merge (tacplus manager pending 5h+) (#75, 4184f25; gates: full)
+- 2026-11-04 looper issue looper:landing label never created in any repo: manager's merge fails (tacplus #284 not merged, exit 3), and the landing holds never applied (#80, b0c075e; gates: full)
