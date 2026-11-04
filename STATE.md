@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by looper (#75).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by looper (#80).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -56,6 +56,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   (#11), which runs the released tacplus (the repository's `tacplus.lock` pin, else its floor's newest patch,
   checksum-verified) in the `build:<MAJOR.MINOR>` image of its line, so Go repositories generate (no longer the
   retired, Go-less `tacplus/tacplus` image), and `looper-smoke` generates Go through it on every image build (#27); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
+  every label the looper uses created where its repository lacks it, by a report, the manager and the scan before they
+  set one, a label edit that fails retried once they are (#80; `looper:landing` was in no repository, so no land's hold
+  was set and the manager's clearing of it failed);
   `bug` and `feature` labels in every repository, unlabelled issues classified first, bugs fixed and released as
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
   the scans file bugs as `bug`, never approve a feature, and read the roadmaps before opening an issue; the build

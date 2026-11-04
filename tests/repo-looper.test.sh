@@ -16,6 +16,9 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # Comments are appended to the issue's `comments` and to $FIX/comments as "<repo>#<n> <body>".
 # `gh api .../templates/repo/<file>` answers from $FIX/templates/<file>, and
 # `gh api .../roadmap/contents/ROADMAP.md` from $FIX/platform/ROADMAP.md, else 404.
+# A repository's labels are $FIX/labels/<repo>, a name a line (an issue's
+# labels are its repository's): an edit that names a label the repository
+# lacks fails, as gh's does (looper#80), and so does a label created twice.
 # `gh label create` is recorded in $FIX/labels-created as "<repo> <label>".
 # `gh api .../issues/<n>[/comments]` answers as GitHub's REST API, each text's
 # author and association from the issue's or comment's `author` and
@@ -62,7 +65,10 @@ case "$cmd" in
     l="${cmd%/permission}"; l="$FIX/permissions/${l##*/}"
     [[ -f "$l" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
     jq -r "$q" "$l" ;;
-  "label create") echo "$repo $n" >> "$FIX/labels-created" ;;
+  "label list") jq -R '{name: .}' "$FIX/labels/$repo" 2>/dev/null | jq -s . | jq -r "$q" ;;
+  "label create")
+    ! grep -qxF -- "$n" "$FIX/labels/$repo" 2>/dev/null || { echo "label with name \"$n\" already exists; use \`--force\` to update its color and description" >&2; exit 1; }
+    mkdir -p "$FIX/labels"; echo "$n" >> "$FIX/labels/$repo"; echo "$repo $n" >> "$FIX/labels-created" ;;
   "issue list")
     jq -s --arg s "$state" '[.[] | select(($s == "all" or .state == ($s | ascii_upcase)) and ([.labels[].name] | contains($ARGS.positional)))] | sort_by(-.number)' \
       "$FIX/issues/$repo"-*.json --args "${labels[@]+"${labels[@]}"}" | jq -r "$q" ;;
@@ -74,6 +80,9 @@ case "$cmd" in
     echo "https://github.com/tacplus-dev/$repo/issues/$n" ;;
   "issue view") [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; jq -r "$q" "$f" ;;
   "issue edit")
+    for l in "${add[@]+"${add[@]}"}" "${rm[@]+"${rm[@]}"}"; do
+      grep -qxF -- "$l" "$FIX/labels/$repo" 2>/dev/null || { echo "failed to update https://github.com/tacplus-dev/$repo/issues/$n: '$l' not found" >&2; exit 1; }
+    done
     t="$(cat "$f")"
     for l in "${add[@]+"${add[@]}"}"; do t="$(jq --arg l "$l" '.labels |= (. + [{name: $l}] | unique)' <<<"$t")"; done
     for l in "${rm[@]+"${rm[@]}"}"; do t="$(jq --arg l "$l" '.labels |= map(select(.name != $l))' <<<"$t")"; done
@@ -179,6 +188,9 @@ issue() { # repo n state labels(csv) body
   jq -n --argjson n "$2" --arg s "$3" --arg l "$4" --arg b "$5" \
     '{number: $n, title: "Issue \($n)", state: $s, labels: ($l | split(",") | map(select(. != "")) | map({name: .})), body: $b, comments: [], createdAt: "2026-10-27T00:00:00Z"}' \
     > "$FIX/issues/$1-$2.json"
+  mkdir -p "$FIX/labels"; tr , '\n' <<<"$4" | while IFS= read -r l; do
+    [[ -z "$l" ]] || grep -qxF -- "$l" "$FIX/labels/$1" 2>/dev/null || echo "$l" >> "$FIX/labels/$1"
+  done
 }
 scenario() { # name: a fresh origin with one commit and an approved issue alpha#4
   NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues"; : > "$FIX/comments"; : > "$FIX/claude.sh"; : > "$FIX/prompts"
@@ -400,6 +412,7 @@ lacks "$(cat "$FIX/comments")" "looper:stuck"
 pass
 
 scenario closed
+echo closed-by-test >> "$FIX/labels/alpha"
 push_fix; echo 'gh issue edit 4 --repo tacplus-dev/alpha --add-label closed-by-test' >> "$FIX/claude.sh"
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 run
@@ -953,8 +966,9 @@ pp="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$pp" "is a bug"; has "$pp" "tag \`v1.2.4\`"; has "$pp" "newest release on main is \`v1.2.3\`"; has "$pp" "backported"
 has "$(history)" "looper release v1.2.4 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.4)"
 has "$(history)" "looper issue Issue 4 (#4, "
-lc="$(cat "$FIX/labels-created")"; has "$lc" "alpha bug"; has "$lc" "alpha feature"
-has "$lc" "alpha priority:high"; has "$lc" "alpha priority:low"
+# The labels alpha lacks are created; `bug`, which its issue carries, is not.
+lc="$(cat "$FIX/labels-created")"; lacks "$lc" "alpha bug"; has "$lc" "alpha feature"
+has "$lc" "alpha priority:high"; has "$lc" "alpha priority:low"; has "$lc" "alpha looper:landing"
 pass
 
 scenario bug-no-release
@@ -1574,6 +1588,42 @@ manage
 lacks "$(origin show main --stat)" ".looper/"
 [[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
 [[ "$(labels alpha 4)" == approved,bug && "$(labels alpha 5)" == approved,bug ]] || fail "labels $(labels alpha 4) / $(labels alpha 5)"
+pass
+
+# A repository that lacks looper:landing (looper#80: none had it): the report
+# creates the looper's labels before it sets one, so its land holds the issue,
+# and the manager merges it and clears the hold; no label edit fails.
+scenario labels-missing
+[[ "$(paste -sd, "$FIX/labels/alpha")" == approved,bug ]] || fail "alpha's labels: $(cat "$FIX/labels/alpha")"
+cat > "$FIX/claude.sh" <<'EOS'
+jq -r '[.labels[].name] | join(",")' "$FIX/issues/alpha-4.json" > "$FIX/labels-working"
+echo 4 > four.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1 &
+for _ in $(seq 100); do grep -q looper:landing "$FIX/issues/alpha-4.json" && break; sleep 0.1; done
+jq -r '[.labels[].name] | join(",")' "$FIX/issues/alpha-4.json" > "$FIX/labels-landing"
+wait $!; echo "rc $?" >> "$FIX/land-4"
+EOS
+run
+lc="$(cat "$FIX/labels-created")"; has "$lc" "alpha looper:in-progress"; has "$lc" "alpha looper:landing"
+[[ "$(cat "$FIX/labels-working")" == approved,bug,looper:in-progress ]] || fail "labels while working: $(cat "$FIX/labels-working")"
+has "$(cat "$FIX/labels-landing")" "looper:landing"
+has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0"
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+lacks "$(labels alpha 4)" "looper:landing"
+lacks "$OUT$(cat "$FIX/manager.log" "$FIX/land-4")" "not found"
+pass
+
+# The manager alone, a land queued in a repository that lacks looper:landing:
+# it merges it, and its edit of the label does not fail.
+scenario manager-labels-missing
+queue 4 2026-11-03T10:00:00Z four.txt 4
+jq '.labels |= map(select(.name != "looper:landing"))' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+manage
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+has "$(cat "$FIX/comments")" "alpha#4 The manager merged"
+has "$(cat "$FIX/labels-created")" "alpha looper:landing"
+lacks "$OUT" "not found"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
 # A code conflict is sent back: nothing merges, the branch stays with its work,

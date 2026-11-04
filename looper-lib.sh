@@ -50,16 +50,34 @@ LABEL_PRIORITY_LOW="priority:low"
 ISSUE_ORDER="[(if any(.labels[]; .name == \"$LABEL_PRIORITY_HIGH\") then 0
                 elif any(.labels[]; .name == \"$LABEL_PRIORITY_LOW\") then 2 else 1 end), .createdAt]"
 
-# The kind and priority labels, in a repository that lacks them. Never fatal.
-ensure_kind_labels() { # repo
-  forge_label_create "$1" "$LABEL_BUG" d73a4a \
-    "The code does not do what it already promises: fixed, and released as a patch" >/dev/null 2>&1 || true
-  forge_label_create "$1" "$LABEL_FEATURE" a2eeef \
-    "New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor" >/dev/null 2>&1 || true
-  forge_label_create "$1" "$LABEL_PRIORITY_HIGH" b60205 \
-    "The looper takes it before unlabelled ready issues; a running issue is never pre-empted" >/dev/null 2>&1 || true
-  forge_label_create "$1" "$LABEL_PRIORITY_LOW" c5def5 \
-    "The looper takes it after every other ready issue" >/dev/null 2>&1 || true
+# Every label the looper sets or reads, "name|colour|description" (looper#80):
+# none is assumed to exist.
+LOOPER_LABELS=(
+  "$LABEL_APPROVED|0e8a16|Someone with write access approved it: the looper works it"
+  "$LABEL_IN_PROGRESS|fbca04|A looper holds it"
+  "$LABEL_LANDING|fbca04|Its commits are queued with the manager, which merges them and gives its verdict here"
+  "$LABEL_STUCK|d93f0b|A run ended without finishing, for no known reason; a person looks"
+  "$LABEL_DECISION|5319e7|The looper needs a decision it may not make"
+  "$LABEL_BUG|d73a4a|The code does not do what it already promises: fixed, and released as a patch"
+  "$LABEL_FEATURE|a2eeef|New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor"
+  "$LABEL_PRIORITY_HIGH|b60205|The looper takes it before unlabelled ready issues; a running issue is never pre-empted"
+  "$LABEL_PRIORITY_LOW|c5def5|The looper takes it after every other ready issue"
+)
+
+# The looper's labels a repository lacks, created (looper#80): once per
+# repository in a process, or again with `again` (a label edit that failed).
+# A label the forge does not list is created, never assumed; one there is
+# left as it is. Never fatal.
+LABELS_ENSURED=" "
+ensure_labels() { # repo [again]
+  local have e name color desc
+  [[ "${2:-}" == again || "$LABELS_ENSURED" != *" $1 "* ]] || return 0
+  have="$(forge_labels "$1" 2>/dev/null)" || have=""
+  for e in "${LOOPER_LABELS[@]}"; do
+    IFS='|' read -r name color desc <<<"$e"
+    grep -qxF -- "$name" <<<"$have" || forge_label_create "$1" "$name" "$color" "$desc" >/dev/null 2>&1 || true
+  done
+  [[ "$LABELS_ENSURED" == *" $1 "* ]] || LABELS_ENSURED+="$1 "
 }
 
 # A file of the platform's roadmap repository (ROADMAP.md, items/...), raw.
@@ -182,7 +200,22 @@ forge_repos() {
 }
 
 # Labels and body, as gh issue edit takes them: --add-label L, --remove-label L, --body B.
+# An edit of labels that fails is retried once the repository's labels are
+# ensured (looper#80): gh refuses one that names a label the repository
+# lacks, adding it or removing it.
 forge_issue_edit() { # repo n [--add-label L]... [--remove-label L]... [--body B]
+  local err rc=0
+  [[ " $* " == *" --add-label "* || " $* " == *" --remove-label "* ]] || { forge_issue_edit_once "$@"; return; }
+  err="$(mktemp)"
+  forge_issue_edit_once "$@" 2> "$err" || rc=$?
+  if (( rc != 0 )); then
+    ensure_labels "$1" again
+    rc=0; forge_issue_edit_once "$@" 2> "$err" || rc=$?
+  fi
+  cat "$err" >&2; rm -f "$err"
+  return "$rc"
+}
+forge_issue_edit_once() { # repo n [--add-label L]... [--remove-label L]... [--body B]
   local r="$1" n="$2"; shift 2
   case "$LOOPER_FORGE" in
     github) gh issue edit "$n" --repo "$LOOPER_ORG/$r" "$@" ;;
@@ -225,6 +258,15 @@ forge_issue_comments() { # repo n
   case "$LOOPER_FORGE" in
     github) gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate --jq '.[] | .body | tojson' ;;
     gitlab) gl_all "$(gl_project "$1")/issues/$2/notes?sort=asc&order_by=created_at" 1000 | jq -c '.[] | select(.system | not) | .body' ;;
+  esac
+}
+
+# A repository's labels, a name a line (on GitLab, its groups' too).
+forge_labels() { # repo
+  case "$LOOPER_FORGE" in
+    github) gh label list --repo "$LOOPER_ORG/$1" --limit 1000 --json name --jq '.[].name' ;;
+    gitlab) local l; l="$(gl_all "$(gl_project "$1")/labels?include_ancestor_groups=true" 1000)" || return 1
+            jq -r '.[].name' <<<"$l" ;;
   esac
 }
 

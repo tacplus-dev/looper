@@ -24,7 +24,12 @@ TOKEN=glpat-forgetesttoken0123456789
 # "gh <args>" or "<METHOD> <path>". $FIX/members.json maps GitLab logins to
 # their access level in every project; $FIX/permissions.json GitHub
 # collaborators' permissions. GitHub associations: an issue's or comment's
-# `association`, default MEMBER.
+# `association`, default MEMBER. A repository's labels: $FIX/labels/<repo, /
+# as __>, a name a line (an issue's labels are its repository's): GitHub
+# refuses an edit that names a label the repository lacks, as gh does
+# (looper#80), and a label created twice; GitLab creates the labels an edit
+# adds, as its API does. Each label created is appended to
+# $FIX/labels-created as "<repo> <label>".
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -82,7 +87,10 @@ case "$cmd" in
     f="$(file "${p%%/*}" "$(cut -d/ -f3 <<<"$p")")"; [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
     if [[ "$p" == */comments ]]; then jq '[.comments[] | {body, user: {login: .author}, author_association: (.association // "MEMBER")}]' "$f"
     else jq '{number, title, body, comments: ([.comments[]? | select(.system | not)] | length), user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}' "$f"; fi | jq -r "$q" ;;
-  "label create") echo "$repo $n" >> "$FIX/labels-created" ;;
+  "label list") jq -R '{name: .}' "$FIX/labels/${repo//\//__}" 2>/dev/null | jq -s . | jq -r "$q" ;;
+  "label create")
+    ! grep -qxF -- "$n" "$FIX/labels/${repo//\//__}" 2>/dev/null || { echo "label with name \"$n\" already exists; use \`--force\` to update its color and description" >&2; exit 1; }
+    echo "$n" >> "$FIX/labels/${repo//\//__}"; echo "$repo $n" >> "$FIX/labels-created" ;;
   "repo list") [[ "$n" == "$ORG" ]] || exit 1; jq -R '{name: .}' "$FIX/repos" | jq -s . | jq -r "$q" ;;
   "search issues")
     [[ "$owner" == "$ORG" ]] || exit 1
@@ -90,6 +98,9 @@ case "$cmd" in
   "issue list") all | jq --arg r "$repo" --argjson l "$limit" '[.[] | select(.repo == $r)][:$l]' | jq -r "$q" ;;
   "issue view") [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; jq -r "$q" "$f" ;;
   "issue edit")
+    for l in "${add[@]+"${add[@]}"}" "${rm[@]+"${rm[@]}"}"; do
+      grep -qxF -- "$l" "$FIX/labels/${repo//\//__}" 2>/dev/null || { echo "failed to update https://github.com/$ORG/$repo/issues/$n: '$l' not found" >&2; exit 1; }
+    done
     t="$(cat "$f")"
     for l in "${add[@]+"${add[@]}"}"; do t="$(jq --arg l "$l" '.labels |= (. + [{name: $l}] | unique)' <<<"$t")"; done
     for l in "${rm[@]+"${rm[@]}"}"; do t="$(jq --arg l "$l" '.labels |= map(select(.name != $l))' <<<"$t")"; done
@@ -159,7 +170,11 @@ case "$rest" in
     [[ -f "$t" ]] || reply 404 '{"message":"404 File Not Found"}'; reply 200 "$(cat "$t")" ;;
   */members/all) u="$(param query)"
     reply 200 "$(jq --arg u "$u" '[to_entries[] | select(.key | contains($u)) | {username: .key, access_level: .value}]' "$FIX/members.json")" ;;
-  */labels) [[ "$m" == POST ]] || reply 404 '{}'; echo "${rest%/labels} $(datum name)" >> "$FIX/labels-created"; reply 201 '{}' ;;
+  */labels) lf="$FIX/labels/$(sed 's#/#__#g' <<<"${rest%/labels}")"
+    [[ "$m" != GET ]] || reply 200 "$(jq -R '{name: .}' "$lf" 2>/dev/null | jq -s .)"
+    [[ "$m" == POST ]] || reply 404 '{}'
+    ! grep -qxF -- "$(datum name)" "$lf" 2>/dev/null || reply 409 '{"message":"Label already exists"}'
+    datum name >> "$lf"; echo >> "$lf"; echo "${rest%/labels} $(datum name)" >> "$FIX/labels-created"; reply 201 '{}' ;;
   */issues) reply 200 "$(list "${rest%/issues}")" ;;
 esac
 repo="$(sed -E 's#/issues/[0-9]+(/notes)?$##' <<<"$rest")"; n="$(grep -oE '/issues/[0-9]+' <<<"$rest" | tr -dc 0-9)"
@@ -171,6 +186,8 @@ case "$m $rest" in
   "GET "*) reply 200 "$(jq --arg org "$ORG" "$GL" "$file")" ;;
   "PUT "*)
     t="$(cat "$file")"
+    # GitLab creates a label an edit adds that the project lacks.
+    if a="$(datum add_labels)"; then tr , '\n' <<<"$a" | while IFS= read -r l; do grep -qxF -- "$l" "$FIX/labels/${repo//\//__}" 2>/dev/null || echo "$l" >> "$FIX/labels/${repo//\//__}"; done; fi
     if a="$(datum add_labels)"; then t="$(jq --arg l "$a" '.labels |= (. + ($l | split(",") | map({name: .})) | unique)' <<<"$t")"; fi
     if r="$(datum remove_labels)"; then t="$(jq --arg l "$r" '.labels |= map(select(.name | IN($l | split(",")[]) | not))' <<<"$t")"; fi
     if d="$(datum description)"; then t="$(jq --arg b "$d" '.body = $b' <<<"$t")"; fi
@@ -201,7 +218,7 @@ pass() { echo "ok $NAME ($FORGE)"; }
 # A scenario on one forge: tacplus-dev's repositories alpha and beta on
 # GitHub; seabeam's alpha, beta and tools/looper (a subgroup's) on GitLab.
 scenario() { # name forge
-  NAME="$1"; FORGE="$2"; FIX="$TMP/$1-$2"; mkdir -p "$FIX/issues" "$FIX/home" "$FIX/files"
+  NAME="$1"; FORGE="$2"; FIX="$TMP/$1-$2"; mkdir -p "$FIX/issues" "$FIX/home" "$FIX/files" "$FIX/labels"
   if [[ "$FORGE" == github ]]; then ORG=tacplus-dev; SUB=""; else ORG=seabeam; SUB=tools/looper; fi
   echo '{}' > "$FIX/members.json"; echo '{}' > "$FIX/permissions.json"; echo '[]' > "$FIX/jobs.json"
   : > "$FIX/calls"; : > "$FIX/argv"
@@ -211,6 +228,7 @@ issue() { # repo n state body label...
   jq -n --arg r "$r" --argjson n "$n" --arg st "$st" --arg b "$b" --arg c "2026-10-$(printf %02d "$n")T00:00:00Z" '$ARGS.positional as $l |
     {repo: $r, number: $n, title: "Issue \($n)", state: $st, labels: [$l[] | {name: .}], body: $b, createdAt: $c, comments: []}' \
     --args "$@" > "$FIX/issues/${r//\//__}-$n.json"
+  for l in "$@"; do grep -qxF -- "$l" "$FIX/labels/${r//\//__}" 2>/dev/null || echo "$l" >> "$FIX/labels/${r//\//__}"; done
 }
 store() { jq -r "$3" "$FIX/issues/${1//\//__}-$2.json"; } # repo n jq
 # Runs a bash snippet with looper-lib.sh sourced, as this scenario's forge.
@@ -283,10 +301,16 @@ for FORGE in github gitlab; do
   [[ "$got" == "alpha 1 OPEN,beta 404 MISSING" ]] || fail "forge_issue_states: $got"
   pass
 
-  # Labels, comments and body edits, and the kind labels.
+  # Labels, comments and body edits, and the looper's labels (looper#80): the
+  # repository starts with `approved` alone, so the first edit names labels it
+  # lacks; they are created and the edit retried.
   scenario labels-comments "$FORGE"
   issue alpha 1 OPEN "Body." approved
   lib 'forge_issue_edit alpha 1 --add-label looper:in-progress --add-label bug' || fail "edit add"
+  if [[ "$FORGE" == github ]]; then
+    want="alpha bug,alpha feature,alpha looper:in-progress,alpha looper:landing,alpha looper:stuck,alpha needs-decision,alpha priority:high,alpha priority:low"
+    [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "$want" ]] || fail "labels created: $(cat "$FIX/labels-created")"
+  fi
   [[ "$(store alpha 1 '[.labels[].name] | sort | join(",")')" == "approved,bug,looper:in-progress" ]] || fail "labels: $(store alpha 1 '[.labels[].name] | join(",")')"
   lib 'forge_issue_edit alpha 1 --remove-label looper:in-progress --add-label looper:stuck' || fail "edit swap"
   [[ "$(store alpha 1 '[.labels[].name] | sort | join(",")')" == "approved,bug,looper:stuck" ]] || fail "labels: $(store alpha 1 '[.labels[].name] | join(",")')"
@@ -301,8 +325,14 @@ Blocked-by: #2"' || fail "edit body"
   t="$(jq '.comments += [{author: "looper", body: "closed", system: true}]' "$FIX/issues/alpha-1.json")"; printf '%s\n' "$t" > "$FIX/issues/alpha-1.json"
   [[ "$(lib 'forge_issue_comment_count alpha 1')" == 1 ]] || fail "comment count: $(lib 'forge_issue_comment_count alpha 1')"
   [[ "$(lib "forge_issue_view alpha 1 state,labels 'select(.state == \"OPEN\") | .labels[].name'" | sort | paste -sd,)" == "approved,bug,looper:stuck" ]] || fail "view"
-  lib 'ensure_kind_labels alpha'
-  [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "alpha bug,alpha feature,alpha priority:high,alpha priority:low" ]] || fail "labels created: $(cat "$FIX/labels-created")"
+  # Each label the looper uses is created where it is missing, once per
+  # repository in a process; one already there is left as it is.
+  : > "$FIX/labels-created"; printf 'approved\nbug\nlooper:stuck\n' > "$FIX/labels/beta"
+  lib 'ensure_labels beta; ensure_labels beta'
+  want="beta feature,beta looper:in-progress,beta looper:landing,beta needs-decision,beta priority:high,beta priority:low"
+  [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "$want" ]] || fail "labels created: $(cat "$FIX/labels-created")"
+  : > "$FIX/labels-created"; lib 'ensure_labels beta'
+  [[ ! -s "$FIX/labels-created" ]] || fail "labels created again: $(cat "$FIX/labels-created")"
   ! lib 'forge_issue_comment alpha 99 x' 2>/dev/null || fail "a comment on no issue succeeded"
   no_token_in_argv
   pass

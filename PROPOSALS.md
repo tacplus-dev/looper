@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A hold that did not take is reported** (2026-11-04, #80): every label edit of the looper is `|| true`, so
+  `looper:landing` was missing from every repository from #70 until #80 and no land's hold was set, without one line
+  in a log anyone read (the manager's stderr had it, among its merge's lines). Labels are now created before a run
+  sets one and a failed edit retried once they are; an edit that still fails could be logged as such (`#N: could not
+  label it looper:landing: <why>`), and the kicker could flag a branch whose `.looper/land` is queued while its
+  issue lacks `looper:landing`.
 - **A verdict only the manager can give** (2026-11-03, #70): a report's `--land` takes the newest comment on its
   issue carrying its land's id (`<!-- looper-land id=... -->`) as the manager's verdict, and the id is on its branch
   (`.looper/land`) for anyone to read. Every model holds the same `GH_TOKEN` as the manager, so another issue's model

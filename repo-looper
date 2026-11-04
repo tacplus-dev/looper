@@ -1198,6 +1198,8 @@ manage() {
   local idle_since tags_seen t new q n id sha rc
   MANAGER_RUN="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-manager"; mkdir -p "$MANAGER_RUN"
   sync_checkout
+  # The looper's labels, before it clears a hold (looper#80).
+  ensure_labels "$REPO"
   land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
   sync_checkout
   tags_seen="$(release_tags)"; idle_since="$(date +%s)"
@@ -2018,6 +2020,8 @@ work_issue() { # issue
   local n="$1" run limit resumed
   run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
   log "taking $LOOPER_ORG/$REPO#$n ($run, in $CHECKOUT on $BRANCH)"
+  # The looper's labels, before it sets one (looper#80).
+  ensure_labels "$REPO"
   forge_issue_edit "$REPO" "$n" --add-label "$LABEL_IN_PROGRESS" >/dev/null
   limit="$(run_limit "$n")"
   # A limit that would outlast the job is capped at the job's deadline
@@ -2033,7 +2037,6 @@ work_issue() { # issue
   fi
   # Bug or feature (looper#14): an unlabelled issue is classified first; a
   # feature no ROADMAP.md links is proposed, never built.
-  ensure_kind_labels "$REPO"
   local kind; kind="$(issue_kind "$n")"
   if [[ -z "$kind" ]]; then classify "$n" "$run" "$limit"; kind="$(issue_kind "$n")"; fi
   if [[ -z "$kind" ]]; then
@@ -2770,7 +2773,7 @@ scan() {
   sync_checkout
   if [[ "$REPO" == "$LOOPER_ROADMAP_REPO" ]]; then suggest_scan "$run"; return; fi
   report="$(security_report "$run")"
-  ensure_kind_labels "$REPO"
+  ensure_labels "$REPO"
   before="$(forge_issue_list "$REPO" all 1 number '.[0].number // 0')" || before=""
   cat > "$run/prompt.md" <<PR
 You are the nightly scanner of $LOOPER_ORG/$REPO. Your working directory is its checkout at origin/main.

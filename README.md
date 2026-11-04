@@ -87,6 +87,7 @@ tests/tacplus.test.sh                      # which tacplus: the pin, else the fl
 | `bug` | the code does not do what it already promises: fixed, and released as a patch |
 | `feature` | new behaviour: needs design, Jody's approval and a ROADMAP.md entry; ships in a minor |
 | `looper:in-progress` | a looper holds it |
+| `looper:landing` | its commits are queued with the manager, which merges them and gives its verdict on the issue (looper#70) |
 | `looper:stuck` | a run ended without finishing and without progress or a known reason; a person looks |
 | `needs-decision` | the looper needs a decision it may not make |
 | `priority:high` | taken before the other ready issues (looper#31) |
@@ -94,6 +95,9 @@ tests/tacplus.test.sh                      # which tacplus: the pin, else the fl
 
 Only someone with write access can set a label, so an issue nobody approved is never worked, whoever
 opened it and whatever its text says.
+
+The looper assumes none of them exists (looper#80): a report, the manager and the nightly scan each create the
+ones their repository lacks before they set one, and a label edit that fails is retried once they are created.
 
 ### Who directs a run (prompt provenance)
 
@@ -1450,11 +1454,11 @@ from GitLab straight into the variables; no agent handles them. `G=https://gitla
    curl -sfH "$H" -X POST $G/projects/$P/variables -d key=LOOPER_ORG -d value=seabeam -d protected=true
    ```
    The tokens are stored the same way (`-d masked=true`), by Jody.
-4. **The labels**, once, as group labels of `seabeam`. `bug`, `feature` and the priorities the looper also creates
-   per project when it scans one:
+4. **The labels**, once, as group labels of `seabeam`. The looper also creates each one a project lacks, as
+   project labels, when it works, manages or scans it (looper#80):
 
    ```sh
-   for l in approved:0e8a16 looper:in-progress:fbca04 looper:stuck:d93f0b needs-decision:5319e7 bug:d73a4a \
+   for l in approved:0e8a16 looper:in-progress:fbca04 looper:landing:fbca04 looper:stuck:d93f0b needs-decision:5319e7 bug:d73a4a \
             feature:a2eeef priority:high:b60205 priority:low:c5def5; do
      curl -sfH "$H" -X POST $G/groups/seabeam/labels --data-urlencode "name=${l%:*}" -d "color=%23${l##*:}" >/dev/null
    done
