@@ -87,7 +87,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   repository's job (pushed alone), `looper-suggest decide` records Jody's decision for the hub. The nightly recap
   (#57, README: Nightly recap), in the same pass: `looper-recap` (in the image) gathers the last 24 hours with no
   model (each job's queue, prepare and run times and failure class; per repository slot use, the hours each ready
-  issue waited and why, lands by gate set, scans; runner pools, Actions workflows, Cloud Build, the image against
+  issue waited and why, lands by gate set, scans; runner pools, Actions workflows, the image against
   main's head; per manager its report-to-merge time, conflicts resolved against sent back, red gates, a red main
   after its merges and reverts from GitHub, redone work; per repository's cap, from the kicker's `capacity:` line a
   pass, the hours ready issues waited at it, how often all reports were busy and the merge backlog, with advice to
@@ -128,9 +128,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
 - **Known gaps:** the model's own user (#68) takes effect with the image built after its land (the broker,
   `looper-docker-broker`, is in it); the manager's gates still run a report's commits as its job's user, and the
-  broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads Cloud Build only
-  where the scan job's `gcloud` is logged in, and the image's revision only where it has `docker buildx`: otherwise
-  its `sources` says so; one more VM's cost is the t2a-standard-8 on-demand list price (`LOOPER_RECAP_VM_USD_HOUR`,
+  broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads tacplus-dev/build's
+  jobs only with that project's token (#85), whose Secret Manager version the scan job does not name yet
+  (`LOOPER_RECAP_BUILD_TOKEN_SECRET`, tacplus-dev/cloud#12), and the image's revision only where it has `docker buildx`:
+  otherwise its `sources` says so; Cloud Build is not read (#85); one more VM's cost is the t2a-standard-8 on-demand list price (`LOOPER_RECAP_VM_USD_HOUR`,
   0.308), not the billing's; a red main is read from the `tacplus-dev/build` commit status, which only a build of the
   merged commit sets (#71 redefines the build jobs);
   gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose

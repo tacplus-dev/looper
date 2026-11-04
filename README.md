@@ -582,10 +582,15 @@ and why**: no free slot, a conflict (and the plan's overlapping paths), the job'
 the job), queued behind a land (the lander logs each land's `queued since`), a scan holding the repository (its job
 queued while the scan ran); each reason with what would have let the work run in parallel. The runner pools (VMs,
 first-job failures before a VM was ready, boot to ready, the disk each job logs at its end: `disk at the end: N% used`),
-GitHub Actions' nightly, release and image workflows of every repository, Cloud Build's builds
-(`LOOPER_RECAP_CLOUDBUILD_PROJECT`), and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
+GitHub Actions' nightly, release and image workflows of every repository, and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
 `org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
 catches a stale image when no run failed. A source it cannot read is named in `sources`, never guessed.
+`tacplus-dev/build`'s jobs (`LOOPER_RECAP_BUILD_PROJECT`) are read with that project's own token (looper#85: GitLab
+will not add the looper project's bot to another project): Reporter, `read_api` only, read from Secret Manager by
+version, `LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/<project>/secrets/<secret>/versions/<version>` (tacplus-dev/cloud#12
+creates and rotates it), with the job's `gcloud` login; unset, `GITLAB_TOKEN`; a secret it cannot read is named in
+`sources` and the project is not read. Cloud Build is not read: nothing builds there
+(`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 
 **Managers, caps and capacity** (looper#72; `tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`; Jody:
 "recap should let us know if we need to adjust", "if builds are backing up somebody tells me"):
@@ -629,7 +634,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the caps from the kicker's passes (raise, lower, advised two nights running only) and the capacity (waits for a VM, one more VM's cost)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the caps from the kicker's passes (raise, lower, advised two nights running only) and the capacity (waits for a VM, one more VM's cost)
 ```
 
 ## Build pipeline

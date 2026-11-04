@@ -103,38 +103,6 @@
    "waiting_hours": 2.25
   }
  },
- "cloud_build": {
-  "builds": 2,
-  "failed": 1,
-  "list": [
-   {
-    "created": "2026-11-01T13:00:00Z",
-    "id": "b1",
-    "images": [
-     "us-docker.pkg.dev/jody1-328023/fleet/mailbox:1"
-    ],
-    "minutes": 9,
-    "status": "FAILURE",
-    "url": "https://console.cloud.google.com/cloud-build/builds/b1"
-   },
-   {
-    "created": "2026-11-01T14:00:00Z",
-    "id": "b2",
-    "images": [
-     "us-docker.pkg.dev/jody1-328023/fleet/gateway:1"
-    ],
-    "minutes": 21,
-    "status": "SUCCESS",
-    "url": "https://console.cloud.google.com/cloud-build/builds/b2"
-   }
-  ],
-  "minutes": {
-   "max": 21,
-   "n": 2,
-   "p50": 9,
-   "p90": 21
-  }
- },
  "failed_jobs": [
   {
    "before_ready": false,
@@ -298,16 +266,6 @@
    "recovered": false,
    "summary": "2 issues waited 1.17 h for a VM (kernel#4 50 min, tacplus#12 20 min); queue p90 20 min; one more t2a-standard-8 is about $7.39 a day (threshold 1 h; the scale-up is Jody's call)",
    "wait_hours": 1.17
-  },
-  {
-   "count": 1,
-   "evidence": [
-    "https://console.cloud.google.com/cloud-build/builds/b1"
-   ],
-   "key": "cloud-build/jody1-328023",
-   "over": false,
-   "recovered": false,
-   "summary": "Cloud Build jody1-328023: 1 of 2 builds failed"
   },
   {
    "count": 1,
@@ -896,7 +854,6 @@
   }
  },
  "sources": {
-  "cloud-build": "ok",
   "github-actions": "ok",
   "github-main": "ok",
   "gitlab:tacplus-dev/build": "ok",

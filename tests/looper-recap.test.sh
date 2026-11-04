@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # looper-recap (looper#57) against recorded API fixtures (tests/recap/: GitLab's
-# jobs and job logs, gh's repositories and workflow runs, gcloud's builds, and
-# the recaps of earlier nights) through stub curl, gh and gcloud: collect gives
+# jobs and job logs, gh's repositories and workflow runs, and the recaps of
+# earlier nights) through stub curl, gh and gcloud: collect gives
 # a byte-identical recap.json (tests/recap/expected.json) whatever the clock,
 # zone and locale, and finds the seed cases of 2026-11-02 by itself (fresh-VM
 # image-pull failures, an issue held hours by "would outlast this job" with one
@@ -12,6 +12,9 @@
 # land); classify puts a once-only, recovered failure in the transient list, a
 # 3-night recurrence and a threshold crossed under advice, and ignores a night
 # older than 7; report writes the recap file with links to the night's advice.
+# tacplus-dev/build's jobs are read with its own read-only token, read from
+# Secret Manager by version (looper#85; tacplus-dev/cloud#12); Cloud Build is
+# not read.
 # The advice's check is looper-suggest's (tests/looper-suggest.test.sh).
 # Run: tests/looper-recap.test.sh   (REGEN=1: rewrite tests/recap/expected.json)
 set -euo pipefail
@@ -25,14 +28,17 @@ has() { grep -qF -- "$2" <<<"$1" || fail "expected \"$2\" in: $1"; }
 lacks() { ! grep -qF -- "$2" <<<"$1" || fail "unexpected \"$2\" in: $1"; }
 
 # curl: the GitLab API from $FX/gitlab/<project>/, the token read from stdin
-# (never on the command line); every call logged.
+# (never on the command line): tacplus-dev/build's own (glpat-build, the one
+# the looper project's bot has 404s there), every other project's glpat-recap;
+# every call logged.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 url="${*: -1}"; echo "curl $*" >> "$TMP/calls"
-[[ "$*" != *glpat-recap* ]] || { echo "the token is on the command line" >&2; exit 9; }
-[[ "$*" == *"-H @-"* && "$(cat)" == "PRIVATE-TOKEN: glpat-recap" ]] || exit 22
+[[ "$*" != *glpat-* ]] || { echo "the token is on the command line" >&2; exit 9; }
 p="${url#https://gitlab.test/api/v4/projects/}"; proj="${p%%/*}"; proj="${proj//%2F/_}"; rest="${p#*/}"
+tok=glpat-recap; [[ "$proj" != tacplus-dev_build ]] || tok=glpat-build
+[[ "$*" == *"-H @-"* && "$(cat)" == "PRIVATE-TOKEN: $tok" ]] || exit 22
 case "$rest" in
   jobs\?*) page="$(grep -oE 'page=[0-9]+' <<<"$rest" | tail -1 | cut -d= -f2)"
            f="$FX/gitlab/$proj/jobs-$page.json"; [[ -f "$f" ]] || { [[ -d "$FX/gitlab/$proj" ]] && { echo '[]'; exit 0; }; exit 22; }; cat "$f" ;;
@@ -61,11 +67,12 @@ case "$1 $2" in
   *) echo "stub gh: unexpected $*" >&2; exit 3 ;;
 esac
 EOF
+# gcloud: Secret Manager only, the build token's version 3.
 cat > "$TMP/bin/gcloud" <<'EOF'
 #!/usr/bin/env bash
 echo "gcloud $*" >> "$TMP/calls"
-[[ "$1 $2 $3" == "builds list --project=jody1-328023" && "$*" == *'createTime>="2026-11-01T03:00:00Z"'* ]] || exit 1
-cat "$FX/gcloud/builds.json"
+[[ "$*" == "secrets versions access 3 --secret=recap-build-token --project=p1" ]] || exit 1
+echo glpat-build
 EOF
 cat > "$TMP/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -75,8 +82,9 @@ cat "$FX/docker/inspect.json"
 EOF
 chmod +x "$TMP/bin/"*
 export PATH="$TMP/bin:$PATH" TMP FX
-ENVS=(GITLAB_TOKEN=glpat-recap LOOPER_BUILD_API=https://gitlab.test/api/v4 LOOPER_ORG=tacplus-dev)
-recap() { env -u LOOPER_RECAP_PROJECTS -u LOOPER_SUGGEST_PROJECTS -u LOOPER_RECAP_ACTIONS_REPOS "${ENVS[@]}" "$ROOT/looper-recap" "$@"; }
+ENVS=(GITLAB_TOKEN=glpat-recap LOOPER_BUILD_API=https://gitlab.test/api/v4 LOOPER_ORG=tacplus-dev
+      LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/p1/secrets/recap-build-token/versions/3)
+recap() { env -u LOOPER_RECAP_PROJECTS -u LOOPER_RECAP_BUILD_PROJECT -u LOOPER_SUGGEST_PROJECTS -u LOOPER_RECAP_ACTIONS_REPOS "${ENVS[@]}" "$ROOT/looper-recap" "$@"; }
 UNTIL=2026-11-02T03:00:00Z
 
 NAME=collect-byte-identical
@@ -86,7 +94,10 @@ cmp -s "$TMP/recap.json" "$FX/expected.json" || { diff -u "$FX/expected.json" "$
 # The same inputs give the same file: another zone, locale and hour of the run.
 TZ=America/Chicago LC_ALL=C recap collect --until "2026-11-01T22:00:00-05:00" > "$TMP/again.json" 2>/dev/null || fail "collect again"
 cmp -s "$TMP/again.json" "$FX/expected.json" || fail "a second collect differs: $(diff "$FX/expected.json" "$TMP/again.json" | head -5)"
-lacks "$(cat "$TMP/calls")" glpat-recap
+lacks "$(cat "$TMP/calls")" glpat-
+# No Cloud Build call: Secret Manager is gcloud's only use.
+[[ "$(grep '^gcloud' "$TMP/calls" | sort -u)" == "gcloud secrets versions access 3 --secret=recap-build-token --project=p1" ]] ||
+  fail "gcloud: $(grep '^gcloud' "$TMP/calls")"
 pass
 
 NAME=collect-finds-the-seed-cases
@@ -94,11 +105,15 @@ J="$TMP/recap.json"
 q() { jq -r "$1" "$J"; }
 [[ "$(q .window.from) $(q .window.until) $(q .night)" == "2026-11-01T03:00:00Z 2026-11-02T03:00:00Z 2026-11-02" ]] || fail "window: $(q .window)"
 # LOOPER_SUGGEST_PROJECTS' default plus tacplus-dev/cluster, which cannot be read: named, not guessed.
-[[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "cloud-build=ok github-actions=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
+[[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
   fail "sources: $(q .sources)"
 [[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "23 8 6 1 1" ]] ||
   fail "looper's jobs: $(q '.projects["tacplus-dev/looper"]')"
-[[ "$(q '.projects["tacplus-dev/build"].failures.gate_failure')" == 1 ]] || fail "build: $(q '.projects["tacplus-dev/build"]')"
+# tacplus-dev/build's jobs, read with its own token: counted, with their failures, queue and run times.
+[[ "$(q '.projects["tacplus-dev/build"] | "\(.jobs) \(.status.failed) \(.failures.gate_failure) \(.queue_s.n) \(.run_s.n)"')" == "2 1 1 2 2" ]] ||
+  fail "build: $(q '.projects["tacplus-dev/build"]')"
+has "$(q '.items[].key')" "failures/tacplus-dev/build/gate_failure"
+lacks "$(q 'keys | join(" ")')" cloud
 # Queue (created to started) and prepare (started to Running on): looper-tacplus-16 queued 97 minutes
 # behind the scan, looper-kernel-4 50 minutes, looper-tacplus-12 20 minutes, prepared in 2.
 [[ "$(q '[.longest.queues[0:3][] | "\(.job) \(.minutes)"] | join(", ")')" == "looper-tacplus-16 97, looper-kernel-4 50, looper-tacplus-12 20" ]] || fail "longest queue: $(q .longest.queues)"
@@ -130,10 +145,9 @@ has "$(q '.items[].key')" "scan/tacplus"
 # Runner pools: the VMs, the jobs that failed before one was ready, the disk at a job's end.
 [[ "$(q '.runner_pools["tacplus-dev arm64 autoscaler"] | "\(.vms) \(.failed_before_ready) \(.disk_pct.max)"')" == "14 6 45" ]] || fail "pool: $(q .runner_pools)"
 [[ "$(q '.runner_pools["tacplus-dev arm64 autoscale-16"].disk_pct.max')" == 72 ]] || fail "pool: $(q .runner_pools)"
-# GitHub Actions (nightly, release, images only) and Cloud Build.
+# GitHub Actions (nightly, release, images only).
 [[ "$(q '.actions.by_workflow | keys | join(",")')" == tacplus/nightly ]] || fail "actions: $(q .actions)"
 [[ "$(q '.items[] | select(.key == "actions/tacplus/nightly") | "\(.count) \(.recovered)"')" == "1 true" ]] || fail "$(q .items)"
-[[ "$(q '.cloud_build | "\(.builds) \(.failed) \(.minutes.max)"')" == "2 1 21" ]] || fail "cloud build: $(q .cloud_build)"
 # A job outside the window is left out.
 lacks "$(q '.failed_jobs[].id')" 900
 pass
@@ -188,7 +202,7 @@ done
 # The send-back its report redid too.
 [[ "$(c '.transient | map(.key) | join(" ")')" == "actions/tacplus/nightly failures/tacplus-dev/looper/timeout manager/tacplus/sent-back" ]] || fail "transient: $(c .transient)"
 # Seen once, not recovered: noted, no advice.
-[[ "$(c '.once | map(.key) | join(" ")')" == "cap/kernel/lower cloud-build/jody1-328023 failures/tacplus-dev/build/gate_failure" ]] || fail "once: $(c .once)"
+[[ "$(c '.once | map(.key) | join(" ")')" == "cap/kernel/lower failures/tacplus-dev/build/gate_failure" ]] || fail "once: $(c .once)"
 lacks "$(c '.recurring[].key')" "timeout"
 # A cap is advised after two nights running over its threshold (looper#72): tacplus's, over last
 # night too; not kernel's, over tonight and the night before last only.
@@ -244,10 +258,31 @@ has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`failures/tacplus-dev/build/gate_fai
 pass
 
 NAME=collect-without-credentials
-env -u GITLAB_TOKEN LOOPER_BUILD_API=https://gitlab.test/api/v4 PATH="$TMP/bin:$PATH" LOOPER_RECAP_CLOUDBUILD_PROJECT= \
+env -u GITLAB_TOKEN -u LOOPER_RECAP_BUILD_TOKEN_SECRET LOOPER_BUILD_API=https://gitlab.test/api/v4 PATH="$TMP/bin:$PATH" \
   "$ROOT/looper-recap" collect --until "$UNTIL" > "$TMP/none.json" 2>/dev/null || fail "collect without a token failed"
 [[ "$(jq -r '.sources["gitlab:tacplus-dev/looper"]' "$TMP/none.json")" == "unavailable: no GITLAB_TOKEN" ]] || fail "$(jq .sources "$TMP/none.json")"
-[[ "$(jq -r '.sources["cloud-build"]' "$TMP/none.json")" == "not configured" ]] || fail "$(jq .sources "$TMP/none.json")"
+lacks "$(jq -r '.sources | keys[]' "$TMP/none.json")" cloud
+pass
+
+# The build token: without its secret tacplus-dev/build is read with GITLAB_TOKEN (which its
+# project refuses); a secret that cannot be read, or is not a version, is named, and
+# tacplus-dev/build is not read with GITLAB_TOKEN instead.
+NAME=collect-build-token
+src() { jq -r --arg k "gitlab:$1" '.sources[$k]' "$TMP/b.json"; }
+: > "$TMP/calls"
+env -u LOOPER_RECAP_BUILD_TOKEN_SECRET "${ENVS[@]:0:3}" LOOPER_RECAP_PROJECTS="tacplus-dev/build tacplus-dev/looper" \
+  "$ROOT/looper-recap" collect --until "$UNTIL" > "$TMP/b.json" 2>/dev/null || fail "collect"
+[[ "$(src tacplus-dev/build)" == "unavailable: GET projects/tacplus-dev%2Fbuild/jobs: curl exit 22" && "$(src tacplus-dev/looper)" == ok ]] || fail "$(jq .sources "$TMP/b.json")"
+lacks "$(cat "$TMP/calls")" gcloud
+: > "$TMP/calls"
+env "${ENVS[@]:0:3}" LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/p1/secrets/recap-build-token/versions/4 LOOPER_RECAP_PROJECTS="tacplus-dev/build tacplus-dev/looper" \
+  "$ROOT/looper-recap" collect --until "$UNTIL" > "$TMP/b.json" 2>/dev/null || fail "collect"
+[[ "$(src tacplus-dev/build)" == "unavailable: the build token (projects/p1/secrets/recap-build-token/versions/4): gcloud exit 1" && "$(src tacplus-dev/looper)" == ok ]] ||
+  fail "$(jq .sources "$TMP/b.json")"
+lacks "$(cat "$TMP/calls")" tacplus-dev%2Fbuild
+env "${ENVS[@]:0:3}" LOOPER_RECAP_BUILD_TOKEN_SECRET=recap-build-token LOOPER_RECAP_PROJECTS=tacplus-dev/build \
+  "$ROOT/looper-recap" collect --until "$UNTIL" > "$TMP/b.json" 2>/dev/null || fail "collect"
+[[ "$(src tacplus-dev/build)" == "unavailable: LOOPER_RECAP_BUILD_TOKEN_SECRET is not projects/<project>/secrets/<secret>/versions/<version>" ]] || fail "$(jq .sources "$TMP/b.json")"
 pass
 
 echo "looper-recap: all scenarios pass"
