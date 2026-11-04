@@ -31,6 +31,7 @@ Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 - One job per issue (direct reports) and a manager per repo that alone merges to main (#70); agents never build, build requests run as build jobs (#71); the recap reports managers, caps and capacity (#72). Agent, at Jody's request, 2026-11-03 (`tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`).
 - Formal verification in the build pipeline: nightly when changed and on every release tag, a bug on failure, and child sizing by gate set (#74). Hub, splitting tacplus-dev/tacplus#275 (approved), 2026-11-04.
 - Enforce 'only the manager writes main': a ruleset on main in the public repositories, a manager App as the only writer, reports on a token that cannot bypass it, Jody's PAT out of every job (#83). Agent, at Jody's request, 2026-11-04 (`tacplus-dev/roadmap:suggestions/2026-11-04-only-the-manager-can-write-main.md`).
+- Looper jobs on the in-cluster runner: normal-pool tags, builds on spot with retry:, requests per job type, no Docker in any pod (#84). Agent, at Jody's request, 2026-11-04 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
