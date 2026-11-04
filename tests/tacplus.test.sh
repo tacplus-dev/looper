@@ -112,6 +112,7 @@ mkdir -p "$TMP/ghconfig"
 printf 'github.com:\n    oauth_token: %s\n    git_protocol: https\n    user: x-access-token\n' "$TOKEN" > "$TMP/ghconfig/hosts.yml"
 tacplus GH_CONFIG_DIR="$TMP/ghconfig" -- clone -q https://github.com/org/repo.git gh3 2>"$TMP/err" || { cat "$TMP/err"; fail "clone failed"; }
 grep -qxF "github.com x-access-token:$TOKEN" "$SRV/log" || fail "github.com did not get the token"
+rm -rf "$TMP/ghconfig"   # the fixture's, not the wrapper's: nothing on disk holds the token (below)
 pass
 
 NAME="any other host gets no credential"
