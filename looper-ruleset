@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-ruleset: only the manager writes main (looper#83). A ruleset on main
+# in each public repository of LOOPER_ORG (default tacplus-dev) restricts
+# updates to it and blocks force-pushes and its deletion, with two bypass
+# actors: the manager App (tacplus-manager), the only writer a job holds, and
+# Jody's account. A report's token, an App installation token or any other,
+# can push its branch and nothing to main, neither by git nor by the contents
+# API. Jody (an org owner, GH_TOKEN) runs it by hand, again whenever a
+# repository is added or the ruleset drifts: it is idempotent.
+#
+#   looper-ruleset apply [REPO...]  the ruleset on each public repository (default every
+#                                   non-archived one): created if absent, put back if it
+#                                   differs, left alone ("unchanged") if it matches, so a
+#                                   second run makes no write
+#   looper-ruleset check [REPO...]  read-only: a line per repository; fails listing each
+#                                   public one whose ruleset is missing or differs
+#   looper-ruleset probe REPO       live, with a report's token in GH_TOKEN (no bypass
+#                                   actor's): a contents API write to main and a git push
+#                                   of an empty commit to main must both be refused; exits
+#                                   1, loudly, if either is accepted (the probe file it
+#                                   wrote is deleted), 2 if a refusal was not the ruleset's
+#
+# The ruleset, named "main: only the manager (looper#83)": target branch,
+# enforcement active, ref_name include refs/heads/main; rules update
+# (update_allows_fetch_and_merge false), non_fast_forward and deletion. Bypass
+# actors, bypass_mode always: the manager App (actor_type Integration,
+# actor_id LOOPER_MANAGER_APP_ID, required) and Jody's account. GitHub's REST
+# API takes individual users as bypass actors (actor_type User; docs.github.com
+# /en/rest/repos/rules, Create a repository ruleset: Integration,
+# OrganizationAdmin, RepositoryRole, Team, DeployKey, User), so Jody is a User
+# actor, LOOPER_RULESET_OWNER (a login; default the login of GH_TOKEN, the one
+# who runs it, which the log names). LOOPER_RULESET_OWNER=org-admins makes the
+# org's owners the actor instead (OrganizationAdmin, whose actor_id GitHub
+# ignores): Jody alone today, but every owner added later too. Never
+# RepositoryRole: a repository's admins must not bypass it. The comparison is
+# of the fields set here, normalised (rules and actors sorted), never the text.
+#
+# Private and internal repositories (fleet-dev, fleet-seatrials) are skipped,
+# and the log says so: rulesets on a private repository need GitHub Team, and
+# the planner skips their reports instead.
+#
+# Environment: GH_TOKEN (gh's: an org owner for apply and check, a report's
+# for probe), LOOPER_ORG, LOOPER_MANAGER_APP_ID (apply, check),
+# LOOPER_RULESET_OWNER, LOOPER_GITHUB_URL (probe's git remote, default
+# https://github.com: <url>/<org>/<repo>.git).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=looper-lib.sh
+source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
+
+RULESET_NAME="main: only the manager (looper#83)"
+GITHUB_URL="${LOOPER_GITHUB_URL:-https://github.com}"
+PROBE_PATH=".looper/ruleset-probe"
+
+# Each non-archived repository of the org named (default every one) as
+# "<name> <visibility>" (PUBLIC, PRIVATE or INTERNAL); a name the org has not
+# is fatal, never skipped.
+repos() { # [repo...]
+  local all r
+  all="$(gh repo list "$LOOPER_ORG" --no-archived --limit 200 --json name,visibility \
+           --jq '.[] | "\(.name) \(.visibility | ascii_upcase)"')" || die "could not list $LOOPER_ORG's repositories"
+  [[ $# -gt 0 ]] || { printf '%s\n' "$all"; return; }
+  for r in "$@"; do
+    grep -E "^${r//./\\.} " <<<"$all" || die "$LOOPER_ORG/$r: not a non-archived repository of $LOOPER_ORG"
+  done
+}
+
+# The bypass actor for Jody's account (LOOPER_RULESET_OWNER, above), as JSON.
+owner_actor() {
+  local login="${LOOPER_RULESET_OWNER:-}" id
+  if [[ "$login" == org-admins ]]; then
+    log "bypass: the manager App ($LOOPER_MANAGER_APP_ID) and $LOOPER_ORG's owners (OrganizationAdmin)" >&2
+    echo '{"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}'; return
+  fi
+  [[ -n "$login" ]] || login="$(gh api user --jq .login)" || die "could not read GH_TOKEN's login; set LOOPER_RULESET_OWNER"
+  id="$(gh api "users/$login" --jq .id)" && [[ "$id" =~ ^[0-9]+$ ]] || die "could not read the id of GitHub user $login"
+  log "bypass: the manager App ($LOOPER_MANAGER_APP_ID) and $login ($id, User)" >&2
+  jq -nc --argjson id "$id" '{actor_id: $id, actor_type: "User", bypass_mode: "always"}'
+}
+
+# The ruleset wanted, as the request body.
+wanted() {
+  [[ "${LOOPER_MANAGER_APP_ID:-}" =~ ^[0-9]+$ ]] || die "LOOPER_MANAGER_APP_ID (the manager App's id, tacplus-manager) is not set"
+  jq -nc --arg name "$RULESET_NAME" --argjson app "$LOOPER_MANAGER_APP_ID" --argjson owner "$(owner_actor)" '{
+    name: $name, target: "branch", enforcement: "active",
+    conditions: {ref_name: {include: ["refs/heads/main"], exclude: []}},
+    rules: [{type: "update", parameters: {update_allows_fetch_and_merge: false}},
+            {type: "non_fast_forward"}, {type: "deletion"}],
+    bypass_actors: [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}, $owner]}'
+}
+
+# A ruleset reduced to the fields set here, in one order: what is compared. A
+# rule without parameters and one with {} are the same; so is an
+# OrganizationAdmin actor with any actor_id (GitHub ignores it); a missing
+# bypass_actors (a reader without write access is not shown them) is none.
+NORMAL='{name, target, enforcement,
+  conditions: {ref_name: {include: (.conditions.ref_name.include // [] | sort),
+                          exclude: (.conditions.ref_name.exclude // [] | sort)}},
+  rules: ([.rules // [] | .[] | {type, parameters: (.parameters // {})}] | sort_by(.type)),
+  bypass_actors: ([.bypass_actors // [] | .[]
+                   | {actor_type, actor_id: (if .actor_type == "OrganizationAdmin" then null else .actor_id end),
+                      bypass_mode: (.bypass_mode // "always")}] | sort_by(.actor_type, .actor_id))}'
+
+# The id of the repository's own ruleset named RULESET_NAME, empty if none
+# (the org's rulesets are not the repository's: includes_parents=false).
+ruleset_id() { # repo
+  local ids
+  ids="$(gh api "repos/$LOOPER_ORG/$1/rulesets?includes_parents=false" \
+           --jq ".[] | select(.name == \"$RULESET_NAME\") | .id")" || die "$LOOPER_ORG/$1: could not list its rulesets"
+  [[ "$(grep -c . <<<"$ids")" -le 1 ]] || log "$LOOPER_ORG/$1: more than one ruleset named \"$RULESET_NAME\"; using the first" >&2
+  head -n1 <<<"$ids"
+}
+
+# "missing", "unchanged" or "differs <id>" for a repository's ruleset.
+state() { # repo wanted-json
+  local id have
+  id="$(ruleset_id "$1")"
+  [[ -n "$id" ]] || { echo missing; return; }
+  have="$(gh api "repos/$LOOPER_ORG/$1/rulesets/$id")" || die "$LOOPER_ORG/$1: could not read ruleset $id"
+  if [[ "$(jq -cS "$NORMAL" <<<"$have")" == "$(jq -cS "$NORMAL" <<<"$2")" ]]; then echo unchanged; else echo "differs $id"; fi
+}
+
+skip_line() { # repo visibility
+  log "$LOOPER_ORG/$1: skipped, ${2,,}: rulesets on a private repository need GitHub Team; the planner skips its reports instead"
+}
+
+apply() { # [repo...]
+  local want list r vis s
+  want="$(wanted)"; list="$(repos "$@")"
+  while read -r r vis; do
+    [[ -n "$r" ]] || continue
+    if [[ "$vis" != PUBLIC ]]; then skip_line "$r" "$vis"; continue; fi
+    s="$(state "$r" "$want")"
+    case "$s" in
+      unchanged) log "$LOOPER_ORG/$r: unchanged" ;;
+      missing) gh api -X POST "repos/$LOOPER_ORG/$r/rulesets" --input - <<<"$want" >/dev/null \
+                 || die "$LOOPER_ORG/$r: could not create the ruleset"
+               log "$LOOPER_ORG/$r: created" ;;
+      differs*) gh api -X PUT "repos/$LOOPER_ORG/$r/rulesets/${s#differs }" --input - <<<"$want" >/dev/null \
+                  || die "$LOOPER_ORG/$r: could not update ruleset ${s#differs }"
+                log "$LOOPER_ORG/$r: updated (ruleset ${s#differs } differed)" ;;
+    esac
+  done <<<"$list"
+}
+
+check() { # [repo...]
+  local want list r vis s bad=""
+  want="$(wanted)"; list="$(repos "$@")"
+  while read -r r vis; do
+    [[ -n "$r" ]] || continue
+    if [[ "$vis" != PUBLIC ]]; then echo "$r skipped (${vis,,})"; continue; fi
+    s="$(state "$r" "$want")"
+    case "$s" in
+      unchanged) echo "$r ok" ;;
+      missing) echo "$r missing"; bad+=" $r" ;;
+      differs*) echo "$r differs (ruleset ${s#differs })"; bad+=" $r" ;;
+    esac
+  done <<<"$list"
+  [[ -z "$bad" ]] || { log "main is not the manager's alone in:$bad (looper-ruleset apply)" >&2; return 1; }
+}
+
+unprotected() { # what
+  log "MAIN IS NOT PROTECTED in $LOOPER_ORG/$REPO: $1 was accepted with a report's token (looper#83)" >&2
+  FAILED=1
+}
+
+# A refusal is the ruleset's only if it says so; any other failure (a token
+# that cannot write at all, no network) proves nothing: inconclusive, exit 2.
+probe() { # repo
+  REPO="${1:-}"; FAILED=""
+  [[ -n "$REPO" ]] || die "probe: which repository?"
+  [[ -n "${GH_TOKEN:-}" ]] || die "probe: no GH_TOKEN (a report's token)"
+  local id bypass out sha url dir head commit msg
+  msg="looper-ruleset probe (looper#83): this write to main should have been refused"
+  if id="$(ruleset_id "$REPO" 2>/dev/null)" && [[ -n "$id" ]] \
+     && bypass="$(gh api "repos/$LOOPER_ORG/$REPO/rulesets/$id" --jq '.current_user_can_bypass // ""' 2>/dev/null)" \
+     && [[ "$bypass" == always || "$bypass" == exempt ]]; then
+    die "probe: GH_TOKEN bypasses the ruleset ($bypass): use a report's token, not the manager's or Jody's"
+  fi
+  if gh api "repos/$LOOPER_ORG/$REPO/contents/$PROBE_PATH?ref=main" >/dev/null 2>&1; then
+    die "probe: $PROBE_PATH is already on main in $LOOPER_ORG/$REPO (an earlier probe got through?): remove it first"
+  fi
+
+  # (a) The contents API.
+  if out="$(gh api -X PUT "repos/$LOOPER_ORG/$REPO/contents/$PROBE_PATH" -f message="$msg" -f branch=main \
+              -f content="$(printf '%s\n' "$msg" | base64 | tr -d '\n')" 2>&1)"; then
+    unprotected "a contents API write to main"
+    sha="$(jq -r '.content.sha // empty' <<<"$out" 2>/dev/null)" || sha=""
+    if [[ -n "$sha" ]] && gh api -X DELETE "repos/$LOOPER_ORG/$REPO/contents/$PROBE_PATH" -f branch=main -f sha="$sha" \
+         -f message="looper-ruleset probe (looper#83): remove the probe file that got through" >/dev/null 2>&1; then
+      log "deleted $PROBE_PATH from main again" >&2
+    else
+      log "could not delete $PROBE_PATH from main: remove it by hand" >&2
+    fi
+  elif grep -qiE 'rule|protected' <<<"$out"; then
+    log "$LOOPER_ORG/$REPO: the contents API write to main was refused: $(tr '\n' ' ' <<<"$out")"
+  else
+    die "probe: the contents API write failed, but not by a rule (inconclusive): $(tr '\n' ' ' <<<"$out")"
+  fi
+
+  # (b) A git push of an empty commit on main's head. The token goes to git
+  # through a credential helper, never a command line or the remote's URL.
+  url="$GITHUB_URL/$LOOPER_ORG/$REPO.git"
+  dir="$(mktemp -d)"
+  local -a g=(git -C "$dir" -c credential.helper=
+              -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f')
+  git init -q --bare "$dir"
+  if ! out="$("${g[@]}" fetch -q --depth 1 "$url" refs/heads/main 2>&1)"; then
+    rm -rf "$dir"; die "probe: could not fetch main from $url: $out"
+  fi
+  head="$(git -C "$dir" rev-parse FETCH_HEAD)"
+  commit="$(git -C "$dir" -c user.name=looper-ruleset -c user.email=looper-ruleset@invalid \
+              commit-tree "$head^{tree}" -p "$head" -m "$msg")"
+  if out="$("${g[@]}" push -q "$url" "$commit:refs/heads/main" 2>&1)"; then
+    unprotected "a git push to main (commit $commit, empty, on $head)"
+  elif grep -qiE 'remote rejected|GH013|rule violation|protected branch' <<<"$out"; then
+    log "$LOOPER_ORG/$REPO: the git push to main was refused: $(grep -iE 'rejected|GH013|rule' <<<"$out" | head -n2 | tr '\n' ' ')"
+  else
+    rm -rf "$dir"; die "probe: the git push failed, but not by a rule (inconclusive): $(tr '\n' ' ' <<<"$out")"
+  fi
+  rm -rf "$dir"
+  [[ -z "$FAILED" ]] || return 1
+  log "$LOOPER_ORG/$REPO: main is the manager's alone: a report's token can write it neither by API nor by push"
+}
+
+case "${1:-}" in
+  apply) shift; apply "$@" ;;
+  check) shift; check "$@" ;;
+  probe) shift; probe "$@" ;;
+  -h|--help|help|"") sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (see --help)" ;;
+esac

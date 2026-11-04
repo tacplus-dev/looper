@@ -58,6 +58,19 @@ stages:
     - when: manual
       allow_failure: true
 
+# Only the manager writes main (looper#83; README, Only the manager writes
+# main): once the project has the apps (LOOPER_REPORT_APP_ID, ...), no job
+# holds GH_TOKEN. Each job exchanges its id_token GCP_ID_TOKEN through Workload
+# Identity Federation for its app's token (looper-token), and its environment
+# names the app whose key GCP lets it sign with: looper-plan and kicker the
+# report app's (tacplus-looper), as the plan's looper-report jobs; the plan's
+# looper-manager jobs the manager's (tacplus-manager, the only bypass of
+# main's ruleset); its looper-scan jobs both. Until then the id_token goes unused.
+.looper-identity:
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
+
 looper-plan:
   stage: plan
   image: ghcr.io/tacplus-dev/looper:main
@@ -67,6 +80,8 @@ looper-plan:
     when: [runner_system_failure, scheduler_failure, unknown_failure]
   needs: []
   <<: *looper-rules
+  extends: .looper-identity
+  environment: {name: looper-plan, action: prepare}
   # The plan's settings, reviewed with this file (looper#56): looper-dispatch
   # plan reads them, and gives the child's jobs the git identity.
   variables:
@@ -100,7 +115,8 @@ looper-run:
 # start this pipeline when a repository has a ready issue and no looper job of
 # its own. gitlab.com runs this group's schedules at most hourly, so the hourly
 # kicker schedule's job makes a pass every 3 minutes for 57 minutes. Mechanical,
-# no model: GH_TOKEN for the issues, GITLAB_TOKEN (read_api) for the jobs and
+# no model: GH_TOKEN for the issues (the report app's token with the apps,
+# looper#83), GITLAB_TOKEN (read_api) for the jobs and
 # LOOPER_TRIGGER_TOKEN (environment kicker; looper#25) to start the pipeline.
 # Never two at once (resource_group): a late
 # job's successor waits for it.
@@ -113,6 +129,7 @@ looper-kick:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/
   resource_group: kicker
   environment: {name: kicker, action: prepare}
+  extends: .looper-identity
   retry:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]
@@ -121,3 +138,25 @@ looper-kick:
     GIT_STRATEGY: none
   script:
     - looper-dispatch run --for 3420
+
+# The live check that main's ruleset holds against a report (looper#83;
+# README, Only the manager writes main): with the report app's token, a
+# contents API write to looper's main and a push of an empty commit to it must
+# both be refused (looper-ruleset probe). Played by hand from a web pipeline,
+# after the setup and whenever the ruleset or the apps change.
+looper-ruleset-probe:
+  stage: plan
+  image: ghcr.io/tacplus-dev/looper:main
+  tags: [arm64, autoscale]
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+      allow_failure: true
+  extends: .looper-identity
+  environment: {name: looper-report, action: prepare}
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - test -z "${GH_TOKEN:-}" || { echo "this project still has GH_TOKEN, Jody's token: delete it first (README)"; exit 1; }
+    - GH_TOKEN="$(looper-token mint report)" looper-ruleset probe looper

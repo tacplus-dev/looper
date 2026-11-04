@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by looper (#80).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by looper (#83).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -108,7 +108,16 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   request with squash auto-merge, build trigger, comment, labels); one run at a time, in a child pipeline. The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
   `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables; the
   model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
-  `LOOPER_TRIGGER_TOKEN` when it is set (#25); the runner
+  `LOOPER_TRIGGER_TOKEN` when it is set (#25); only the manager writes main, built and tested, not yet set up (#83;
+  README, Only the manager writes main): `looper-ruleset apply` puts a ruleset on main in each public repository
+  (restricted updates, no force-push or deletion; bypass: the `tacplus-manager` app and Jody), idempotent, with `check`
+  and a live `probe` (the CI file's manual `looper-ruleset-probe`); with the apps' variables set, every job's GitHub
+  token is an app's, minted by `looper-token` from its id_token through WIF and KMS (its environment naming the key it
+  may use) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
+  scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;
+  a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan` and leaves
+  its PROPOSALS.md change for the looper to commit; private repositories' issues get no report
+  (`--visibility public`, `LOOPER_PRIVATE_REPORTS=1` to undo); the runner
   VMs' image and readiness (#43): `runner/startup.sh`, the templates' startup-script, marks a VM ready
   (`/var/run/runner-ready`) only once Docker answers, for the autoscaler's `instance_ready_command`; `runner-image build`
   (the build pipeline's `runner-image` job, input `runner_image: true`) bakes the image family `runner-arm64-docker`
@@ -179,7 +188,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   cross-test models are not scanned; the suggestion pass (#50) has run only against a stub roadmap: it starts with
   the next looper image, on the roadmap's nightly scan, and the hub's daily review (the sitrep, `looper-suggest
   decide`) is the hub's to wire; no release line yet
-- **Blocked on:** the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
+- **Blocked on:** "only the manager writes main" (#83) is enforced once Jody creates and installs the two apps,
+  imports their keys to KMS with their bindings, applies the ruleset and swaps `GH_TOKEN` for the apps' variables
+  (README, Only the manager writes main, Setting it up); until then every job uses `GH_TOKEN` as before; the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`
   app; #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build

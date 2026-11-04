@@ -26,10 +26,15 @@
 #
 # Git in the container authenticates to https://github.com, and only
 # there, with $GH_TOKEN (the private tacplus-dev/registry that `depends`
-# resolve through since 2.4): DOCKER_GITHUB_CREDS in looper-lib.sh.
+# resolve through since 2.4): DOCKER_GITHUB_CREDS in looper-lib.sh. A job
+# whose token is an app's (looper#83) has no GH_TOKEN: gh's configuration
+# holds it, refreshed hourly, so it is read from there when this starts.
 set -euo pipefail
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$(dirname "${BASH_SOURCE[0]}")/looper-lib.sh}"
+if [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" && -n "${GH_CONFIG_DIR:-}" ]] && t="$(gh auth token 2>/dev/null)" && [[ -n "$t" ]]; then
+  export GH_TOKEN="$t"
+fi
 
 minor="${TACPLUS_MINOR:-}" project=""
 d="$PWD"

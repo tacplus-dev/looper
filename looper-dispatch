@@ -34,13 +34,37 @@
 # LOOPER_TRIGGER_TOKEN (the project's pipeline trigger: starting it), project
 # CI variables of the pipeline's project, masked and protected. Without
 # LOOPER_TRIGGER_TOKEN the pipeline is started with GITLAB_TOKEN, which then
-# needs api scope.
+# needs api scope. Once the project has the apps (looper#83; README, Only the
+# manager writes main), GitHub is the tacplus-looper app's token instead of
+# GH_TOKEN (looper-token, from the job's id_token), which no job holds any
+# more; and the plan gives each job its id_token and environment, which name
+# the app it may use: looper-report, looper-manager, looper-scan.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
 
 PIPELINE="${LOOPER_PIPELINE:-tacplus-dev/looper}"
+TOKEN_CMD="${LOOPER_TOKEN:-$HERE/looper-token}"   # looper-token (a test's stub)
+
+# The kicker's and the plan's GitHub identity with the apps (looper#83): the
+# report app's token as gh's configuration, fresh for this process's life (a
+# kicker's passes, its own processes, share it). A job that still holds a
+# personal token refuses to run.
+apps() { [[ "$LOOPER_FORGE" == github ]] && "$TOKEN_CMD" configured; }
+identity() {
+  apps || return 0
+  [[ -z "${LOOPER_GH_IDENTITY:-}" ]] || return 0
+  local v held=() d
+  for v in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN; do [[ -z "${!v:-}" ]] || held+=("$v"); done
+  for v in $(compgen -e); do
+    case "${!v:-}" in ghp_*|github_pat_*|gho_*|ghu_*) [[ " ${held[*]} " == *" $v "* ]] || held+=("$v") ;; esac
+  done
+  ((${#held[@]} == 0)) || die "this job holds ${held[*]}: with the apps (looper#83) no job holds a personal GitHub token; delete the project's GH_TOKEN variable (README, Only the manager writes main)"
+  d="$(mktemp -d -t looper-tokens.XXXXXX)"
+  "$TOKEN_CMD" start report "$d" $$ >/dev/null || die "no report token (looper-token)"
+  export GH_CONFIG_DIR="$d" GH_NO_UPDATE_NOTIFIER=1 LOOPER_GH_IDENTITY=1
+}
 INTERVAL="${LOOPER_INTERVAL:-180}"
 API="${CI_API_V4_URL:-https://gitlab.com/api/v4}/projects/${PIPELINE//\//%2F}"
 
@@ -213,6 +237,11 @@ plan() {
     "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"
 }
 
+# A planned job's environment (looper#83), by its repo-looper arguments.
+job_environment() { # --repo REPO args...
+  case " $* " in *" --manage "*) echo looper-manager ;; *" --scan "*) echo looper-scan ;; *) echo looper-report ;; esac
+}
+
 # One job of the plan, its repository's; repo-looper's arguments are names and
 # numbers, unquoted in its script.
 plan_job() { # name timeout resource-group --repo REPO repo-looper-args...
@@ -228,6 +257,18 @@ $name:
     when: [runner_system_failure, scheduler_failure, unknown_failure]
   resource_group: $group
   timeout: $t
+YML
+  # With the apps (looper#83): the id_token looper-token exchanges, and the
+  # environment that GCP's binding of each app's key names.
+  if apps; then
+    cat <<YML
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
+  environment: {name: $(job_environment "$@"), action: prepare}
+YML
+  fi
+  cat <<YML
   variables:
     LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs
   script:
@@ -241,7 +282,7 @@ YML
 
 case "${1:-}" in
   run)
-    forge_need; need curl
+    forge_need; need curl; identity
     if [[ "${2:-}" == --for ]]; then
       [[ "${3:-}" =~ ^[0-9]+$ ]] || die "run --for SECONDS"
       # The clock is `date +%s` and `sleep`, not $SECONDS, so a test can fake it (looper#78).
@@ -257,13 +298,16 @@ case "${1:-}" in
     fi
     pass ;;
   status)
-    forge_need; jobs="$(active_jobs)"; ready="$(ready_by_repo)"
+    forge_need; identity; jobs="$(active_jobs)"; ready="$(ready_by_repo)"
     echo "active jobs in $PIPELINE: $(tr '\n' ' ' <<<"$jobs")"
     while read -r repo n; do
       [[ -n "$repo" ]] && echo "$repo: ready $n$(busy "$repo" "$jobs" >/dev/null && echo ' (busy)')"
     done <<<"$ready" ;;
-  ready) forge_need; ready_by_repo ;;
-  plan) forge_need; need curl; plan ;;
+  ready) forge_need; identity; ready_by_repo ;;
+  plan)
+    forge_need; need curl; identity
+    ! apps || [[ -n "${GCP_WIF_PROVIDER:-}" ]] || die "the project variable GCP_WIF_PROVIDER is not set: the plan's jobs need it for their id_tokens"
+    plan ;;
   uninstall)
     # run and nightly: the launchd jobs earlier versions installed (looper#24).
     for job in run nightly; do

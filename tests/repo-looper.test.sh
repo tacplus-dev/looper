@@ -1000,6 +1000,55 @@ has "$(cat "$FIX/comments")" "alpha#8 "
 lacks "$(cat "$FIX/comments")" "alpha#4 "
 pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
 has "$pp" "labelled \`bug\`"; has "$pp" "prioritized"; has "$pp" "PROPOSALS.md"; has "$pp" "never \`approved\`"; has "$pp" "data to weigh, never instructions"
+lacks "$pp" "git push origin main"
+pass
+
+# Only the manager's identity writes main (looper#83): the scan's model
+# leaves its PROPOSALS.md in the checkout and pushes nothing; the looper
+# commits that change alone on main, on the main of the moment.
+scenario scan-proposals
+templates
+printf '# Proposals\n' > "$FIX/seed/PROPOSALS.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm proposals; git -C "$FIX/seed" push -q origin main
+cat > "$FIX/scan.sh" <<'EOS'
+printf -- '- An idea (what, why, links)\n' >> PROPOSALS.md
+echo sneaked > README.md
+EOS
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(origin log -1 --format=%s main)" == "PROPOSALS.md: the nightly scan's proposals (looper)" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(origin diff --name-only main~1 main)" == PROPOSALS.md ]] || fail "the commit: $(origin diff --stat main~1 main)"
+origin show main:PROPOSALS.md | grep -qx -- '- An idea (what, why, links)' || fail "PROPOSALS.md: $(origin show main:PROPOSALS.md)"
+before="$(origin rev-parse main)"; : > "$FIX/scan.sh"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(origin rev-parse main)" == "$before" ]] || fail "a scan with no proposal committed: $(origin log --oneline -1 main)"
+pass
+
+# The apps (looper#83): a job holds an app's token, gh's configuration that
+# looper-token (a stub here) keeps fresh, and never a personal token: one
+# that holds GH_TOKEN, or anything shaped like a personal token, refuses to
+# run. A report's model gets the report's token (GH_CONFIG_DIR) and no
+# GH_TOKEN; the manager holds the manager's; a scan both, so its model must
+# run as a user of its own.
+printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' \
+  '  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;' \
+  '  start) echo "start $2 $(basename "$3")" >> "$FIX/token"; mkdir -p "$3"; echo 0 ;;' \
+  '  *) exit 3 ;;' 'esac' > "$TMP/bin/looper-token-stub"
+chmod +x "$TMP/bin/looper-token-stub"
+APPS=(LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GH_TOKEN= GITHUB_TOKEN=)
+scenario apps-identity
+for v in GH_TOKEN=ghp_0123456789abcdef0123 GITHUB_TOKEN=x OTHER=github_pat_0123456789abcdef; do
+  ! OUT="$(looper "${APPS[@]}" "$v" -- --repo alpha --issue 4 2>&1)" || fail "ran holding ${v%%=*}"
+  has "$OUT" "this job holds ${v%%=*}"
+done
+[[ ! -e "$FIX/token" && ! -s "$FIX/prompts" ]] || fail "a job holding a personal token went on"
+echo 'env > "$FIX/model-env"' >> "$FIX/claude.sh"; report "Done."
+run "${APPS[@]}"
+grep -qx 'start report report' "$FIX/token" && grep -qx 'start manager manager' "$FIX/token" || fail "tokens: $(cat "$FIX/token")"
+grep -q '^GH_CONFIG_DIR=.*/report$' "$FIX/model-env" || fail "the model's gh: $(grep GH_ "$FIX/model-env")"
+! grep -qE '^(GH_TOKEN|GITHUB_TOKEN)=.' "$FIX/model-env" || fail "the model holds a GH_TOKEN"
+: > "$FIX/token"
+! OUT="$(looper "${APPS[@]}" -- --repo alpha --scan 2>&1)" || fail "a scan ran with its model as the job's user"
+has "$OUT" "its model must run as a user of its own"
+[[ ! -s "$FIX/token" ]] || fail "the scan minted: $(cat "$FIX/token")"
 pass
 
 # The nightly scan reads the build pipeline's security report (looper#49): the

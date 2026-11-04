@@ -104,6 +104,16 @@ tacplus GITHUB_TOKEN="$TOKEN" -- clone -q https://github.com/org/repo.git gh2 2>
 grep -qxF "github.com x-access-token:$TOKEN" "$SRV/log" || fail "github.com did not get the token"
 pass
 
+# A job whose token is an app's (looper#83) has no GH_TOKEN: the token is
+# gh's configuration (GH_CONFIG_DIR), refreshed hourly, read when this starts.
+NAME="gh's configuration does when no token is in the environment"
+: > "$SRV/log"
+mkdir -p "$TMP/ghconfig"
+printf 'github.com:\n    oauth_token: %s\n    git_protocol: https\n    user: x-access-token\n' "$TOKEN" > "$TMP/ghconfig/hosts.yml"
+tacplus GH_CONFIG_DIR="$TMP/ghconfig" -- clone -q https://github.com/org/repo.git gh3 2>"$TMP/err" || { cat "$TMP/err"; fail "clone failed"; }
+grep -qxF "github.com x-access-token:$TOKEN" "$SRV/log" || fail "github.com did not get the token"
+pass
+
 NAME="any other host gets no credential"
 : > "$SRV/log"
 if tacplus GH_TOKEN="$TOKEN" -- clone -q https://gitlab.example.test/org/repo.git other 2>"$TMP/err"; then fail "clone without a credential succeeded"; fi

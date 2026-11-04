@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-token: the GitHub identity of a job of the looper pipeline
+# (gitlab.com/tacplus-dev/looper), so that only the manager writes main
+# (looper#83; tacplus-dev/roadmap suggestions/2026-11-04-only-the-manager-can-write-main.md).
+# Every repository's main has a ruleset (looper-ruleset) that only the
+# tacplus-manager app and the org's owner may bypass, and no job holds Jody's
+# personal token. Each job's token is an installation token of a GitHub App
+# whose private key is a Cloud KMS signing key (imported once,
+# non-exportable, as tacplus-reader's is): the job's GitLab id_token is
+# exchanged through Workload Identity Federation, KMS signs the app's JWT, and
+# GitHub gives a one-hour token. A role is an app:
+#
+#   report   tacplus-looper: contents, issues and pull requests write, no
+#            bypass of main's ruleset. The reports and their models, the
+#            scans' models, the kicker and the plan.
+#   manager  tacplus-manager: contents and issues write, the ruleset's bypass
+#            actor. The managers, and the commits to main of the scans (their
+#            planning files, the roadmap's suggestions) once their model is done.
+#
+#   looper-token start ROLE DIR [PID]
+#                                 mints ROLE's token into DIR/hosts.yml (gh's
+#                                 config: point GH_CONFIG_DIR at DIR, and gh and
+#                                 git through `gh auth git-credential` read it on
+#                                 every call) and keeps it fresh, every
+#                                 LOOPER_TOKEN_REFRESH seconds (default 2700), in
+#                                 a process of its own until PID (default the
+#                                 caller) ends; prints that process's PID
+#   looper-token mint ROLE        one token on stdout
+#   looper-token configured       exits 0 when this deployment's jobs use the
+#                                 apps (LOOPER_REPORT_APP_ID is set)
+#
+# Which job may sign with which key is GCP's to enforce: each key's IAM
+# binding names the environments of the pipeline's jobs that may use it
+# (README, Only the manager writes main). The id_token is kept, in DIR's
+# gcloud configuration and readable by the job's user alone, for the job's
+# life: a token lasts an hour and a job up to eleven, so each refresh exchanges
+# it again. A model never holds it (repo-looper withholds every *ID_TOKEN, and
+# each model runs as a user of its own, looper#68).
+#
+# Environment (variables of the pipeline's project, names and no secrets):
+# GCP_WIF_PROVIDER (projects/N/locations/global/workloadIdentityPools/P/providers/R),
+# LOOPER_KMS_KEYRING (projects/P/locations/L/keyRings/R), LOOPER_REPORT_APP_ID,
+# LOOPER_REPORT_INSTALLATION_ID, LOOPER_MANAGER_APP_ID,
+# LOOPER_MANAGER_INSTALLATION_ID; GCP_ID_TOKEN (the job's id_tokens, audience
+# https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_GITHUB_API (default
+# https://api.github.com).
+set -euo pipefail
+
+GITHUB_API="${LOOPER_GITHUB_API:-https://api.github.com}"
+GITLAB_ISSUER="${LOOPER_GITLAB_ISSUER:-https://gitlab.com}"
+REFRESH="${LOOPER_TOKEN_REFRESH:-2700}"
+
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+# The log is stderr: stdout carries what a command returns.
+log() { printf '[%s] looper-token: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+fail() { log "FATAL $*"; exit 1; }
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+b64url_decode() { local s; s="$(tr '_-' '/+' <<<"$1")"; while ((${#s} % 4)); do s+="="; done; base64 -d <<<"$s"; }
+
+# A role's app: "<KMS key> <app id> <installation id> <permissions>".
+role_app() { # role
+  case "$1" in
+    report)
+      : "${LOOPER_REPORT_APP_ID:?the project variable LOOPER_REPORT_APP_ID is not set (README, Only the manager writes main)}"
+      : "${LOOPER_REPORT_INSTALLATION_ID:?the project variable LOOPER_REPORT_INSTALLATION_ID is not set}"
+      echo "tacplus-looper $LOOPER_REPORT_APP_ID $LOOPER_REPORT_INSTALLATION_ID" \
+        '"contents":"write","issues":"write","pull_requests":"write","metadata":"read"' ;;
+    manager)
+      : "${LOOPER_MANAGER_APP_ID:?the project variable LOOPER_MANAGER_APP_ID is not set (README, Only the manager writes main)}"
+      : "${LOOPER_MANAGER_INSTALLATION_ID:?the project variable LOOPER_MANAGER_INSTALLATION_ID is not set}"
+      echo "tacplus-manager $LOOPER_MANAGER_APP_ID $LOOPER_MANAGER_INSTALLATION_ID" \
+        '"contents":"write","issues":"write","metadata":"read"' ;;
+    *) fail "no role '$1': report or manager" ;;
+  esac
+}
+
+# The id_token's claims, checked before GCP sees it: GitLab's issuer, the
+# provider's audience, and GitLab's own word for the project and its protected
+# main, which no variable overrides. (Its signature and the environment are
+# GCP's to check: the key's binding.)
+check_id_token() {
+  local c
+  c="$(IFS=. read -r _ p _ <<<"$GCP_ID_TOKEN"; b64url_decode "$p" 2>/dev/null)" || true
+  jq -e 'type == "object"' <<<"$c" >/dev/null 2>&1 || fail "GCP_ID_TOKEN is not a JWT"
+  [[ "$(jq -r .iss <<<"$c")" == "$GITLAB_ISSUER" ]] || fail "the id_token's issuer is $(jq -r .iss <<<"$c"), not $GITLAB_ISSUER"
+  jq -e --arg a "https://iam.googleapis.com/$GCP_WIF_PROVIDER" '.aud | if type == "array" then index($a) != null else . == $a end' <<<"$c" >/dev/null ||
+    fail "the id_token's audience is not the WIF provider $GCP_WIF_PROVIDER"
+  [[ -z "${CI_PROJECT_PATH:-}" || "$(jq -r .project_path <<<"$c")" == "$CI_PROJECT_PATH" ]] ||
+    fail "the id_token is project $(jq -r .project_path <<<"$c"), the job says $CI_PROJECT_PATH: a variable overrides GitLab's"
+  [[ "$(jq -r .ref <<<"$c")" == main && "$(jq -r .ref_protected <<<"$c")" == true ]] ||
+    fail "the id_token is for ref $(jq -r .ref <<<"$c") (protected: $(jq -r .ref_protected <<<"$c")), not protected main"
+}
+
+# gcloud federated with the job's id_token, its configuration in DIR/gcloud
+# (the job's user's alone): every later call exchanges the token again.
+gcp_login() { # dir
+  : "${GCP_ID_TOKEN:?this job has no id_tokens GCP_ID_TOKEN (README, Only the manager writes main)}"
+  : "${GCP_WIF_PROVIDER:?the project variable GCP_WIF_PROVIDER is not set}"
+  check_id_token
+  export CLOUDSDK_CONFIG="$1/gcloud" CLOUDSDK_CORE_DISABLE_PROMPTS=1
+  ( umask 077; mkdir -p "$CLOUDSDK_CONFIG"
+    printf '%s' "$GCP_ID_TOKEN" > "$CLOUDSDK_CONFIG/oidc-token"
+    gcloud iam workload-identity-pools create-cred-config "$GCP_WIF_PROVIDER" \
+      --credential-source-file="$CLOUDSDK_CONFIG/oidc-token" --output-file="$CLOUDSDK_CONFIG/federation.json" >/dev/null ) ||
+    fail "no credential configuration for $GCP_WIF_PROVIDER"
+  gcloud auth login --cred-file="$CLOUDSDK_CONFIG/federation.json" --quiet >/dev/null 2>&1 ||
+    fail "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER)"
+}
+
+# A one-hour installation token of the role's app, on stdout: KMS signs the
+# app's JWT (only a job whose binding allows it may), GitHub mints the token.
+mint() { # role dir
+  local key app inst perms now header payload sig resp token
+  read -r key app inst perms < <(role_app "$1")
+  : "${LOOPER_KMS_KEYRING:?the project variable LOOPER_KMS_KEYRING is not set}"
+  now="$(date +%s)"
+  header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
+  payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app" | b64url)"
+  ( umask 077; printf '%s' "$header.$payload" > "$2/jwt-input" )
+  gcloud kms asymmetric-sign --key="$LOOPER_KMS_KEYRING/cryptoKeys/$key" --version=1 --digest-algorithm=sha256 \
+      --input-file="$2/jwt-input" --signature-file="$2/jwt-sig" >/dev/null 2>&1 ||
+    { rm -f "$2/jwt-input" "$2/jwt-sig"; log "Cloud KMS refused to sign with $key: this job's environment may not be $1"; return 1; }
+  sig="$(b64url < "$2/jwt-sig")"; rm -f "$2/jwt-input" "$2/jwt-sig"
+  resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
+            -d "{\"permissions\":{$perms}}" "$GITHUB_API/app/installations/$inst/access_tokens")" ||
+    { log "GitHub refused the app $key a token"; return 1; }
+  token="$(jq -r '.token // empty' <<<"$resp")"
+  [[ -n "$token" ]] || { log "no token in GitHub's answer"; return 1; }
+  printf '%s\n' "$token"
+}
+
+# The token as gh's configuration, replaced whole (a reader never sees half a
+# file). The directory and the file are readable by whoever may read DIR: a
+# report's model holds the report token, the manager token's DIR is the job's
+# user's alone (the caller's chmod).
+write_hosts() { # dir token
+  local t="$1/.hosts.yml.$$"
+  printf 'github.com:\n    oauth_token: %s\n    git_protocol: https\n    user: x-access-token\n' "$2" > "$t"
+  chmod 0644 "$t"; mv -f "$t" "$1/hosts.yml"
+}
+
+start() { # role dir [pid]
+  local role="$1" dir="$2" parent="${3:-$PPID}" token
+  mkdir -p "$dir"
+  gcp_login "$dir"
+  token="$(mint "$role" "$dir")" || fail "no $role token"
+  write_hosts "$dir" "$token"
+  log "$role: a token of $(role_app "$role" | cut -d' ' -f1) in $dir, refreshed every ${REFRESH}s"
+  # Fresh until the job's process ends; a refresh that fails is tried again
+  # within a minute, while the token it replaces still has its hour.
+  ( exec </dev/null >/dev/null
+    while kill -0 "$parent" 2>/dev/null; do
+      next=$(( $(date +%s) + REFRESH ))
+      while kill -0 "$parent" 2>/dev/null && (( $(date +%s) < next )); do sleep $(( REFRESH < 5 ? REFRESH : 5 )); done
+      kill -0 "$parent" 2>/dev/null || break
+      until token="$(mint "$role" "$dir")"; do
+        kill -0 "$parent" 2>/dev/null || exit 0
+        log "$role: the token was not refreshed; again in a minute"; sleep 60
+      done
+      write_hosts "$dir" "$token"
+    done ) &
+  echo $!
+}
+
+case "${1:-}" in
+  start) [[ $# -eq 3 || $# -eq 4 ]] || fail "start ROLE DIR [PID]"; start "$2" "$3" "${4:-$PPID}" ;;
+  mint)
+    [[ $# -eq 2 ]] || fail "mint ROLE"
+    d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+    gcp_login "$d"; mint "$2" "$d" ;;
+  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;
+  -h|--help|help|"") usage ;;
+  *) fail "unknown command: $1 (see --help)" ;;
+esac

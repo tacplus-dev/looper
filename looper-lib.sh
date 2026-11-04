@@ -180,9 +180,10 @@ forge_issue_list() { # repo state limit fields jq [label...]
 
 # The org's open issues with a label, every repository's (repository.name is
 # the path under LOOPER_ORG); the jq filter optional.
-forge_search_issues() { # label limit fields [jq]
+forge_search_issues() { # label limit fields [jq [public]]
   case "$LOOPER_FORGE" in
     github) local q=(); [[ -z "${4:-}" ]] || q=(--jq "$4")
+            [[ "${5:-}" != public ]] || q+=(--visibility public)
             gh search issues --owner "$LOOPER_ORG" --state open --label "$1" --limit "$2" --json "$3" "${q[@]+"${q[@]}"}" ;;
     gitlab) local i; i="$(gl_all "groups/$(gl_enc "$LOOPER_ORG")/issues?state=opened&labels=$(gl_enc "$1")" "$2")" || return 1
             gl_issues <<<"$i" | jq -r "${4:-.}" ;;
@@ -487,9 +488,15 @@ next_ready() { # repo
 # whose next issue is priority:high comes first (looper#31), so it is planned
 # first. ready_by_repo is each repository's first.
 ready_by_repo() { ready_all_by_repo | awk '!seen[$1]++'; }
+# A private repository's issues are no report's (looper#83): a ruleset on its
+# main needs GitHub Team, so nothing there keeps a report's push off main
+# (the hub's call, 2026-11-04, until Jody decides otherwise:
+# LOOPER_PRIVATE_REPORTS=1 lists them again). On GitHub, the search's own
+# filter, no request more.
 ready_all_by_repo() {
-  local all issues r n b64 refs states
-  all="$(forge_search_issues "$LABEL_APPROVED" 1000 repository,number,labels,createdAt,body)" || return 1
+  local all issues r n b64 refs states vis=public
+  [[ "${LOOPER_PRIVATE_REPORTS:-}" != 1 ]] || vis=""
+  all="$(forge_search_issues "$LABEL_APPROVED" 1000 repository,number,labels,createdAt,body "" "$vis")" || return 1
   # Not held, in ISSUE_ORDER: "<repo> <number> <body, base64>".
   issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
                    | sort_by($ISSUE_ORDER) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1

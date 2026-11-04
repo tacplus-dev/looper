@@ -159,8 +159,9 @@ looper creates both labels in a repository that lacks them.
   (`feature`) asking for that entry to be prioritized, linking it and saying why now.
 - **The nightly scan** files each finding (a vulnerability, a failing gate, a stale pin) as a `bug`,
   `approved` when the fix is mechanical; an idea for new behaviour is a `feature`, never `approved`, and goes
-  to PROPOSALS.md. After the scan, an issue it filed with no kind gets `bug`, and a feature it filed loses
-  `approved`.
+  to PROPOSALS.md. The model leaves that file in the checkout and pushes nothing. The looper then commits that file's
+  change alone on main (looper#83), and its model runs as `looper-scan`, a user of its own. After the scan, an issue it
+  filed with no kind gets `bug`, and a feature it filed loses `approved`.
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository) in an issue's body holds it until that issue is closed.
@@ -545,7 +546,8 @@ and the looper's check again before the commit, whoever wrote the file.
 **Other jobs file one** (tacplus-dev/chaos#1's nightly Chaos Mesh watch, say): `looper-suggest file` without `--dir`
 clones the roadmap repository (`GH_TOKEN`), writes the suggestion in the same format, checks it against TYPES.md and
 the rejected list, and pushes it to main as its own commit touching `suggestions/` only, made again on the new main
-when the push is rejected.
+when the push is rejected. Once main's ruleset is on ([Only the manager writes main](#only-the-manager-writes-main),
+looper#83), that push needs a bypass actor's token; the job's own is refused (PROPOSALS.md).
 
 **The review** (the hub, outside this repository): the hub brings the open suggestions to Jody in its daily sitrep, in
 the index's order; Jody accepts, rejects or defers each, with a reason; the hub records it (`looper-suggest decide
@@ -1092,7 +1094,7 @@ of their own").
 | `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`looper-dispatch plan`) and each report's job poll read the project's jobs; the kicker reads them too |
 | `LOOPER_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/looper (`glptt-`), environment scope `kicker` | the kicker starts the pipeline with it (`POST /projects/:id/trigger/pipeline`; the token is on no command line) |
 | `BUILD_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/build (`glptt-`), owned by the build project's bot user ([Looper identity](#looper-identity)), protected and masked | the reports and managers start build jobs with it ([Build jobs](#build-jobs), looper#71; on no command line); no model holds it. Unset, every repository builds as before |
-| `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before | GitHub, the model |
+| `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before; `GH_TOKEN` gone once the project has the apps ([Only the manager writes main](#only-the-manager-writes-main), looper#83) | GitHub, the model |
 
 A Reporter with `read_api` reads the project's code, pipelines and jobs. It cannot read CI variables (Maintainer),
 play a manual job, start a pipeline or change a setting, and it reaches no other project: not fleet-seatrials' protected
@@ -1158,6 +1160,115 @@ In the next looper job `gcloud auth list` names `looper-runner`, and the `testIa
 `projects/jody1-328023` grants none of `artifactregistry.repositories.uploadArtifacts`, `storage.objects.create`,
 `storage.objects.get`, `storage.objects.list`. build-box itself keeps its roles for whatever else runs as it; the
 hub reviews them, but no looper VM holds it.
+
+### Only the manager writes main
+
+Since looper#70 the manager alone merges, and nothing reaches main without green gates. Since looper#83 GitHub enforces
+it (tacplus-dev/roadmap `suggestions/2026-11-04-only-the-manager-can-write-main.md`), rather than a clone's pre-push hook,
+which `git push --no-verify` or a contents API call skips. The hooks stay as early, friendly refusals.
+
+- **A ruleset on main** in each public repository of the org (`looper-ruleset apply`, idempotent: run it again whenever a
+  repository is added; `looper-ruleset check` lists any that lack it or differ). It restricts updates, and blocks
+  force-pushes and deletion. Its only bypass actors are the `tacplus-manager` app and Jody's account; a repository's
+  admins are not among them.
+- **Two GitHub Apps**, whose private keys are Cloud KMS signing keys, held like `tacplus-reader`'s ([Looper identity](#looper-identity)):
+  - `tacplus-manager` (contents and issues write) is the ruleset's bypass actor. It is held only by the managers'
+    jobs, and by the scans for their commits to main, after their model is done: a scan's `PROPOSALS.md`, the planning
+    files, `HISTORY.md` and the roadmap's suggestions (`looper-suggest`'s commit through the roadmap scan).
+  - `tacplus-looper` (contents, issues and pull requests write) is no bypass actor. It is held by the reports and their
+    models, the scans' models, the kicker and the plan. It may push branches, comment and label, and nothing to main.
+- **No job holds Jody's token.** Each job exchanges its GitLab id_token (`GCP_ID_TOKEN`) through Workload Identity
+  Federation, and KMS signs its app's JWT (`looper-token`). Which key a job may use is GCP's to enforce: each key's
+  binding names the job environments the plan gives (`looper-report`, `looper-manager`, `looper-scan`; the plan's
+  `looper-plan`, the kicker's `kicker`).
+  - The token is gh's configuration (`GH_CONFIG_DIR`), which gh, git (`gh auth git-credential`) and the `tacplus`
+    wrapper read on every call. It is refreshed every 45 minutes for the job's life.
+  - A job that still holds `GH_TOKEN`, or anything shaped like a personal token, refuses to run.
+  - A scan's model runs as a user of its own (`looper-scan`, looper#68), so the manager's token, readable by the job's
+    user alone, stays out of its reach. Its `PROPOSALS.md` change is the looper's commit, not the model's push.
+  - Without the apps (`LOOPER_REPORT_APP_ID` unset), the jobs use `GH_TOKEN` as before.
+- **The private repositories** (fleet-dev, fleet-seatrials) would need GitHub Team for a ruleset, so no report works
+  them. Their issues are left out of the kicker's and the plan's search (`--visibility public`) until Jody decides
+  otherwise (`LOOPER_PRIVATE_REPORTS=1`; the hub's call, 2026-11-04). Their nightly scans still run.
+
+What it is not: the manager's gates run each report's commits as the manager's job's user, which holds the manager's
+token. A report's tests therefore reach main through what they land (PROPOSALS.md, "The land's gates as a user of their
+own"), as they always reached the job's user.
+
+```sh
+looper-token start report|manager DIR [PID]   # a job's token, as DIR/hosts.yml, fresh until PID ends (repo-looper, looper-dispatch)
+looper-ruleset apply | check [REPO...]        # main's ruleset on the public repositories (Jody, by hand)
+looper-ruleset probe REPO                     # with a report's token: a contents write and a push to main both refused
+tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; an id_token not the project's protected main refused
+tests/looper-ruleset.test.sh  # the ruleset created on the public repositories and the private ones skipped, a second apply writes nothing, a drifted one put back, check; the probe passes on refusals and fails when main accepts a write
+```
+
+**Setting it up** (Jody; `P=jody1-328023`, `PN` and `PROVIDER` as in [Setting it up](#setting-it-up-the-hub-with-jodys-approval-as-recorded-on-looper28),
+the pool `gitlab-loopers` already there, `LP` the id of the GitLab project tacplus-dev/looper,
+`curl -sH "PRIVATE-TOKEN: <Jody's>" https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper | jq .id`):
+
+1. **The apps.** On github.com, under tacplus-dev's Settings, Developer settings, GitHub Apps, New GitHub App, create
+   two private apps with no webhook:
+   - `tacplus-manager`: Repository permissions Contents read and write, Issues read and write, Metadata read.
+   - `tacplus-looper`: Contents read and write, Issues read and write, Pull requests read and write, Metadata read.
+
+   Install each on **all repositories** of tacplus-dev. Note each app's id (the app's page) and its installation's id
+   (the number at the end of the installation's settings URL). Generate a private key for each and download it.
+2. **Their keys in KMS**, imported once as non-exportable keys; the files never exist outside Google again:
+
+   ```sh
+   for k in tacplus-manager tacplus-looper; do
+     gcloud kms keys create $k --keyring=looper --location=us --project=$P --purpose=asymmetric-signing \
+       --default-algorithm=rsa-sign-pkcs1-2048-sha256 --protection-level=software --import-only --skip-initial-version-creation
+     gcloud kms import-jobs create $k-import --keyring=looper --location=us --project=$P \
+       --import-method=rsa-oaep-3072-sha256-aes-256 --protection-level=software
+     openssl pkcs8 -topk8 -nocrypt -inform PEM -outform DER -in $k.private-key.pem -out $k.der
+     gcloud kms keys versions import --import-job=$k-import --keyring=looper --location=us --project=$P \
+       --key=$k --algorithm=rsa-sign-pkcs1-2048-sha256 --target-key-file=$k.der   # version 1
+     shred -u $k.private-key.pem $k.der
+   done
+   ```
+3. **The looper project's provider**, its own, beside kernel's in the pool: GitLab's word for the job's environment is
+   the attribute each key's binding matches. Then each key's own bindings, never at the key ring:
+
+   ```sh
+   gcloud iam workload-identity-pools providers create-oidc gitlab-looper --project=$P --location=global \
+     --workload-identity-pool=gitlab-loopers --issuer-uri=https://gitlab.com \
+     --attribute-mapping='google.subject=assertion.project_id + ":" + assertion.job_id,attribute.role=assertion.project_id + ":" + assertion.ref + ":" + assertion.ref_protected + ":" + assertion.environment' \
+     --attribute-condition="assertion.project_id == \"$LP\" && assertion.ref_protected == \"true\""
+   R="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/attribute.role/$LP:main:true"
+   for e in looper-report looper-scan looper-plan kicker; do
+     gcloud kms keys add-iam-policy-binding tacplus-looper --keyring=looper --location=us --project=$P \
+       --role=roles/cloudkms.signer --member="$R:$e"
+   done
+   for e in looper-manager looper-scan; do
+     gcloud kms keys add-iam-policy-binding tacplus-manager --keyring=looper --location=us --project=$P \
+       --role=roles/cloudkms.signer --member="$R:$e"
+   done
+   ```
+4. **The ruleset**, with Jody's own token (an org owner; the image has the script). `LOOPER_RULESET_OWNER` defaults to
+   the token's login, which becomes the ruleset's second bypass actor. Then check it:
+
+   ```sh
+   docker run --rm -e GH_TOKEN -e LOOPER_MANAGER_APP_ID=<tacplus-manager's app id> ghcr.io/tacplus-dev/looper:main looper-ruleset apply
+   docker run --rm -e GH_TOKEN -e LOOPER_MANAGER_APP_ID=<tacplus-manager's app id> ghcr.io/tacplus-dev/looper:main looper-ruleset check
+   ```
+5. **The project's variables**, names and no secrets (`G=https://gitlab.com/api/v4`, `L=tacplus-dev%2Flooper`). Then,
+   at once, delete `GH_TOKEN`, because a job that holds both refuses to run:
+
+   ```sh
+   for v in "GCP_WIF_PROVIDER=projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/providers/gitlab-looper" \
+            "LOOPER_KMS_KEYRING=projects/$P/locations/us/keyRings/looper" \
+            LOOPER_MANAGER_APP_ID=<tacplus-manager's app id> LOOPER_MANAGER_INSTALLATION_ID=<its installation id> \
+            LOOPER_REPORT_APP_ID=<tacplus-looper's app id> LOOPER_REPORT_INSTALLATION_ID=<its installation id>; do
+     curl -sfH "PRIVATE-TOKEN: <Jody's>" -X POST $G/projects/$L/variables -d key="${v%%=*}" --data-urlencode value="${v#*=}" -d protected=true >/dev/null
+   done
+   curl -sfH "PRIVATE-TOKEN: <Jody's>" -X DELETE $G/projects/$L/variables/GH_TOKEN
+   ```
+6. **Checked.** First, a web pipeline's manual job `looper-ruleset-probe`: with the report app's token, a contents API
+   write to looper's main and a push to it are both refused. Then the next kicker's log has no `this job holds`, and
+   the next land's verdict comment is `tacplus-manager[bot]`'s, its merge on main. Then Jody revokes, on github.com, the
+   personal token the project held as `GH_TOKEN`.
 
 ## Infrastructure
 

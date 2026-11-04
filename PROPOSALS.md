@@ -15,7 +15,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   (`.looper/land`) for anyone to read. Every model holds the same `GH_TOKEN` as the manager, so another issue's model
   could post a verdict for it. The merge itself is the manager's alone (nothing reaches main without its gates), so
   the worst is a model told "merged" or "sent back" falsely. A manager identity of its own (a GitHub App, as the
-  looper identity pilot has), checked by author, or a ref only that identity may push, would close it.
+  looper identity pilot has), checked by author, or a ref only that identity may push, would close it. Since #83
+  the manager comments as `tacplus-manager[bot]` once the project has the apps: `--land` can take only that
+  author's verdict (the comment's `user.login` and `performed_via_github_app`), the rest left as before.
 - **Lock files every repository has, without a generated.yaml** (2026-11-03, #70): the manager regenerates only
   what a repository's `generated.yaml` maps; none has one yet, so every lock-file conflict is sent back today. A
   `generated.yaml` in tacplus (its generated code: `just generate`), kernel and the Go services (`go.sum`: `go mod
@@ -36,9 +38,29 @@ the looper then marks it `promoted` or `declined` here with the date.
   `tacplus-reader` app set, by its creator's login (`tacplus-reader[bot]`), linking the pipeline it started. A
   status's creator is GitHub's to record, so the looper's `GH_TOKEN` cannot pass for it; reading the pipeline's own
   status from GitLab would need a read token for tacplus-dev/build that the looper's jobs do not have.
-- **The nightly scan's PROPOSALS.md push** (2026-11-03, #70): the scan still commits PROPOSALS.md on main itself
-  (`git pull --rebase` and push), the one push to main that is not the manager's. It could queue it on a branch of
-  its own for the manager, as a report does.
+- **The nightly scan's PROPOSALS.md push** (2026-11-03, #70; **done** 2026-11-04, #83: the model leaves the file
+  in the checkout and the looper commits its change, as the manager's identity): the scan still commits PROPOSALS.md
+  on main itself (`git pull --rebase` and push), the one push to main that is not the manager's.
+- **The kernel pilot's merges under main's ruleset** (2026-11-04, #83): `looper-ruleset` restricts updates of main on
+  every public repository, kernel's too, so a pull request GitHub squash-merges for `kernel-looper[bot]` (looper#28's
+  auto-merge) is refused unless that app is a bypass actor on kernel. Before the pilot goes live, either
+  `looper-ruleset` takes a repository's own extra bypass actor (kernel-looper on kernel), or kernel's ruleset swaps
+  "restrict updates" for "require a pull request" plus its required check.
+- **The id_token for a job's life** (2026-11-04, #83): an app's token lasts an hour, a job up to eleven, so
+  `looper-token` keeps the job's GitLab id_token, root's alone, to exchange it again at each refresh; kernel's
+  commit job, which mints once, drops its own at once (SYNTHESIS 21). GitLab's id_token lives for the job's timeout,
+  so a refresh after it fails (the job ends first). A shorter-lived chain (a GCP service account's own credentials,
+  impersonated once) would not need it kept.
+- **Require the build's status on main** (2026-11-04, #83): main's ruleset restricts who updates it; a required
+  status check (`tacplus-dev/build` from `tacplus-reader`, as kernel's protection has) would also refuse a manager's
+  push whose build did not pass, once every repository builds in tacplus-dev/build (only looper is pinned today).
+- **Other jobs' suggestions under main's ruleset** (2026-11-04, #83): `looper-suggest file` without `--dir` (another
+  job's suggestion, tacplus-dev/chaos#1's watch, say) pushes to the roadmap's main itself, which main's ruleset refuses
+  to any token but the manager's or Jody's. It could push a branch `suggestion/<slug>` instead, which the roadmap scan
+  (the manager's identity) checks and commits, as it does its own model's.
+- **Private repositories' reports** (2026-11-04, #83): fleet-dev and fleet-seatrials get no report while their main
+  has no ruleset (GitHub Team). Jody's call: Team for the org, the reports back with `LOOPER_PRIVATE_REPORTS=1`, or
+  the repositories public.
 - **The manager's polling** (2026-11-03, #70): every `LOOPER_MANAGER_POLL` (30s) the manager lists its branches
   (one `ls-remote`), reads two labels (two GitHub requests) and, for a branch queued it has not judged, its issue's
   comments; a waiting `--land` reads its issue's comments every `LOOPER_LAND_POLL` (30s). With 15 reports at once
@@ -236,7 +258,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   time where the next job reads it (a git note on the landed commit, say, or the job's cache) would make it the
   repository's real last land, and would let `--job-timeout` size a job for its children's lands too.
 - **ROADMAP.md guard that a model cannot skip** (2026-10-27, #13): repo-looper refuses a push touching ROADMAP.md
-  with a pre-push hook in its checkout, which `git push --no-verify` skips. Once main is protected (README, Later),
+  with a pre-push hook in its checkout, which `git push --no-verify` skips. Main is protected since #83 (only the
+  manager writes it, after its gates). Once reviews are wanted (README, Later),
   require Jody's review for ROADMAP.md (CODEOWNERS); until then, repo-looper could also check the run's pushed
   range (`head_before..head_after`) after the run and mark the issue `looper:stuck` if it touched ROADMAP.md.
 - **Pin the planning-files check to the caller's ref** (2026-10-27, #13): the reusable workflow checks out

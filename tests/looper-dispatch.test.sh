@@ -35,10 +35,11 @@ if [[ "$cmd" == "api graphql" ]]; then
              | sed -E 's/^([a-z0-9_]+): repository\(owner: "[^"]+", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3/')
   jq -c '{data: .}' <<<"$data"; exit "$rc"
 fi
-repo=""; n=""; q="."; label=""; rm=""; body=""
+repo=""; n=""; q="."; label=""; rm=""; body=""; vis=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2##*/}"; shift 2 ;;
+    --visibility) vis="$2"; shift 2 ;;
     --jq) q="$2"; shift 2 ;;
     --label) label="$2"; shift 2 ;;
     --remove-label) rm="$2"; shift 2 ;;
@@ -55,7 +56,10 @@ if [[ "$cmd $label" == "search issues approved" && -e "$FIX/slow" ]]; then
   echo "$t $e" >> "$FIX/passes"; echo "$e" > "$FIX/clock"
 fi
 case "$cmd" in
-  "search issues") jq -s --arg l "$label" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})' "$FIX"/issues/*.json | jq -r "$q" ;;
+  # $FIX/private: the org's private repositories, one a line (--visibility public leaves them out).
+  "search issues") jq -s --arg l "$label" --arg vis "$vis" --arg priv "$(cat "$FIX/private" 2>/dev/null || true)" \
+                     'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})
+                      | map(select($vis != "public" or (.repo | IN($priv | split("\n")[]) | not)))' "$FIX"/issues/*.json | jq -r "$q" ;;
   "issue list") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")))' "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
   "issue view") jq -r "$q" "$f" ;;
   "repo list") jq -R '{name: .}' "$FIX/repos" | jq -s . | jq -r "$q" ;;   # $FIX/repos: the org's, one a line
@@ -548,6 +552,65 @@ PLAN="$(env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_
 rm "$FIX/repos"
 ! env CI_PIPELINE_SOURCE=schedule LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
   "$ROOT/looper-dispatch" plan >/dev/null 2>&1 || fail "planned a schedule with the org's repositories unread"
+pass
+
+# A private repository's issues are no report's (looper#83): main's ruleset
+# needs GitHub Team there. Its ready issue starts nothing and is planned for
+# no report, unless LOOPER_PRIVATE_REPORTS=1 (Jody's call).
+scenario private-skipped
+rm "$FIX/issues/alpha-4.json"
+issue fleet 2 OPEN "Private." approved
+issue beta 3 OPEN "Public." approved
+echo fleet > "$FIX/private"
+dispatch ready
+[[ "$(paste -sd' ' <<<"$OUT")" == "beta 3" ]] || fail "ready: $(paste -sd' ' <<<"$OUT")"
+PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed"
+grep -qx 'looper-beta-3:' <<<"$PLAN" && ! grep -q 'looper-fleet' <<<"$PLAN" || fail "plan: $PLAN"
+rm "$FIX/issues/beta-3.json"
+dispatch run
+! started || fail "started a pipeline for a private repository's issue: $OUT"
+OUT="$(env LOOPER_PRIVATE_REPORTS=1 LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" "$ROOT/looper-dispatch" ready 2>&1)"
+[[ "$OUT" == "fleet 2" ]] || fail "with LOOPER_PRIVATE_REPORTS=1: $OUT"
+pass
+
+# The apps (looper#83): the kicker and the plan hold the report app's token
+# (looper-token, here a stub), never a personal one; each planned job gets
+# its id_token and the environment GCP's binding of each app's key names.
+printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' \
+  '  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;' \
+  '  start) echo "start $2" >> "$FIX/token"; mkdir -p "$3"; echo 0 ;;' \
+  '  *) exit 3 ;;' 'esac' > "$TMP/bin/looper-token-stub"
+chmod +x "$TMP/bin/looper-token-stub"
+APPS=(LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/r)
+scenario apps-plan
+issue alpha 6 OPEN "Land it." looper:landing
+PLAN="$(env -u CI_PIPELINE_SOURCE -u GH_TOKEN "${APPS[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"
+[[ "$(cat "$FIX/token")" == "start report" ]] || fail "the plan's token: $(cat "$FIX/token" 2>/dev/null)"
+for j in looper-alpha-4:looper-report looper-alpha-manager:looper-manager; do
+  awk -v j="${j%%:*}:" '$0 == j { on = 1; next } /^[a-z]/ { on = 0 } on' <<<"$PLAN" > "$FIX/job"
+  grep -qx '      aud: https://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r' "$FIX/job" &&
+    grep -qx '  id_tokens:' "$FIX/job" && grep -qx "  environment: {name: ${j#*:}, action: prepare}" "$FIX/job" || fail "${j%%:*}: $(cat "$FIX/job")"
+done
+echo alpha > "$FIX/repos"
+PLAN="$(env -u GH_TOKEN CI_PIPELINE_SOURCE=schedule "${APPS[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "the scheduled plan failed"
+grep -qx '  environment: {name: looper-scan, action: prepare}' <<<"$PLAN" || fail "scan: $PLAN"
+# Without the apps, no id_token and no environment, as before.
+PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)"
+! grep -qE 'id_tokens|environment' <<<"$PLAN" || fail "without the apps: $PLAN"
+pass
+
+scenario apps-no-pat
+for v in GH_TOKEN=ghp_0123456789abcdef0123 GITHUB_TOKEN=x SOMETHING=github_pat_0123456789abcdef; do
+  ! OUT="$(env -u GH_TOKEN "${APPS[@]}" "$v" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" run 2>&1)" ||
+    fail "ran holding ${v%%=*}: $OUT"
+  grep -q "this job holds ${v%%=*}" <<<"$OUT" || fail "log: $OUT"
+done
+! started || fail "started a pipeline holding a personal token"
+GH_TOKEN=ghp_0123456789abcdef0123 dispatch run
+started || fail "without the apps a GH_TOKEN is as before: $OUT"
 pass
 
 # Nothing runs on the Mac any more: there is no launchd install.

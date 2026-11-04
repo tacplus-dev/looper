@@ -146,6 +146,6 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
 COPY looper-lib.sh caps.yaml /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
-COPY repo-looper looper-dispatch looper-build looper-scan looper-identity looper-suggest looper-recap looper-trace tacplus looper-smoke looper-docker looper-docker-broker looper-pkill runner-image /usr/local/bin/
+COPY repo-looper looper-dispatch looper-build looper-scan looper-identity looper-token looper-ruleset looper-suggest looper-recap looper-trace tacplus looper-smoke looper-docker looper-docker-broker looper-pkill runner-image /usr/local/bin/
 ENV LOOPER_IMAGE=1 LOOPER_TACPLUS_LINE=${TACPLUS_LINE} LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work

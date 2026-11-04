@@ -339,8 +339,12 @@ report_dir() { echo "$WORK/issues/$1"; } # issue
 if [[ "$MODE" == one ]] || [[ "$MODE" =~ ^(checkpoint|land|build)$ && -e "$(report_dir "$ISSUE")/.git" ]]; then
   CHECKOUT="$(report_dir "$ISSUE")"; BRANCH="looper/$REPO-$ISSUE"
 fi
-# A report's models run as its own user (looper#68).
-MODEL_USER=""; [[ "$MODE" != one ]] || MODEL_USER="${LOOPER_USER_PREFIX:-looper-}$ISSUE"
+# A report's models run as its own user (looper#68), a scan's as looper-scan
+# (looper#83): on whenever the looper runs as root with setpriv and useradd
+# (model_users; below, run_claude).
+model_users() { [[ "${LOOPER_MODEL_USERS:-1}" != 0 && "$(id -u)" == 0 ]] && command -v setpriv useradd groupadd >/dev/null; }
+MODEL_USER=""
+case "$MODE" in one) MODEL_USER="${LOOPER_USER_PREFIX:-looper-}$ISSUE" ;; scan) MODEL_USER="${LOOPER_USER_PREFIX:-looper-}scan" ;; esac
 MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
 TIMEOUT="${LOOPER_TIMEOUT:-14400}"
 MAX_LIMIT=36000   # 10h: what a `Timeout:` line may ask for
@@ -427,6 +431,47 @@ job_timeout() { # issue
 [[ "$MODE" == job-timeout ]] && { job_timeout "$ISSUE"; exit 0; }
 need claude
 mkdir -p "$RUNS"
+
+# The job's GitHub identity (looper#83; README, Only the manager writes main).
+# Once the pipeline's project has the apps (looper-token configured), no job
+# holds Jody's token: one that still has a GH_TOKEN, or anything shaped like a
+# personal or OAuth token, refuses to run. A report holds the tacplus-looper
+# app's token, which main's ruleset refuses; a manager the tacplus-manager
+# app's, its bypass actor; a scan both, the manager's for its commits to main
+# alone (land), out of its model's reach: its model runs as a user of its own,
+# and the manager's token is the job's user's alone. Each is gh's
+# configuration (GH_CONFIG_DIR), which gh and git read on every call and
+# looper-token keeps fresh for this process's life. Without the apps, GH_TOKEN
+# as before.
+TOKEN_CMD="${LOOPER_TOKEN:-$(dirname "$LOOPER_SELF")/looper-token}"   # looper-token (a test's stub)
+MANAGER_GH=""
+job_identity() {
+  [[ "$LOOPER_FORGE" == github && "$MODE" =~ ^(one|manage|scan)$ ]] && "$TOKEN_CMD" configured || return 0
+  local v held=() tokens
+  for v in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN; do [[ -z "${!v:-}" ]] || held+=("$v"); done
+  for v in $(compgen -e); do
+    case "${!v:-}" in ghp_*|github_pat_*|gho_*|ghu_*) [[ " ${held[*]} " == *" $v "* ]] || held+=("$v") ;; esac
+  done
+  ((${#held[@]} == 0)) || die "this job holds ${held[*]}: with the apps (looper#83) no job holds a personal GitHub token; delete the project's GH_TOKEN variable (README, Only the manager writes main)"
+  [[ "$MODE" != scan ]] || model_users ||
+    die "a scan commits to main as the manager, so its model must run as a user of its own (looper#68, looper#83): run it as root with setpriv and useradd, and LOOPER_MODEL_USERS on"
+  # The report's token is its model's to read too; the manager's, the job's user's alone.
+  tokens="$(mktemp -d -t looper-tokens.XXXXXX)"; chmod 0711 "$tokens"
+  mkdir -m 0755 "$tokens/report"; mkdir -m 0700 "$tokens/manager"
+  if [[ "$MODE" == manage ]]; then
+    "$TOKEN_CMD" start manager "$tokens/manager" $$ >/dev/null || die "no manager token (looper-token)"
+    export GH_CONFIG_DIR="$tokens/manager"
+  else
+    "$TOKEN_CMD" start report "$tokens/report" $$ >/dev/null || die "no report token (looper-token)"
+    export GH_CONFIG_DIR="$tokens/report"
+  fi
+  if [[ "$MODE" == scan ]]; then
+    "$TOKEN_CMD" start manager "$tokens/manager" $$ >/dev/null || die "no manager token for the scan's commits (looper-token)"
+    MANAGER_GH="$tokens/manager"
+  fi
+  export GH_NO_UPDATE_NOTIFIER=1
+}
+job_identity
 forge_setup_git
 
 # git fetch from origin in a checkout or worktree, tried again a few times:
@@ -543,7 +588,9 @@ LAND_LOCK="$WORK/.land.lock"
 land() { # message command [args...]
   local msg="$1" wt; shift
   wt="$(mktemp -d)"; mkdir -p "$WORK"
-  ( flock 8
+  # A scan's commits are the manager's (looper#83): its token for this alone.
+  ( [[ -z "$MANAGER_GH" ]] || export GH_CONFIG_DIR="$MANAGER_GH"
+    flock 8
     for i in 1 2 3; do
       fetch "$MAIN_CHECKOUT" main || break
       if (( i == 1 )); then git -C "$MAIN_CHECKOUT" worktree add -q -f --detach "$wt" origin/main || break
@@ -1332,7 +1379,6 @@ model_forge_env() {
 # gid. Never useradd -U's next free gid: in a job's container the host's
 # socket has a gid with no name (1002 on a runner worker), which the next free
 # gid can be, and with it the socket.
-model_users() { [[ "${LOOPER_MODEL_USERS:-1}" != 0 && "$(id -u)" == 0 ]] && command -v setpriv useradd groupadd >/dev/null; }
 model_user() { echo "${LOOPER_USER_PREFIX:-looper-}$1"; } # issue, plan or docker (the broker's)
 docker_sock() { local s="${DOCKER_HOST:-unix:///var/run/docker.sock}"; echo "${s#unix://}"; }
 docker_sock_gid() { local s; s="$(docker_sock)"; [[ ! -S "$s" ]] || stat -c %g "$s"; } # none without a socket
@@ -1386,7 +1432,8 @@ model_user_up() { # user run-dir
   ( export HOME="$home"; forge_setup_git )
   chown -R "$u:$u" "$home" "$run"; chmod 0750 "$home"; chmod 0700 "$run"
   MODEL_ROOTS="$home"
-  if [[ "$CHECKOUT" != "$MAIN_CHECKOUT" ]]; then
+  # A scan's checkout is the job's main checkout, its model's for the scan (looper#83).
+  if [[ "$CHECKOUT" != "$MAIN_CHECKOUT" || "$MODE" == scan ]]; then
     chown -R "$u:$u" "$CHECKOUT"; chmod 0750 "$CHECKOUT"; MODEL_ROOTS="$CHECKOUT:$home"
   fi
 }
@@ -2777,8 +2824,11 @@ IT
 }
 
 scan() {
-  local run before report; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
+  local run before report base; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
+  # Its model runs as looper-scan (looper#83), its containers limited as a report's (looper#41).
+  model_job_private
+  LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
   if [[ "$REPO" == "$LOOPER_ROADMAP_REPO" ]]; then suggest_scan "$run"; return; fi
   report="$(security_report "$run")"
   ensure_labels "$REPO"
@@ -2799,13 +2849,21 @@ evidence (command and output), the fix you recommend and acceptance criteria. La
 fix is mechanical and safe (a patched dependency version, a gate fix with an obvious cause); otherwise
 \`$LABEL_DECISION\`. If nothing is found, file nothing.
 An idea for new behaviour you come across is a feature, never \`$LABEL_APPROVED\`: add it to PROPOSALS.md (what, why,
-links), the one file you may change: commit only it on main, with a message ending with
-\`Co-Authored-By: Claude <noreply@anthropic.com>\`, then \`git pull --rebase origin main\` and \`git push origin main\`.
+links), the one file you may change. Leave it in the checkout: commit nothing and push nothing (only the manager's
+identity writes main, looper#83); the looper commits your PROPOSALS.md change on main when you are done.
 $(opening_rule)
 $(provenance_rule)
 PR
+  base="$(git -C "$CHECKOUT" rev-parse HEAD)"
   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
   [[ -n "$before" ]] && scan_labels "$before"
+  # Its PROPOSALS.md, the looper's commit (looper#83): the change since the
+  # scan's main, on the current main; nothing else the model left.
+  git -C "$CHECKOUT" diff --binary "$base" -- PROPOSALS.md > "$run/proposals.patch" || : > "$run/proposals.patch"
+  if [[ -s "$run/proposals.patch" ]]; then
+    land "PROPOSALS.md: the nightly scan's proposals (looper)" git apply --3way "$run/proposals.patch"
+  fi
+  git -C "$CHECKOUT" checkout -q -f -B main origin/main && git -C "$CHECKOUT" clean -fdq
   log "scan of $REPO finished"
 }
 
@@ -2832,6 +2890,25 @@ child_memory_size() { child_memory | awk '{ m = int($1 * 1024); if (m < 6) m = 6
 # The report of an issue (looper#70): its job works it, if it is still ready
 # (or its run was killed outright, looper#20), in its own clone, and touches
 # no other issue and never main.
+# What of the job its model's user (looper#68) may not read, a report's or a
+# scan's: GitLab's file variables (CI_PROJECT_DIR.tmp, world-readable) are the
+# job's alone. The model's user takes the checkpoint lock too.
+model_job_private() {
+  model_users || return 0
+  local d
+  touch "$WORK/.checkpoint.lock"; chmod 0666 "$WORK/.checkpoint.lock"
+  [[ -z "${CI_PROJECT_DIR:-}" || ! -d "$CI_PROJECT_DIR.tmp" ]] || chmod -R go-rwx "$CI_PROJECT_DIR.tmp"
+  # The image's tools under the job's home (tacplus's openjml, on the PATH) stay
+  # the model's to run: the home is its to pass through, not to list, and
+  # what in it is private stays the job's.
+  if [[ -d "$HOME" && "$HOME" != / ]]; then
+    chmod 0711 "$HOME"
+    for d in .claude .claude.json .config .local .cache/gh .docker .ssh .gnupg .netrc .git-credentials; do
+      [[ ! -e "$HOME/$d" ]] || chmod go-rwx "$HOME/$d"
+    done
+  fi
+}
+
 report_job() { # issue
   local n="$1"
   # Its manager first (looper#75): this job's slot is the one the manager waits
@@ -2842,21 +2919,7 @@ report_job() { # issue
     else log "#$n is no longer ready; nothing to do"; return 0; fi
   fi
   prepare_report
-  # The model's user (looper#68) takes the checkpoint lock too. GitLab's file
-  # variables (CI_PROJECT_DIR.tmp, world-readable) are the job's alone.
-  if model_users; then
-    touch "$WORK/.checkpoint.lock"; chmod 0666 "$WORK/.checkpoint.lock"
-    [[ -z "${CI_PROJECT_DIR:-}" || ! -d "$CI_PROJECT_DIR.tmp" ]] || chmod -R go-rwx "$CI_PROJECT_DIR.tmp"
-    # The image's tools under the job's home (tacplus's openjml, on the PATH) stay
-    # the model's to run: the home is its to pass through, not to list, and
-    # what in it is private stays the job's.
-    if [[ -d "$HOME" && "$HOME" != / ]]; then
-      chmod 0711 "$HOME"
-      for d in .claude .claude.json .config .local .cache/gh .docker .ssh .gnupg .netrc .git-credentials; do
-        [[ ! -e "$HOME/$d" ]] || chmod go-rwx "$HOME/$d"
-      done
-    fi
-  fi
+  model_job_private
   # Its containers are limited to its share (looper#41).
   LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
   # A pinned repository's report builds in build jobs, with no container runtime (looper#71).
