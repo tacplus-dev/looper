@@ -279,15 +279,17 @@ lander are gone. One job per issue needs none of them.
     The merge comment quotes the report's last checkpoint, for the issue's next report when its own run had ended.
   - It adds the planning files from their templates, `HISTORY.md`'s line for each closed issue (its report queues
     the line as `.looper/history` on its branch) and for each release.
-  - It runs while a report job of the repository is active, an open issue of it is `looper:in-progress` (a closed
-    one too, for as long as its report may take to end), or any is `looper:landing` (a closed one's `HISTORY.md`
-    line), and `LOOPER_MANAGER_LINGER` (300 seconds) after, polling every `LOOPER_MANAGER_POLL` (30). A land that would not
-    finish before its job ends (looper#38: its estimate, by gate set, as before) is left queued, and the manager
+  - It runs while a report job of the repository is running, or any issue of it is `looper:landing` (a closed one's
+    `HISTORY.md` line), and `LOOPER_MANAGER_LINGER` (300 seconds) after. A report job created or pending does not
+    hold it (looper#82): on a one-VM pool that report waits for the VM the manager holds, and the land it queues once
+    it runs gets a new manager from the kicker. Outside GitLab, or when GitLab cannot be read, an open issue
+    `looper:in-progress` holds it instead (a closed one too, for as long as its report may take to end).
+    It polls every `LOOPER_MANAGER_POLL` (30). A land that would not finish before its job ends (looper#38: its estimate, by gate set, as before) is left queued, and the manager
     ends: the kicker starts the next one.
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group and ahead of every report, the pass's capacity line
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short, manager-report-pending, manager-report-running
 ```
 
 ### Build jobs

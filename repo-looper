@@ -47,8 +47,10 @@
 # the issue, and its next report finishes it from the branch. The manager adds
 # HISTORY.md's lines (a closed issue's, which its report queues on its branch
 # as .looper/history, and each release's), and runs while an issue of the
-# repository is looper:in-progress or looper:landing (or a report job of it
-# is active), or was within LOOPER_MANAGER_LINGER seconds (default 300). Each container a report's model
+# repository is looper:landing or a report of it runs (in a GitLab job, a
+# report job running: not one waiting for the VM the manager holds, looper#82;
+# elsewhere, an issue looper:in-progress), or was within
+# LOOPER_MANAGER_LINGER seconds (default 300). Each container a report's model
 # starts (docker run, tacplus) is limited to the report's memory, without swap
 # (looper#41): the model's docker is looper-docker. The gates a land runs are
 # the set its diff calls for: the repository's gates.yaml maps paths to gate
@@ -251,10 +253,11 @@ gitlab_auth() {
 }
 
 # The names of the looper jobs that hold a repository (busy() in looper-lib.sh)
-# in this GitLab job's project. Outside a GitLab job, none.
-project_jobs() {
+# in this GitLab job's project; with scopes (`scope[]=running`), those jobs'
+# alone. Outside a GitLab job, none.
+project_jobs() { # [scopes]
   [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 0
-  curl -fsS --retry 2 -H @<(gitlab_auth) "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
+  curl -fsS --retry 2 -H @<(gitlab_auth) "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?${1:-$LOOPER_JOB_SCOPES}&per_page=100" \
     | jq -r --arg me "${CI_JOB_ID:-}" '.[] | select((.id | tostring) != $me) | .name'
 }
 
@@ -1065,23 +1068,28 @@ queued_lands() {
   printf '%s' "$list" | sort -k1,1 -k2,2n
 }
 
-# Whether the repository has a report at work or a land queued: an open issue
-# labelled looper:in-progress, a closed one for CLOSED_GRACE, any labelled
-# looper:landing (a closed one's HISTORY.md line), or, in a GitLab job, a
-# report job created, pending, waiting or running. Unreadable: it has.
+# Whether the repository has a report at work or a land queued: any issue
+# labelled looper:landing (a closed one's HISTORY.md line), and, in a GitLab
+# job, a report job running; elsewhere (or GitLab unreadable), an open issue
+# labelled looper:in-progress or a closed one for CLOSED_GRACE. Unreadable: it
+# has.
 reports_active() {
   local n c now jobs; now="$(date +%s)"
-  n="$(forge_issue_list "$REPO" open 1 number '.[0].number // empty' "$LABEL_IN_PROGRESS")" || return 0
-  [[ -z "$n" ]] || return 0
   n="$(forge_issue_list "$REPO" all 1 number '.[0].number // empty' "$LABEL_LANDING")" || return 0
+  [[ -z "$n" ]] || return 0
+  # In a GitLab job, a report at work is a report job running: one created,
+  # pending or waiting may wait for the VM this manager holds (looper#82), and
+  # an issue still looper:in-progress without one has no run that could land.
+  # The land it queues once it runs gets a new manager from the kicker.
+  if [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] && jobs="$(project_jobs 'scope[]=running')"; then
+    busy "$REPO" "$jobs" >/dev/null; return
+  fi
+  n="$(forge_issue_list "$REPO" open 1 number '.[0].number // empty' "$LABEL_IN_PROGRESS")" || return 0
   [[ -z "$n" ]] || return 0
   for c in $(forge_issue_list "$REPO" closed 20 number '.[].number' "$LABEL_IN_PROGRESS" 2>/dev/null); do
     CLOSED_SEEN[$c]="${CLOSED_SEEN[$c]:-$now}"
     (( now - CLOSED_SEEN[$c] >= CLOSED_GRACE )) || return 0
   done
-  if [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] && jobs="$(project_jobs)"; then
-    ! busy "$REPO" "$jobs" >/dev/null || return 0
-  fi
   return 1
 }
 

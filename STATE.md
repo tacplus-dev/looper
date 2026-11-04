@@ -25,7 +25,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   merged branch deleted, every merge, resolution and send-back a comment on the issue with the gate verdict; it adds
   the planning files and `HISTORY.md`'s lines (closed issues', queued by their reports, and releases'); a land still
   queued when its report's time runs out is merged after it; a land its job has no time for (the last land's time
-  on its gate set, #38) waits for the next manager; the parent and its in-job children (#32), its area plan and
+  on its gate set, #38) waits for the next manager; with nothing queued, the manager lingers only for report jobs
+  running, never for ones created or pending, which on a one-VM pool wait for its VM (#82); the parent and its in-job children (#32), its area plan and
   conflict holds (#39), its time-left holds and re-plans (#33, #59) and its in-job lander (#34, #38, #44) are
   retired; each report's model's containers limited to its memory (4 GB, 12 in a repository whose gates run Kani)
   without swap by `looper-docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone (#41); a

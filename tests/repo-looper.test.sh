@@ -1714,6 +1714,44 @@ has "$(labels alpha 4)" "looper:landing"
 branch || fail "the branch is gone"
 pass
 
+# The manager of alpha in the background, in a GitLab job (80) that reads the
+# scenario's jobs, lingering for none.
+manager_gitlab() { looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 "${GL[@]}" CI_JOB_ID=80 -- --repo alpha --manage > "$FIX/manager.log" 2>&1 & MANAGER=$!; }
+# A manager with nothing queued does not linger for reports that have not
+# started (looper#82): on a one-VM pool they wait for the VM it holds. Its
+# report pending (an orphaned run's issue, still looper:in-progress, too), it
+# ends; the report then runs, and its queued land is the next manager's.
+scenario manager-report-pending
+jobs "looper-alpha-4 pending 81" "looper-alpha-5 created 82" "looper-alpha-6 waiting_for_resource 83"
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+manager_gitlab
+for _ in $(seq 100); do kill -0 "$MANAGER" 2>/dev/null || break; sleep 0.1; done
+kill -0 "$MANAGER" 2>/dev/null && { kill "$MANAGER"; cat "$FIX/manager.log"; fail "the manager lingers for reports that have not started"; }
+manager_wait
+has "$(cat "$FIX/manager.log")" "no report at work and no land queued; the manager ends"
+echo 'echo x > x.txt && git add -A && git commit -qm "fix 4"' > "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true' >> "$FIX/claude.sh"
+issue alpha 4 OPEN approved,bug "Fix it."; rm -f "$FIX/jobs.json"
+OUT="$(looper LOOPER_TIMEOUT=20 LOOPER_STOP_EARLY=0 -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "the report exited non-zero"; }
+has "$OUT" "#4: land-pending"; has "$(labels alpha 4)" "looper:landing"
+manage
+[[ "$(landed x.txt)" == x ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# A report running holds the manager (its land may come), and the manager ends
+# once it no longer runs.
+scenario manager-report-running
+jobs "looper-alpha-5 running 81"
+manager_gitlab
+sleep 4
+kill -0 "$MANAGER" 2>/dev/null || { cat "$FIX/manager.log"; fail "the manager ended while a report runs"; }
+jobs "looper-alpha-5 success 81"
+for _ in $(seq 100); do kill -0 "$MANAGER" 2>/dev/null || break; sleep 0.1; done
+kill -0 "$MANAGER" 2>/dev/null && { kill "$MANAGER"; fail "the manager lingers after its report ended"; }
+manager_wait
+has "$(cat "$FIX/manager.log")" "no report at work and no land queued; the manager ends"
+pass
+
 # A report's model sees its memory (looper#41): containers it starts are
 # limited to it, through looper-docker; in a repository whose gates run Kani,
 # to LOOPER_KANI_MEMORY_GB.
