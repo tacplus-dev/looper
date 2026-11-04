@@ -48,7 +48,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 f="$FIX/issues/$repo-$n.json"
-[[ "$cmd" != "search issues" || ! -e "$FIX/slow" ]] || sleep 1   # $FIX/slow: a pass takes 2 seconds
+# $FIX/slow: a pass (its one search for approved issues) takes that many
+# seconds on the fake clock, its start and end appended to $FIX/passes.
+if [[ "$cmd $label" == "search issues approved" && -e "$FIX/slow" ]]; then
+  t="$(cat "$FIX/clock")"; e="$((t + $(cat "$FIX/slow")))"
+  echo "$t $e" >> "$FIX/passes"; echo "$e" > "$FIX/clock"
+fi
 case "$cmd" in
   "search issues") jq -s --arg l "$label" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})' "$FIX"/issues/*.json | jq -r "$q" ;;
   "issue list") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")))' "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
@@ -85,7 +90,21 @@ case "$m $url" in
   *) reply 404 '{"message":"404 Not found"}' ;;
 esac
 EOF
-chmod +x "$TMP/bin/gh" "$TMP/bin/curl"
+# A fake clock (looper#78), for a scenario that writes $FIX/clock: `date +%s`
+# reads it and `sleep N` moves it on N seconds, at once. Without it both are
+# the real ones.
+cat > "$TMP/bin/date" <<'EOF'
+#!/usr/bin/env bash
+[[ -e "${FIX:-}/clock" && "$*" == +%s ]] || exec /usr/bin/env PATH="${PATH#*:}" date "$@"
+cat "$FIX/clock"
+EOF
+cat > "$TMP/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+[[ -e "${FIX:-}/clock" ]] || exec /usr/bin/env PATH="${PATH#*:}" sleep "$@"
+[[ "$1" =~ ^[0-9]+$ ]] || { echo "stub sleep: $1" >&2; exit 3; }
+echo "$(( $(cat "$FIX/clock") + $1 ))" > "$FIX/clock"
+EOF
+chmod +x "$TMP/bin/gh" "$TMP/bin/curl" "$TMP/bin/date" "$TMP/bin/sleep"
 
 scenario() { # name: alpha has a ready issue #4
   NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues" "$FIX/home"; echo '[]' > "$FIX/jobs.json"
@@ -397,11 +416,24 @@ started || fail "no pipeline started: $OUT"
 pass
 
 # The interval is from one pass's start to the next's: a slow pass does not
-# stretch it.
-scenario loop-slow-pass
-touch "$FIX/slow"
-INTERVAL=3 dispatch run --for 6
-[[ "$(passes)" -ge 3 ]] || fail "$(passes) pass(es) of 2 seconds in 6 seconds, every 3: $OUT"
+# stretch it, and a pass slower than the interval delays the next, which never
+# overlaps it. On a fake clock, since real seconds failed on a loaded runner
+# (looper#78), and 20 times over to show it holds.
+for i in $(seq 20); do
+  scenario loop-slow-pass
+  echo 1000 > "$FIX/clock"; echo 2 > "$FIX/slow"
+  INTERVAL=3 dispatch run --for 6
+  [[ "$(paste -sd' ' "$FIX/passes")" == "1000 1002 1003 1005 1006 1008" ]] \
+    || fail "run $i: passes (start end) of 2 seconds every 3 for 6: $(paste -sd' ' "$FIX/passes"): $OUT"
+  [[ "$(passes)" -eq 3 ]] || fail "run $i: $(passes) passes: $OUT"
+  rm -rf "$FIX"
+  scenario loop-slow-pass
+  echo 1000 > "$FIX/clock"; echo 4 > "$FIX/slow"
+  INTERVAL=3 dispatch run --for 9
+  [[ "$(paste -sd' ' "$FIX/passes")" == "1000 1004 1004 1008 1008 1012" ]] \
+    || fail "run $i: passes (start end) of 4 seconds every 3 for 9: $(paste -sd' ' "$FIX/passes"): $OUT"
+  rm -rf "$FIX"
+done
 pass
 
 # A pass that fails (GitLab down) does not end the loop; the job fails at its
