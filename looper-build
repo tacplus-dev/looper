@@ -8,11 +8,13 @@
 # it never changes the repository. The pipeline is gitlab.com/tacplus-dev/build
 # (ci/build.gitlab-ci.yml here), whose jobs run this script:
 #
-#   plan     fetch exactly the commit, read its tacplus.lock, and write the
-#            child pipeline whose gates job runs in the pinned build image
-#   gates    in that image, with no agent: `just gates` on the commit; a
-#            change to a tracked file fails it; then the code it generates
-#            (a `generated` recipe), for the security checks
+#   plan     fetch exactly the commit, read its pin (tacplus.lock, or
+#            build.lock: looper#71), and write the child pipeline whose gates
+#            job runs in the pinned build image
+#   gates    in that image, with no agent: `just gates` on the commit, or the
+#            gate set asked for from its gates.yaml (looper#71); a change to a
+#            tracked file fails it; then the code it generates (a `generated`
+#            recipe), for the security checks
 #   (the security checks, looper#49, are looper-scan's: the child pipeline's
 #            security-<repo> and security-report jobs, in the looper image)
 #   status   the GitHub commit status (context tacplus-dev/build)
@@ -55,7 +57,9 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build status STATE [TEXT]   the commit status: pending, success or failure
        looper-build publish [--dry-run]   the release image and its digest (--dry-run: build only)
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
-nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty), the tacplus-reader
+nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty), BUILD_GATES
+(the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
+LOOPER_GATES_BASE, a full hash), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
 EOF
@@ -83,6 +87,9 @@ check_inputs() {
   [[ -z "${BUILD_TAG:-}" || "$BUILD_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     verdict fail "BUILD_TAG '$BUILD_TAG' is not a release tag vX.Y.Z"
   [[ "${BUILD_NIGHTLY:-}" != true || -z "${BUILD_TAG:-}" ]] || verdict fail "a nightly build is not a release (BUILD_TAG $BUILD_TAG)"
+  [[ "${BUILD_GATES:-}" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] ||
+    verdict fail "BUILD_GATES '${BUILD_GATES:-}' is not a gate set (gates.yaml's set names, joined by +)"
+  [[ -z "${BUILD_BASE:-}" || "$BUILD_BASE" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_BASE '$BUILD_BASE' is not a full commit hash"
 }
 
 # The kind of the security checks (looper-scan): release, nightly or build.
@@ -174,16 +181,26 @@ refuse_push_credential() { # dir
 # --- the pin ----------------------------------------------------------------
 
 # tacplus.lock, as tacplus validates it (pkg/tacplusyaml/lock.go): an exact
-# release and the build image by digest, of the same line. Prints the image.
+# release and the build image by digest, of the same line. A repository that
+# is no tacplus project (the looper's, looper#71) pins its build image alone,
+# by digest, in build.lock, in the same form (`build_image: <image>`). Prints
+# the image.
+PIN_IMAGE='^[a-z0-9][a-z0-9._/-]*(:([A-Za-z0-9_][A-Za-z0-9._-]*))?@sha256:[0-9a-f]{64}$'
 read_pin() { # dir
   local lock="$1/tacplus.lock" version image tag
-  [[ -f "$lock" ]] || verdict fail "no pin: $BUILD_REPO has no tacplus.lock at $BUILD_SHA (run \`tacplus pin\` and commit it)"
+  if [[ ! -f "$lock" && -f "$1/build.lock" ]]; then
+    image="$(sed -n 's/^build_image:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$1/build.lock" | head -1)"
+    [[ "$image" =~ $PIN_IMAGE ]] ||
+      verdict fail "build.lock: build_image: '$image' must name the image by digest (<name>[:<tag>]@sha256:<64 hex>)"
+    echo "$image"; return 0
+  fi
+  [[ -f "$lock" ]] || verdict fail "no pin: $BUILD_REPO has no tacplus.lock (nor build.lock) at $BUILD_SHA (run \`tacplus pin\` and commit it)"
   version="$(sed -n 's/^tacplus:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$lock" | head -1)"
   image="$(sed -n 's/^build_image:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$lock" | head -1)"
   [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] ||
     verdict fail "tacplus.lock: tacplus: '$version' must be an exact MAJOR.MINOR.PATCH release"
   local line="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-  [[ "$image" =~ ^[a-z0-9][a-z0-9._/-]*(:([A-Za-z0-9_][A-Za-z0-9._-]*))?@sha256:[0-9a-f]{64}$ ]] ||
+  [[ "$image" =~ $PIN_IMAGE ]] ||
     verdict fail "tacplus.lock: build_image: '$image' must name the image by digest (<name>[:<tag>]@sha256:<64 hex>)"
   tag="${BASH_REMATCH[2]}"
   if [[ "$tag" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ && "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" != "$line" ]]; then
@@ -246,6 +263,8 @@ gates:
     BUILD_SHA: "$BUILD_SHA"
     BUILD_TAG: "${BUILD_TAG:-}"
     BUILD_ORG: "$BUILD_ORG"
+    BUILD_GATES: "${BUILD_GATES:-}"
+    BUILD_BASE: "${BUILD_BASE:-}"
   script:
     - |
       cat > "\$CI_PROJECT_DIR/looper-build" <<'LOOPER_BUILD_EOF'
@@ -320,22 +339,57 @@ cmd_gates() {
   # Private Go modules of the org come from GitHub through the token, not the proxy.
   export GOPRIVATE="${GOPRIVATE:-github.com/$BUILD_ORG/*}"
 
-  local src="$BUILD_OUT/src" rc=0 changed
+  local src="$BUILD_OUT/src" rc=0 changed run what
   fetch_commit "$src"
   refuse_push_credential "$src"
-  command -v just >/dev/null || verdict fail "the build image has no just"
-  if ! (cd "$src" && just --summary 2>/dev/null | tr ' ' '\n' | grep -qx gates); then
-    verdict fail "no gates: $BUILD_REPO's justfile has no \`gates\` recipe at $BUILD_SHA"
+  if [[ -f "$src/gates.yaml" ]]; then
+    # The set the manager's diff calls for (looper#71), from the commit's own map.
+    run="$(gate_run "$src/gates.yaml" "${BUILD_GATES:-full}")" || verdict fail "$run"
+    what="the gates ${BUILD_GATES:-full} (gates.yaml)"
+    if [[ -n "${BUILD_BASE:-}" ]]; then
+      git -C "$src" fetch -q --depth 1 origin "$BUILD_BASE" 2>&1 | tail -5 >&2 || true
+      git -C "$src" rev-parse -q --verify "$BUILD_BASE^{commit}" >/dev/null 2>&1 ||
+        verdict fail "$BUILD_ORG/$BUILD_REPO has no base commit $BUILD_BASE (or it cannot be read)"
+    fi
+  else
+    [[ -z "${BUILD_GATES:-}" || "$BUILD_GATES" == full ]] ||
+      verdict fail "no gates.yaml: $BUILD_REPO maps no gate set $BUILD_GATES at $BUILD_SHA"
+    command -v just >/dev/null || verdict fail "the build image has no just"
+    if ! (cd "$src" && just --summary 2>/dev/null | tr ' ' '\n' | grep -qx gates); then
+      verdict fail "no gates: $BUILD_REPO's justfile has no \`gates\` recipe at $BUILD_SHA"
+    fi
+    run="just gates"; what="just gates"
   fi
-  log "gates: $BUILD_REPO $BUILD_SHA: just gates"
-  (cd "$src" && just gates) 2>&1 | tee "$BUILD_OUT/gates.log" >&2 || rc="${PIPESTATUS[0]}"
+  log "gates: $BUILD_REPO $BUILD_SHA: $what"
+  (cd "$src" && LOOPER_GATES_BASE="${BUILD_BASE:-}" bash -c "$run") 2>&1 | tee "$BUILD_OUT/gates.log" >&2 || rc="${PIPESTATUS[0]}"
   changed="$(git -C "$src" status --porcelain --untracked-files=no)"
   [[ -z "$changed" ]] || verdict fail "the build changed tracked files: $(echo "$changed" | head -20 | tr '\n' ' ')"
   [[ "$(git -C "$src" rev-parse HEAD)" == "$BUILD_SHA" ]] || verdict fail "the build moved HEAD off $BUILD_SHA"
-  ((rc == 0)) || verdict fail "just gates exited $rc (gates.log)"
+  ((rc == 0)) || verdict fail "$what exited $rc (gates.log)"
   built "$src"
   generated "$src"
   verdict pass
+}
+
+# The command of the gate sets named (a+b), in a gate map (gates.yaml,
+# repo-looper's format: looper#48): each set's run:, in turn, as the manager's
+# land would run them. Prints why when a set is not there.
+gate_run() { # gates.yaml sets
+  local s r cmd=""
+  for s in ${2//+/ }; do
+    r="$(awk -v want="$s" '
+      function unq(v) {
+        sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+        if (v ~ /^".*"$/) { v = substr(v, 2, length(v) - 2); gsub(/\\"/, "\"", v); gsub(/\\\\/, "\\", v) }
+        else if (v ~ /^\047.*\047$/) { v = substr(v, 2, length(v) - 2); gsub(/\047\047/, "\047", v) }
+        return v
+      }
+      /^[A-Za-z0-9_-]+:[ \t]*$/ { set = $0; sub(/:.*/, "", set); next }
+      set == want && /^[ \t]+run:/ { v = $0; sub(/^[ \t]+run:/, "", v); print unq(v); exit }' "$1")"
+    [[ -n "$r" ]] || { echo "gates.yaml has no gate set $s with a run: command"; return 1; }
+    cmd+="${cmd:+ && }( $r )"
+  done
+  echo "$cmd"
 }
 
 # What the gates built that the security checks need (looper#49), the gates
@@ -377,8 +431,8 @@ cmd_status() { # state [description]
   refuse_write_credentials
   check_inputs
   [[ -n "$text" ]] || case "$state" in
-    pending) text="building" ;;
-    success) text="pass" ;;
+    pending) text="building${BUILD_GATES:+: gates $BUILD_GATES}" ;;
+    success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}" ;;
     *) text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null)"; text="${text:-the build failed}" ;;
   esac
   local token body

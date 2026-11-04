@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#72).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by looper (#71).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -60,7 +60,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
   the scans file bugs as `bug`, never approve a feature, and read the roadmaps before opening an issue; the build
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
-  (started with inputs `repo`, `sha`, `tag`): the commit's gates in its pinned build image, no agent, read-only
+  (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
+  #71): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
+  tacplus project: the looper's pins the looper image by digest, #71), no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status, and on a release
   a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
   and with a real buildx (same commit, same digest); its deterministic security checks (#49, `looper-scan`, README:
@@ -152,13 +154,19 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-03 by lo
   (PROPOSALS.md); the GitLab plan plans repositories in name order, not priority:high first (#31),
   until the hub copies `ci/tacplus-dev.gitlab-ci.yml` (#56); the reports
   and managers (#70) are tested against a stub forge and GitLab but not yet seen end to end: they run once the image
-  from main is published and the hub copies `ci/tacplus-dev.gitlab-ci.yml` (its jobs are named by the plan); until
-  the companion issue (#71) the manager runs the gates in its own job, not as a build job; the identity pilot's
+  from main is published and the hub copies `ci/tacplus-dev.gitlab-ci.yml` (its jobs are named by the plan);
+  build jobs (#71, README: Build jobs) are built and tested against stubs but run nowhere yet: they take effect for
+  a repository once its commit is pinned (only this one is: `build.lock`; the hub files the others' pin issues) and
+  the report and manager jobs hold `BUILD_TRIGGER_TOKEN` (not yet set in tacplus-dev/looper), and need the hub's copy
+  of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
+  job and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
+  repository is pinned, and an image build in the build job without host Docker waits on rootless BuildKit
+  (tacplus-dev/tacplus#315), both the follow-up's (PROPOSALS.md); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); tacplus has no `gates.yaml`
   yet, so its lands still run the full gates (#48 waits on it), and the think job (#28) and the build pipeline always
-  run the full gates (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
+  run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
   tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
   `nightly` input; a schedule per repository), and on the day they start tacplus's build fails them (gosec's HIGH
   findings, six OSV advisories with fixes) as kernel's does (gitleaks: PEM markers in its Java) until each is fixed

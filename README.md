@@ -243,7 +243,8 @@ lander are gone. One job per issue needs none of them.
   clone is refused (its pre-push hook). Its job's timeout is its issue's limit and an hour
   (`repo-looper --job-timeout N`), and its limit is capped at the job's deadline (looper#35). Its containers are
   limited to `LOOPER_CHILD_MEMORY_GB` (4; `LOOPER_KANI_MEMORY_GB`, 12, in a repository whose gates run Kani),
-  through `looper-docker` (looper#41).
+  through `looper-docker` (looper#41). In a repository that pins its build image it has no containers at all: it
+  builds with build jobs ([Build jobs](#build-jobs), looper#71).
 - **Landing is queuing.** The model's `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository
   has no `gates.yaml` and no justfile) pushes a checkpoint whose `.looper/land` names the land (its id, gates and
   when it was queued), labels the issue `looper:landing` (a hold: no other report takes it) and waits for the
@@ -254,7 +255,8 @@ lander are gone. One job per issue needs none of them.
   adds it beside the reports it starts (unless one already waits to start) and for any queued land. It takes the
   queued branches oldest first, one at a time under the landing lock: it rebases each on main, runs the gates its
   diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)), pushes **only on green**, and **deletes
-  the merged branch**. Until the companion issue's build jobs (looper#71) the gates run in the manager's job.
+  the merged branch**. In a repository that pins its build image the gates are a **build job's verdict** on the
+  rebased commit ([Build jobs](#build-jobs), looper#71); in any other, they run in the manager's job.
   - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
     (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
     resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
@@ -275,6 +277,51 @@ lander are gone. One job per issue needs none of them.
 ```sh
 tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group, the pass's capacity line
 tests/repo-looper.test.sh       # reports-in-parallel, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short
+```
+
+### Build jobs
+
+**Agents never build: a report requests a build, and the build runs as its own job in a build container** (Jody,
+2026-11-03, looper#71; `tacplus-dev/roadmap:decisions/builds-in-containers-2026-11-03.md`). A build job is a
+pipeline of the [build pipeline](#build-pipeline), gitlab.com/tacplus-dev/build: the commit as it is, in the build
+image the repository pins, with no agent, and a verdict. **The cutover is per repository, keyed on its pin** (the
+hub's decision on looper#71): a repository whose commit has a `tacplus.lock`, or a `build.lock` when it is no tacplus
+project, builds in build jobs; one with neither keeps the gates in the manager's job and `looper-docker`, until its
+pin issue (filed by the hub) commits one.
+
+- **The manager's gates are a build job's verdict** on the rebased commit: it pushes that commit to a branch of its
+  own (`looper/build-<repo>-<n>`, deleted after; never the issue's branch, which is the report's queue), starts the
+  build with the gate set its diff calls for (input `gates`, from the commit's own `gates.yaml`, and `base`, the main
+  it is rebased on: the build runs exactly what [Gates scaled to the diff](#gates-scaled-to-the-diff) would) and
+  merges on its pass alone. Its verdict comment carries the build's link and verdict line.
+- **A report requests a build** with `repo-looper --repo R --issue N --build`: it checkpoints (the commit is then on
+  GitHub, under the issue's branch), asks for the gate set its diff since main calls for, prints the build's link
+  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours). The
+  model never holds the trigger: its request is a file in its run directory, which its report's looper, holding
+  `BUILD_TRIGGER_TOKEN`, checks (a full hash, a gate set, a base; at most `LOOPER_BUILD_MAX`, 30, a run) and starts.
+- **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the
+  build's `tacplus-reader` app set (creator `tacplus-reader[bot]`: the looper's own `GH_TOKEN` could set one too)
+  linking the pipeline that was started, once it is no longer pending.
+- **No container runtime in the report**: its model's `docker` refuses, saying to use `--build` (so `tacplus`,
+  which runs through docker, is the build job's alone); no `looper-docker`, no broker, no `DOCKER_HOST`. Its prompt's
+  rule 4 says so. Since looper#68 the model runs as a user outside the socket's group, so it cannot reach the host's
+  socket either way. Taking the socket's mount out of the job's container is the runner's configuration
+  (tacplus-dev/cloud).
+- **The trigger** is `BUILD_TRIGGER_TOKEN`, a pipeline trigger token of tacplus-dev/build owned by its bot user (as
+  the [looper identity](#looper-identity)'s), a protected, masked CI variable of tacplus-dev/looper that the report and
+  manager jobs read ([Credentials](#credentials)). A job without it builds as before, even in a pinned repository,
+  and its log says so: the cutover waits for the token as well as the pin, so no repository's merges stop on a
+  missing one.
+- **The looper repository's build image is the looper image, by digest** (`build.lock`; Jody on looper#71): it is no
+  tacplus project, and its gates are the bash tests of `gates.yaml`, which run in that image. A new digest is a
+  change like any other.
+- **Not yet** (the follow-up, Blocked-by tacplus-dev/tacplus#315): retiring `looper-docker`, `looper-docker-broker`
+  and the host socket's path once every repository is pinned, and an image build inside the build job with rootless
+  BuildKit, without the host's Docker.
+
+```sh
+tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on a build job's verdict of the rebased commit; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin
 ```
 
 ### Gates scaled to the diff
@@ -580,7 +627,9 @@ release it also publishes the image. It never changes the repository. It is the 
 gitlab.com/tacplus-dev/build, whose `.gitlab-ci.yml` is `ci/build.gitlab-ci.yml` here, copied there as is; its
 jobs run `looper-build`, from this image.
 
-- **Started** from the API or the web with **inputs** `repo`, `sha` and, for a release, `tag`. The project forbids
+- **Started** from the API or the web with **inputs** `repo`, `sha` and, for a release, `tag`; a manager's merge
+  and a report's `--build` ([Build jobs](#build-jobs), looper#71) add `gates` (the commit's `gates.yaml` sets,
+  joined by `+`; none: its full, or `just gates` without a `gates.yaml`) and `base` (their `LOOPER_GATES_BASE`). The project forbids
   pipeline variables (as this group does); inputs are typed and checked against their pattern before any job runs.
   A push to the project starts nothing.
 
@@ -590,9 +639,12 @@ jobs run `looper-build`, from this image.
     -d '{"ref": "main", "inputs": {"repo": "kernel", "sha": "<40 hex>"}}'
   ```
 - **`plan`** fetches exactly that commit and reads its `tacplus.lock` (as tacplus validates it: an exact release,
-  the build image by digest, of the same line). No pin, or a bad one, is a **fail** verdict, never a guess. It
+  the build image by digest, of the same line), or for a repository that is no tacplus project its `build.lock`
+  (`build_image:` by digest alone; the looper's, looper#71). No pin, or a bad one, is a **fail** verdict, never a guess. It
   writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' jobs.
-- **`gates`**, in the pinned build image: `just gates` on the commit. It fails if the commit has no `gates` recipe,
+- **`gates`**, in the pinned build image: `just gates` on the commit, or, when the commit has a `gates.yaml`, the
+  sets `gates` names (its full when none), in turn, with `LOOPER_GATES_BASE` the `base` (fetched too). It fails if
+  a set is not in the map, if the commit has no `gates` recipe where `just gates` runs,
   if a gate fails, or if the build changed a tracked file (`git status --porcelain --untracked-files=no`) or moved
   HEAD. Its log is the artifact `gates.log`, and the job's log.
 - **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the
@@ -991,7 +1043,7 @@ builds' too. The model is `LOOPER_MODEL` (default `claude-opus-5-5`).
 ### Credentials
 
 Every looper job's model runs on the same VM as the job that holds its credentials (looper#25). The model's
-environment holds no GitLab credential: `repo-looper` withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, GitLab's job
+environment holds no GitLab credential: `repo-looper` withholds `GITLAB_TOKEN`, `LOOPER_TRIGGER_TOKEN`, `BUILD_TRIGGER_TOKEN`, GitLab's job
 token and the variables that carry it, and any `*ID_TOKEN` (`MODEL_WITHHELD`), and keeps them for its own reads of
 GitLab. Since looper#68 each model also runs as its own unprivileged user, so it cannot read them from its parent's
 `/proc/<pid>/environ` either. **The boundary is still each token's reach**, which is this project's and nothing
@@ -1021,6 +1073,7 @@ of their own").
 |---|---|---|
 | `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`looper-dispatch plan`) and each report's job poll read the project's jobs; the kicker reads them too |
 | `LOOPER_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/looper (`glptt-`), environment scope `kicker` | the kicker starts the pipeline with it (`POST /projects/:id/trigger/pipeline`; the token is on no command line) |
+| `BUILD_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/build (`glptt-`), owned by the build project's bot user ([Looper identity](#looper-identity)), protected and masked | the reports and managers start build jobs with it ([Build jobs](#build-jobs), looper#71; on no command line); no model holds it. Unset, every repository builds as before |
 | `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before | GitHub, the model |
 
 A Reporter with `read_api` reads the project's code, pipelines and jobs. It cannot read CI variables (Maintainer),

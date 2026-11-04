@@ -20,6 +20,8 @@
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
 #   repo-looper --repo NAME --issue N --land [--gates CMD]   queue the report's commits with the manager
 #                                       and wait for its verdict (the model's step)
+#   repo-looper --repo NAME --issue N --build   a build job of the report's committed HEAD, in the build
+#                                       image it pins, and its verdict (the model's step, looper#71)
 #   repo-looper --repo NAME --issue N --think DIR   the think job of a looper with its own identity
 #                                       (looper#28): no write credential, writes its outcome to DIR
 #
@@ -52,6 +54,17 @@
 # the set its diff calls for: the repository's gates.yaml maps paths to gate
 # sets, and anything in doubt (a path it does not map, a change to the map)
 # runs the full gates.
+#
+# Build jobs (looper#71; tacplus-dev/roadmap
+# decisions/builds-in-containers-2026-11-03.md): agents never build. In a
+# repository whose commit pins its build image (tacplus.lock, or build.lock
+# for one that is no tacplus project), and in a job that holds the build
+# trigger (BUILD_TRIGGER_TOKEN), the gates the manager runs before a merge are
+# a build job's verdict on the rebased commit (gitlab.com/tacplus-dev/build,
+# looper-build, the gate set its diff calls for), and the report's model has
+# no container runtime (no docker, no broker): it asks for a build with
+# --build, which its looper starts. The cutover is per repository, keyed on its
+# pin; an unpinned one keeps the gates here and looper-docker.
 #
 # Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
 # needs-decision), and every `Blocked-by:` issue in its body closed.
@@ -198,6 +211,7 @@ while [[ $# -gt 0 ]]; do
     --issue) ISSUE="$2"; [[ "$MODE" == next ]] && MODE=one; shift 2 ;;
     --checkpoint) STEP="$2"; MODE=checkpoint; shift 2 ;;
     --land) MODE=land; shift ;;
+    --build) MODE=build; shift ;;
     --gates) LAND_GATES="$2"; shift 2 ;;
     --manage) MODE=manage; shift ;;
     --job-timeout) ISSUE="$2"; MODE=job-timeout; shift 2 ;;
@@ -308,7 +322,7 @@ MAIN_CHECKOUT="$WORK/checkout"
 CHECKOUT="$MAIN_CHECKOUT"; BRANCH=main
 report_dir() { echo "$WORK/issues/$1"; } # issue
 # A report, and the model's --checkpoint and --land from a report's clone.
-if [[ "$MODE" == one ]] || [[ "$MODE" =~ ^(checkpoint|land)$ && -e "$(report_dir "$ISSUE")/.git" ]]; then
+if [[ "$MODE" == one ]] || [[ "$MODE" =~ ^(checkpoint|land|build)$ && -e "$(report_dir "$ISSUE")/.git" ]]; then
   CHECKOUT="$(report_dir "$ISSUE")"; BRANCH="looper/$REPO-$ISSUE"
 fi
 # A report's models run as its own user (looper#68).
@@ -763,8 +777,17 @@ land_work() {
         log "nothing landed: $GATES_WHY. Fix it, commit, and land again." >&2
         exit 4
       fi
-      log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
-      grc=0; t=$SECONDS; LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
+      grc=0; t=$SECONDS
+      if build_jobs HEAD .; then
+        # A pinned repository's gates are a build job's verdict (looper#71).
+        log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
+        build_gates "$before" > "$out/gates.log" 2>&1 || grc=$?
+      else
+        [[ "$LOOPER_FORGE" != github ]] || ! pinned HEAD . || [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] ||
+          log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: the gates run here, not as a build job (looper#71)"
+        log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
+        LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
+      fi
       (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
       if (( grc != 0 )); then
         { log "nothing landed: the gates failed (exit $grc), on your commits rebased on main; their end:"; tail -n 30 "$out/gates.log"; } >&2
@@ -868,6 +891,137 @@ queue_history() { # issue line...
   log "#$n: HISTORY.md's line queued with the manager"
 }
 
+# --- build jobs (looper#71) -----------------------------------------------------
+
+# A build is a pipeline of gitlab.com/tacplus-dev/build (ci/build.gitlab-ci.yml,
+# looper-build), started with its trigger token, BUILD_TRIGGER_TOKEN, which the
+# report's and the manager's jobs hold and no model does (MODEL_WITHHELD). Its
+# verdict is the GitHub commit status it sets on the commit (context
+# tacplus-dev/build) by the tacplus-reader app alone (creator
+# tacplus-reader[bot]: the looper's own GH_TOKEN could set one too), linking
+# the pipeline started. LOOPER_BUILD_WAIT (seconds, default 10800) is how long
+# a verdict is waited for, LOOPER_BUILD_POLL (default 30) between its reads.
+BUILD_API="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}"
+BUILD_PROJECT="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}"
+BUILD_CONTEXT="${LOOPER_BUILD_CONTEXT:-tacplus-dev/build}"
+BUILD_CREATOR="${LOOPER_BUILD_CREATOR:-tacplus-reader[bot]}"
+BUILD_WAIT="${LOOPER_BUILD_WAIT:-10800}"
+BUILD_POLL="${LOOPER_BUILD_POLL:-30}"
+BUILD_MAX="${LOOPER_BUILD_MAX:-30}"   # a report run's builds, at most
+PIN_FILES=(tacplus.lock build.lock)
+
+# The tree at rev pins its build image (looper-build reads the pin).
+pinned() { # rev [dir]
+  local f; for f in "${PIN_FILES[@]}"; do git -C "${2:-$CHECKOUT}" cat-file -e "$1:$f" 2>/dev/null && return 0; done; return 1
+}
+# Builds of rev are build jobs: GitHub's (the build reads it), pinned, and
+# this job holds the trigger.
+build_jobs() { # rev [dir]
+  [[ "$LOOPER_FORGE" == github && -n "${BUILD_TRIGGER_TOKEN:-}" ]] && pinned "$@"
+}
+
+# Starts the build of a commit on GitHub with the gate set and base given (no
+# set: the commit's full), and prints "<pipeline id> <its URL>"; else why not.
+# The token goes on no command line.
+start_build() { # sha gates base
+  local r id url
+  r="$(printf 'token=%s&ref=main&inputs%%5Brepo%%5D=%s&inputs%%5Bsha%%5D=%s&inputs%%5Bgates%%5D=%s&inputs%%5Bbase%%5D=%s' \
+         "$BUILD_TRIGGER_TOKEN" "$REPO" "$1" "$2" "$3" |
+       curl -fsS --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data @- 2>&1)" ||
+    { echo "GitLab refused to start the build: $(redact <<<"$r" | tail -n 1)"; return 1; }
+  id="$(jq -r '.id // empty' <<<"$r" 2>/dev/null)"; url="$(jq -r '.web_url // empty' <<<"$r" 2>/dev/null)"
+  [[ "$id" =~ ^[0-9]+$ ]] || { echo "GitLab started no pipeline: $(redact <<<"$r" | head -c 300)"; return 1; }
+  echo "$id ${url:-$BUILD_API/projects/$BUILD_PROJECT/pipelines/$id}"
+}
+
+# The verdict of the build pipeline id on sha: the commit status the build's
+# reader app set, linking that pipeline, once it is no longer pending. Prints
+# it ("success: <description>", "failure: <why>"); 0 on success, 1 on a
+# failure, 2 when none came within LOOPER_BUILD_WAIT.
+build_verdict() { # sha pipeline-id
+  local end=$(( $(date +%s) + BUILD_WAIT )) v
+  while :; do
+    v="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$1/statuses?per_page=100" 2>/dev/null |
+         jq -r --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg p "/pipelines/$2" \
+           '[.[] | select(.context == $c and .creator.login == $who and (.target_url // "" | endswith($p)) and .state != "pending")]
+            | first // empty | "\(.state): \(.description // "")"' 2>/dev/null)" || v=""
+    if [[ -n "$v" ]]; then echo "verdict: $v"; [[ "$v" == success:* ]]; return; fi
+    (( $(date +%s) < end )) || { echo "no verdict within $(hours "$BUILD_WAIT")"; return 2; }
+    sleep "$BUILD_POLL"
+  done
+}
+
+# The manager's gates on a pinned repository (looper#71): the rebased commit,
+# pushed to a branch of its own for the build to fetch (looper/build-NAME-N,
+# never the issue's branch: that is the report's queue), a build job of the
+# gate set its diff calls for, and the branch deleted after. At HEAD, in the
+# scratch worktree.
+build_gates() { # base
+  local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates=""; sha="$(git rev-parse HEAD)"
+  [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
+  git push -q -f origin "$sha:refs/heads/$b" || { echo "nothing built: the rebased commit could not be pushed to $b"; return 1; }
+  if p="$(start_build "$sha" "$gates" "$1")"; then
+    echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}"
+    build_verdict "$sha" "${p%% *}" || rc=$?
+  else echo "nothing built: $p"; rc=1; fi
+  git push -q origin --delete "$b" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+# --build, the model's step in a report of a pinned repository (looper#71): a
+# build job of its committed HEAD, with the gate set its diff since main calls
+# for, as the manager's merge would run it. The model holds no trigger: its
+# looper does, and starts the build (the run's builds/ directory: a request,
+# then the pipeline or why not) once the checkpoint has put the commit on the
+# issue's branch. Prints the verdict; exits 0 on a pass, 1 on a failure, 2
+# with no verdict.
+build_request() {
+  local run="${LOOPER_RUN:-}" d sha base gates="" id i
+  d="$run/builds"
+  [[ -n "$run" && -d "$d" ]] || die "no build jobs in this run: $REPO's main pins no build image (tacplus.lock, build.lock), or its job holds no build trigger; verify as your prompt's rule 4 says"
+  cd "$CHECKOUT"
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit them first; --build builds your HEAD as committed"
+  fetch . main || die "could not fetch main; nothing built"
+  sha="$(git rev-parse HEAD)"; base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse origin/main)"
+  choose_gates . "$base" "" || die "nothing built: $GATES_WHY"
+  [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
+  checkpoint "$ISSUE" "a build" "$run"
+  id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
+  printf 'sha=%s\ngates=%s\nbase=%s\n' "$sha" "$gates" "$base" > "$d/$id.new" && mv "$d/$id.new" "$d/$id.request"
+  log "build requested: $REPO ${sha:0:7}, the gates ${gates:-full}${GATES_WHY:+ ($GATES_WHY)}"
+  for (( i = 0; i < 300; i++ )); do [[ -s "$d/$id.started" || -s "$d/$id.refused" ]] && break; sleep 1; done
+  [[ ! -s "$d/$id.refused" ]] || die "the looper did not start the build: $(cat "$d/$id.refused")"
+  [[ -s "$d/$id.started" ]] || die "the looper did not start the build within 5 minutes"
+  echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}"
+  build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")"
+}
+
+# The report's looper serves its model's build requests (looper#71), every
+# second until killed: each, checked, is started with the trigger the model
+# never holds, and answered with the pipeline (its id and URL) or why not.
+build_server() { # run-dir
+  local d="$1/builds" r id sha gates base p k=0 z=""
+  trap 'kill "$z" 2>/dev/null; exit 0' TERM
+  while :; do
+    for r in "$d"/*.request; do
+      [[ -f "$r" ]] || continue
+      id="$(basename "$r" .request)"; mv -f "$r" "$d/$id.taken" 2>/dev/null || continue
+      sha="$(sed -n 's/^sha=//p' "$d/$id.taken" | head -n 1)"; gates="$(sed -n 's/^gates=//p' "$d/$id.taken" | head -n 1)"
+      base="$(sed -n 's/^base=//p' "$d/$id.taken" | head -n 1)"
+      if ! [[ "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]]; then
+        echo "not a build request (sha=, gates=, base=)" > "$d/$id.refused"
+      elif (( ++k > BUILD_MAX )); then
+        echo "this run has asked for $BUILD_MAX builds already" > "$d/$id.refused"
+      elif p="$(start_build "$sha" "$gates" "$base")"; then
+        echo "$p" > "$d/$id.started"; log "started a build of $REPO ${sha:0:7} (the gates ${gates:-full}) for its model: ${p#* }"
+      else
+        echo "$p" > "$d/$id.refused"; log "a build of $REPO ${sha:0:7} for its model: $p"
+      fi
+    done
+    sleep 1 & z=$!; wait "$z"
+  done
+}
+
 # --- the manager (looper#70) ---------------------------------------------------
 
 MANAGER_POLL="${LOOPER_MANAGER_POLL:-30}"
@@ -924,14 +1078,17 @@ reports_active() {
 # id: merged (green), sent back (a conflict it does not resolve), or not
 # merged (red, or why not).
 verdict_comment() { # issue id rc record-dir sha
-  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts
+  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build
   b="$(wip_branch "$n")"; url="$(wip_url "$n")"
   regen="$(cat "$rec/regenerated" 2>/dev/null || true)"; conflicts="$(cat "$rec/conflicts" 2>/dev/null || true)"
   step="$(git -C "$CHECKOUT" log -1 --format=%b "$sha" 2>/dev/null | sed '/^$/d' || true)"
   if [[ "$rc" == 0 && -s "$rec/landed" ]]; then
     read -r before after set <<<"$(tail -n 1 "$rec/landed")"
     why="$(sed -n 's/^[^:]*: //p' "$rec/gate-sets" 2>/dev/null | tail -n 1)"
-    what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}: green."
+    # A pinned repository's gates are a build job's (looper#71): its link.
+    build="$(sed -n 's/^the build job \([^ ]*\) of .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    [[ -z "$build" ]] || build=", a build job's verdict ($build)"
+    what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green."
     [[ -z "$regen" ]] || what+=" It resolved the rebase's conflicts by regenerating them, never by hand: $(sed 's/.*/`&`/' <<<"$regen" | paste -sd, - | sed 's/,/, /g')."
     what+=" The branch is deleted.${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
     [[ -z "$step" ]] || what+="
@@ -1114,7 +1271,7 @@ RENDER='
 # GITLAB_TOKEN, the job token and the variables that carry it, any id_token),
 # which the looper keeps for its own reads of GitLab. It runs as the job's user,
 # so this is not a boundary: the tokens' reach is (README, Credentials).
-MODEL_WITHHELD=(GITLAB_TOKEN LOOPER_TRIGGER_TOKEN CI_JOB_TOKEN CI_BUILD_TOKEN CI_REGISTRY_PASSWORD
+MODEL_WITHHELD=(GITLAB_TOKEN LOOPER_TRIGGER_TOKEN BUILD_TRIGGER_TOKEN CI_JOB_TOKEN CI_BUILD_TOKEN CI_REGISTRY_PASSWORD
                 CI_DEPENDENCY_PROXY_PASSWORD CI_REPOSITORY_URL CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2)
 model_env() { # the env(1) arguments that withhold them
   local v
@@ -1256,12 +1413,23 @@ broker_start() { # dir
 #
 # With MODEL_USER (looper#68) the model runs as that user (setpriv), with its
 # own HOME, TMPDIR and tacplus cache, and its docker through the broker.
+#
+# A report of a pinned repository (BUILD_JOBS, looper#71) has no container
+# runtime: no looper-docker, no broker, no DOCKER_HOST; its `docker` says so.
+# It builds through --build, whose requests its looper serves (build_server).
 run_claude() { # prompt-file log-file seconds run-dir [issue]
-  local rc=0 dir pid fmt watcher k withheld limited=() as=() BROKER_PID=""
+  local rc=0 dir pid fmt watcher k withheld limited=() as=() BROKER_PID="" builds="" server=""
   mapfile -t withheld < <(model_env)
   dir="$(mktemp -d)"; mkfifo "$dir/out"
   mkdir "$dir/bin"; ln -s "$(dirname "$LOOPER_SELF")/looper-pkill" "$dir/bin/pkill"
   limited=(PATH="$dir/bin:$PATH" LOOPER_MODEL_RUN="$4")
+  if [[ -n "${BUILD_JOBS:-}" && -n "${5:-}" ]]; then
+    builds=1; mkdir -p "$4/builds"
+    printf '#!/bin/sh\necho "docker: %s builds in build jobs (looper#71): a report has no container runtime. Build with: %s --repo %s --issue %s --build" >&2\nexit 125\n' \
+      "$REPO" "$LOOPER_SELF" "$REPO" "$5" > "$dir/bin/docker"
+    chmod 0755 "$dir/bin/docker"
+    withheld+=(-u DOCKER_HOST -u LOOPER_REAL_DOCKER -u LOOPER_DOCKER_BROKER)
+  fi
   if [[ -n "${MODEL_USER:-}" ]] && model_users; then
     model_user_up "$MODEL_USER" "$4" || { rm -rf "$dir"; return 1; }
     chmod 0755 "$dir"
@@ -1270,11 +1438,11 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
     limited+=(HOME="$MODEL_HOME" USER="$MODEL_USER" LOGNAME="$MODEL_USER" TMPDIR="$MODEL_HOME/tmp"
               LOOPER_TACPLUS_HOME="$MODEL_HOME/.tacplus-home" CARGO_HOME="$MODEL_HOME/.cargo")
     withheld+=(-u GIT_CONFIG_PARAMETERS -u LOOPER_REAL_DOCKER)
-    if [[ -n "${LOOPER_CHILD_MEMORY:-}" ]] && broker_start "$dir"; then
+    if [[ -z "$builds" && -n "${LOOPER_CHILD_MEMORY:-}" ]] && broker_start "$dir"; then
       ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
       limited+=(LOOPER_DOCKER_BROKER="$dir/broker/sock")
     fi
-  elif [[ -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
+  elif [[ -z "$builds" && -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
     ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
     limited+=(LOOPER_REAL_DOCKER="$(command -v docker || true)")
   fi
@@ -1284,8 +1452,10 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!
   watch_run "$pid" "$2" "$4" "${5:-}" & watcher=$!
+  [[ -z "$builds" ]] || { build_server "$4" >> "$4/builds.log" 2>&1 & server=$!; }
   wait "$pid" || rc=$?
   kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null || true
+  [[ -z "$server" ]] || { kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true; }
   [[ -z "$BROKER_PID" ]] || { kill "$BROKER_PID" 2>/dev/null; wait "$BROKER_PID" 2>/dev/null || true; }
   # The log is complete when the model's output closes; a process the model
   # left holding that output does not hold the run.
@@ -1788,6 +1958,14 @@ EOF
 # Rule 4's word on the report's memory (looper#41), when its job set it.
 memory_rule() {
   [[ -n "${LOOPER_CHILD_MEMORY:-}" ]] || return 0
+  if [[ -n "${BUILD_JOBS:-}" ]]; then   # no containers (looper#71)
+    if [[ -n "${MODEL_USER:-}" ]] && model_users; then
+      printf '\n   %s\n   %s' \
+        "You run as your own user, $MODEL_USER (looper#68): you own your worktree, your home and your run directory, and no" \
+        "other run's processes or files."
+    fi
+    return 0
+  fi
   printf '\n   %s\n   %s\n   %s' \
     "Containers you start (\`docker run\`, \`tacplus\`) are limited to $LOOPER_CHILD_MEMORY of memory, without swap: your" \
     "share of the runner, beside the other reports. One over it is OOM-killed (exit 137), and a larger --memory is" \
@@ -1797,6 +1975,24 @@ memory_rule() {
       "You run as your own user, $MODEL_USER (looper#68): you own your worktree, your home and your run directory, and no" \
       "other run's processes or files. \`docker\` is the looper's broker: your own containers only, unprivileged, mounting only those two."
   fi
+}
+
+# Rule 4's first sentence: how the report verifies. In a pinned repository
+# (looper#71), with a build job: the model has no container runtime.
+verify_rule() { # issue
+  if [[ -z "${BUILD_JOBS:-}" ]]; then echo "Verify with $(gates_hint)."; return 0; fi
+  printf '%s\n   %s\n   %s\n   %s\n   %s' \
+    "Verify with a build job: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds" \
+    "your committed HEAD in the build image this repository pins, on the gate set your diff since main calls for, as the" \
+    "manager's merge will (tacplus-dev/build: no agent), and prints its verdict (exit 0 on a pass, 1 on a failure). You" \
+    "have no container runtime (no \`docker\`, so no \`tacplus\` here either): agents never build (looper#71). What needs" \
+    "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
+}
+
+# Rule 2's word on tacplus: none in a report with no container runtime (looper#71).
+tacplus_rule() {
+  if [[ -n "${BUILD_JOBS:-}" ]]; then echo "\`tacplus\` runs in the build job only (rule 4)."
+  else printf '%s\n   %s' "\`tacplus\` in this container runs the compiler image for this repository's" "MAJOR.MINOR floor (tacplus.yaml), always its latest patch."; fi
 }
 
 # A report's outcome, for its job's log: closed, blocked,
@@ -1868,11 +2064,10 @@ Rules:
    recommendation, add the label $LABEL_DECISION, and stop without committing.
 2. Tests first where the change has behaviour: write the test that fails, then make it pass. Surgical
    changes, the existing style, no hacks. Generated code is never edited by hand: change the generator or
-   the proto and regenerate. \`tacplus\` in this container runs the compiler image for this repository's
-   MAJOR.MINOR floor (tacplus.yaml), always its latest patch.
+   the proto and regenerate. $(tacplus_rule)
 3. You may use sub-agents (the Task/Agent tool) for independent parts, in this same worktree. They do not
    commit or land; you do.
-4. Verify with $(gates_hint). Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
+4. $(verify_rule "$n") Long builds: start them detached (\`nohup ... > /tmp/x.log 2>&1 &\`) and
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
    reply ends the run. Stop a process you started by its PID (\`kill <pid>\`, the \`\$!\` you noted when you
    started it), never by a pattern (\`pkill -f\`, \`kill \$(pgrep ...)\`): other issues' runs and the looper's lands
@@ -2639,6 +2834,10 @@ report_job() { # issue
   fi
   # Its containers are limited to its share (looper#41).
   LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
+  # A pinned repository's report builds in build jobs, with no container runtime (looper#71).
+  BUILD_JOBS=""
+  if build_jobs origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: this report builds in build jobs, its model with no container runtime"
+  elif [[ "$LOOPER_FORGE" == github ]] && pinned origin/main; then log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: its model keeps looper-docker (looper#71)"; fi
   work_issue "$n"
 }
 
@@ -2651,6 +2850,8 @@ disk_log() {
 case "$MODE" in
   # The model's step in a report: the manager merges it (looper#70).
   land) land_request ;;
+  # The model's build request in a pinned repository's report (looper#71).
+  build) build_request ;;
   checkpoint)
     # The model's step: what is done and what is left becomes the message of
     # every checkpoint after it.

@@ -15,8 +15,21 @@ the looper then marks it `promoted` or `declined` here with the date.
   `generated.yaml` in tacplus (its generated code: `just generate`), kernel and the Go services (`go.sum`: `go mod
   tidy`) and the Rust ones (`Cargo.lock`), or defaults for the well-known lock files, would let the manager resolve
   them. Regenerating runs the repository's tools in the manager's job: with #71, in a build job instead.
-- **The manager's gates as a build job** (2026-11-03, #70, #71): the manager runs the gates its diff calls for in its
-  own job, as the lander did. The companion issue (#71) makes them a build job's verdict on the rebased commit.
+- **The manager's gates as a build job** (2026-11-03, #70, #71): done for a pinned repository whose jobs hold
+  `BUILD_TRIGGER_TOKEN` (README: Build jobs); the others still run them in the manager's job until their pin issues
+  (the hub's) land and the hub sets the token in tacplus-dev/looper. Regenerating a conflict's generated files
+  (`generated.yaml`'s commands) still runs in the manager's job: in a pinned repository it could be a build job too,
+  one that hands back the files it wrote.
+- **Retire looper-docker, its broker and the host socket's path** (2026-11-03, #71; the hub's decision on #71): once
+  every repository is pinned no report needs a container runtime, so `looper-docker`, `looper-docker-broker`, the
+  `looper-docker` user and the model-user code that guards the socket's gid (#68, #69) can go, and tacplus-dev/cloud
+  can drop the socket's mount from the jobs' containers. With it, the test that an image builds in the build job
+  without host Docker (rootless BuildKit in the build image: tacplus-dev/tacplus#315, which it is Blocked-by). The
+  follow-up issue is #71's (linked from it).
+- **A forged build verdict** (2026-11-03, #71): the looper takes a build's verdict only from the commit status the
+  `tacplus-reader` app set, by its creator's login (`tacplus-reader[bot]`), linking the pipeline it started. A
+  status's creator is GitHub's to record, so the looper's `GH_TOKEN` cannot pass for it; reading the pipeline's own
+  status from GitLab would need a read token for tacplus-dev/build that the looper's jobs do not have.
 - **The nightly scan's PROPOSALS.md push** (2026-11-03, #70): the scan still commits PROPOSALS.md on main itself
   (`git pull --rebase` and push), the one push to main that is not the manager's. It could queue it on a branch of
   its own for the manager, as a report does.

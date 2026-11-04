@@ -31,6 +31,8 @@ case "$cmd" in
   "repo clone") git clone -q "$FIX/origin.git" "$2"; exit 0 ;;
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
+  # A commit's statuses (looper#71), newest first: $FIX/statuses/<sha>.json, which the stub build writes.
+  api\ repos/*/commits/*/statuses*) c="${cmd#api repos/*/commits/}"; c="${c%%/*}"; cat "$FIX/statuses/$c.json" 2>/dev/null || echo '[]'; exit 0 ;;
 esac
 n=""; repo=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; title=""
 while [[ $# -gt 0 ]]; do
@@ -125,6 +127,31 @@ reply() { # code body
 # latest security report of the repository the URL names; its packages
 # (looper#50), $FIX/packages.json.
 case "$url" in
+  # The build project's trigger (looper#71): the form on stdin (never argv), recorded
+  # in $FIX/builds as "<token> <repo> <sha> <gates> <base>"; the build itself, at
+  # once: the commit's gate set from origin, as looper-build runs it
+  # (BUILD_STUB=build in its environment), and its commit status by the reader
+  # app, linking the pipeline. $FIX/forge-status adds a success linking it too,
+  # newer, by another creator: no verdict.
+  */projects/tacplus-dev%2Fbuild/trigger/pipeline)
+    form="$(cat)"; v() { tr '&' '\n' <<<"$form" | sed -n "s/^$1=//p"; }
+    sha="$(v 'inputs%5Bsha%5D')"; gates="$(v 'inputs%5Bgates%5D')"; base="$(v 'inputs%5Bbase%5D')"
+    echo "$(v token) $(v 'inputs%5Brepo%5D') $sha $gates $base" >> "$FIX/builds"
+    id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}"
+    if ! git clone -q "$FIX/origin.git" "$d/src" 2>/dev/null || ! git -C "$d/src" -c advice.detachedHead=false checkout -q "$sha" 2>/dev/null; then
+      state=failure; desc="tacplus-dev/alpha has no commit $sha"
+    elif [[ -f "$d/src/gates.yaml" ]]; then
+      run="$(bash -c 'source "$1"; gate_run "$2/gates.yaml" "$3"' _ "$ROOT/looper-build" "$d/src" "${gates:-full}")" &&
+        (cd "$d/src" && BUILD_STUB=build LOOPER_GATES_BASE="$base" bash -c "$run") >> "$FIX/build-runs.log" 2>&1 ||
+        { state=failure; desc="the gates ${gates:-full} (gates.yaml) exited 1 (gates.log)"; }
+    fi
+    rm -rf "$d"; mkdir -p "$FIX/statuses"; f="$FIX/statuses/$sha.json"; [[ -f "$f" ]] || echo '[]' > "$f"
+    st() { jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" \
+             '[{state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: $w}}] + . | [{state: $s, context: "tacplus-dev/build", description: $d, target_url: $u, creator: {login: $w}}] + .' "$f" > "$f.new" && mv "$f.new" "$f"; }
+    st "$state" "$desc" "tacplus-reader[bot]"
+    [[ ! -e "$FIX/forge-status" ]] || st success pass "tacplus-looper[bot]"
+    reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"
+    exit 0 ;;
   */packages/generic/security-*/latest/*)
     if [[ -f "$FIX/security/${url##*/}" ]]; then reply 200 "$(cat "$FIX/security/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
@@ -1735,6 +1762,92 @@ echo 'sleep 30' > "$FIX/claude.sh"
 run CI_JOB_TIMEOUT=3620 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_STOP_EARLY=0
 has "$OUT" "limit 4h capped at "
 has "$(grep '^alpha#4 ' "$FIX/comments")" "capped at"
+pass
+
+# --- build jobs (looper#71) ---------------------------------------------------------
+# Agents never build: in a repository that pins its build image (build.lock,
+# tacplus.lock), with the build trigger in the job, a report's model has no
+# container runtime and asks for a build with --build, which its looper starts
+# (the trigger is never the model's); the manager's gates are a build job's
+# verdict on the rebased commit, the gate set its diff calls for. The stub
+# build (curl's trigger) runs the commit's gate set from origin.
+pin_seed() { # alpha's main: pinned, with a gate map whose gates say where they ran
+  printf 'build_image: ghcr.io/tacplus-dev/looper:main@sha256:%s\n' "$(printf 'a%.0s' {1..64})" > "$FIX/seed/build.lock"
+  cat > "$FIX/seed/gates.yaml" <<'EOF'
+full:
+  run: echo "full ${BUILD_STUB:-here}" >> "$FIX/gates-ran"
+docs:
+  run: 'echo "docs ${BUILD_STUB:-here} $LOOPER_GATES_BASE" >> "$FIX/gates-ran" && ! grep -qs red *.md'
+  paths: ["*.md"]
+EOF
+  git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm pinned && git -C "$FIX/seed" push -q origin main
+  mkdir -p "$FIX/dk"; printf '#!/usr/bin/env bash\necho "$*" >> "$FIX/real-docker"\n' > "$FIX/dk/docker"; chmod +x "$FIX/dk/docker"
+  : > "$FIX/docker.sock"
+}
+# claude.sh: what the model's docker and environment are, then a change built and landed.
+build_model() { # file content
+  cat >> "$FIX/claude.sh" <<EOS
+{ readlink -f "\$(command -v docker)"; docker ps; echo "docker rc \$?"; env | grep -E '^(DOCKER_HOST|BUILD_TRIGGER_TOKEN|LOOPER_DOCKER_BROKER|LOOPER_REAL_DOCKER)=' ; } > "\$FIX/probe" 2>&1
+echo "$2" > $1 && git add -A && git commit -qm "change $1" && git rev-parse HEAD > "\$FIX/head"
+"\$ROOT/repo-looper" --repo alpha --issue 4 --build > "\$FIX/build-4" 2>&1; echo "rc \$?" >> "\$FIX/build-4"
+"\$ROOT/repo-looper" --repo alpha --issue 4 --land > "\$FIX/land-4" 2>&1; echo "rc \$?" >> "\$FIX/land-4"
+EOS
+}
+BUILDS=(BUILD_TRIGGER_TOKEN=glptt-build LOOPER_BUILD_POLL=1 LOOPER_CHILD_MEMORY_GB=2)
+
+scenario build-job-report
+pin_seed; build_model notes.md "the docs"
+main0="$(origin rev-parse main)"
+run "${BUILDS[@]}" DOCKER_HOST="unix://$FIX/docker.sock" PATH="$FIX/dk:$TMP/bin:$PATH"
+p="$(cat "$FIX/probe")"
+has "$p" "a report has no container runtime. Build with: "; has "$p" "--repo alpha --issue 4 --build"; has "$p" "docker rc 125"
+lacks "$p" "looper-docker"; lacks "$p" "DOCKER_HOST="; lacks "$p" "BUILD_TRIGGER_TOKEN="; lacks "$p" "LOOPER_DOCKER_BROKER="
+[[ ! -e "$FIX/real-docker" ]] || fail "the model reached docker: $(cat "$FIX/real-docker")"
+b="$(cat "$FIX/build-4")"
+has "$b" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha $(cut -c1-7 "$FIX/head"), the gates docs"
+has "$b" "verdict: success: pass: gates docs"; has "$b" "rc 0"
+[[ "$(head -n 1 "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0" ]] || fail "the build asked for: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+# The manager's gates: a build job of the rebased commit, never the gates here.
+[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(sed -n 2p "$FIX/builds")" == "glptt-build alpha $(origin rev-parse main) docs $main0" ]] || fail "the manager's build: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, notes.md, maps to docs), a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/902): green"
+[[ "$(sort -u "$FIX/gates-ran")" == "docs build $main0" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+! grep -q glptt-build "$FIX/curl-argv" || fail "the trigger token was on a command line"
+pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pr" "Verify with a build job: "; has "$pr" "have no container runtime (no \`docker\`, so no \`tacplus\` here either)"; has "$pr" "\`tacplus\` runs in the build job only"
+lacks "$pr" "limited to 2048m of memory"
+pass
+
+# A red build: --build says why and exits 1, and the manager merges nothing.
+# A success that another creator set on the commit, linking the pipeline, is
+# no verdict: only the build's reader app gives one.
+scenario build-job-red
+pin_seed; build_model red.md red; touch "$FIX/forge-status"
+run "${BUILDS[@]}"
+b="$(cat "$FIX/build-4")"
+has "$b" "verdict: failure: the gates docs (gates.yaml) exited 1"; has "$b" "rc 1"
+has "$(cat "$FIX/land-4")" "The manager did not merge"; has "$(cat "$FIX/land-4")" "rc 4"
+has "$(cat "$FIX/land-4")" "verdict: failure: the gates docs"
+[[ -z "$(landed red.md)" ]] || fail "red merged"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+lacks "$(cat "$FIX/gates-ran")" "here"
+pass
+
+# Without the trigger a pinned repository keeps today's path: the model's
+# docker is looper-docker, --build says there are no build jobs, and the gates
+# run in the manager's job, which says why.
+scenario build-job-no-trigger
+pin_seed; build_model notes.md "the docs"
+run LOOPER_CHILD_MEMORY_GB=2 PATH="$FIX/dk:$TMP/bin:$PATH"
+has "$(cat "$FIX/probe")" "$ROOT/looper-docker"
+has "$(cat "$FIX/build-4")" "no build jobs in this run"; has "$(cat "$FIX/build-4")" "rc 2"
+has "$(cat "$FIX/land-4")" "rc 0"; [[ ! -e "$FIX/builds" ]] || fail "built: $(cat "$FIX/builds")"
+[[ "$(cat "$FIX/gates-ran")" == "docs here $(origin rev-parse main~1)" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
+has "$OUT$(cat "$FIX/manager.log")" "this job holds no BUILD_TRIGGER_TOKEN"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Verify with the full gates"
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------

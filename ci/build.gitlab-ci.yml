@@ -18,6 +18,11 @@
 #   {"ref": "main", "inputs": {"repo": "<repo>", "sha": "<40 hex>"}}
 # (The empty defaults only let a push to this project create no pipeline: the
 # workflow rules below drop it. looper-build refuses an empty repo or sha.)
+# A build may name the gate set to run (looper#71): "gates": the commit's
+# gates.yaml sets, joined by + (empty: its full, or `just gates` without a
+# gates.yaml), and "base": the commit their LOOPER_GATES_BASE names (the main
+# a manager's land is rebased on, or a report's branch point). A manager's
+# merge and a report's --build pass the set their diff calls for (repo-looper).
 # A release runs on this project's protected tag <repo>/vX.Y.Z, with
 # "tag": "vX.Y.Z" and the commit the repository's tag vX.Y.Z names; only there
 # does the publish job get its GCP identity (tacplus-dev/tacplus#223).
@@ -61,6 +66,14 @@ spec:
       description: "A release: the repository's tag vX.Y.Z at that commit (run on this project's tag <repo>/vX.Y.Z)"
       default: ""
       regex: '^(v[0-9]+\.[0-9]+\.[0-9]+)?$'
+    gates:
+      description: "The gate sets of the commit's gates.yaml to run, joined by + (empty: its full, else just gates)"
+      default: ""
+      regex: '^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$'
+    base:
+      description: "The commit the gate sets' LOOPER_GATES_BASE names, in full (40 hex)"
+      default: ""
+      regex: '^([0-9a-f]{40})?$'
     smoke:
       description: "The macOS smoke: a web run on main whose one manual job checks the Mac runner (no repo, sha or tag)"
       type: boolean
@@ -88,7 +101,7 @@ workflow:
         BUILD_PIPELINE_NAME: "nightly $[[ inputs.repo ]] $[[ inputs.sha ]]"
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
       variables:
-        BUILD_PIPELINE_NAME: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]]"
+        BUILD_PIPELINE_NAME: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]] $[[ inputs.gates ]]"
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME == "main" && $BUILD_SMOKE == "true"
       variables:
         BUILD_PIPELINE_NAME: "macos smoke"
@@ -102,6 +115,8 @@ variables:
   BUILD_REPO: "$[[ inputs.repo ]]"
   BUILD_SHA: "$[[ inputs.sha ]]"
   BUILD_TAG: "$[[ inputs.tag ]]"
+  BUILD_GATES: "$[[ inputs.gates ]]"
+  BUILD_BASE: "$[[ inputs.base ]]"
   BUILD_SMOKE: "$[[ inputs.smoke ]]"
   BUILD_RUNNER_IMAGE: "$[[ inputs.runner_image ]]"
   BUILD_NIGHTLY: "$[[ inputs.nightly ]]"
@@ -133,7 +148,7 @@ pending:
   script:
     - looper-build status pending
 
-# Fetch exactly the commit (a nightly: main's head), read its tacplus.lock,
+# Fetch exactly the commit (a nightly: main's head), read its pin (tacplus.lock, or build.lock),
 # write the gates job in the pinned image and the security checks' jobs. No
 # pin, or a bad one, is a fail verdict.
 plan:

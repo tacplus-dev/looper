@@ -64,6 +64,26 @@ printf 'FROM scratch\nCOPY data.txt /\n' > "$work/Dockerfile"
 git -C "$work" checkout -q pass; printf 'FROM scratch\nCOPY data.txt /\n' > "$work/Dockerfile"
 git -C "$work" add Dockerfile; git -C "$work" commit -qm "a Dockerfile"; SHA[release]="$(git -C "$work" rev-parse HEAD)"
 git -C "$work" tag -a v1.2.3 -m v1.2.3
+# A repository that is no tacplus project (the looper's, looper#71): its gates
+# are gates.yaml's sets, no justfile, and its pin build.lock, the image by digest.
+BLOCK="build_image: ghcr.io/tacplus-dev/looper:main@$DIGEST_A"
+git -C "$work" checkout -q --orphan mapped; git -C "$work" rm -rqf --ignore-unmatch . >/dev/null
+printf 'tracked\n' > "$work/data.txt"; printf '# the pin\n%s\n' "$BLOCK" > "$work/build.lock"
+cat > "$work/gates.yaml" <<'EOF'
+# The gate map.
+full:
+  run: echo "full ran base=${LOOPER_GATES_BASE:-none}"
+  minutes: 3
+docs:
+  run: 'echo "docs ran base=$LOOPER_GATES_BASE" && git diff --name-only "$LOOPER_GATES_BASE" HEAD | grep -qx gates.yaml'
+  paths: ["*.md"]
+red:
+  run: echo "red ran"; exit 4
+  paths: [red/]
+EOF
+git -C "$work" add -A; git -C "$work" commit -qm mapped; SHA[mapped]="$(git -C "$work" rev-parse HEAD)"
+case_commit blocktag "$PASS_GATES"; printf 'build_image: ghcr.io/tacplus-dev/looper:main\n' > "$work/build.lock"
+git -C "$work" add -A; git -C "$work" commit -qm blocktag; SHA[blocktag]="$(git -C "$work" rev-parse HEAD)"
 case_commit generated "$PASS_GATES
     mkdir -p gen target/classes/x target/debug node_modules && echo 'package gen' > gen/spec.go
     echo class > target/classes/x/A.class && echo 'fn x() {}' > target/debug/x.rs && echo x > node_modules/a.js
@@ -360,6 +380,30 @@ verdict_is "fail: tacplus.lock: build_image"
 grep -q "not of the pin's line 2.6" "$OUT/build-verdict" || fail "$(cat "$OUT/build-verdict")"
 pass
 
+NAME="plan: a repository that is no tacplus project pins its build image in build.lock (looper#71)"
+build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=docs BUILD_BASE="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+y="$OUT/build-gates.yml"
+grep -qxF "  image: \"ghcr.io/tacplus-dev/looper:main@$DIGEST_A\"" "$y" || fail "not build.lock's image: $(head -8 "$y")"
+grep -qxF '    BUILD_GATES: "docs"' "$y" && grep -qxF "    BUILD_BASE: \"${SHA[pass]}\"" "$y" || fail "the gate set is not the gates job's: $(head -16 "$y")"
+if build BUILD_SHA="${SHA[blocktag]}" -- plan 2>"$TMP/err"; then fail "planned with a tag"; fi
+verdict_is "fail: build.lock: build_image: 'ghcr.io/tacplus-dev/looper:main' must name the image by digest"
+pass
+
+NAME="plan: a gate set or base that is not one is refused"
+if build BUILD_SHA="${SHA[mapped]}" BUILD_GATES='docs;rm' -- plan 2>"$TMP/err"; then fail "planned"; fi
+verdict_is "fail: BUILD_GATES 'docs;rm' is not a gate set"
+if build BUILD_SHA="${SHA[mapped]}" BUILD_BASE=main -- plan 2>"$TMP/err"; then fail "planned"; fi
+verdict_is "fail: BUILD_BASE 'main' is not a full commit hash"
+pass
+
+NAME="the looper repository's own pin: build.lock names the looper image by digest (looper#71)"
+pin="$(cd "$TMP" && BUILD_OUT="$TMP/own-pin" BUILD_REPO=looper BUILD_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo HEAD)" \
+         bash -c 'mkdir -p "$BUILD_OUT"; source "$1"; read_pin "$2"' _ "$ROOT/looper-build" "$ROOT" 2>"$TMP/err")" ||
+  fail "$(cat "$TMP/own-pin/build-verdict" 2>/dev/null) $(cat "$TMP/err")"
+[[ "$pin" =~ ^ghcr\.io/tacplus-dev/looper(:[A-Za-z0-9_.-]+)?@sha256:[0-9a-f]{64}$ ]] || fail "build.lock pins '$pin', not the looper image by digest"
+[[ ! -e "$ROOT/tacplus.lock" ]] || fail "the looper repository has a tacplus.lock: it is no tacplus project, its pin is build.lock"
+pass
+
 NAME="plan: a commit that is not there fails"
 if build BUILD_SHA="$(printf '1%.0s' {1..40})" -- plan 2>"$TMP/err"; then fail "planned"; fi
 verdict_is "fail: tacplus-dev/demo has no commit"
@@ -447,6 +491,31 @@ if build BUILD_SHA="${SHA[nogates]}" -- gates 2>"$TMP/err"; then fail "passed"; 
 verdict_is "fail: no gates: demo's justfile has no \`gates\` recipe"
 pass
 
+# Gate sets (looper#71): a build runs the set the manager's diff calls for,
+# from the commit's own gates.yaml, with LOOPER_GATES_BASE its base.
+NAME="gates: the gate set asked for, from the commit's gates.yaml, on its base"
+build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=docs BUILD_BASE="${SHA[pass]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+grep -qxF "docs ran base=${SHA[pass]}" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
+! grep -q "full ran" "$OUT/gates.log" || fail "ran full too"
+pass
+
+NAME="gates: no set asked for in a repository with a gates.yaml runs its full, without just"
+build BUILD_SHA="${SHA[mapped]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+grep -qxF "full ran base=none" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
+pass
+
+NAME="gates: a red set fails the build; sets run in turn; an unknown set fails"
+if build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=full+red -- gates 2>"$TMP/err"; then fail "red passed"; fi
+verdict_is "fail: the gates full+red (gates.yaml) exited 4"
+grep -q "full ran" "$OUT/gates.log" && grep -q "red ran" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
+if build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=nosuch -- gates 2>"$TMP/err"; then fail "passed"; fi
+verdict_is "fail: gates.yaml has no gate set nosuch"
+if build BUILD_SHA="${SHA[pass]}" BUILD_GATES=docs -- gates 2>"$TMP/err"; then fail "passed"; fi
+verdict_is "fail: no gates.yaml: demo maps no gate set docs"
+pass
+
 # --- status ---------------------------------------------------------------------
 NAME="status: the commit status, with a token that can only write statuses on the repository"
 build BUILD_SHA="${SHA[pass]}" -- status pending 2>"$TMP/err" || fail "status failed"
@@ -456,6 +525,9 @@ line="$(grep '^status ' "$TMP/api.log")"
 body="${line#status Bearer "$READ_TOKEN" "${SHA[pass]}" }"
 [[ "$(jq -r '[.state, .context, .description, .target_url] | join("|")' <<<"$body")" == \
    "pending|tacplus-dev/build|building|https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] || fail "$body"
+build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=docs -- status success 2>"$TMP/err" || fail "status failed"
+[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == "success|pass: gates docs" ]] ||
+  fail "a gate set's pass does not name it: $(cat "$TMP/api.log")"
 pass
 
 NAME="status: a failure says why"
