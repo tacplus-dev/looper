@@ -127,8 +127,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   creation-to-"Running on" times; tested in an Ubuntu container and against stub gcloud and curl; two forges (#29):
   `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
   credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
-  `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, a reference to another org held and
-  never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, #55) and the plan's git identity, on a schedule a scan per repository (#56),
+  `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, an issue's URL read as its reference and an unreadable
+  `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, #55) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the

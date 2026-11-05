@@ -301,6 +301,30 @@ for FORGE in github gitlab; do
   [[ "$got" == "alpha 1 OPEN,beta 404 MISSING" ]] || fail "forge_issue_states: $got"
   pass
 
+  scenario blocked-by-url "$FORGE"
+  # An issue's URL on this forge reads as <org>/<repo>#N (looper#87): GitHub's
+  # /issues/N, GitLab's /-/issues/N; one on another host or another org never
+  # resolves, so it holds. A Blocked-by line it cannot read holds its issue too.
+  if [[ "$FORGE" == github ]]; then WEB=https://github.com; OTHER=https://gitlab.com; I=issues
+  else WEB=https://gitlab.com; OTHER=https://github.com; I=-/issues; fi
+  got="$(printf 'Blocked-by: %s/%s/beta/%s/5\nBlocked-by: <%s/%s/alpha/%s/3>.\nBlocked-by: %s/other-org/beta/%s/6\nBlocked-by: %s/%s/beta/%s/7\n' \
+           "$WEB" "$ORG" "$I" "$WEB" "$ORG" "$I" "$WEB" "$I" "$OTHER" "$ORG" "$I" | lib 'parse_blockers alpha' | paste -sd,)"
+  [[ "$got" == "beta 5,alpha 3,other-org/beta 6,${OTHER#https://}/$ORG/beta 7" ]] || fail "parse_blockers on URLs: $got"
+  got="$(printf 'Blocked-by: the other half\nBlocked-by: %s/%s/beta/pull/5\nBlocked-by:\n' "$WEB" "$ORG" | lib 'parse_blockers alpha' | paste -sd,)"
+  [[ "$got" == "?/unreadable 0,?/unreadable 0,?/unreadable 0" ]] || fail "parse_blockers on unreadable lines: $got"
+  issue alpha 20 OPEN "Open still."
+  issue alpha 21 CLOSED "Done."
+  issue alpha 22 OPEN "Blocked-by: $WEB/$ORG/alpha/$I/20" approved
+  issue alpha 23 OPEN "Blocked-by: $WEB/$ORG/alpha/$I/21" approved
+  issue alpha 24 OPEN "Blocked-by: $OTHER/$ORG/alpha/$I/21" approved
+  issue alpha 25 OPEN "Blocked-by: alpha 21, when it lands" approved
+  ! lib 'ready alpha 22' || fail "alpha#22 (its blocker, by URL, open) ready"
+  lib 'ready alpha 23' || fail "alpha#23 (its blocker, by URL, closed) not ready"
+  ! lib 'ready alpha 24' || fail "alpha#24 (its blocker on another host) ready"
+  ! lib 'ready alpha 25' || fail "alpha#25 (its Blocked-by unreadable) ready"
+  got="$(lib ready_all_by_repo | paste -sd,)"; [[ "$got" == "alpha 23" ]] || fail "ready_all_by_repo with URLs: $got"
+  pass
+
   # Labels, comments and body edits, and the looper's labels (looper#80): the
   # repository starts with `approved` alone, so the first edit names labels it
   # lacks; they are created and the edit retried.

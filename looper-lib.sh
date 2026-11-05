@@ -424,10 +424,11 @@ approved_issues() { # repo
       | sort_by($ISSUE_ORDER) | .[].number" "$LABEL_APPROVED"
 }
 
-# The issues an issue waits on: lines `Blocked-by: #N` (same repository) or
-# `Blocked-by: <org>/<repo>#N` in its body (on GitLab `seabeam/<path>#N`,
-# subgroups included), printed as "<repo> <N>". Fails (non-zero) when the
-# body cannot be read: an unreadable issue is never taken for an unblocked one.
+# The issues an issue waits on: lines `Blocked-by: #N` (same repository),
+# `Blocked-by: <org>/<repo>#N` (on GitLab `seabeam/<path>#N`, subgroups
+# included) or the issue's URL in its body, printed as "<repo> <N>"
+# (parse_blockers). Fails (non-zero) when the body cannot be read: an
+# unreadable issue is never taken for an unblocked one.
 blockers() { # repo issue
   local body
   body="$(forge_issue_view "$1" "$2" body .body)" || return 1
@@ -437,12 +438,24 @@ blockers() { # repo issue
 # The `Blocked-by:` lines of the text on stdin, as "<repo> <N>"; `#N` is in
 # repo, `<org>/<path>#N` in path. A reference outside LOOPER_ORG keeps its
 # whole path, which names no repository of the org, so it never resolves and
-# holds its issue: an instance reads no other org (looper#29).
+# holds its issue: an instance reads no other org (looper#29). An issue's URL
+# (`https://github.com/<org>/<repo>/issues/N`, on GitLab
+# `<LOOPER_FORGE_URL>/<path>/-/issues/N`, in <> or not) reads as
+# `<org>/<repo>#N`; one on another host keeps its host, so it never resolves
+# either (looper#87). A line it cannot read at all is `?/unreadable 0`, no
+# issue of any org, so it holds its issue too: never taken for no blocker.
 parse_blockers() { # repo
-  grep -oiE '^[[:space:]]*blocked-by:[[:space:]]*([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)?#[0-9]+' \
+  local host ref num slug
+  case "$LOOPER_FORGE" in github) host=github.com ;; *) host="${LOOPER_FORGE_URL#*://}"; host="${host%/}" ;; esac
+  grep -iE '^[[:space:]]*blocked-by:' \
     | sed -E 's/^[[:space:]]*[Bb][Ll][Oo][Cc][Kk][Ee][Dd]-[Bb][Yy]:[[:space:]]*//' \
     | while IFS= read -r ref; do
-        num="${ref##*#}"; slug="${ref%#*}"
+        if [[ "$ref" =~ ^(([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)?)#([0-9]+) ]]; then
+          slug="${BASH_REMATCH[1]}"; num="${BASH_REMATCH[4]}"
+        elif [[ "$ref" =~ ^\<?https?://([A-Za-z0-9_.:-]+(/[A-Za-z0-9_.-]+)+)(/-)?/issues/([0-9]+) ]]; then
+          slug="${BASH_REMATCH[1]%/-}"; num="${BASH_REMATCH[4]}"   # the longest path takes GitLab's /-
+          if [[ "${slug,,}" == "${host,,}/"* ]]; then slug="${slug#*/}"; fi
+        else echo "?/unreadable 0"; continue; fi
         if [[ -z "$slug" ]]; then echo "$1 $num"
         elif [[ "$slug" == "$LOOPER_ORG/"* ]]; then echo "${slug#"$LOOPER_ORG/"} $num"
         else echo "$slug $num"; fi

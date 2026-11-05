@@ -164,7 +164,9 @@ looper creates both labels in a repository that lacks them.
   filed with no kind gets `bug`, and a feature it filed loses `approved`.
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
-repository) in an issue's body holds it until that issue is closed.
+repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`, on GitLab `.../-/issues/N`) in
+an issue's body holds it until that issue is closed. A `Blocked-by:` line the looper cannot read holds its issue
+too (looper#87).
 
 Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
 instead, at most 10h. A report's job is sized for its issue (`repo-looper --job-timeout N`, looper#70): its
