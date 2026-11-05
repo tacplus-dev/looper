@@ -43,7 +43,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
   that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one idle after its land
   landed reports `landed`, with main's range, and stays approved for the next run to close, #37; one that ends with its land queued and no verdict is `land-pending`, held
-  (`looper:landing`) until the manager's verdict, #70;
+  (`looper:landing`) until the manager's verdict, #70, a blocked one's land too, kept queued, and any other
+  outcome leaves no `looper:landing`, nor does a manager wait on one with no land queued: it clears it, and says
+  what holds it every `LOOPER_MANAGER_SAY`, #93;
   gates scaled to the diff, #48: a repository's `gates.yaml` maps paths to gate sets, a land runs the sets its
   changed paths call for, full for a path no set names or one of full's, a `gates.yaml` change, or no change, and lands
   nothing on a map it cannot read; the set and why are in the land's output, the looper's land comments and the issue's

@@ -210,7 +210,7 @@ looper() { # [VAR=value...] -- repo-looper args
   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
-      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
+      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -1804,6 +1804,68 @@ has "$(grep -A4 '^alpha#4 The manager merged' "$FIX/comments")" "Its report's la
 has "$(grep -A4 '^alpha#4 The manager merged' "$FIX/comments")" "> x.txt fixed; left: comment and close"
 lacks "$(labels alpha 4)" "looper:landing"
 branch && fail "the merged branch is left"
+pass
+
+# The manager alone, which must end within a minute: one held for ever fails.
+manage_ends() { # [VAR=value...]
+  looper LOOPER_MANAGER_POLL=1 "$@" -- --repo alpha --manage > "$FIX/manager.log" 2>&1 & MANAGER=$!
+  for _ in $(seq 600); do kill -0 "$MANAGER" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$MANAGER" 2>/dev/null && { kill "$MANAGER"; cat "$FIX/manager.log"; fail "the manager did not end"; }
+  manager_wait; OUT="$(cat "$FIX/manager.log")"
+}
+# A report that ends blocked while its land is queued (looper#93: tacplus#259):
+# the land stays queued on its branch, so the issue stays looper:landing, and
+# the manager merges it after the run.
+scenario blocked-land-pending
+issue alpha 3 OPEN "" "Another."
+echo 'echo x > x.txt && git add -A && git commit -qm "fix 4"' > "$FIX/claude.sh"
+echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true' >> "$FIX/claude.sh"
+OUT="$(looper LOOPER_TIMEOUT=20 LOOPER_STOP_EARLY=0 -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "the report exited non-zero"; }
+main_unchanged
+has "$(labels alpha 4)" "looper:landing"; has "$(body alpha 4)" "Blocked-by: #3"
+has "$(origin show looper/alpha-4:.looper/land)" "state=queued"
+c="$(grep '^alpha#4 ' "$FIX/comments")"; has "$c" "Its commits are queued with the manager of alpha"; lacks "$c" "Nothing was pushed"
+manage_ends LOOPER_MANAGER_LINGER=0
+[[ "$(landed x.txt)" == x ]] || fail "main: $(origin log --oneline main)"
+lacks "$(labels alpha 4)" "looper:landing"
+pass
+
+# Every outcome without a land queued leaves no looper:landing behind
+# (looper#93): blocked with nothing pushed, and an end the next run resumes.
+for o in blocked ended; do
+  scenario "no-land-$o-unlabels"
+  issue alpha 3 OPEN "" "Another."
+  echo 'gh issue edit 4 --repo tacplus-dev/alpha --add-label looper:landing' > "$FIX/claude.sh"
+  if [[ "$o" == blocked ]]; then echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
+  else echo 'echo x > x.txt'  >> "$FIX/claude.sh"; step "x.txt written; left: the rest"; fi
+  run_alone
+  lacks "$(labels alpha 4)" "looper:landing"; lacks "$(labels alpha 4)" "looper:in-progress"
+  pass
+done
+
+# A looper:landing with no land queued (looper#93: no looper/alpha-N branch,
+# or one whose land has its verdict already) holds no manager: it clears the
+# label, says so, and ends after its linger.
+scenario manager-stale-landing
+issue alpha 4 OPEN approved,bug,looper:landing "Fix it."
+issue alpha 5 OPEN approved,bug "Fix that."; queue 5 2026-11-03T10:00:00Z five.txt 5
+jq --arg b "$(printf 'An earlier verdict.\n\n<!-- looper-land id=q5 rc=4 -->')" '.comments += [{body: $b}]' "$FIX/issues/alpha-5.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-5.json"
+manage_ends LOOPER_MANAGER_LINGER=2
+lacks "$(labels alpha 4)" "looper:landing"; lacks "$(labels alpha 5)" "looper:landing"
+has "$OUT" "#4: looper:landing with no land queued"; has "$OUT" "#5: looper:landing with no land queued"
+has "$OUT" "no report at work and no land queued; the manager ends"
+main_unchanged
+pass
+
+# A manager held says, every LOOPER_MANAGER_SAY seconds, what holds it (looper#93).
+scenario manager-says-why
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 LOOPER_MANAGER_SAY=1 CI_API_V4_URL= -- --repo alpha --manage > "$FIX/manager.log" 2>&1 & MANAGER=$!
+for _ in $(seq 100); do grep -q 'the manager waits' "$FIX/manager.log" && break; sleep 0.1; done
+issue alpha 4 OPEN approved,bug "Fix it."
+manager_wait
+has "$(cat "$FIX/manager.log")" "the manager waits: #4 is looper:in-progress"
 pass
 
 # The manager's job too short for a land (looper#38): it merges nothing, leaves

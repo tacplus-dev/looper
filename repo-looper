@@ -52,7 +52,8 @@
 # the issue, and its next report finishes it from the branch. The manager adds
 # HISTORY.md's lines (a closed issue's, which its report queues on its branch
 # as .looper/history, and each release's), and runs while an issue of the
-# repository is looper:landing or a report of it runs (in a GitLab job, a
+# repository is looper:landing with a land queued (a label with none it
+# clears, looper#93) or a report of it runs (in a GitLab job, a
 # report job running: not one waiting for the VM the manager holds, looper#82;
 # elsewhere, an issue looper:in-progress), or was within
 # LOOPER_MANAGER_LINGER seconds (default 300). Each container a report's model
@@ -965,14 +966,16 @@ land_request() {
   else
     id="$(date -u +%Y%m%dT%H%M%SZ)-$n-$RANDOM$RANDOM"
     printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n' "$id" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run/land"
-    forge_issue_edit "$REPO" "$n" --add-label "$LABEL_LANDING" >/dev/null || true
     checkpoint "$n" "land queued" "$run"
     fetch . "+refs/heads/$b:refs/remotes/origin/$b" || true
     m="$(git show "origin/$b:.looper/land" 2>/dev/null)" || m=""
     if ! grep -qx "id=$id" <<<"$m"; then
-      rm -f "$run/land"; forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true
+      rm -f "$run/land"
       die "could not queue the land: the checkpoint to $b did not push; nothing queued"
     fi
+    # Labelled once the branch carries it (looper#93): a manager clears a
+    # looper:landing whose issue has no land queued.
+    forge_issue_edit "$REPO" "$n" --add-label "$LABEL_LANDING" >/dev/null || true
     log "queued: the manager of $REPO merges $BRANCH after the lands queued before it, one at a time, and says on the issue what came of it; waiting for its verdict. If your time runs out first, it still lands it after you."
   fi
   until v="$(land_verdict "$n" "$id")"; do sleep "$LAND_POLL"; done
@@ -1147,6 +1150,7 @@ build_server() { # run-dir
 MANAGER_POLL="${LOOPER_MANAGER_POLL:-30}"
 LAND_DEFERRED=75   # a land that would not finish before the manager's job ends (looper#38): it waits, queued
 MANAGER_LINGER="${LOOPER_MANAGER_LINGER:-300}"
+MANAGER_SAY="${LOOPER_MANAGER_SAY:-300}"   # how often a manager held says what holds it (looper#93)
 # How long a closed issue still looper:in-progress counts as a report at work:
 # its model may close it and be stopped only later (idle, or done), before its
 # report queues its HISTORY.md line. One left so by a killed run stops counting.
@@ -1174,27 +1178,49 @@ queued_lands() {
   printf '%s' "$list" | sort -k1,1 -k2,2n
 }
 
+# The issues labelled looper:landing, open or closed (a closed one's
+# HISTORY.md line), a number a line.
+landing_issues() { forge_issue_list "$REPO" all 100 number '.[].number' "$LABEL_LANDING"; }
+
+# A looper:landing holds the manager only while its issue has a land queued
+# (looper#93): a run that ended without one (tacplus#259: its land unqueued,
+# the label left) held a manager for ten hours. Of the issues labelled before
+# the queue was read, each with no land in it loses the label, logged. The
+# label is set only once the branch carries the land, so none is cleared
+# before its land is queued.
+clear_stale_landing() { # labelled-issues queued-lands
+  local n
+  for n in $1; do
+    awk -v n="$n" '$2 == n { f = 1 } END { exit !f }' <<<"$2" && continue
+    if forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null; then
+      log "#$n: $LABEL_LANDING with no land queued (no $(wip_branch "$n") carrying one without a verdict); the label is removed, and holds the manager no more"
+    else log "#$n: $LABEL_LANDING with no land queued, but the label could not be removed"; fi
+  done
+}
+
 # Whether the repository has a report at work or a land queued: any issue
 # labelled looper:landing (a closed one's HISTORY.md line), and, in a GitLab
 # job, a report job running; elsewhere (or GitLab unreadable), an open issue
 # labelled looper:in-progress or a closed one for CLOSED_GRACE. Unreadable: it
-# has.
+# has. What it has, in WAITING.
 reports_active() {
   local n c now jobs; now="$(date +%s)"
-  n="$(forge_issue_list "$REPO" all 1 number '.[0].number // empty' "$LABEL_LANDING")" || return 0
-  [[ -z "$n" ]] || return 0
+  WAITING="GitHub, which it cannot read: an issue $LABEL_LANDING or $LABEL_IN_PROGRESS may hold it"
+  n="$(landing_issues)" || return 0
+  if [[ -n "$n" ]]; then WAITING="$(sed 's/^/#/' <<<"$n" | paste -sd, - | sed 's/,/, /g') $LABEL_LANDING, a land queued"; return 0; fi
   # In a GitLab job, a report at work is a report job running: one created,
   # pending or waiting may wait for the VM this manager holds (looper#82), and
   # an issue still looper:in-progress without one has no run that could land.
   # The land it queues once it runs gets a new manager from the kicker.
   if [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] && jobs="$(project_jobs 'scope[]=running')"; then
-    busy "$REPO" "$jobs" >/dev/null; return
+    jobs="$(busy "$REPO" "$jobs")" || return 1
+    WAITING="its report jobs running: $(paste -sd, - <<<"$jobs" | sed 's/,/, /g')"; return 0
   fi
   n="$(forge_issue_list "$REPO" open 1 number '.[0].number // empty' "$LABEL_IN_PROGRESS")" || return 0
-  [[ -z "$n" ]] || return 0
+  [[ -z "$n" ]] || { WAITING="#$n is $LABEL_IN_PROGRESS"; return 0; }
   for c in $(forge_issue_list "$REPO" closed 20 number '.[].number' "$LABEL_IN_PROGRESS" 2>/dev/null); do
     CLOSED_SEEN[$c]="${CLOSED_SEEN[$c]:-$now}"
-    (( now - CLOSED_SEEN[$c] >= CLOSED_GRACE )) || return 0
+    (( now - CLOSED_SEEN[$c] >= CLOSED_GRACE )) || { WAITING="#$c is closed and still $LABEL_IN_PROGRESS: its report may yet queue its HISTORY.md line"; return 0; }
   done
   return 1
 }
@@ -1327,9 +1353,10 @@ append_history_new() { # lines (one string)
 # the planning files, then, every LOOPER_MANAGER_POLL, merges the queued lands
 # oldest first and adds a HISTORY.md line for each new release, until no
 # report is at work and no land queued for LOOPER_MANAGER_LINGER seconds, or
-# a land would outlast its job.
+# a land would outlast its job. A looper:landing with no land queued it
+# clears; held, it says by what every LOOPER_MANAGER_SAY seconds (looper#93).
 manage() {
-  local idle_since tags_seen t new q n id sha rc
+  local idle_since tags_seen t new q n id sha rc labelled said=0
   MANAGER_RUN="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-manager"; mkdir -p "$MANAGER_RUN"
   sync_checkout
   # The looper's labels, before it clears a hold (looper#80).
@@ -1339,19 +1366,24 @@ manage() {
   tags_seen="$(release_tags)"; idle_since="$(date +%s)"
   log "the manager of $REPO: merging its reports' queued branches, one at a time"
   while :; do
-    q="$(queued_lands)" || { log "could not read $REPO's branches"; q=""; }
+    labelled="$(landing_issues)" || labelled=""
+    if ! q="$(queued_lands)"; then log "could not read $REPO's branches"; q=""; labelled=""; fi
     while read -r _ n id sha; do
       [[ -n "$n" ]] || continue
       rc=0; merge_report "$n" "$id" "$sha" || rc=$?
       (( rc != LAND_DEFERRED )) || { log "the manager stops: its job's time is short; the next manager merges what is queued"; return 0; }
     done <<<"$q"
+    clear_stale_landing "$labelled" "$q"
     new=()
     for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_seen") || true); do
       new+=("- $(date -u +%F) looper release $t ($(forge_web "$REPO" release "$t"))")
       tags_seen+=$'\n'"$t"
     done
     if (( ${#new[@]} )); then land "HISTORY.md: releases (looper)" append_history "${new[@]}"; fi
-    if [[ -n "$q" ]] || reports_active; then idle_since="$(date +%s)"
+    if [[ -n "$q" ]]; then idle_since="$(date +%s)"
+    elif reports_active; then
+      idle_since="$(date +%s)"
+      (( idle_since - said < MANAGER_SAY )) || { log "the manager waits: $WAITING"; said="$idle_since"; }
     elif (( $(date +%s) - idle_since >= MANAGER_LINGER )); then log "no report at work and no land queued; the manager ends"; return 0; fi
     sleep "$MANAGER_POLL"
   done
@@ -1448,6 +1480,9 @@ merge_batch() {
     new+=("- $(date -u +%F) looper release $t ($(forge_web "$REPO" release "$t"))")
   done
   if (( ${#new[@]} )); then land "HISTORY.md: releases (looper)" append_history "${new[@]}"; fi
+  # Its batch's labels are cleared; a looper:landing with no land queued too (looper#93).
+  local labelled q
+  if labelled="$(landing_issues)" && q="$(queued_lands)"; then clear_stale_landing "$labelled" "$q"; fi
   log "the manager job of $REPO is done"
 }
 
@@ -2422,13 +2457,22 @@ Run record: $(run_record "$run")." >/dev/null || true
     fi
     report "$n" closed; log "#$n done${head_after:+ (main $head_before..$head_after)}"; return 0
   fi
-  forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
+  # Only a land still queued keeps the issue looper:landing (looper#93): one
+  # left without (a land that never queued, say) would hold the manager.
+  if [[ -n "$pending" ]]; then forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
+  else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_LANDING" >/dev/null || true; fi
   local blocked what by those="that issue is" brc=0 dropped="" also=""
   blocked="$(outcome_blocked "$n" "$run")" || brc=$?
   [[ -s "$run/blockers-closed" ]] && dropped="$(sed 's/.*/`&`/' "$run/blockers-closed" | paste -sd, - | sed 's/,/, /g')"
   if (( brc == 0 )); then
     report "$n" blocked
-    if [[ -n "$head_after" ]]; then
+    if [[ -n "$pending" ]]; then
+      # Its land stays queued on the branch (looper#93): the manager merges it.
+      checkpoint "$n" blocked "$run"
+      what="Its commits are queued with the manager of $REPO, which merges them after the run and gives its verdict here (this issue is $LABEL_LANDING until then)"
+      [[ -z "$head_after" ]] || what="The fix is pushed (main $head_before..$head_after$on), and its last commits are queued with the manager of $REPO, which merges them after the run and gives its verdict here (this issue is $LABEL_LANDING until then)"
+      what+="; the run found this issue waits on another"
+    elif [[ -n "$head_after" ]]; then
       drop_wip "$n"
       what="The fix is pushed (main $head_before..$head_after$on); the gates wait"
     else

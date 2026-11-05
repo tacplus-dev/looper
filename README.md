@@ -255,7 +255,7 @@ lander are gone. One job per issue needs none of them.
   builds with build jobs ([Build jobs](#build-jobs), looper#71).
 - **Landing is queuing.** The model's `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository
   has no `gates.yaml` and no justfile) pushes a checkpoint whose `.looper/land` names the land (its id, gates and
-  when it was queued), labels the issue `looper:landing` (a hold: no other report takes it) and waits for the
+  when it was queued), then labels the issue `looper:landing` (a hold: no other report takes it) and waits for the
   manager's verdict, which it prints, exiting with its code: 0 merged, 3 sent back, 4 red. A land still queued when
   the report's time runs out is the manager's all the same; the report says so on the issue.
 - **The manager**, one job per repository with work to merge (`looper-<repo>-manager`, `repo-looper --repo R
@@ -283,8 +283,12 @@ lander are gone. One job per issue needs none of them.
     The merge comment quotes the report's last checkpoint, for the issue's next report when its own run had ended.
   - It adds the planning files from their templates, `HISTORY.md`'s line for each closed issue (its report queues
     the line as `.looper/history` on its branch) and for each release.
-  - It runs while a report job of the repository is running, or any issue of it is `looper:landing` (a closed one's
-    `HISTORY.md` line), and `LOOPER_MANAGER_LINGER` (300 seconds) after. A report job created or pending does not
+  - It runs while a report job of the repository is running, or any issue of it is `looper:landing` with a land
+    queued (a closed one's `HISTORY.md` line too), and `LOOPER_MANAGER_LINGER` (300 seconds) after. A label alone
+    holds no manager (looper#93: tacplus#259's, its land unqueued by a blocked run, held tacplus's manager on its one
+    VM for ten hours): an issue `looper:landing` with no land queued (no `looper/<repo>-<n>` branch carrying one
+    without a verdict) loses the label, logged, and so does each the split manager's job finds so. Held, the manager
+    logs what holds it every `LOOPER_MANAGER_SAY` (300 seconds): the issues, the report jobs running. A report job created or pending does not
     hold it (looper#82): on a one-VM pool that report waits for the VM the manager holds, and the land it queues once
     it runs gets a new manager from the kicker. Outside GitLab, or when GitLab cannot be read, an open issue
     `looper:in-progress` holds it instead (a closed one too, for as long as its report may take to end).
@@ -293,7 +297,7 @@ lander are gone. One job per issue needs none of them.
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group and ahead of every report, the pass's capacity line
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, manager-job-short, manager-report-pending, manager-report-running
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-report-pending, manager-report-running
 ```
 
 ### Build jobs
@@ -439,7 +443,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | --- | --- |
 | pushed and closed it | closed |
 | asked a question | `needs-decision` |
-| found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
+| found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. A land of its still queued stays queued, and the issue `looper:landing` until the manager's verdict; with none, it is no longer `looper:landing` (looper#93), as after every outcome but a land queued. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | ended (its limit, or earlier) with its land queued and no verdict yet (looper#70) | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |

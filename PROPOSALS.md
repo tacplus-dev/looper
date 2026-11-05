@@ -4,6 +4,15 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
+  its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
+  which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges
+  only the line. The prompt has the model close after the verdict, so no run is known to have hit it; the report
+  could add `.looper/history` to the branch's last checkpoint instead when a land of its is pending (`post_land`
+  already appends a land's history lines after merging it).
+- **A stale `looper:landing` told on its issue** (2026-11-05, #93): a manager that clears a `looper:landing` with no
+  land queued logs it in its job; a comment on the issue would tell whoever reads it why it lost the hold (a land
+  unqueued, a verdict given by a manager that stopped before clearing it).
 - **Each pool's own VM in the recap's scale-up** (2026-11-05, #92): `capacity/<pool>` names the pool a cap's queued
   reports waited for, but prices one more VM as `LOOPER_RECAP_VM_MACHINE` (t2a-standard-8) whatever the pool: the
   16-CPU pool's VM is another machine and price. A machine and price per runner description (a map beside caps.yaml,
