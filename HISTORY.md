@@ -62,3 +62,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-04 looper issue Recap: read tacplus-dev/build's jobs with its read-only token; drop the Cloud Build source (#85, 29593f0; gates: docs+recap)
 - 2026-11-05 looper issue Syft 1.56.0's release binary in the image has golang.org/x/net GO-2026-6860/6866 (fixed in v0.62.0); no newer release, clean when built from source (#88, 50b258d; gates: full)
 - 2026-11-05 looper issue The manager's gates run tacplus on an empty checkout: operator's land fails at generate with 'tacplus.yaml must declare a language' (#79, 98ba81b; gates: full)
+- 2026-11-05 looper issue looper-docker.test.sh fails inside a model run: it inherits LOOPER_DOCKER_BROKER (#68) (#81, f585f54; gates: full)
