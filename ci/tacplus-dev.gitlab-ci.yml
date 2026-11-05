@@ -87,7 +87,8 @@ looper-plan:
   variables:
     GIT_STRATEGY: none
     LOOPER_ORG: tacplus-dev
-    # Per-repository runner tags (looper#55): tacplus on the 16-CPU pool (runner 58307468).
+    # Per-repository runner tags (looper#55): tacplus's reports on the 16-CPU pool (runner 58307468);
+    # its manager and scan stay on LOOPER_JOB_TAGS's (looper#91: LOOPER_MANAGER_TAGS_tacplus would move the manager back).
     LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"
     GIT_AUTHOR_NAME: jodydadescott
     GIT_AUTHOR_EMAIL: jody@thescottsweb.com

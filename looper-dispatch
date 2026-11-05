@@ -193,7 +193,9 @@ pass() {
 # waits for every one of them to get a VM while their work stays unmerged and the
 # later ones start from a stale main. LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
 # jobs' image and runner tags; LOOPER_JOB_TAGS_<repo> (`-` as `_`) overrides the
-# tags for one repository's jobs (looper#55: tacplus's on the 16-CPU pool). The
+# tags for one repository's reports (looper#55: tacplus's on the 16-CPU pool),
+# LOOPER_MANAGER_TAGS_<repo> for its manager and LOOPER_SCAN_TAGS_<repo> for its
+# scan (looper#91: tacplus's off that pool's one VM, not behind its reports). The
 # plan's GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL, those it has, are
 # the jobs' too. With none to plan, one job that says so: a child pipeline has
 # at least one.
@@ -246,7 +248,8 @@ job_environment() { # --repo REPO args...
 # numbers, unquoted in its script.
 plan_job() { # name timeout resource-group --repo REPO repo-looper-args...
   local name="$1" t="$2" group="$3" repo="$5" v tags; shift 3
-  v="LOOPER_JOB_TAGS_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
+  case " $* " in *" --manage "*) v=LOOPER_MANAGER_TAGS ;; *" --scan "*) v=LOOPER_SCAN_TAGS ;; *) v=LOOPER_JOB_TAGS ;; esac
+  v="${v}_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
   log "planned $name ($t, tags $tags)" >&2
   cat <<YML
 $name:

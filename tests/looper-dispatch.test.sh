@@ -459,9 +459,12 @@ grep -q 'pass failed' <<<"$OUT" || fail "log: $OUT"
 [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "labels $(labels alpha 4)"
 pass
 
-# Per-repository runner tags (looper#55): a repository's job takes
+# Per-repository runner tags (looper#55): a repository's report takes
 # LOOPER_JOB_TAGS_<repo> (`-` as `_`), else LOOPER_JOB_TAGS, else the default;
-# so tacplus's jobs go to the 16-CPU pool and every other repository's stay.
+# so tacplus's reports go to the 16-CPU pool and every other repository's stay.
+# Its manager and its scan (looper#91) take LOOPER_MANAGER_TAGS_<repo> and
+# LOOPER_SCAN_TAGS_<repo>, else LOOPER_JOB_TAGS, else the default, never the
+# reports' override: they no longer wait for that pool's VM behind a report.
 scenario plan-tags
 issue tacplus 5 OPEN "Go." approved
 issue fleet-lab 6 OPEN "Go." approved
@@ -476,6 +479,17 @@ plan_with LOOPER_JOB_TAGS="arm64, other" LOOPER_JOB_TAGS_fleet_lab="arm64, lab"
 [[ "$(tags_of fleet-lab-6)" == "[arm64, lab]" ]] || fail "fleet-lab's override: $(tags_of fleet-lab-6)"
 [[ "$(tags_of tacplus-5)" == "[arm64, other]" ]] || fail "tacplus without its override: $(tags_of tacplus-5)"
 [[ "$(tags_of alpha-4)" == "[arm64, other]" ]] || fail "alpha: $(tags_of alpha-4)"
+plan_with -u LOOPER_JOB_TAGS LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16"
+[[ "$(tags_of tacplus-manager)" == "[arm64, autoscale]" ]] || fail "tacplus's manager: $(tags_of tacplus-manager): $PLAN"
+plan_with LOOPER_JOB_TAGS="arm64, other" LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" LOOPER_MANAGER_TAGS_fleet_lab="arm64, lab"
+[[ "$(tags_of tacplus-manager)" == "[arm64, other]" ]] || fail "tacplus's manager: $(tags_of tacplus-manager)"
+[[ "$(tags_of fleet-lab-manager)" == "[arm64, lab]" ]] || fail "fleet-lab's manager: $(tags_of fleet-lab-manager)"
+[[ "$(tags_of fleet-lab-6)" == "[arm64, other]" ]] || fail "fleet-lab's report took its manager's tags: $(tags_of fleet-lab-6)"
+printf '%s\n' alpha fleet-lab tacplus > "$FIX/repos"
+plan_with -u LOOPER_JOB_TAGS LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" LOOPER_SCAN_TAGS_fleet_lab="arm64, lab" CI_PIPELINE_SOURCE=schedule
+[[ "$(tags_of scan-tacplus)" == "[arm64, autoscale]" ]] || fail "tacplus's scan: $(tags_of scan-tacplus): $PLAN"
+[[ "$(tags_of scan-fleet-lab)" == "[arm64, lab]" ]] || fail "fleet-lab's scan: $(tags_of scan-fleet-lab): $PLAN"
+[[ "$(tags_of scan-alpha)" == "[arm64, autoscale]" ]] || fail "alpha's scan: $(tags_of scan-alpha)"
 pass
 
 # tacplus-dev's pipeline (looper#56): ci/tacplus-dev.gitlab-ci.yml's
@@ -507,7 +521,9 @@ CLEAN=(-u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_ID -u LOOPER_RUNNING_COPY -u 
        -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL)
 for source in schedule api; do
   mkdir -p "$FIX/inline-$source"
-  (cd "$FIX/inline-$source" && env "${CLEAN[@]}" LOOPER_ORG=tacplus-dev LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" CI_PIPELINE_SOURCE="$source" \
+  # The scans no longer take the reports' tags (looper#91): the inline plan's without tacplus's override.
+  inline_tags=(-u LOOPER_JOB_TAGS_tacplus); [[ "$source" == schedule ]] || inline_tags+=(LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16")
+  (cd "$FIX/inline-$source" && env "${CLEAN[@]}" "${inline_tags[@]}" LOOPER_ORG=tacplus-dev CI_PIPELINE_SOURCE="$source" \
      LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" bash "$ROOT/tests/tacplus-dev-plan.inline.sh" >/dev/null 2>&1) \
     || fail "the inline plan failed ($source)"
   got="$(env "${CLEAN[@]}" "${plan_vars[@]}" CI_PIPELINE_SOURCE="$source" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" \

@@ -128,7 +128,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
   credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, an issue's URL read as its reference and an unreadable
-  `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, #55) and the plan's git identity, on a schedule a scan per repository (#56),
+  `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
@@ -147,7 +147,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
   `looper-plan` runs `looper-dispatch plan` (#56, tested against the hub's former inline plan), but it takes effect
   when the hub copies it there; until then that pipeline plans with its inline script (tacplus's jobs on the 16-CPU
-  pool, #55, through its own `LOOPER_JOB_TAGS_tacplus`); README's "A fresh VM is ready before its job" (#43) is not hand-applied on
+  pool, #55, through its own `LOOPER_JOB_TAGS_tacplus`, its manager and scan too: #91's tags per kind take effect with the plan); README's "A fresh VM is ready before its job" (#43) is not hand-applied on
   jody1-328023 (the hub, 2026-11-03: the recap measured 0.24 h of waiting in 24 h, and lasting infrastructure comes
   from the cloud pipeline): the runner pools of tacplus-dev/cloud's `ci` stack (cloud#4, closed) boot a pinned
   Container-Optimized OS with nothing installed at boot, a `docker info` readiness gate and one VM per job, and the

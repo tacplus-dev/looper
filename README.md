@@ -1039,7 +1039,7 @@ looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL 
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
 looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
-tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; a repository at its cap (caps.yaml) starts none; a report per ready issue up to the cap and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>`, else `LOOPER_JOB_TAGS`, else the default); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; a repository at its cap (caps.yaml) starts none; a report per ready issue up to the cap and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
 **The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is
@@ -1283,14 +1283,17 @@ plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 the hub applies [A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)): up to 5 workers, size 0 at rest.
 
 **Two pools** (looper#55). tacplus's gates run Kani at 12 GB a child, so on a t2a-standard-8 (8 CPUs, 31 GB) its job
-gets two children; every other repository fits four. tacplus's jobs therefore run on a larger pool, the others stay:
+gets two children; every other repository fits four. tacplus's reports therefore run on a larger pool, the others stay, and so
+do tacplus's manager and nightly scan (looper#91): that pool runs one job per VM on 1 VM, so behind a running report the
+manager waited for the VM and the 2-hour scan held it while reports queued:
 
 | Pool | Runner | Tags | Instance group, template | Holds |
 |---|---|---|---|---|
-| every repository but tacplus | 57939705 *tacplus-dev arm64 autoscaler* | `arm64, autoscale` | `runner-arm64-tacplus`, `runner-arm64-t2a8-v*` (t2a-standard-8, 31 GB) | up to 5 workers |
-| tacplus | 58307468 (group runner, protected refs only) | `arm64, autoscale-16` | `runner-arm64-tacplus-big`, `runner-arm64-t2a16-v7` (t2a-standard-16, 64 GB, `looper-runner`, 400 GB pd-standard) | up to 2 VMs; 5 children a job (64 GB / 12; the CPUs allow 8) |
+| every repository but tacplus, and tacplus's manager and scan | 57939705 *tacplus-dev arm64 autoscaler* | `arm64, autoscale` | `runner-arm64-tacplus`, `runner-arm64-t2a8-v*` (t2a-standard-8, 31 GB) | up to 5 workers |
+| tacplus's reports | 58307468 (group runner, protected refs only) | `arm64, autoscale-16` | `runner-arm64-tacplus-big`, `runner-arm64-t2a16-v7` (t2a-standard-16, 64 GB, `looper-runner`, 400 GB pd-standard) | up to 2 VMs; 5 children a job (64 GB / 12; the CPUs allow 8) |
 
-`looper-dispatch plan` gives a repository's job the tags of `LOOPER_JOB_TAGS_<repo>` (its name, `-` as `_`), else
+`looper-dispatch plan` gives a repository's report the tags of `LOOPER_JOB_TAGS_<repo>` (its name, `-` as `_`), its
+manager those of `LOOPER_MANAGER_TAGS_<repo>` and its scan those of `LOOPER_SCAN_TAGS_<repo>`, each else
 `LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper
 ([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml), copied there by the hub) sets, among `looper-plan`'s `variables`:
 
@@ -1299,7 +1302,9 @@ gets two children; every other repository fits four. tacplus's jobs therefore ru
 ```
 
 The plan's log names each job's tags (`planned looper-tacplus-<n> (<timeout>, tags arm64, autoscale-16)`), and the
-job's page names the runner.
+job's page names the runner. tacplus's manager runs the full gates in its job, Kani's 12 GB children two at a time on a
+t2a-standard-8's 31 GB; should they not fit, `LOOPER_MANAGER_TAGS_tacplus: "arm64, autoscale-16"` puts it back on the
+larger pool and leaves only the scan off it.
 
 - The workers run as their own Google account, `looper-runner`, which may only pull the tacplus build images
   (once the hub applies [Credentials](#credentials); until then, `build-box`).
