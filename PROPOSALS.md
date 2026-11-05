@@ -503,6 +503,17 @@ the looper then marks it `promoted` or `declined` here with the date.
   gateway's `mint_token`/`mint_x509_cert` (proxies, with no propagation test), oauth's `mint_callback_tokens` (no
   propagation test) and mailbox's record-plane calls (no `trace_id` anywhere in its source). The nightly scans file
   them as bugs once this lands; nothing was filed by hand.
+- **The hub lints before it copies a CI file** (2026-11-05, #94): `looper-ci-lint` gates a land, but the hub's copy
+  to GitLab (README, The pipeline file) is a manual PUT; running `looper-ci-lint` (or GitLab's `POST
+  /projects/:id/ci/lint`) on the exact content first, and refusing on an error, would close the gap for a file that
+  reaches GitLab another way. Shipping `looper-ci-lint` and its schema in the image would let the hub run it anywhere.
+- **Lint each CI file in its own project** (2026-11-05, #94): with `GITLAB_TOKEN`, `looper-ci-lint` sends only
+  `ci/tacplus-dev.gitlab-ci.yml` to GitLab's lint API (project 88136765); `build`, `looper` and `instance` are linted
+  offline only, their projects' ids not mapped (and `instance` is on SeaBeam's group). Mapping them, and checking a
+  token with the `api` scope reaches the land's gates, would make GitLab's own verdict the gate everywhere.
+- **Refresh the vendored CI schema** (2026-11-05, #94): `ci/gitlab-ci.schema.json` is GitLab's `ci.json` at
+  a38e1992; a keyword GitLab adds later is refused offline until it is refreshed. The nightly scan could compare it
+  with GitLab's current file and propose the update.
 
 ## Promoted / declined
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap

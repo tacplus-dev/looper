@@ -1055,8 +1055,22 @@ tests/looper-dispatch.test.sh    # an issue whose report job is created, pending
 that project as is, on its protected `main`, by the hub (like `ci/build.gitlab-ci.yml` and `ci/instance.gitlab-ci.yml`):
 
 ```sh
+./looper-ci-lint ci/tacplus-dev.gitlab-ci.yml &&
 curl -sfH "PRIVATE-TOKEN: <the hub's token>" -X PUT https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper/repository/files/.gitlab-ci.yml -d branch=main \
   -d commit_message="ci/tacplus-dev.gitlab-ci.yml at <commit> (looper#56)" --data-urlencode content@ci/tacplus-dev.gitlab-ci.yml
+```
+
+Lint it first, as every CI file here is linted before it lands (looper#94: one GitLab could not read failed every
+pipeline of its project, the kicker's included): `looper-ci-lint` parses each `ci/*.gitlab-ci.yml` (a `spec:`
+header and the configuration, `!reference` read as a list) and checks it against GitLab's own JSON schema
+(`ci/gitlab-ci.schema.json`, GitLab's `ci.json` at a pinned commit) and for what GitLab checks within the file (each
+`extends:` defined, each stage in `stages:`, each `needs:` a job); with `GITLAB_TOKEN` it also sends
+`ci/tacplus-dev.gitlab-ci.yml` to GitLab's lint API (`POST /projects/:id/ci/lint`), whose errors fail it, and a
+refusal leaves the offline verdict:
+
+```sh
+./looper-ci-lint [FILE...]        # default ci/*.gitlab-ci.yml: a line per file, ok or each error; exits 1 if one is invalid
+tests/looper-ci-lint.test.sh      # a script line YAML reads as a mapping (#83's probe), broken YAML, a misspelt key, an unknown extends, stage or needs fail; GitLab's lint API (stub curl) only with a token, the token on stdin; and every file of ci/
 ```
 
 Its `looper-plan` is `looper-dispatch plan > looper-jobs.yml`, nothing inline, so a change to the plan here reaches

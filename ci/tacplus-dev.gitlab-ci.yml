@@ -163,5 +163,5 @@ looper-ruleset-probe:
   variables:
     GIT_STRATEGY: none
   script:
-    - test -z "${GH_TOKEN:-}" || { echo "this project still has GH_TOKEN, Jody's token: delete it first (README)"; exit 1; }
+    - 'test -z "${GH_TOKEN:-}" || { echo "this project still has GH_TOKEN, Jody''s token: delete it first (README)"; exit 1; }'
     - GH_TOKEN="$(looper-token mint report)" looper-ruleset probe looper

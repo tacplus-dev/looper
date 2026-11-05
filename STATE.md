@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#90).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#94).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -57,7 +57,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   nonce redacted from what leaves the job; the nightly scan; the `tacplus` wrapper with GitHub credentials for its container
   (#11), which runs the released tacplus (the repository's `tacplus.lock` pin, else its floor's newest patch,
   checksum-verified) in the `build:<MAJOR.MINOR>` image of its line, so Go repositories generate (no longer the
-  retired, Go-less `tacplus/tacplus` image), and `looper-smoke` generates Go through it on every image build (#27); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the issue flow (#14):
+  retired, Go-less `tacplus/tacplus` image), and `looper-smoke` generates Go through it on every image build (#27); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the GitLab CI files of `ci/` linted as GitLab reads them, a gate (`looper-ci-lint`: YAML, GitLab's JSON schema, extends/stages/needs, and GitLab's lint API with a token, #94); the issue flow (#14):
   every label the looper uses created where its repository lacks it, by a report, the manager and the scan before they
   set one, a label edit that fails retried once they are (#80; `looper:landing` was in no repository, so no land's hold
   was set and the manager's clearing of it failed);
@@ -113,7 +113,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   `LOOPER_TRIGGER_TOKEN` when it is set (#25); only the manager writes main, built and tested, not yet set up (#83;
   README, Only the manager writes main): `looper-ruleset apply` puts a ruleset on main in each public repository
   (restricted updates, no force-push or deletion; bypass: the `tacplus-manager` app and Jody), idempotent, with `check`
-  and a live `probe` (the CI file's manual `looper-ruleset-probe`); with the apps' variables set, every job's GitHub
+  and a live `probe` (the CI file's manual `looper-ruleset-probe`, whose script GitLab could not read until #94: the file
+  on GitLab is still a691d64's until the hub copies main's); with the apps' variables set, every job's GitHub
   token is an app's, minted by `looper-token` from its id_token through WIF and KMS (its environment naming the key it
   may use) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
   scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;

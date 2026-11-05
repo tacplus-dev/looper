@@ -4,7 +4,7 @@
 # full. Each set's run is a shell command at the root of the checkout, with
 # LOOPER_GATES_BASE the main the land is rebased on.
 full:
-  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh && tests/looper-token.test.sh && tests/looper-ruleset.test.sh
+  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh && tests/looper-token.test.sh && tests/looper-ruleset.test.sh && tests/looper-ci-lint.test.sh
   minutes: 30
   paths: [/repo-looper, /looper-lib.sh, /looper-dispatch, /looper-docker, /looper-docker-broker, /looper-pkill, tests/looper-pkill.test.sh, /Dockerfile, tests/git-server.py, tests/forge.test.sh, tests/repo-looper.test.sh, tests/looper-dispatch.test.sh]
 # The planning files and the docs: what CI checks of them.
@@ -47,6 +47,12 @@ recap:
   run: tests/looper-recap.test.sh
   minutes: 1
   paths: [/looper-recap, tests/looper-recap.test.sh, tests/recap/]
+# The GitLab CI files of ci/, linted as GitLab reads them (looper#94); the two the
+# map gives other sets are linted here too, the rest are full's.
+ci:
+  run: tests/looper-ci-lint.test.sh
+  minutes: 1
+  paths: [/looper-ci-lint, tests/looper-ci-lint.test.sh, ci/gitlab-ci.schema.json, ci/build.gitlab-ci.yml, ci/looper.gitlab-ci.yml]
 # The trace propagation check (looper#51); the prompts and the scan that run it are repo-looper's, in full.
 trace:
   run: tests/looper-trace.test.sh

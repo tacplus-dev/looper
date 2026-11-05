@@ -1,0 +1,188 @@
+#!/usr/bin/env -S python3 -I
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-ci-lint (looper#94): the GitLab CI files this repository keeps (ci/)
+# are copied into their GitLab projects as is, and an invalid one fails every
+# pipeline there, the kicker's included, with no job run. This checks each one
+# before it lands, as GitLab would:
+#
+#   looper-ci-lint [FILE...]   default ci/*.gitlab-ci.yml at the checkout's root;
+#                              a line per file, "ok" or each error; exits 1 if any
+#                              file is invalid
+#
+# Offline, always: the file parsed as YAML (all its documents: a spec: header,
+# then the configuration; !reference read as a list), each document checked
+# against GitLab's own JSON schema of .gitlab-ci.yml, ci/gitlab-ci.schema.json
+# (gitlab-org/gitlab app/assets/javascripts/editor/schema/ci.json at a38e1992,
+# MIT; refresh it from there). With GITLAB_TOKEN, also GitLab's lint API (POST
+# /projects/:id/ci/lint, dry run off: the content alone) for each file whose
+# project is known (PROJECTS below): its errors fail the file; an answer other
+# than 200 (a token without the api scope, no network) is said and the offline
+# verdict stands.
+#
+# PyYAML and jsonschema are the scanners' venv's (scanners/requirements.txt):
+# without them in python3, it runs with LOOPER_CI_LINT_PYTHON (default
+# /opt/scanners/venv/bin/python3). Environment: GITLAB_TOKEN, CI_API_V4_URL
+# (default https://gitlab.com/api/v4).
+import glob
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+try:
+    import jsonschema
+    import yaml
+except ImportError:
+    py = os.environ.get("LOOPER_CI_LINT_PYTHON", "/opt/scanners/venv/bin/python3")
+    if os.environ.get("LOOPER_CI_LINT_REEXEC") or not os.access(py, os.X_OK):
+        sys.exit("looper-ci-lint: needs PyYAML and jsonschema (python3, or LOOPER_CI_LINT_PYTHON: %s)" % py)
+    os.environ["LOOPER_CI_LINT_REEXEC"] = "1"
+    os.execv(py, [py, "-I", os.path.abspath(__file__)] + sys.argv[1:])
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCHEMA = os.path.join(HERE, "ci", "gitlab-ci.schema.json")
+# The GitLab project each file is copied into, by its name, for the lint API.
+PROJECTS = {"tacplus-dev.gitlab-ci.yml": "88136765"}  # gitlab.com/tacplus-dev/looper
+
+
+class Loader(yaml.SafeLoader):
+    pass
+
+
+Loader.add_constructor("!reference", lambda loader, node: loader.construct_sequence(node))
+
+
+def where(error):
+    return ":".join(str(p) for p in error.absolute_path) or "root"
+
+
+def semantic(doc, keywords):
+    """What GitLab checks beyond the schema, within the one file (none with include:):
+    each extends: names a job or template of the file, each job's stage is in stages:,
+    each needs: names a job of the file."""
+    if "include" in doc:
+        return []
+    jobs = {k: v for k, v in doc.items() if k not in keywords and isinstance(v, dict)}
+    stages = [".pre"] + (doc.get("stages") or ["build", "test", "deploy"]) + [".post"]
+    errors = []
+
+    def parents(name):
+        e = jobs[name].get("extends") or []
+        return [e] if isinstance(e, str) else e
+
+    def stage(name, seen=()):
+        if "stage" in jobs[name] or name in seen:
+            return jobs[name].get("stage")
+        found = None
+        for p in parents(name):
+            if p in jobs:
+                found = stage(p, seen + (name,)) or found
+        return found
+
+    for name, job in jobs.items():
+        for p in parents(name):
+            if p not in jobs:
+                errors.append("%s: extends %s, which the file does not define" % (name, p))
+        if name.startswith("."):
+            continue
+        st = stage(name) or "test"
+        if st not in stages:
+            errors.append("%s: its stage %s is not in stages: %s" % (name, st, ", ".join(stages)))
+        for n in job.get("needs") or []:
+            n = n.get("job") if isinstance(n, dict) and "pipeline" not in n and "project" not in n else n
+            if isinstance(n, str) and (n not in jobs or n.startswith(".")):
+                errors.append("%s: needs %s, which is not a job of the file" % (name, n))
+    return errors
+
+
+def offline(path, validator):
+    """The file's errors: its YAML, its documents, each against the schema."""
+    try:
+        with open(path) as f:
+            docs = list(yaml.load_all(f, Loader=Loader))
+    except (OSError, yaml.YAMLError) as e:
+        return ["not valid YAML: %s" % " ".join(str(e).split())]
+    if len(docs) > 2:
+        return ["%d YAML documents: at most a spec: header and the configuration" % len(docs)]
+    if len(docs) == 2 and (not isinstance(docs[0], dict) or set(docs[0]) != {"spec"}):
+        return ["its first of two YAML documents is not a spec: header"]
+    if not isinstance(docs[-1], dict):
+        return ["the configuration is not a mapping"]
+    errors = []
+    for doc in docs:
+        for e in sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path)):
+            # anyOf/oneOf: the deepest reason, not "is not valid under any of the given schemas".
+            best = jsonschema.exceptions.best_match(e.context) if e.context else e
+            msg = best.message if len(best.message) <= 300 else best.message[:300] + "..."
+            errors.append("%s: %s" % (where(best), msg))
+    return errors or semantic(docs[-1], set(validator.schema["properties"]) | {"spec"})
+
+
+def api(path):
+    """GitLab's lint of the file's content, in its project: (errors, note)."""
+    project = PROJECTS.get(os.path.basename(path))
+    token = os.environ.get("GITLAB_TOKEN", "")
+    if not project or not token:
+        return [], None
+    base = os.environ.get("CI_API_V4_URL", "https://gitlab.com/api/v4")
+    with open(path) as f:
+        body = json.dumps({"content": f.read()})
+    # The token on curl's stdin (-H @-), never in its argv; the body in a file.
+    with tempfile.NamedTemporaryFile("w", suffix=".json") as b:
+        b.write(body)
+        b.flush()
+        r = subprocess.run(
+            ["curl", "-sS", "-o", "-", "-w", "\n%{http_code}", "-X", "POST", "-H", "@-",
+             "-H", "Content-Type: application/json", "--data-binary", "@" + b.name,
+             "%s/projects/%s/ci/lint" % (base, project)],
+            input="PRIVATE-TOKEN: %s\n" % token, capture_output=True, text=True)
+    out, _, code = r.stdout.rpartition("\n")
+    if r.returncode != 0 or code != "200":
+        return [], "GitLab's lint API not used (curl %d, HTTP %s): offline only" % (r.returncode, code or "none")
+    try:
+        answer = json.loads(out)
+    except ValueError:
+        return [], "GitLab's lint API answered no JSON: offline only"
+    if answer.get("valid") is True:
+        return [], "GitLab's lint API: valid (project %s)" % project
+    return ["GitLab: %s" % e for e in answer.get("errors") or ["not valid"]], None
+
+
+def shown(path):
+    rel = os.path.relpath(path)
+    return path if rel.startswith("..") else rel
+
+
+def main(argv):
+    if argv[:1] in (["-h"], ["--help"]):
+        print("usage: looper-ci-lint [FILE...]  (default ci/*.gitlab-ci.yml)")
+        return 0
+    files = argv or sorted(glob.glob(os.path.join(HERE, "ci", "*.gitlab-ci.yml")))
+    if not files:
+        print("looper-ci-lint: no file to lint", file=sys.stderr)
+        return 1
+    with open(SCHEMA) as f:
+        validator = jsonschema.Draft7Validator(json.load(f))
+    bad = 0
+    for path in files:
+        errors = offline(path, validator)
+        notes = []
+        if not errors:
+            errors, note = api(path)
+            notes = [note] if note else []
+        for n in notes:
+            print("%s: %s" % (shown(path), n))
+        if errors:
+            bad += 1
+            for e in errors:
+                print("%s: invalid: %s" % (shown(path), e))
+        else:
+            print("%s: ok" % shown(path))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
