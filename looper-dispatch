@@ -123,22 +123,26 @@ landing_repos() {
   forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name' | sort -u
 }
 
-# Each repository's reports against its cap, its ready issues with no report
-# waiting at the cap and its lands queued (open issues labelled looper:landing,
-# a line each in LANDING; `?` when GitHub could not say), as one line,
-# `capacity: <repo> reports=N cap=N waiting=<n,...> landing=N; ...`, for every
-# repository with any of them (`capacity: none` for none): the nightly recap
-# reads it from the kicker's log, a pass every LOOPER_INTERVAL (looper#72).
-capacity_line() { # jobs ready landing
-  local repo n k cap w l out=()
+# Each repository's reports against its cap, how many of them are running
+# (the rest created, pending or waiting: a cap they fill waits for a VM, not
+# for a raise, looper#92), its ready issues with no report waiting at the cap
+# and its lands queued (open issues labelled looper:landing, a line each in
+# LANDING; `?` when GitHub could not say), as one line,
+# `capacity: <repo> reports=N running=N cap=N waiting=<n,...> landing=N; ...`,
+# for every repository with any of them (`capacity: none` for none): the
+# nightly recap reads it from the kicker's log, a pass every LOOPER_INTERVAL
+# (looper#72). STATUSES is active_job_statuses' "<name> <status>" lines.
+capacity_line() { # jobs ready landing statuses
+  local repo n k r cap w l out=()
   for repo in $( { grep -E '^looper-.+-[0-9]+$' <<<"$1" | sed -E 's/^looper-(.+)-[0-9]+$/\1/'
                    cut -d' ' -f1 <<<"$2"; [[ "$3" == "?" ]] || printf '%s\n' "$3"; } | grep . | sort -u); do
     k="$(busy "$repo" "$1" | grep -c . || true)"; cap="$(repo_cap "$repo")"; w=""
+    r="$(busy "$repo" "$(awk '$2 == "running" {print $1}' <<<"$4")" | grep -c . || true)"
     if (( k >= cap )); then
       while read -r _ n; do busy "$repo" "$1" "$n" >/dev/null || w+="${w:+,}$n"; done < <(awk -v r="$repo" '$1 == r' <<<"$2")
     fi
     if [[ "$3" == "?" ]]; then l="?"; else l="$(grep -cxF -- "$repo" <<<"$3" || true)"; fi
-    out+=("$repo reports=$k cap=$cap waiting=$w landing=$l")
+    out+=("$repo reports=$k running=$r cap=$cap waiting=$w landing=$l")
   done
   (( ${#out[@]} )) || out=(none)
   l="$(printf '%s; ' "${out[@]}")"
@@ -150,14 +154,14 @@ capacity_line() { # jobs ready landing
 # cap, caps.yaml), in the order of ready_all_by_repo (priority:high first,
 # looper#31), or with commits queued to land and no manager job (looper#70).
 pass() {
-  local jobs ready repo n landing
-  jobs="$(active_jobs)"
+  local statuses jobs ready repo n landing
+  statuses="$(active_job_statuses)"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
   ready="$(ready_all_by_repo)"
   landing="$(forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name')" || landing="?"
-  capacity_line "$jobs" "$ready" "$landing"
+  capacity_line "$jobs" "$ready" "$landing" "$statuses"
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" "$n" >/dev/null && continue
@@ -291,7 +295,7 @@ plan_job() { # name timeout resource-group --repo REPO repo-looper-args...
   local name="$1" t="$2" group="$3" repo="$5" v tags; shift 3
   case " $* " in *" --manage "*) v=LOOPER_MANAGER_TAGS ;; *" --scan "*) v=LOOPER_SCAN_TAGS ;; *) v=LOOPER_JOB_TAGS ;; esac
   v="${v}_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
-  log "planned $name ($t, tags $tags)" >&2
+  log "planned $name ($t, tags $tags, resource_group $group)" >&2
   cat <<YML
 $name:
   image: $image

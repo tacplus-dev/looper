@@ -44,18 +44,27 @@
    "p90": 20
   },
   "waiting_for_vm": {
-   "hours": 1.17,
-   "issues": 2,
+   "hours": 2.78,
+   "issues": 3,
    "jobs": [
+    {
+     "issue": 16,
+     "minutes": 97,
+     "pool": "tacplus-dev arm64 autoscale-16",
+     "repo": "tacplus",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1310"
+    },
     {
      "issue": 4,
      "minutes": 50,
+     "pool": "tacplus-dev arm64 autoscaler",
      "repo": "kernel",
      "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
     },
     {
      "issue": 12,
      "minutes": 20,
+     "pool": "tacplus-dev arm64 autoscale-16",
      "repo": "tacplus",
      "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1200"
     }
@@ -66,41 +75,58 @@
   "alpha": {
    "all_busy": 0.0,
    "all_busy_hours": 0,
+   "all_running": 0.0,
+   "all_running_hours": 0,
    "backlog": {
     "max": 0,
     "p90": 0
    },
    "cap": 3,
    "passes": 39,
+   "pool": "tacplus-dev arm64 autoscaler",
+   "queued": {},
+   "queued_hours": 0,
    "waiting": {},
    "waiting_hours": 0
   },
   "kernel": {
    "all_busy": 0.0,
    "all_busy_hours": 0,
+   "all_running": 0.0,
+   "all_running_hours": 0,
    "backlog": {
     "max": 3,
     "p90": 3
    },
    "cap": 3,
    "passes": 39,
+   "pool": "tacplus-dev arm64 autoscaler",
+   "queued": {},
+   "queued_hours": 0,
    "waiting": {},
    "waiting_hours": 0
   },
   "tacplus": {
    "all_busy": 0.64,
    "all_busy_hours": 1.25,
+   "all_running": 0.51,
+   "all_running_hours": 1,
    "backlog": {
     "max": 2,
     "p90": 2
    },
    "cap": 6,
    "passes": 39,
+   "pool": "tacplus-dev arm64 autoscale-16",
+   "queued": {
+    "26": 0.25
+   },
+   "queued_hours": 0.25,
    "waiting": {
     "25": 1,
-    "26": 1.25
+    "26": 1
    },
-   "waiting_hours": 2.25
+   "waiting_hours": 2
   }
  },
  "failed_jobs": [
@@ -240,7 +266,7 @@
    "over": true,
    "recovered": false,
    "running": 2,
-   "summary": "kernel: lower its cap of 3 in caps.yaml, its manager behind: all its reports busy in 0% of the kicker's 39 passes (0 h); merge backlog p90 3, max 3 lands (threshold 3)",
+   "summary": "kernel: lower its cap of 3 in caps.yaml, its manager behind: all its reports busy in 0% of the kicker's 39 passes (0 h), running in 0% (0 h); merge backlog p90 3, max 3 lands (threshold 3)",
    "wait_hours": 0
   },
   {
@@ -252,20 +278,21 @@
    "over": true,
    "recovered": false,
    "running": 2,
-   "summary": "tacplus: raise its cap of 6 in caps.yaml: ready issues waited 2.25 h at it (#25 1 h, #26 1.25 h); all its reports busy in 64% of the kicker's 39 passes (1.25 h); merge backlog p90 2, max 2 lands (threshold 1 h)",
-   "wait_hours": 2.25
+   "summary": "tacplus: raise its cap of 6 in caps.yaml: ready issues waited 2 h at it with all its reports running (#25 1 h, #26 1 h), 0.25 h more with some of them queued for a VM; all its reports busy in 64% of the kicker's 39 passes (1.25 h), running in 51% (1 h); merge backlog p90 2, max 2 lands (threshold 1 h)",
+   "wait_hours": 2
   },
   {
-   "count": 2,
+   "count": 3,
    "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1200",
+    "https://gitlab.com/tacplus-dev/looper/-/jobs/1310",
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
    ],
    "key": "capacity/vm",
    "over": true,
    "recovered": false,
-   "summary": "2 issues waited 1.17 h for a VM (kernel#4 50 min, tacplus#12 20 min); queue p90 20 min; one more t2a-standard-8 is about $7.39 a day (threshold 1 h; the scale-up is Jody's call)",
-   "wait_hours": 1.17
+   "summary": "3 issues waited 2.78 h for a VM (tacplus#16 97 min, kernel#4 50 min, tacplus#12 20 min); queue p90 20 min; one more t2a-standard-8 is about $7.39 a day (threshold 1 h; the scale-up is Jody's call)",
+   "wait_hours": 2.78
   },
   {
    "count": 1,
@@ -350,18 +377,6 @@
    "recovered": false,
    "summary": "tacplus: issues held back by no_free_slot 1 time (#14), up to 7.2 h, 7.2 h in all",
    "wait_hours": 7.2
-  },
-  {
-   "count": 1,
-   "evidence": [
-    "https://gitlab.com/tacplus-dev/looper/-/jobs/1310"
-   ],
-   "key": "held/tacplus/scan_holds_repo",
-   "over": true,
-   "parallel": "a scan that does not hold the repository's lock, or a shorter one",
-   "recovered": false,
-   "summary": "tacplus: issues held back by scan_holds_repo 1 time (#16), up to 1.6 h, 1.6 h in all",
-   "wait_hours": 1.6
   },
   {
    "count": 2,
@@ -469,13 +484,6 @@
     "reason": "limit_outlasts_job",
     "repo": "tacplus",
     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1200"
-   },
-   {
-    "hours": 1.6,
-    "issue": 16,
-    "reason": "scan_holds_repo",
-    "repo": "tacplus",
-    "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1310"
    },
    {
     "hours": 0.5,
@@ -603,14 +611,6 @@
      ],
      "max_hours": 7.2,
      "total_hours": 7.2
-    },
-    "scan_holds_repo": {
-     "count": 1,
-     "issues": [
-      16
-     ],
-     "max_hours": 1.6,
-     "total_hours": 1.6
     }
    },
    "jobs": 4,
@@ -654,22 +654,15 @@
       "why": {
        "conflict": 7.2
       }
-     },
-     "16": {
-      "hours": 1.6,
-      "why": {
-       "scan_holds_repo": 1.6
-      }
      }
     },
     "by_reason": {
      "behind_a_land": 0.5,
      "conflict": 7.2,
      "limit_outlasts_job": 2.42,
-     "no_free_slot": 7.2,
-     "scan_holds_repo": 1.6
+     "no_free_slot": 7.2
     },
-    "hours": 18.92
+    "hours": 17.32
    }
   }
  },

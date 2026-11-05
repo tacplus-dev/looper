@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Each pool's own VM in the recap's scale-up** (2026-11-05, #92): `capacity/<pool>` names the pool a cap's queued
+  reports waited for, but prices one more VM as `LOOPER_RECAP_VM_MACHINE` (t2a-standard-8) whatever the pool: the
+  16-CPU pool's VM is another machine and price. A machine and price per runner description (a map beside caps.yaml,
+  say) would make each pool's advice cost what its scale-up costs.
+- **A plan's resource groups from the plan's own job** (2026-11-05, #92): the recap reads each job's resource group
+  from the plan's `planned ... resource_group` lines when the plan's job falls in the night; a scan planned before
+  the window falls back to the plan's rule (`looper-<repo>`). Should a scan ever share a report's group again, the
+  recap would miss it for a scan planned the night before; the plan could log the groups in the scan's own job too.
 - **The verdict a test can write** (2026-11-05, #90): the manager split in two keeps the manager's token out of the
   job that runs a report's code, but the verdict job's gates run as that job's user. That user writes the verdict
   (each land's exit) and pushes `looper/staging`, so a test the batch lands can forge a green the manager job then

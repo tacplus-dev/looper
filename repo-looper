@@ -2837,8 +2837,8 @@ a land, a scan holding the repository), the lands by gate set, the scans, the ru
 Cloud Build builds and the looper image against main; and (tacplus-dev/looper#72; Jody: "recap should let us know if
 we need to adjust", "if builds are backing up somebody tells me") each manager's score (\`managers\`: report to merge
 time, conflicts resolved against sent back, red gates, a red main after its merges, reverts, redone work), each
-repository's cap (\`caps\`: the hours ready issues waited at it, how often all its reports were busy, its merge
-backlog) and the capacity (\`capacity\`: the queue p90, the issues that waited for a VM, one more VM's cost a day).
+repository's cap (\`caps\`: the hours ready issues waited at it while all its reports ran, and behind reports queued
+for a VM, how often all its reports were busy and running, its merge backlog) and the capacity (\`capacity\`: the queue p90, the issues that waited for a VM, one more VM's cost a day).
 $ctx/recap-classes.json classifies its items: \`transient\` and \`once\` are only noted (no advice); each
 \`recurring\` item (seen on 2 of 7 nights, or over a threshold tonight; a cap's, \`cap/<repo>/raise\` or \`lower\`,
 only two nights running), ranked by \`wait_hours\`, the hours of waiting it would remove, gets advice: a
@@ -2851,7 +2851,8 @@ conflicts instead of areas, a fresh job instead of idling, parallel lands of dis
 caps.yaml in tacplus-dev/looper (\`--change "caps.yaml: <repo>: <n>"\`, the new cap from the hours waited and the
 backlog). Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
 for Jody to decide, its \`--cost\` one more VM a day from \`capacity.one_more_vm\`, its gain the hours of waiting for a
-VM; never an autoscaling change. A manager's red main or revert names the merges. Advice counts toward
+VM; never an autoscaling change. So is \`capacity/<pool>\`'s: ready issues waited at a cap full of reports queued for
+that pool's VMs, where a raise of the cap would only queue more (looper#92). A manager's red main or revert names the merges. Advice counts toward
 the night's $SUGGEST_MAX, ranked with the rest, Security first, then the hours of waiting removed. When an open
 issue already covers a cause, file nothing for it: write the line \`<the item's key> <owner/repo#n> <why it covers
 it>\` to $1/covered instead. The looper writes the recap file itself (suggestions/recap/$night.md, for Jody's daily

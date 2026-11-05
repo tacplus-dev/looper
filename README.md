@@ -242,7 +242,8 @@ lander are gone. One job per issue needs none of them.
   waits (`alpha#7 waits: alpha is at its cap of 3 reports`). The kicker starts the pipeline when a ready issue has
   no report and its repository is under its cap, or when commits are queued to land and the repository has no
   manager job. Each pass logs a `capacity:` line, for the recap: every repository's active reports against its cap,
-  its ready issues waiting at the cap and its lands queued (`alpha reports=3 cap=3 waiting=5 landing=1; ...`). Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
+  how many of them are running (the rest created or pending, waiting for a VM, looper#92), its ready issues waiting at
+  the cap and its lands queued (`alpha reports=3 running=2 cap=3 waiting=5 landing=1; ...`). Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
   tacplus-dev/cloud's pools (whose containers share VMs) once it exists: until then their runner tags are as before.
 - **A report** works its issue alone, in its own clone (`LOOPER_WORK/<repo>/issues/<n>`) on its own branch
   (`looper/<repo>-<n>`), as its own unprivileged user (looper#68), with the per-issue flow below unchanged:
@@ -584,7 +585,9 @@ From the looper jobs' logs, per repository: slot use (each plan's children again
 by gate set and the deferred lands, how long each scan held the repository, and **the hours each ready issue waited,
 and why**: no free slot, a conflict (and the plan's overlapping paths), the job's time left (its limit would outlast
 the job), queued behind a land (the lander logs each land's `queued since`), a scan holding the repository (its job
-queued while the scan ran); each reason with what would have let the work run in parallel. The runner pools (VMs,
+queued while the scan ran in the same resource group, as the plan's log names it, `planned <job> (..., resource_group
+<group>)`, else as the plan sets it: since looper#70 a report's is its own, so a scan holds none and that queue is a
+wait for a VM, looper#92); each reason with what would have let the work run in parallel. The runner pools (VMs,
 first-job failures before a VM was ready, boot to ready, the disk each job logs at its end: `disk at the end: N% used`),
 GitHub Actions' nightly, release and image workflows of every repository, and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
 `org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
@@ -609,12 +612,17 @@ login; a secret it cannot read is named in `sources` and the project is not read
   a red main and a revert always; a report-to-merge p90 over `LOOPER_RECAP_MERGE_MINUTES` (120); 3 send-backs.
 - **Per repository's cap** (`caps`, from the kicker's `capacity:` lines, each standing for the time to the next pass of
   its job, `LOOPER_RECAP_PASS` 180 seconds for the last): the hours its ready issues waited at the cap, by issue, how
-  often (and how long) all its reports were busy, its merge backlog (lands queued, p90 and max over the passes). It
-  advises raising the cap (`cap/<repo>/raise`) when ready issues waited `LOOPER_RECAP_CAP_WAIT_HOURS` (1) at it and
-  the backlog is under `LOOPER_RECAP_BACKLOG` (3), lowering it (`cap/<repo>/lower`) when the backlog is over, the
-  manager the bottleneck; either only after **two nights running** over the threshold (classify's `running`).
+  often (and how long) all its reports were busy and all of them running, its merge backlog (lands queued, p90 and max
+  over the passes). A pass is at the cap by its **running** reports only (looper#92): the hours issues waited at a
+  cap some of whose reports were created or pending (`queued`) are the hours of the pool they wait for a VM of (the
+  repository's reports' runner, `pool`), not the cap's. It advises raising the cap (`cap/<repo>/raise`) when ready
+  issues waited `LOOPER_RECAP_CAP_WAIT_HOURS` (1) at it with all its reports running and the backlog is under
+  `LOOPER_RECAP_BACKLOG` (3), lowering it (`cap/<repo>/lower`) when the backlog is over, the manager the bottleneck;
+  either only after **two nights running** over the threshold (classify's `running`). Issues that waited as long
+  behind queued reports give the pool's item instead, `capacity/<pool>`, with that pool's reports' VM wait: a raise
+  would only queue more reports on the same VMs.
 - **Capacity** (`capacity`), the numbers the hub brings Jody for a manual scale-up: the queue p90 of every job, the
-  issues whose report waited for a VM (its queue less any scan's, `LOOPER_RECAP_VM_WAIT` 300 seconds or more; an
+  issues whose report waited for a VM, and on which pool (its queue less a scan's that held it, `LOOPER_RECAP_VM_WAIT` 300 seconds or more; an
   item over `LOOPER_RECAP_VM_WAIT_HOURS`, 1) and one more VM's cost a day (`LOOPER_RECAP_VM_MACHINE`, t2a-standard-8,
   at `LOOPER_RECAP_VM_USD_HOUR`, 0.308, its on-demand list price: set it from the billing). Capacity is manual: the
   advice is a scale-up for Jody to decide, never an autoscaling change.
@@ -1329,7 +1337,8 @@ manager those of `LOOPER_MANAGER_TAGS_<repo>` and its scan those of `LOOPER_SCAN
   LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"
 ```
 
-The plan's log names each job's tags (`planned looper-tacplus-<n> (<timeout>, tags arm64, autoscale-16)`), and the
+The plan's log names each job's tags and resource group (`planned looper-tacplus-<n> (<timeout>, tags arm64, autoscale-16,
+resource_group looper-tacplus-<n>)`), and the
 job's page names the runner. tacplus's manager runs the full gates in its job, Kani's 12 GB children two at a time on a
 t2a-standard-8's 31 GB; should they not fit, `LOOPER_MANAGER_TAGS_tacplus: "arm64, autoscale-16"` puts it back on the
 larger pool and leaves only the scan off it.

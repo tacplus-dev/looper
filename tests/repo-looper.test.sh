@@ -1209,7 +1209,7 @@ has "$pp" "(1 recurring, 0 transient, 0 once)"
 has "$pp" "--recap \"$d <the item's key>\" --cause"; has "$pp" "ranked by \`wait_hours\`, the hours of waiting it would remove"
 # The managers, caps and capacity (looper#72): a cap's advice changes caps.yaml after two nights running; a scale-up is Jody's call.
 has "$pp" "each manager's score (\`managers\`"; has "$pp" "only two nights running"; has "$pp" "\`--change \"caps.yaml: <repo>: <n>\"\`"
-has "$pp" "\`capacity/vm\`'s advice is a scale-up"; has "$pp" "never an autoscaling change"
+has "$pp" "\`capacity/vm\`'s advice is a scale-up"; has "$pp" "never an autoscaling change"; has "$pp" "So is \`capacity/<pool>\`'s"
 has "$pp" "to $run_dir/covered instead"; has "$pp" "Security first"
 # A night with nothing to suggest commits nothing.
 : > "$FIX/scan.sh"; before="$(origin rev-parse main)"

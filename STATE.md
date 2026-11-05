@@ -91,8 +91,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   issue waited and why, lands by gate set, scans; runner pools, Actions workflows, the image against
   main's head; per manager its report-to-merge time, conflicts resolved against sent back, red gates, a red main
   after its merges and reverts from GitHub, redone work; per repository's cap, from the kicker's `capacity:` line a
-  pass, the hours ready issues waited at it, how often all reports were busy and the merge backlog, with advice to
-  raise or lower it after two nights running; the capacity: queue p90, issues waiting for a VM and one more VM's cost
+  pass, the hours ready issues waited at it, how often all reports were busy (and running) and the merge backlog, with advice to
+  raise or lower it after two nights running, a raise only for waits while all its reports ran, else the pool's item
+  `capacity/<pool>` (#92); a scan holds a queued report only in its resource group (#92); the capacity: queue p90, issues waiting for a VM and one more VM's cost
   a day, for Jody's manual scale-up, #72) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
   would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
   suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the

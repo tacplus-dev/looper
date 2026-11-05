@@ -249,9 +249,10 @@ jobs "looper-alpha-4 running" "looper-alpha-7 running" "looper-alpha-8 pending"
 printf 'default: 3\n' > "$FIX/caps.yaml"
 CAPS="$FIX/caps.yaml" dispatch run
 ! started || fail "started a pipeline at the cap: $OUT"
-# Each pass logs each repository's reports against its cap, the ready issues
-# waiting at it and the lands queued: the nightly recap's numbers (looper#72).
-grep -q 'capacity: alpha reports=3 cap=3 waiting=5 landing=0$' <<<"$OUT" || fail "capacity: $OUT"
+# Each pass logs each repository's reports against its cap, how many of them
+# run (the rest pending for a VM: no raise of the cap, looper#92), the ready
+# issues waiting at it and the lands queued: the nightly recap's numbers (looper#72).
+grep -q 'capacity: alpha reports=3 running=2 cap=3 waiting=5 landing=0$' <<<"$OUT" || fail "capacity: $OUT"
 pass
 
 scenario kick-landing
@@ -259,7 +260,7 @@ issue alpha 4 OPEN "Done, its land queued." approved looper:landing
 dispatch run
 started || fail "no pipeline for a queued land without a manager: $OUT"
 grep -q 'queued to land and no manager' <<<"$OUT" || fail "log: $OUT"
-grep -q 'capacity: alpha reports=0 cap=3 waiting= landing=1$' <<<"$OUT" || fail "capacity: $OUT"
+grep -q 'capacity: alpha reports=0 running=0 cap=3 waiting= landing=1$' <<<"$OUT" || fail "capacity: $OUT"
 rm "$FIX/started"
 jobs "looper-alpha-manager running"
 dispatch run
@@ -494,6 +495,12 @@ plan_with -u LOOPER_JOB_TAGS LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" LOOPE
 [[ "$(tags_of scan-tacplus)" == "[arm64, autoscale]" ]] || fail "tacplus's scan: $(tags_of scan-tacplus): $PLAN"
 [[ "$(tags_of scan-fleet-lab)" == "[arm64, lab]" ]] || fail "fleet-lab's scan: $(tags_of scan-fleet-lab): $PLAN"
 [[ "$(tags_of scan-alpha)" == "[arm64, autoscale]" ]] || fail "alpha's scan: $(tags_of scan-alpha)"
+# The plan's log names each job's tags and resource group: the recap counts a
+# report queued behind a scan as held by it only when they share one (looper#92).
+PLANLOG="$(env -u CI_PIPELINE_SOURCE -u LOOPER_JOB_TAGS LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>&1 >/dev/null)" || fail "plan failed"
+grep -qF 'planned looper-tacplus-5 (5h, tags arm64, autoscale-16, resource_group looper-tacplus-5)' <<<"$PLANLOG" || fail "the plan's log: $PLANLOG"
+grep -qF 'planned looper-tacplus-manager (' <<<"$PLANLOG" && grep -qF ', resource_group looper-tacplus-main)' <<<"$PLANLOG" || fail "the plan's log: $PLANLOG"
 pass
 
 # tacplus-dev's pipeline (looper#56): ci/tacplus-dev.gitlab-ci.yml's

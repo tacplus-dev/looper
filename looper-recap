@@ -26,7 +26,9 @@
 #       issue waited, and why: no free slot, a conflict (and what overlaps), the
 #       job's time left (its limit would outlast the job), queued behind a land
 #       (the lander's "queued since"), a scan holding the repository (its job
-#       queued while the scan ran), each with what would have let it run in
+#       queued while the scan ran in the same resource group, as the plan's log
+#       names it: none since looper#70; else that queue is a VM's, looper#92),
+#       each with what would have let it run in
 #       parallel. Per manager (looper#70, looper-<repo>-manager; looper#72):
 #       its report-to-merge time (a land queued to merged), the hours lands
 #       waited for it, the conflicts it resolved by regenerating against those
@@ -34,8 +36,11 @@
 #       (a land again after a send-back or red), and from GitHub each merge's
 #       build status (a red main after it) and the reverts on main. Per
 #       repository's cap (caps.yaml), from the kicker's capacity lines: the
-#       hours ready issues waited at it, how often all its reports were busy,
-#       its merge backlog, with advice to raise or lower it. The capacity: the
+#       hours ready issues waited at it, how often all its reports were busy
+#       and all of them running, its merge backlog, with advice to raise or
+#       lower it; a raise only for waits while all its reports ran (looper#92):
+#       waits behind reports queued for a VM are their pool's, capacity/<pool>,
+#       with that pool's VM wait. The capacity: the
 #       queue p90 of every job, the issues whose report waited for a VM and
 #       one more VM's cost a day, the numbers for a manual scale-up. The
 #       looper image (LOOPER_RECAP_IMAGE, ghcr.io/tacplus-dev/
@@ -71,7 +76,8 @@
 # LOOPER_RECAP_HOLD_HOURS (1: an issue held back that long), LOOPER_RECAP_LAND_MINUTES
 # (60), LOOPER_RECAP_SCAN_MINUTES (60), LOOPER_RECAP_DISK_PCT (85),
 # LOOPER_RECAP_MERGE_MINUTES (120: a manager's report to merge p90),
-# LOOPER_RECAP_CAP_WAIT_HOURS (1: ready issues waiting at a cap: raise it),
+# LOOPER_RECAP_CAP_WAIT_HOURS (1: ready issues waiting at a cap: raise it if
+# its reports ran, else the pool's item),
 # LOOPER_RECAP_BACKLOG (3: lands queued, p90 of the passes: lower it),
 # LOOPER_RECAP_VM_WAIT (300 s: a report's wait for a VM that counts),
 # LOOPER_RECAP_VM_WAIT_HOURS (1). One more VM: LOOPER_RECAP_VM_MACHINE
@@ -277,6 +283,8 @@ LANDED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): landed on main: .*on the gate
 NOT_LANDED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): nothing landed")
 DEFERRED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): deferred to the next job")
 DISK = re.compile(r"disk at the end: (\d+)% used")
+# The plan's line for each job it plans (looper-dispatch plan_job): its resource group.
+PLANNED = re.compile(r"\] planned (\S+) \(.*, resource_group (\S+)\)$")
 
 
 QUEUED = re.compile(r"queued since (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
@@ -289,7 +297,7 @@ M_NOT = re.compile(r"\] #(\d+): not merged \(exit (\d+)\)")
 M_RESOLVED = re.compile(r"\] #(\d+): resolved its conflicts by regenerating: (.*)$")
 M_DEFERRED = re.compile(r"\] #(\d+): left queued for the next manager")
 CAPACITY = re.compile(r"\] capacity: (.*)$")
-CAP_REPO = re.compile(r"(\S+) reports=(\d+) cap=(\d+) waiting=([\d,]*) landing=(\d+|\?)")
+CAP_REPO = re.compile(r"(\S+) reports=(\d+)(?: running=(\d+))? cap=(\d+) waiting=([\d,]*) landing=(\d+|\?)")
 
 
 def held_reason(r):
@@ -309,7 +317,7 @@ PARALLEL = {
     "limit_outlasts_job": "a fresh job for the issue instead of idling until this one ends",
     "conflict": "file-level conflicts instead of areas, when the issues touch different files of the area",
     "behind_a_land": "parallel lands of disjoint diffs (no file in common), each on its own gate set",
-    "scan_holds_repo": "a scan that does not hold the repository's lock, or a shorter one",
+    "scan_holds_repo": "a scan in its own resource group (looper-<repo>, the reports' looper-<repo>-<issue>), or a shorter one",
     "image_stale": "an image build that is not cancelled by newer pushes, or one per push",
 }
 
@@ -318,7 +326,7 @@ def read_log(text, started, finished):
     """What a job's log says: its prepare time and VM, a pull or gate failure,
     and for a looper job its plans, holds, lands and disk."""
     out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False,
-           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None}
+           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}}
     now = started
     waiting = {}   # issue -> (reason, since)
     landing = {}   # issue -> since
@@ -393,6 +401,10 @@ def read_log(text, started, finished):
         m = DISK.search(line)
         if m:
             out["disk_pct"] = int(m.group(1))
+            continue
+        m = PLANNED.search(line)
+        if m:
+            out["groups"][m.group(1)] = m.group(2)
     for n in list(waiting):
         hold(n, finished)
     return out
@@ -445,14 +457,16 @@ def read_manager(text):
 
 
 def read_kicker(text):
-    """The kicker's capacity lines (looper#72): (time, {repo: (reports, cap,
-    [issues waiting at the cap], lands queued or None)}) a pass."""
+    """The kicker's capacity lines (looper#72): (time, {repo: (reports, of them
+    running, cap, [issues waiting at the cap], lands queued or None)}) a pass.
+    A line without running= (the kicker's before looper#92) counts every
+    report as running."""
     out = []
     for now, line in lines_at(text):
         m = CAPACITY.search(line)
         if m and now is not None:
-            out.append((now, {r: (int(k), int(c), [int(x) for x in w.split(",") if x], None if l == "?" else int(l))
-                              for r, k, c, w, l in CAP_REPO.findall(m.group(1))}))
+            out.append((now, {r: (int(k), int(n or k), int(c), [int(x) for x in w.split(",") if x], None if l == "?" else int(l))
+                              for r, k, n, c, w, l in CAP_REPO.findall(m.group(1))}))
     return out
 
 
@@ -484,6 +498,16 @@ def looper_repo(name):
     return None, None
 
 
+def resource_group(name, groups):
+    """A looper job's resource group: as the plan's log names it (groups), else
+    as looper-dispatch's plan sets it since looper#70: a scan's looper-<repo>,
+    a manager's looper-<repo>-main, a report's its own name."""
+    if name in groups:
+        return groups[name]
+    kind, repo = looper_repo(name)
+    return {"scan": f"looper-{repo}", "manager": f"looper-{repo}-main"}.get(kind, name)
+
+
 # --- collect -----------------------------------------------------------------
 
 
@@ -498,7 +522,7 @@ def collect(until):
            "sources": sources, "projects": {}, "failed_jobs": [], "loopers": {}, "runner_pools": {},
            "longest": {"queues": [], "lands": [], "scans": [], "holds": []}}
     queues, lands, scans, holdl = [], [], [], []
-    passes, managers, vmwait = [], {}, []
+    passes, managers, vmwait, groups = [], {}, [], {}
 
     for project in projects:
         try:
@@ -516,6 +540,7 @@ def collect(until):
                 text = ""
             c, s, f = when(j.get("created_at")), when(j.get("started_at")), when(j.get("finished_at"))
             lg = read_log(text, s, f)
+            groups.update(lg["groups"])
             if j.get("name") == "looper-kick":
                 passes.append((j["id"], read_kicker(text)))
             if looper_repo(j.get("name"))[0] == "manager":
@@ -560,7 +585,7 @@ def collect(until):
             if kind is None:
                 continue
             lp = out["loopers"].setdefault(repo, {"jobs": 0, "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred_lands": 0,
-                                                  "scans": [], "scan_runs": [], "queued": []})
+                                                  "scans": [], "scan_runs": [], "queued": [], "pools": {}})
             lp["jobs"] += 1
             if kind == "manager":
                 mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "urls": []})
@@ -570,11 +595,14 @@ def collect(until):
                 mg["urls"].append(url)
             if kind == "scan" and rn is not None:
                 lp["scans"].append(rn)
-                lp["scan_runs"].append((s, f))
+                lp["scan_runs"].append((s, f, j.get("name")))
                 scans.append({"repo": repo, "s": rn, "url": url})
             m = re.fullmatch(r"looper-.+-(\d+)", j.get("name") or "")
+            pool = (j.get("runner") or {}).get("description")
+            if kind == "work" and pool:
+                lp["pools"][pool] = lp["pools"].get(pool, 0) + 1
             if kind == "work" and q is not None:
-                lp["queued"].append((int(m.group(1)), c, s, url))
+                lp["queued"].append((int(m.group(1)), j.get("name"), c, s, url, pool))
             lp["plans"] += lg["plans"]
             for ov, ns in lg["overlaps"].items():
                 lp["overlaps"].setdefault(ov, set()).update(ns)
@@ -607,13 +635,20 @@ def collect(until):
                               "evidence": [f"https://gitlab.com/{project}/-/jobs"]})
 
     # The looper jobs, per repository.
+    pools = {}
     for repo, lp in sorted(out["loopers"].items()):
+        # The pool its reports ran on (the most of them, looper#92).
+        ps = lp.pop("pools")
+        pools[repo] = min(ps, key=lambda x: (-ps[x], x)) if ps else None
         # A job of an issue queued while the repository's scan ran: the scan
-        # held it (GitLab runs one job of a repository at a time).
+        # held it only in the scan's resource group (GitLab runs one job of a
+        # group at a time; since looper#70 a report has its own, looper#92).
         runs, held = lp.pop("scan_runs"), {}
-        for n, c, s, url in lp.pop("queued"):
+        for n, name, c, s, url, pool in lp.pop("queued"):
             scan = 0
-            for a, b in runs:
+            for a, b, sn in runs:
+                if resource_group(sn, groups) != resource_group(name, groups):
+                    continue
                 o = secs(max(a, c), min(b, s))
                 if o and o > 0:
                     scan += o
@@ -621,7 +656,7 @@ def collect(until):
                     holdl.append({"repo": repo, "issue": n, "reason": "scan_holds_repo", "s": o, "url": url})
             # The rest of its queue it waited for a runner's VM (looper#72).
             if secs(c, s) - scan >= T["vm_wait_s"]:
-                vmwait.append({"repo": repo, "issue": n, "s": secs(c, s) - scan, "url": url})
+                vmwait.append({"repo": repo, "issue": n, "s": secs(c, s) - scan, "url": url, "pool": pool})
         if held:
             lp["holds"]["scan_holds_repo"] = {"count": len(held), "issues": set(held), "s": [held[n] for n in sorted(held)]}
         plans = lp.pop("plans")
@@ -685,7 +720,7 @@ def collect(until):
                           "evidence": [f"https://gitlab.com/{ENV.get('LOOPER_ORG', 'tacplus-dev')}/looper/-/jobs"]})
 
     out["managers"] = managers_of(managers, start, until, sources, items)
-    out["caps"] = caps_of(passes, out["managers"], items)
+    out["caps"] = caps_of(passes, out["managers"], items, pools, vmwait)
     out["capacity"] = capacity_of(queues, vmwait, items)
     out["actions"] = actions(start, until, sources, items)
     out["image"] = image_check(until, sources, items)
@@ -788,42 +823,58 @@ def managers_of(managers, start, until, sources, items):
     return out
 
 
-def caps_of(passes, managers, items):
+def caps_of(passes, managers, items, pools, vmwait):
     """Each repository's cap (looper#72; Jody: "recap should let us know if we
     need to adjust"), from the kicker's capacity lines: the hours its ready
-    issues waited at the cap, how often all its reports were busy, its merge
-    backlog (lands queued, a pass). Advice to raise the cap when issues waited
-    at it LOOPER_RECAP_CAP_WAIT_HOURS and the backlog is under
+    issues waited at the cap, how often all its reports were busy and how often
+    all of them were running, its merge backlog (lands queued, a pass). A pass
+    is at the cap by its running reports only (looper#92): the hours issues
+    waited at a cap some of whose reports were created or pending are the
+    hours of the pool those reports wait for a VM of (pools: the repository's),
+    not the cap's. Advice to raise the cap when issues waited at it with all its
+    reports running LOOPER_RECAP_CAP_WAIT_HOURS and the backlog is under
     LOOPER_RECAP_BACKLOG, to lower it when the backlog is over: the manager
     is the bottleneck and more reports only queue more lands. Either is
-    advised after two nights running (the item's `running`)."""
+    advised after two nights running (the item's `running`). The pool's,
+    capacity/<pool>, when issues waited LOOPER_RECAP_CAP_WAIT_HOURS behind
+    queued reports, with its reports' VM wait (vmwait): a raise would only
+    queue more of them."""
     obs = []
     for _, ps in sorted(passes):
         for k, (t, per) in enumerate(ps):
             nxt = ps[k + 1][0] if k + 1 < len(ps) else None
             obs.append((t, min(secs(t, nxt), PASS_GAP) if nxt else PASS_S, per))
     obs.sort(key=lambda x: x[0])
-    out = {}
+    out, queued_at = {}, {}
     for repo in sorted({r for _, _, per in obs for r in per}):
-        at, busy_s, waits, backlog, cap = 0, 0, {}, [], None
+        at, busy_s, ran, ran_s, waits, queued, backlog, cap = 0, 0, 0, 0, {}, {}, [], None
         for _, d, per in obs:
             if repo not in per:
                 backlog.append(0)   # no line for it: nothing at work, queued or ready
                 continue
-            k, cap, w, l = per[repo]
+            k, r, cap, w, l = per[repo]
             if k >= cap:
                 at, busy_s = at + 1, busy_s + d
+                if r >= cap:
+                    ran, ran_s = ran + 1, ran_s + d
                 for n in w:
-                    waits[n] = waits.get(n, 0) + d
+                    into = waits if r >= cap else queued
+                    into[n] = into.get(n, 0) + d
             if l is not None:
                 backlog.append(l)
-        wh = sum(waits.values())
+        wh, qh = sum(waits.values()), sum(queued.values())
         b90 = pct(backlog, 90) or 0
         out[repo] = {"cap": cap, "passes": len(obs), "all_busy": round(at / len(obs), 2), "all_busy_hours": hours(busy_s),
+                     "all_running": round(ran / len(obs), 2), "all_running_hours": hours(ran_s),
                      "waiting_hours": hours(wh), "waiting": {str(n): hours(v) for n, v in sorted(waits.items())},
-                     "backlog": {"p90": b90, "max": max(backlog, default=0)}}
-        why = ((f"ready issues waited {hours(wh)} h at it ({', '.join('#%d %s h' % (n, hours(v)) for n, v in sorted(waits.items()))}); " if waits else "")
+                     "queued_hours": hours(qh), "queued": {str(n): hours(v) for n, v in sorted(queued.items())},
+                     "pool": pools.get(repo), "backlog": {"p90": b90, "max": max(backlog, default=0)}}
+        if queued:
+            queued_at.setdefault(pools.get(repo) or "unknown", []).append((repo, cap, queued))
+        why = ((f"ready issues waited {hours(wh)} h at it with all its reports running ({', '.join('#%d %s h' % (n, hours(v)) for n, v in sorted(waits.items()))})"
+                + (f", {hours(qh)} h more with some of them queued for a VM" if queued else "") + "; " if waits else "")
                + f"all its reports busy in {round(100 * at / len(obs))}% of the kicker's {len(obs)} passes ({hours(busy_s)} h)"
+               + f", running in {round(100 * ran / len(obs))}% ({hours(ran_s)} h)"
                + f"; merge backlog p90 {b90}, max {out[repo]['backlog']['max']} lands")
         if b90 >= T["backlog"]:
             items.append({"key": f"cap/{repo}/lower", "count": b90, "over": True, "recovered": False, "running": 2,
@@ -835,6 +886,24 @@ def caps_of(passes, managers, items):
                           "wait_hours": hours(wh),
                           "summary": f"{repo}: raise its cap of {cap} in caps.yaml: {why} (threshold {whole(T['cap_wait_hours'])} h)",
                           "evidence": ["caps.yaml"]})
+    for pool, rs in sorted(queued_at.items()):
+        qh = sum(v for _, _, q in rs for v in q.values())
+        if qh < T["cap_wait_hours"] * 3600:
+            continue
+        vw = sorted((x for x in vmwait if x["pool"] == pool), key=lambda x: (-x["s"], x["url"]))
+        vh = sum(x["s"] for x in vw)
+        vm = dict(VM, usd_day=whole(round(VM["usd_hour"] * 24, 2)))
+        items.append({"key": f"capacity/{pool}", "count": sum(len(q) for _, _, q in rs), "over": True, "recovered": False,
+                      "wait_hours": hours(qh),
+                      "summary": f"{pool}: ready issues waited {hours(qh)} h at a full cap whose reports were queued for this pool's VMs, not running ("
+                                 + "; ".join(f"{repo} at its cap of {cap}: " + ", ".join('#%d %s h' % (n, hours(v)) for n, v in sorted(q.items()))
+                                             for repo, cap, q in rs)
+                                 + "): the cap is not what limits them, and a raise would only queue more reports; "
+                                 + f"its reports waited {hours(vh)} h for a VM"
+                                 + (f" ({', '.join('%s#%d %s min' % (x['repo'], x['issue'], minutes(x['s'])) for x in vw)})" if vw else "")
+                                 + f"; one more {vm['machine']} is about ${vm['usd_day']} a day "
+                                 + f"(threshold {whole(T['cap_wait_hours'])} h; the scale-up is Jody's call)",
+                      "evidence": [x["url"] for x in vw][:5] or ["caps.yaml"]})
     return out
 
 
@@ -849,7 +918,7 @@ def capacity_of(queues, vmwait, items):
     vm = dict(VM, usd_hour=whole(VM["usd_hour"]), usd_day=whole(round(VM["usd_hour"] * 24, 2)))
     out = {"queue_minutes": q and {k: minutes(v) if k != "n" else v for k, v in q.items()},
            "waiting_for_vm": {"issues": len(vmwait), "hours": hours(wh),
-                              "jobs": [{"repo": x["repo"], "issue": x["issue"], "minutes": minutes(x["s"]), "url": x["url"]}
+                              "jobs": [{"repo": x["repo"], "issue": x["issue"], "minutes": minutes(x["s"]), "url": x["url"], "pool": x["pool"]}
                                        for x in sorted(vmwait, key=lambda x: (-x["s"], x["url"]))]},
            "one_more_vm": vm}
     if vmwait:
@@ -1081,7 +1150,10 @@ def report(night, classes, sdir, cov):
     L.append("Managers: " + ("; ".join(mgs) or "none") + ".")
     cps = [f"{r} cap {c['cap']}: waited at it {c['waiting_hours']} h"
            + (f" ({', '.join('#%s' % n for n in c['waiting'])})" if c["waiting"] else "")
-           + f", all busy {round(100 * c['all_busy'])}% of {c['passes']} passes, merge backlog p90 {c['backlog']['p90']}"
+           + (f", {c['queued_hours']} h more queued for a VM of {c['pool'] or 'its pool'} ({', '.join('#%s' % n for n in c['queued'])})"
+              if c.get("queued") else "")
+           + f", all busy {round(100 * c['all_busy'])}% (running {round(100 * c.get('all_running', c['all_busy']))}%) of {c['passes']} passes,"
+           + f" merge backlog p90 {c['backlog']['p90']}"
            for r, c in sorted((night.get("caps") or {}).items())]
     L.append("Caps: " + ("; ".join(cps) or "no kicker pass read") + ".")
     cp = night.get("capacity")
