@@ -26,8 +26,10 @@ stages:
 # held, every Blocked-by closed), looper-<repo>-<issue>, up to the repository's
 # cap, each on its own branch and never on main (resource_group per issue), and
 # the repository's manager, looper-<repo>-manager, the only job that merges to
-# its main (resource_group looper-<repo>-main). The kicker and the plan are the
-# control jobs.
+# its main (resource_group looper-<repo>-main); with the apps, unless the
+# repository's gates are build jobs, after its verdict job,
+# looper-<repo>-verdict, which runs the batch's gates (looper#90). The kicker
+# and the plan are the control jobs.
 # schedule: the nightly scan of every repository (files issues, changes no code).
 # The kicker schedule (description containing "kicker") runs only looper-kick
 # below (tacplus-dev/looper#24; schedules are told apart by
@@ -63,9 +65,11 @@ stages:
 # holds GH_TOKEN. Each job exchanges its id_token GCP_ID_TOKEN through Workload
 # Identity Federation for its app's token (looper-token), and its environment
 # names the app whose key GCP lets it sign with: looper-plan and kicker the
-# report app's (tacplus-looper), as the plan's looper-report jobs; the plan's
-# looper-manager jobs the manager's (tacplus-manager, the only bypass of
-# main's ruleset); its looper-scan jobs both. Until then the id_token goes unused.
+# report app's (tacplus-looper), as the plan's looper-report jobs (its
+# reports, and its verdict jobs, which run a batch's gates: looper#90); the
+# plan's looper-manager jobs the manager's (tacplus-manager, the only bypass of
+# main's ruleset), which then run no repository code; its looper-scan jobs
+# both. Until then the id_token goes unused.
 .looper-identity:
   id_tokens:
     GCP_ID_TOKEN:

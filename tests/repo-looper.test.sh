@@ -1505,6 +1505,24 @@ for st in created pending; do
   pass
 done
 
+# A batch split in two (looper#90): its manager job is created until its
+# verdict job is done. A report yields while the verdict waits for a runner,
+# not while it runs.
+scenario report-yields-to-verdict-pending
+jobs "looper-alpha-4 running 77" "looper-alpha-verdict pending 90" "looper-alpha-manager created 91"
+push_fix
+run_alone "${GL[@]}" CI_JOB_ID=77
+[[ -z "$(prompts)" ]] || fail "worked: $(prompts)"
+has "$OUT" "#4 yields to looper-alpha-manager, which waits to start"
+pass
+scenario report-beside-verdict-running
+jobs "looper-alpha-4 running 77" "looper-alpha-verdict running 90" "looper-alpha-manager created 91"
+working
+run "${GL[@]}" CI_JOB_ID=77
+lacks "$OUT" "yields"
+has "$(prompts)" "working issue #4."
+pass
+
 # A manager already running, or waiting for main's resource behind one that is,
 # is merging: the report works. So it does beside another repository's waiting
 # manager, and when GitLab cannot be read.
@@ -1835,6 +1853,154 @@ for _ in $(seq 100); do kill -0 "$MANAGER" 2>/dev/null || break; sleep 0.1; done
 kill -0 "$MANAGER" 2>/dev/null && { kill "$MANAGER"; fail "the manager lingers after its report ended"; }
 manager_wait
 has "$(cat "$FIX/manager.log")" "no report at work and no land queued; the manager ends"
+pass
+
+# --- the manager split in two (looper#90) ----------------------------------------
+# Until a repository's gates run as build jobs, its batch is two jobs: the
+# verdict job (environment looper-report, the report app's token) merges the
+# queued lands onto looper/staging, oldest first, regenerating and running
+# each one's gates, and pushes it; the manager job (looper-manager, the only
+# holder of tacplus-manager) runs no repository code: it checks that staging is
+# the commit the verdict named, on the main it was built on, fast-forwards main
+# to it and posts the verdicts and the HISTORY.md lines.
+verdict() { # [VAR=value...]: the verdict job of alpha's queued lands, into $FIX/verdict (a job's own, fresh)
+  rm -rf "$FIX/verdict"
+  OUT="$(looper "$@" -- --repo alpha --verdict "$FIX/verdict" 2>&1)" || { echo "$OUT"; fail "the verdict job exited non-zero"; }
+}
+merge() { # [VAR=value...]: the manager job of that verdict
+  OUT="$(looper "$@" -- --repo alpha --merge "$FIX/verdict" 2>&1)" || { echo "$OUT"; fail "the manager job exited non-zero"; }
+}
+staging() { origin rev-parse -q --verify refs/heads/looper/staging; }
+
+# A green land, a red one and a closed issue's HISTORY.md line: the verdict job
+# builds staging and touches neither main nor the issues; the manager job
+# fast-forwards main to it, gives each verdict, deletes the merged branch and
+# staging, and adds the line.
+scenario split-batch
+issue alpha 5 OPEN approved,bug "Fix that."; issue alpha 6 CLOSED approved,bug "Done."
+queue 4 2026-11-03T10:00:00Z four.txt 4
+queue 5 2026-11-03T11:00:00Z five.txt 5 'echo the-gates-say-no; false'
+( d="$FIX/q-6"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b looper/alpha-6; mkdir -p "$d/.looper"
+  printf 'id=q6\nstate=queued\nqueued=2026-11-03T12:00:00Z\n' > "$d/.looper/land"; echo '- 2026-11-03 looper issue Done. (#6)' > "$d/.looper/history"
+  git -C "$d" add -A; git -C "$d" commit -qm "looper: HISTORY.md's line for #6"; git -C "$d" push -q origin looper/alpha-6 )
+jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-6.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-6.json"
+verdict CI_JOB_URL=https://gl.test/jobs/90
+main_unchanged
+[[ "$(origin show looper/staging:four.txt)" == 4 ]] || fail "staging: $(origin log --oneline looper/staging)"
+! origin show looper/staging:five.txt >/dev/null 2>&1 || fail "red on staging"
+[[ "$(origin rev-parse looper/staging^)" == "$(origin rev-parse main)" ]] || fail "staging is not main and the green land"
+[[ ! -s "$FIX/comments" ]] || fail "the verdict job commented: $(cat "$FIX/comments")"
+has "$(labels alpha 4)" "looper:landing"; has "$(labels alpha 5)" "looper:landing"
+has "$(cat "$FIX/verdict/verdict")" "staging=$(staging)"; has "$(cat "$FIX/verdict/verdict")" "main=$(origin rev-parse main)"
+# A planning file the repository lacks: the manager job adds it once main is staging.
+mkdir -p "$FIX/templates"; echo '# State' > "$FIX/templates/STATE.md"
+s="$(staging)"; merge
+# main is the staging the verdict named, then the planning file and #6's HISTORY.md line.
+[[ "$(origin rev-parse main~2)" == "$s" ]] || fail "main is not the staging the verdict named: $(origin log --oneline main)"
+[[ "$(landed STATE.md)" == "# State" ]] || fail "no STATE.md: $(origin log --oneline main)"
+[[ "$(landed four.txt)" == 4 && -z "$(landed five.txt)" ]] || fail "main: $(origin log --oneline main)"
+lacks "$(origin show main --stat)" ".looper/"
+c="$(cat "$FIX/comments")"
+has "$c" "alpha#4 The manager merged [\`looper/alpha-4\`]"; has "$c" "Its gates: job https://gl.test/jobs/90."
+has "$c" "alpha#5 The manager did not merge [\`looper/alpha-5\`]"; has "$c" "the-gates-say-no"
+lacks "$c" "alpha#6 The manager"
+# Its log is the one manager's, which the nightly recap reads (looper#72).
+has "$OUT" "merging #4 (looper/alpha-4, queued 2026-11-03T10:00:00Z)"; has "$OUT" "#4: landed on main: "
+has "$OUT" "#5: not merged (exit 4)"
+has "$(history)" "- 2026-11-03 looper issue Done. (#6)"
+origin rev-parse -q --verify refs/heads/looper/alpha-4 >/dev/null && fail "the merged branch is left"
+branch_5="$(origin rev-parse -q --verify refs/heads/looper/alpha-5)" || fail "the red branch is gone"
+! staging >/dev/null || fail "staging is left"
+for n in 4 5 6; do lacks "$(labels alpha "$n")" "looper:landing"; done
+# A second manager job on the same verdict merges nothing again.
+: > "$FIX/comments"; m="$(origin rev-parse main)"
+! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a verdict twice: $OUT"
+[[ "$(origin rev-parse main)" == "$m" && ! -s "$FIX/comments" ]] || fail "the second merge: $OUT"
+pass
+
+# The manager job runs no repository code: not the gates, not a regeneration,
+# not a justfile, whatever the queued branches and main carry; main's are
+# the verdict job's to run.
+scenario split-merge-runs-no-repo-code
+printf 'full:\n  run: touch "$FIX/ran-gates-$PPID-$$"\n  minutes: 1\n' > "$FIX/seed/gates.yaml"
+printf 'lock:\n  run: touch "$FIX/ran-generator"\n  paths: [app.lock]\n' > "$FIX/seed/generated.yaml"
+printf 'gates:\n    touch "$FIX/ran-just"\n' > "$FIX/seed/justfile"
+git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm "repository code"; git -C "$FIX/seed" push -q origin main
+queue 4 2026-11-03T10:00:00Z four.txt 4 ""
+verdict
+ls "$FIX"/ran-gates-* >/dev/null 2>&1 || fail "the verdict job ran no gates: $OUT"
+rm -f "$FIX"/ran-*
+merge
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+ls "$FIX"/ran-* >/dev/null 2>&1 && fail "the manager job ran the repository's code: $(ls "$FIX"/ran-*)"
+has "$(cat "$FIX/comments")" "alpha#4 The manager merged"
+pass
+
+# Staging moved after the verdict (a report's token can push it): the manager
+# job merges nothing, gives no verdict, and the lands stay queued for the next
+# batch. So does a main that moved since the verdict job built on it.
+scenario split-staging-moved
+queue 4 2026-11-03T10:00:00Z four.txt 4
+verdict
+( d="$FIX/evil"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b x origin/looper/staging
+  echo evil > "$d/evil.txt"; git -C "$d" add -A; git -C "$d" commit -qm evil; git -C "$d" push -q -f origin HEAD:refs/heads/looper/staging )
+! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a staging that moved: $OUT"
+has "$OUT" "looper/staging moved since the verdict"
+main_unchanged
+[[ ! -s "$FIX/comments" ]] || fail "a verdict on a moved staging: $(cat "$FIX/comments")"
+has "$(labels alpha 4)" "looper:landing"; branch || fail "the branch is gone"
+# The next batch, on a main that moves before its manager job.
+verdict
+on_main other.txt other
+! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged onto a main that moved: $OUT"
+has "$OUT" "main moved since the verdict"
+[[ -z "$(landed four.txt)" && "$(landed other.txt)" == other ]] || fail "main: $(origin log --oneline main)"
+[[ ! -s "$FIX/comments" ]] || fail "a verdict on a moved main: $(cat "$FIX/comments")"
+has "$(labels alpha 4)" "looper:landing"
+verdict; merge
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# The tokens (looper#83): the verdict job holds the report app's alone, and a
+# gate that asks for the manager's is refused (here the stub refuses as KMS
+# does: the job's id_token is environment looper-report, whose binding has no
+# manager key; and the gates do not see the id_token at all); the manager job
+# holds the manager's. Neither runs in the other's environment.
+scenario split-tokens
+printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' \
+  '  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;' \
+  '  start) echo "start $2 $(basename "$3")" >> "$FIX/token"; mkdir -p "$3"; echo 0 ;;' \
+  '  mint) echo "mint $2 id_token=${GCP_ID_TOKEN:-none}" >> "$FIX/token"' \
+  '        [[ "$2:${GCP_ID_TOKEN:-}" =~ ^(report:env=looper-(report|scan)|manager:env=looper-(manager|scan))$ ]] && echo ghs_minted ;;' \
+  '  *) exit 3 ;;' 'esac' > "$FIX/looper-token-kms"
+chmod +x "$FIX/looper-token-kms"
+SPLIT=(LOOPER_TOKEN="$FIX/looper-token-kms" LOOPER_REPORT_APP_ID=7 GH_TOKEN= GITHUB_TOKEN=)
+queue 4 2026-11-03T10:00:00Z four.txt 4 '! "$LOOPER_TOKEN" mint manager > "$FIX/minted" || { echo MINTED; false; }'
+verdict "${SPLIT[@]}" GCP_ID_TOKEN=env=looper-report CI_ENVIRONMENT_NAME=looper-report
+[[ "$(cat "$FIX/token")" == $'start report report\nmint manager id_token=none' ]] || fail "the verdict job's tokens: $(cat "$FIX/token")"
+[[ ! -s "$FIX/minted" ]] || fail "a gate minted the manager's token"
+: > "$FIX/token"
+merge "${SPLIT[@]}" GCP_ID_TOKEN=env=looper-manager CI_ENVIRONMENT_NAME=looper-manager
+[[ "$(cat "$FIX/token")" == "start manager manager" ]] || fail "the manager job's tokens: $(cat "$FIX/token")"
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+issue alpha 5 OPEN approved,bug "Fix that."; queue 5 2026-11-03T11:00:00Z five.txt 5
+! OUT="$(looper "${SPLIT[@]}" CI_ENVIRONMENT_NAME=looper-manager -- --repo alpha --verdict "$FIX/verdict2" 2>&1)" || fail "a verdict job ran as looper-manager"
+has "$OUT" "the verdict job runs a report's code"
+! OUT="$(looper "${SPLIT[@]}" CI_ENVIRONMENT_NAME=looper-report -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "a manager job ran as looper-report"
+has "$OUT" "the manager job merges as looper-manager"
+pass
+
+# The one-job manager that holds the manager's token (the apps) runs no
+# repository code either: a land whose gates would run in its job, not as a
+# build job, is not merged, and says why (looper#90); so is a conflict it
+# would regenerate.
+scenario apps-manager-runs-no-gates
+queue 4 2026-11-03T10:00:00Z four.txt 4 'touch "$FIX/ran-gates"'
+manage "${APPS[@]}"
+[[ ! -e "$FIX/ran-gates" ]] || fail "the manager ran the gates beside its token"
+main_unchanged
+has "$(cat "$FIX/comments")" "alpha#4 The manager could not merge"
+has "$(cat "$FIX/comments")" "runs no repository code"
 pass
 
 # A report's model sees its memory (looper#41): containers it starts are

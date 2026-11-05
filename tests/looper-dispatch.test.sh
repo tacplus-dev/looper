@@ -56,6 +56,10 @@ if [[ "$cmd $label" == "search issues approved" && -e "$FIX/slow" ]]; then
   echo "$t $e" >> "$FIX/passes"; echo "$e" > "$FIX/clock"
 fi
 case "$cmd" in
+  # A file of a repository's main (looper#90): $FIX/contents/<repo>-<path>, else HTTP 404.
+  api\ repos/*/contents/*)
+    p="${cmd#api repos/*/}"; f="$FIX/contents/${p%%/*}-${p#*/contents/}"
+    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; echo '{"type":"file"}'; exit 0 ;;
   # $FIX/private: the org's private repositories, one a line (--visibility public leaves them out).
   "search issues") jq -s --arg l "$label" --arg vis "$vis" --arg priv "$(cat "$FIX/private" 2>/dev/null || true)" \
                      'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})
@@ -616,6 +620,49 @@ grep -qx '  environment: {name: looper-scan, action: prepare}' <<<"$PLAN" || fai
 # Without the apps, no id_token and no environment, as before.
 PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)"
 ! grep -qE 'id_tokens|environment' <<<"$PLAN" || fail "without the apps: $PLAN"
+pass
+
+# The manager split in two (looper#90): with the apps, a repository whose
+# gates do not run as build jobs gets two jobs for its batch, ahead of its
+# reports: looper-<repo>-verdict (looper-report: the gates, staging) and
+# looper-<repo>-manager (looper-manager: main), which needs the verdict's
+# artifacts; both on main's resource group. A pinned repository, when the
+# project has the build trigger, keeps the one manager (looper#71). A pair
+# already active is not planned again: the kicker starts the next batch.
+scenario apps-plan-split
+issue alpha 6 OPEN "Land it." looper:landing
+issue beta 2 OPEN "Land it." looper:landing
+split_plan() { PLAN="$(env -u CI_PIPELINE_SOURCE -u GH_TOKEN "${APPS[@]}" "$@" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
+job_of() { awk -v j="$1:" '$0 == j { on = 1; next } /^[a-z]/ { on = 0 } on' <<<"$PLAN"; }
+split_plan
+[[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-verdict looper-alpha-manager looper-alpha-4" ]] \
+  || fail "alpha's jobs: $(grep '^looper-' <<<"$PLAN")"
+v="$(job_of looper-alpha-verdict)"; m="$(job_of looper-alpha-manager)"
+grep -qx '  environment: {name: looper-report, action: prepare}' <<<"$v" || fail "the verdict's environment: $v"
+grep -qx '    - repo-looper --repo alpha --verdict looper-verdict' <<<"$v" || fail "the verdict's script: $v"
+grep -qx '    paths: \[looper-runs/, looper-verdict/\]' <<<"$v" || fail "the verdict's artifacts: $v"
+grep -qx '  resource_group: looper-alpha-main' <<<"$v" || fail "the verdict's group: $v"
+grep -qx '  environment: {name: looper-manager, action: prepare}' <<<"$m" || fail "the manager's environment: $m"
+grep -qx '    - repo-looper --repo alpha --merge looper-verdict' <<<"$m" || fail "the manager's script: $m"
+grep -qx '  needs: \[{job: looper-alpha-verdict, artifacts: true}\]' <<<"$m" || fail "the manager's needs: $m"
+grep -qx '  resource_group: looper-alpha-main' <<<"$m" || fail "the manager's group: $m"
+grep -qx 'looper-beta-verdict:' <<<"$PLAN" && grep -qx 'looper-beta-manager:' <<<"$PLAN" || fail "beta: $(grep '^looper-' <<<"$PLAN")"
+# A pinned repository with the build trigger: its one manager, as before.
+mkdir -p "$FIX/contents"; echo "build: x" > "$FIX/contents/alpha-build.lock"
+split_plan BUILD_TRIGGER_TOKEN=glptt-x
+grep -qx 'looper-alpha-verdict:' <<<"$PLAN" && fail "a pinned repository split: $(grep '^looper-' <<<"$PLAN")"
+grep -qx '    - repo-looper --repo alpha --manage' <<<"$(job_of looper-alpha-manager)" || fail "alpha's manager: $(job_of looper-alpha-manager)"
+grep -qx 'looper-beta-verdict:' <<<"$PLAN" || fail "beta, unpinned, not split: $(grep '^looper-' <<<"$PLAN")"
+# Pinned, but no trigger: its gates would run in a job, so split.
+split_plan
+grep -qx 'looper-alpha-verdict:' <<<"$PLAN" || fail "pinned without the trigger, not split: $(grep '^looper-' <<<"$PLAN")"
+# A batch under way, its verdict running or its manager waiting: no second pair.
+for j in "looper-alpha-verdict running" "looper-alpha-manager created"; do
+  jobs "$j"; split_plan
+  ! grep -qE '^looper-alpha-(verdict|manager):' <<<"$PLAN" || fail "a second batch beside $j: $(grep '^looper-' <<<"$PLAN")"
+  grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "no report beside $j"
+done
 pass
 
 scenario apps-no-pat

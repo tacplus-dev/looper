@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#79).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#90).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -117,7 +117,14 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   may use) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
   scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;
   a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan` and leaves
-  its PROPOSALS.md change for the looper to commit; private repositories' issues get no report
+  its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes
+  main): with the apps, a repository whose gates are not build jobs gets, for each batch, `looper-<repo>-verdict`
+  (environment `looper-report`: its queued lands merged onto `looper/staging`, regenerated and gated, with no job
+  credential in the gates' environment, staging pushed with the report app's token, the verdict its artifacts) and
+  `looper-<repo>-manager` (`looper-manager`, `needs:` the verdict: no repository code, staging checked to be the
+  commit the verdict named on the main it was built on, main fast-forwarded, the verdicts and HISTORY.md lines
+  posted; anything moved, nothing merged and the lands left queued); a pinned repository with the build trigger keeps
+  the one manager, which with the manager's token runs no gates in its job and regenerates nothing; private repositories' issues get no report
   (`--visibility public`, `LOOPER_PRIVATE_REPORTS=1` to undo); the runner
   VMs' image and readiness (#43): `runner/startup.sh`, the templates' startup-script, marks a VM ready
   (`/var/run/runner-ready`) only once Docker answers, for the autoscaler's `instance_ready_command`; `runner-image build`
@@ -137,7 +144,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
 - **Known gaps:** the model's own user (#68) takes effect with the image built after its land (the broker,
-  `looper-docker-broker`, is in it); the manager's gates still run a report's commits as its job's user, and the
+  `looper-docker-broker`, is in it); the verdict job's gates (#90) still run a report's commits as its job's user,
+  which writes the verdict the manager job trusts, and the
   broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads tacplus-dev/build's
   jobs with `GITLAB_TOKEN` (#85), its bot a Reporter there once tacplus-dev/cloud#12's `apply:gitlab` has run on
   main (until then `sources` names the 404), and the image's revision only where it has `docker buildx`:
@@ -174,7 +182,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   a repository once its commit is pinned (only this one is: `build.lock`; the hub files the others' pin issues) and
   the report and manager jobs hold `BUILD_TRIGGER_TOKEN` (not yet set in tacplus-dev/looper), and need the hub's copy
   of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
-  job and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
+  job (with the apps, its verdict job: #90) and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
   repository is pinned, and an image build in the build job without host Docker waits on rootless BuildKit
   (tacplus-dev/tacplus#315), both the follow-up's (PROPOSALS.md); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
@@ -191,7 +199,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   decide`) is the hub's to wire; no release line yet
 - **Blocked on:** "only the manager writes main" (#83) is enforced once Jody creates and installs the two apps,
   imports their keys to KMS with their bindings, applies the ruleset and swaps `GH_TOKEN` for the apps' variables
-  (README, Only the manager writes main, Setting it up); until then every job uses `GH_TOKEN` as before; the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
+  (README, Only the manager writes main, Setting it up); until then every job uses `GH_TOKEN` as before, and the
+  plan does not split the manager (#90): it splits only with the apps; the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
   identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
   tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`
   app; #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build

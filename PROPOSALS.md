@@ -4,6 +4,21 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The verdict a test can write** (2026-11-05, #90): the manager split in two keeps the manager's token out of the
+  job that runs a report's code, but the verdict job's gates run as that job's user. That user writes the verdict
+  (each land's exit) and pushes `looper/staging`, so a test the batch lands can forge a green the manager job then
+  merges. It can no longer hold the bypass, nor reach main past the manager job's checks (staging the commit the
+  verdict named, on the main it was built on). The gates as a user of their own in the verdict job (below) would put
+  the verdict and the staging push out of its reach; a build job per batch (#86) ends it.
+- **A release's HISTORY.md line queued by its report** (2026-11-05, #90): the split manager job adds a release's
+  line for each tag that came after its verdict job started. A tag pushed between batches gets none, as one pushed
+  between the one manager's jobs got none. The report that tags a release could queue its line beside its closed
+  issue's (`.looper/history`), which reaches the manager whenever it runs.
+- **Regeneration in the build** (2026-11-05, #90): the one manager a pinned repository keeps holds the manager's
+  token, so it regenerates nothing. A rebase that conflicts only in files `generated.yaml` maps is sent back to its
+  report, where the split's verdict job, and the one manager before #90, resolved it. The build job could regenerate
+  them and build the result (the merge train's batch, #86), or the pinned repositories could keep the split until it
+  does.
 - **The tacplus wrapper refuses a directory the host cannot see** (2026-11-05, #79): its compiler is a sibling
   container mounting the checkout at its own path, so a checkout outside the runner's `/builds` bind mount (the
   manager's scratch worktrees in the job's `/tmp`, until #79) showed it an empty directory, and every land of a
@@ -218,7 +233,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   (README, Credentials).
 - **The land's gates as a user of their own** (2026-11-03, #68): a model runs as its own user, but the land's
   gates run its commits (its tests, its gate map's commands, `--gates CMD`) as the job's user, which holds the
-  withheld credentials and the Docker socket: what a model cannot read itself, a test it lands can. The gates
+  withheld credentials and the Docker socket: what a model cannot read itself, a test it lands can. Since #90 that
+  job (the verdict job) holds the report app's token, not the manager's, and its gates' environment none of the
+  job's credentials; the user still owns them on disk. The gates
   could run as a gates user per land (its clone, no socket but a broker of its own, the credentials out of its
   environment), as the model does; the push and the comments after them stay the lander's.
 - **The full gates as a model's user** (2026-11-03, #69): a model runs the gates as its own user, its docker the

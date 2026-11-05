@@ -1194,9 +1194,37 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
   them. Their issues are left out of the kicker's and the plan's search (`--visibility public`) until Jody decides
   otherwise (`LOOPER_PRIVATE_REPORTS=1`; the hub's call, 2026-11-04). Their nightly scans still run.
 
-What it is not: the manager's gates run each report's commits as the manager's job's user, which holds the manager's
-token. A report's tests therefore reach main through what they land (PROPOSALS.md, "The land's gates as a user of their
-own"), as they always reached the job's user.
+**The manager split in two** (looper#90; tacplus-dev/roadmap
+`suggestions/2026-11-05-the-manager-s-token-out-of-the-job-that-runs-a-report-s-code.md`). A land's gates run a report's
+commits, its tests among them, as the job's user. In the manager's job that user holds the id_token that mints
+`tacplus-manager`, so a test could mint the bypass itself. So, with the apps, the job that holds that token runs no
+repository code, and the plan gives a repository two jobs for a batch, both on main's resource group:
+
+- **`looper-<repo>-verdict`** (environment `looper-report`, the report app's token; `repo-looper --verdict DIR`) takes
+  the queued lands oldest first. It merges each onto `looper/staging` (main, then the green lands before it), regenerates
+  the files `generated.yaml` maps, and runs its gate set, with none of the job's credentials in the gates' environment.
+  It pushes staging and writes the verdict (main, staging, each land's exit and record) as its artifacts. It comments on
+  no issue and never touches main. A gate that asks for the manager's token gets none: KMS refuses `looper-report` the
+  manager's key.
+- **`looper-<repo>-manager`** (environment `looper-manager`, `needs:` the verdict's artifacts; `repo-looper --merge DIR`)
+  runs no repository code: no rebase, no generator, no gate. A call to one there is a bug and fatal. It checks that
+  `looper/staging` is the commit the verdict named and that main is still the one the verdict was built on. Then it
+  fast-forwards main to staging and deletes staging. It posts each verdict on its issue, deletes the merged branches,
+  and adds the `HISTORY.md` lines: the closed issues', and a release's for each tag that came after the verdict job
+  started. If anything moved, it merges nothing and gives no verdict. The lands stay queued, and the kicker's next
+  batch judges them again.
+- A batch under way (its verdict or manager job active) gets no second pair; the kicker starts the next once it is done.
+  A report that starts while its verdict job waits for a runner yields to it (looper#75).
+- **A pinned repository keeps its one manager**, whose gates are build jobs (looper#71). The plan splits every other
+  one; it reads the pin (`tacplus.lock`, `build.lock`) on the repository's main only when it holds `BUILD_TRIGGER_TOKEN`
+  itself. The split goes away for each repository as it is pinned. That one manager still runs no repository code. A
+  land whose gates would run in its job (the trigger missing, the pin gone) is not merged (exit 6). It regenerates
+  nothing: such a conflict is sent back.
+- Without the apps no job holds the manager's token, and the one manager works as before.
+
+What it is not: the verdict job's gates still decide its verdict, which the manager job takes as data. A report's test
+can fail its batch, or claim a green it did not earn, as it always could. What it cannot do is reach main except
+through the manager job's checks, or hold the bypass.
 
 ```sh
 looper-token start report|manager DIR [PID]   # a job's token, as DIR/hosts.yml, fresh until PID ends (repo-looper, looper-dispatch)

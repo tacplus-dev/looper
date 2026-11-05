@@ -19,7 +19,8 @@
 #   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
 #                                      order the plan takes them: priority:high first (looper#31)
 #   looper-dispatch plan               the pipeline's child jobs: a report per ready issue, up to each
-#                                      repository's cap, and its manager (on a schedule, a scan per
+#                                      repository's cap, and its manager (with the apps, its verdict
+#                                      and manager jobs, looper#90; on a schedule, a scan per
 #                                      repository), as YAML
 #                                      on stdout (ci/instance.gitlab-ci.yml, ci/tacplus-dev.gitlab-ci.yml)
 #   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
@@ -188,7 +189,10 @@ pass() {
 # planned or commits queued to land (looper:landing), its manager,
 # looper-<repo>-manager running repo-looper --manage, the only job that merges
 # to its main (resource_group looper-<repo>-main), unless one is already
-# waiting to start. The managers come first (looper#75): a pool's runner starts
+# waiting to start; with the apps, unless the repository's gates are build
+# jobs, the manager split in two (looper#90, split_manager below): its verdict
+# job and its manager job, unless a batch is under way. The managers come
+# first (looper#75): a pool's runner starts
 # its pending jobs in id order, the plan's, and a manager behind its own reports
 # waits for every one of them to get a VM while their work stays unmerged and the
 # later ones start from a stale main. LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
@@ -227,6 +231,18 @@ plan() {
     landing="$(landing_repos)" || landing=""
     for repo in $landing; do [[ "$managed" == *" $repo "* ]] || managed+="$repo "; done
     for repo in $managed; do
+      if split_manager "$repo"; then
+        # A batch under way (its verdict or its manager active) is not doubled:
+        # the kicker starts the next once it is done.
+        if grep -qE "^($(verdict_job "$repo")|$(manager_job "$repo")) (created|pending|waiting_for_resource|running)\$" <<<"$statuses"; then
+          log "$repo's batch is under way ($(verdict_job "$repo"), $(manager_job "$repo")); not planned again" >&2; continue
+        fi
+        PLAN_ARTIFACTS="looper-verdict/" \
+          plan_job "$(verdict_job "$repo")" "${LOOPER_MANAGER_TIMEOUT:-11h}" "looper-$repo-main" --repo "$repo" --verdict looper-verdict
+        PLAN_NEEDS="$(verdict_job "$repo")" \
+          plan_job "$(manager_job "$repo")" 1h "looper-$repo-main" --repo "$repo" --merge looper-verdict
+        any=1; continue
+      fi
       # One already waiting to start serves these too; one running may be ending.
       if grep -qE "^$(manager_job "$repo") (created|pending|waiting_for_resource)\$" <<<"$statuses"; then
         log "$(manager_job "$repo") is already waiting to start; not planned again" >&2; continue
@@ -239,9 +255,34 @@ plan() {
     "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"
 }
 
-# A planned job's environment (looper#83), by its repo-looper arguments.
+# A planned job's environment (looper#83), by its repo-looper arguments: the
+# verdict job's is a report's (looper#90).
 job_environment() { # --repo REPO args...
-  case " $* " in *" --manage "*) echo looper-manager ;; *" --scan "*) echo looper-scan ;; *) echo looper-report ;; esac
+  case " $* " in *" --manage "*|*" --merge "*) echo looper-manager ;; *" --scan "*) echo looper-scan ;; *) echo looper-report ;; esac
+}
+
+# The manager split in two (looper#90; README, Only the manager writes main):
+# with the apps, a repository whose gates would run in its manager's job, as
+# the manager's token's user, gets two jobs for a batch instead: its verdict
+# job, looper-<repo>-verdict in environment looper-report, merges the queued
+# lands onto looper/staging, regenerates, runs their gates and pushes staging
+# with the report app's token (repo-looper --verdict); its manager job,
+# looper-<repo>-manager in environment looper-manager, needs the verdict's
+# artifacts, runs no repository code, and fast-forwards main to staging when
+# staging is the commit the verdict named (repo-looper --merge). Only a
+# repository whose main pins its build image (tacplus.lock, build.lock), in a
+# project that has the build trigger (BUILD_TRIGGER_TOKEN), keeps the one
+# manager: its gates are build jobs (looper#71). Without the apps no job holds
+# the manager's token: the one manager, as before.
+verdict_job() { echo "looper-$1-verdict"; } # repo
+split_manager() { # repo
+  local f
+  apps || return 1
+  [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] || return 0
+  for f in tacplus.lock build.lock; do
+    gh api "repos/$LOOPER_ORG/$1/contents/$f" --silent >/dev/null 2>&1 && return 1
+  done
+  return 0
 }
 
 # One job of the plan, its repository's; repo-looper's arguments are names and
@@ -261,6 +302,7 @@ $name:
   resource_group: $group
   timeout: $t
 YML
+  [[ -z "${PLAN_NEEDS:-}" ]] || printf '  needs: [{job: %s, artifacts: true}]\n' "$PLAN_NEEDS"
   # With the apps (looper#83): the id_token looper-token exchanges, and the
   # environment that GCP's binding of each app's key names.
   if apps; then
@@ -279,7 +321,7 @@ YML
   artifacts:
     when: always
     expire_in: 30 days
-    paths: [looper-runs/]
+    paths: [looper-runs/${PLAN_ARTIFACTS:+, $PLAN_ARTIFACTS}]
 YML
 }
 

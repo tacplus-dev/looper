@@ -12,6 +12,11 @@
 #   repo-looper --repo NAME             the report of NAME's next ready issue (priority:high first)
 #   repo-looper --repo NAME --manage    the manager: merges the reports' queued branches on main, one
 #                                       at a time, while the repository has a report running or a land queued
+#   repo-looper --repo NAME --verdict DIR   the manager split in two (looper#90), its verdict job: the
+#                                       queued lands merged onto looper/staging, their gates run, staging
+#                                       pushed, the verdict written to DIR; never main
+#   repo-looper --repo NAME --merge DIR    its manager job: main fast-forwarded to the staging the verdict
+#                                       in DIR names, and the verdicts posted; runs no repository code
 #   repo-looper --repo NAME --scan      the nightly scan: file issues, change no code; of the platform's
 #                                       roadmap repository, the suggestion pass (looper#50)
 #   repo-looper --repo NAME --list      print the ready issues; in a GitLab job, none while NAME
@@ -55,7 +60,9 @@
 # (looper#41): the model's docker is looper-docker. The gates a land runs are
 # the set its diff calls for: the repository's gates.yaml maps paths to gate
 # sets, and anything in doubt (a path it does not map, a change to the map)
-# runs the full gates.
+# runs the full gates. With the apps, a manager whose gates would run in its
+# own job is split in two (looper#90; --verdict and --merge, below): the job
+# that holds the manager's token runs no repository code.
 #
 # Build jobs (looper#71; tacplus-dev/roadmap
 # decisions/builds-in-containers-2026-11-03.md): agents never build. In a
@@ -207,7 +214,7 @@ source "$LOOPER_LIB"
 # This script's own path, for the model's --checkpoint.
 : "${LOOPER_SELF:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")}"
 
-REPO=""; ISSUE=""; MODE=next; STEP=""; LAND_GATES=""
+REPO=""; ISSUE=""; MODE=next; STEP=""; LAND_GATES=""; VERDICT_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) REPO="$2"; shift 2 ;;
@@ -217,6 +224,8 @@ while [[ $# -gt 0 ]]; do
     --build) MODE=build; shift ;;
     --gates) LAND_GATES="$2"; shift 2 ;;
     --manage) MODE=manage; shift ;;
+    --verdict) VERDICT_DIR="$2"; MODE=verdict; shift 2 ;;
+    --merge) VERDICT_DIR="$2"; MODE=merge; shift 2 ;;
     --job-timeout) ISSUE="$2"; MODE=job-timeout; shift 2 ;;
     --scan) MODE=scan; shift ;;
     --list) MODE=list; shift ;;
@@ -225,6 +234,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$REPO" ]] || die "no repository: --repo NAME (a $LOOPER_ORG repository)"
+[[ -z "$VERDICT_DIR" || "$VERDICT_DIR" == /* ]] || VERDICT_DIR="$PWD/$VERDICT_DIR"
 
 # The think job holds no identity (looper#28): no write credential, no
 # id_token, nothing shaped like a personal or OAuth token. GitHub is read with
@@ -265,12 +275,17 @@ project_jobs() { # [scopes]
 # Whether the repository's manager job waits for a runner (created or pending,
 # looper#75): a report that starts meanwhile, pending from an earlier pipeline
 # with a lower id than the manager a later plan wrote, yields to it. Not one
-# waiting for main's resource_group: the manager holding it merges. Outside a
-# GitLab job, or when GitLab cannot be read, it does not.
+# waiting for main's resource_group: the manager holding it merges. A batch
+# split in two (looper#90) waits when its verdict job does: its manager job is
+# created until the verdict is done. Outside a GitLab job, or when GitLab
+# cannot be read, it does not.
 manager_waiting() {
   [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 1
-  curl -fsS --retry 2 -H @<(gitlab_auth) "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?scope[]=created&scope[]=pending&per_page=100" \
-    | jq -e --arg m "$(manager_job "$REPO")" 'any(.[]; .name == $m and (.status | IN("created", "pending")))' >/dev/null
+  curl -fsS --retry 2 -H @<(gitlab_auth) "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs?scope[]=created&scope[]=pending&scope[]=running&per_page=100" \
+    | jq -e --arg m "$(manager_job "$REPO")" --arg v "looper-$REPO-verdict" '
+        (map(select(.name == $v)) | first) as $verdict
+        | if $verdict then ($verdict.status | IN("created", "pending"))
+          else any(.[]; .name == $m and (.status | IN("created", "pending"))) end' >/dev/null
 }
 
 # This GitLab job's status as GitLab reports it (running, failed, canceled...),
@@ -451,9 +466,15 @@ mkdir -p "$RUNS"
 # looper-token keeps fresh for this process's life. Without the apps, GH_TOKEN
 # as before.
 TOKEN_CMD="${LOOPER_TOKEN:-$(dirname "$LOOPER_SELF")/looper-token}"   # looper-token (a test's stub)
-MANAGER_GH=""
+MANAGER_GH=""; MANAGER_TOKEN=""; VERDICT_JOB=""
 job_identity() {
-  [[ "$LOOPER_FORGE" == github && "$MODE" =~ ^(one|manage|scan)$ ]] && "$TOKEN_CMD" configured || return 0
+  # The manager split in two (looper#90): each job in its own environment, the
+  # one GCP's binding of its key names; a job in the other's refuses to run.
+  case "$MODE:${CI_ENVIRONMENT_NAME:-}" in
+    verdict:looper-manager) die "the verdict job runs a report's code: never in environment looper-manager, whose key mints the manager's token (looper#90)" ;;
+    merge:?*) [[ "$CI_ENVIRONMENT_NAME" == looper-manager ]] || die "the manager job merges as looper-manager, the environment of the manager's key: this job's is $CI_ENVIRONMENT_NAME (looper#90)" ;;
+  esac
+  [[ "$LOOPER_FORGE" == github && "$MODE" =~ ^(one|manage|scan|verdict|merge)$ ]] && "$TOKEN_CMD" configured || return 0
   local v held=() tokens
   for v in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN; do [[ -z "${!v:-}" ]] || held+=("$v"); done
   for v in $(compgen -e); do
@@ -465,9 +486,11 @@ job_identity() {
   # The report's token is its model's to read too; the manager's, the job's user's alone.
   tokens="$(mktemp -d -t looper-tokens.XXXXXX)"; chmod 0711 "$tokens"
   mkdir -m 0755 "$tokens/report"; mkdir -m 0700 "$tokens/manager"
-  if [[ "$MODE" == manage ]]; then
+  if [[ "$MODE" =~ ^(manage|merge)$ ]]; then
     "$TOKEN_CMD" start manager "$tokens/manager" $$ >/dev/null || die "no manager token (looper-token)"
     export GH_CONFIG_DIR="$tokens/manager"
+    # The one manager holds it beside the gates it would run: it runs none (looper#90).
+    [[ "$MODE" != manage ]] || MANAGER_TOKEN=1
   else
     "$TOKEN_CMD" start report "$tokens/report" $$ >/dev/null || die "no report token (looper-token)"
     export GH_CONFIG_DIR="$tokens/report"
@@ -707,13 +730,20 @@ GEN_MAP=generated.yaml
 # once, at the root, every tracked file it changes taken; the rebase goes on.
 # Any other conflict, or a command that fails, aborts it. REGENERATED: what was
 # regenerated, "<file> (<command>)" a line; CONFLICTS: the files it did not
-# resolve.
+# resolve. ONTO is what it rebases on: origin/main, or a verdict job's
+# staging (looper#90). A job that holds the manager's token runs no
+# repository code (looper#90): it regenerates nothing.
+ONTO=origin/main
 rebase_on_main() {
   local map files f s p hit sets i
-  REGENERATED=""; CONFLICTS=""
-  git rebase -q origin/main >/dev/null 2>&1 && return 0
+  REGENERATED=""; CONFLICTS=""; REGEN_REFUSED=""
+  no_repo_code "a rebase"
+  git rebase -q "$ONTO" >/dev/null 2>&1 && return 0
   map="$(mktemp)"
-  git show "origin/main:$GEN_MAP" > "$map" 2>/dev/null || : > "$map"
+  git show "$ONTO:$GEN_MAP" > "$map" 2>/dev/null || : > "$map"
+  if [[ -n "$MANAGER_TOKEN" && -s "$map" ]]; then
+    : > "$map"; REGEN_REFUSED=" (this manager holds the manager's token and runs no repository code: it regenerates nothing, looper#90)"
+  fi
   for (( i = 0; i < 1000; i++ )); do
     files="$(git diff --name-only --diff-filter=U)"
     [[ -n "$files" ]] || break
@@ -744,8 +774,15 @@ rebase_on_main() {
   done
   rm -f "$map"
   [[ -n "$CONFLICTS" ]] || CONFLICTS="$(git diff --name-only --diff-filter=U | paste -sd' ' -)"
+  CONFLICTS+="${REGEN_REFUSED:-}"
   git rebase --abort >/dev/null 2>&1 || true
   return 1
+}
+
+# The manager job of a batch split in two (looper#90) runs no repository code:
+# no rebase that may regenerate, no gates. Each is a bug there, and fatal.
+no_repo_code() { # what
+  [[ "$MODE" != merge ]] || die "the manager job runs no repository code, and this is $1: a bug (looper#90)"
 }
 
 glob_regex() { # pattern: the ERE matching the paths it names
@@ -810,6 +847,8 @@ choose_gates() { # dir base fallback
   else GATES_WHY="all $k changed paths map to $(sed 's/+/, /g' <<<"$GATES_SET")"; fi
 }
 
+onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging; fi; }
+
 # The manager's merge of a report's commits (looper#32, looper#70), in a
 # scratch worktree at them. Under the repository's landing lock it rebases them
 # onto the current main (rebase_on_main: generated files regenerated), re-runs
@@ -822,6 +861,7 @@ choose_gates() { # dir base fallback
 # in the run's `landed` file, "<main before> <main after>", with the gate set
 # when a gate map chose it, and the set and why in its `gate-sets`.
 land_work() {
+  no_repo_code "a land's gates"
   local gates out; gates="$(land_gates)"
   [[ -n "$gates" || -f "$CHECKOUT/$GATE_MAP" ]] || die "no gates to re-run before landing: $REPO has no $GATE_MAP, no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
@@ -830,8 +870,8 @@ land_work() {
   ( flock 8
     for i in 1 2 3; do
       fetch . main || { log "could not fetch main; nothing landed"; exit 1; }
-      [[ "$(git rev-list --count origin/main..HEAD)" != 0 ]] || { log "nothing to land: $BRANCH has no commit that main lacks"; exit 0; }
-      before="$(git rev-parse origin/main)"
+      [[ "$(git rev-list --count "$ONTO..HEAD")" != 0 ]] || { log "nothing to land: $BRANCH has no commit that main lacks"; exit 0; }
+      before="$(git rev-parse "$ONTO")"
       if ! rebase_on_main; then
         printf '%s\n' "$CONFLICTS" > "$out/conflicts"
         log "nothing landed: rebasing $BRANCH onto main conflicts in: $CONFLICTS. Rebase it yourself (git fetch origin && git rebase origin/main), resolve them, verify, and land again." >&2
@@ -848,24 +888,36 @@ land_work() {
       grc=0; t=$SECONDS
       if build_jobs HEAD .; then
         # A pinned repository's gates are a build job's verdict (looper#71).
-        log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
+        log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
         build_gates "$before" > "$out/gates.log" 2>&1 || grc=$?
+      elif [[ -n "$MANAGER_TOKEN" ]]; then
+        # Its gates would run beside the manager's token (looper#90).
+        log "nothing landed: this manager holds the manager's token and runs no repository code; the gates $GATES_SET would run in its job, not as a build job ($REPO pins no build image, or the job holds no BUILD_TRIGGER_TOKEN). The next batch's verdict job runs them (looper#90)." >&2
+        exit 6
       else
         [[ "$LOOPER_FORGE" != github ]] || ! pinned HEAD . || [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] ||
           log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: the gates run here, not as a build job (looper#71)"
-        log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on main $(git rev-parse --short origin/main)"
-        LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
+        log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
+        # A verdict job's gates hold none of the job's credentials: no id_token (looper#90).
+        if [[ "$MODE" == verdict ]]; then mapfile -t wh < <(model_env); else wh=(); fi
+        env "${wh[@]+"${wh[@]}"}" LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
       fi
       (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
       if (( grc != 0 )); then
-        { log "nothing landed: the gates failed (exit $grc), on your commits rebased on main; their end:"; tail -n 30 "$out/gates.log"; } >&2
+        { log "nothing landed: the gates failed (exit $grc), on your commits rebased on $(onto_name); their end:"; tail -n 30 "$out/gates.log"; } >&2
         exit 4
       fi
       if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
         log "nothing landed: the gates changed tracked files ($(git status --porcelain --untracked-files=no | awk '{ print $2 }' | paste -sd' ' -)): it is not the tested tree" >&2
         exit 4
       fi
-      if LOOPER_LANDING=1 git push -q origin HEAD:refs/heads/main; then
+      # A verdict job's green land goes on its staging, not main (looper#90).
+      if [[ "$ONTO" != origin/main ]] && git update-ref "$ONTO" HEAD "$before"; then
+        echo "$before $(git rev-parse HEAD)${GATES_MAPPED:+ $GATES_SET}" >> "$out/landed"
+        printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
+        log "green on staging: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD), on the gates $GATES_SET ($GATES_WHY)"
+        exit 0
+      elif [[ "$ONTO" == origin/main ]] && LOOPER_LANDING=1 git push -q origin HEAD:refs/heads/main; then
         echo "$before $(git rev-parse HEAD)${GATES_MAPPED:+ $GATES_SET}" >> "$out/landed"
         printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
         log "landed on main: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD), on the gates $GATES_SET ($GATES_WHY)"
@@ -1163,7 +1215,7 @@ verdict_comment() { # issue id rc record-dir sha
     [[ -z "$build" ]] || build=", a build job's verdict ($build)"
     what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green."
     [[ -z "$regen" ]] || what+=" It resolved the rebase's conflicts by regenerating them, never by hand: $(sed 's/.*/`&`/' <<<"$regen" | paste -sd, - | sed 's/,/, /g')."
-    what+=" The branch is deleted.${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
+    what+=" The branch is deleted.${VERDICT_JOB:+ Its gates: job $VERDICT_JOB.}${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
     [[ -z "$step" ]] || what+="
 
 Its report's last checkpoint:
@@ -1182,29 +1234,35 @@ $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$rec/out" | redact)")"
 
 $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$rec/out" | redact)")"
   fi
-  [[ "$rc" == 0 && -s "$rec/landed" ]] || what+="${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
+  [[ "$rc" == 0 && -s "$rec/landed" ]] || what+="${VERDICT_JOB:+ Its gates: job $VERDICT_JOB.}${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
   forge_issue_comment "$REPO" "$n" "$what
 
 $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 }
 
-# Merges one queued land (looper#70), in a scratch worktree of the manager's
-# checkout at the commits it queued (the parent of the branch's checkpoint):
-# land_work rebases them on main, runs the gates and pushes on green. Then the
-# verdict on the issue, the issue's HISTORY.md line if it queued one, and, once
-# merged, the branch deleted (unless the report pushed to it since) and the
-# issue no longer looper:landing. LAND_DEFERRED, untouched, when the land would
-# not finish before the manager's job ends.
+# Merges one queued land (looper#70): judge_land, then post_land. Fails when
+# it could not judge it; LAND_DEFERRED, untouched, when the land would not
+# finish before the manager's job ends.
 merge_report() { # issue id sha
-  local n="$1" id="$2" sha="$3" b gates wt rec rc=0 lines
-  b="$(wip_branch "$n")"
+  local rec="$MANAGER_RUN/$1-$2"
+  judge_land "$1" "$2" "$3" "$rec" || return
+  post_land "$1" "$2" "$3" "$JUDGE_RC" "$rec"
+}
+
+# Judges one queued land, in a scratch worktree of the manager's checkout at
+# the commits it queued (the parent of the branch's checkpoint): land_work
+# rebases them on ONTO (main, or a verdict job's staging), runs the gates and,
+# on green, pushes main or moves staging. Its record in rec, its exit in
+# JUDGE_RC. LAND_DEFERRED when the land would not finish before the job ends.
+judge_land() { # issue id sha rec-dir
+  local n="$1" id="$2" sha="$3" rec="$4" b gates wt ahead
+  b="$(wip_branch "$n")"; JUDGE_RC=0
   gates="$(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^gates=//p')"
-  lines="$(git -C "$CHECKOUT" show "$sha:.looper/history" 2>/dev/null || true)"
-  rec="$MANAGER_RUN/$n-$id"; mkdir -p "$rec"
+  mkdir -p "$rec"
   wt="$(scratch_dir)"; rm -rf "$wt"
   git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$sha^" || { log "#$n: cannot check out $b's commits"; return 1; }
   land_set "$wt"
-  local ahead; ahead="$(git -C "$wt" rev-list --count origin/main..HEAD)"
+  ahead="$(git -C "$wt" rev-list --count "$ONTO..HEAD")"
   if [[ "$ahead" != 0 ]] && ! land_fits "$GATES_SET"; then
     log "#$n: left queued for the next manager: this job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")")"
     git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
@@ -1212,12 +1270,26 @@ merge_report() { # issue id sha
   fi
   log "merging #$n ($b, queued $(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^queued=//p'))"
   if [[ "$ahead" == 0 ]]; then log "nothing to land: $b has no commit that main lacks" > "$rec/out"
-  else ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; land_work ) > "$rec/out" 2>&1 || rc=$?; fi
+  else ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; land_work ) > "$rec/out" 2>&1 || JUDGE_RC=$?; fi
   git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
+  return 0
+}
+
+# A judged land's end, once main has it (looper#70): the verdict on the issue,
+# the issue's HISTORY.md line if it queued one, and, once merged, the branch
+# deleted (unless the report pushed to it since) and the issue no longer
+# looper:landing.
+post_land() { # issue id sha rc rec-dir
+  local n="$1" id="$2" sha="$3" rc="$4" rec="$5" b lines
+  b="$(wip_branch "$n")"
+  lines="$(git -C "$CHECKOUT" show "$sha:.looper/history" 2>/dev/null || true)"
   JUDGED[$id]=1
-  # The nightly recap counts the conflicts it resolved against those it sent back (looper#72).
+  # The nightly recap reads the manager's job (looper#72): a split one's
+  # (looper#90) says what its verdict job judged, as the one manager does.
+  [[ "$MODE" != merge ]] || log "merging #$n ($b, queued $(git -C "$CHECKOUT" show "$sha:.looper/land" 2>/dev/null | sed -n 's/^queued=//p'))"
+  # The recap counts the conflicts it resolved against those it sent back (looper#72).
   [[ ! -s "$rec/regenerated" ]] || log "#$n: resolved its conflicts by regenerating: $(paste -sd, - < "$rec/regenerated" | sed 's/,/, /g')"
-  if (( rc == 0 )); then log "#$n: $(grep 'landed on main\|nothing to land' "$rec/out" | tail -n 1 | cut -c24-)"; else log "#$n: not merged (exit $rc)"; fi
+  if (( rc == 0 )); then log "#$n: $(grep 'landed on main\|green on staging\|nothing to land' "$rec/out" | tail -n 1 | cut -c24- | sed 's/^green on staging:/landed on main:/')"; else log "#$n: not merged (exit $rc)"; fi
   # A history request has nothing to merge, and is no merge to report.
   [[ -n "$lines" && "$rc" == 0 && ! -s "$rec/landed" ]] || verdict_comment "$n" "$id" "$rc" "$rec" "$sha" || log "#$n: could not comment the verdict"
   if (( rc == 0 )); then
@@ -1283,6 +1355,100 @@ manage() {
     elif (( $(date +%s) - idle_since >= MANAGER_LINGER )); then log "no report at work and no land queued; the manager ends"; return 0; fi
     sleep "$MANAGER_POLL"
   done
+}
+
+# --- the manager split in two (looper#90) ---------------------------------------
+#
+# Until a repository's gates run as build jobs (looper#71), the job that runs
+# them must not hold the manager's token (README, Only the manager writes
+# main): a report's test runs as the job's user, beside the id_token that
+# mints it. So the plan (looper-dispatch, with the apps) splits the manager:
+# the verdict job (--verdict DIR, environment looper-report, the report app's
+# token) judges the queued lands oldest first, each rebased on looper/staging
+# (main, then each green land before it; generated files regenerated) and on
+# its own gates, pushes staging and writes the verdict to DIR, its artifacts:
+# `verdict` (main=, staging=, job=), `lands` ("<issue> <id> <sha> <rc>" a line,
+# in order) and each land's record. It comments on no issue and never touches
+# main. The manager job (--merge DIR, looper-manager, the only job with the
+# manager's token) runs no repository code: it checks that looper/staging is
+# the commit the verdict named and that main is still the one it was built on,
+# fast-forwards main to it, and posts each verdict, the HISTORY.md lines and
+# the releases' lines (each tag that came since the verdict job started).
+# Anything else moved, it merges nothing and gives no verdict: the lands stay
+# queued for the next batch.
+STAGING=looper/staging
+STAGING_REF=refs/looper/staging
+
+verdict_batch() {
+  local q n id sha rc main staging
+  MANAGER_RUN="$VERDICT_DIR"
+  [[ ! -e "$VERDICT_DIR/verdict" ]] || die "$VERDICT_DIR holds a verdict already"
+  mkdir -p "$VERDICT_DIR"; : > "$VERDICT_DIR/lands"
+  sync_checkout
+  ensure_labels "$REPO"
+  # The tags before any gate runs: the releases since are the manager job's to note.
+  release_tags > "$VERDICT_DIR/tags"
+  main="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  git -C "$CHECKOUT" update-ref "$STAGING_REF" "$main"
+  ONTO="$STAGING_REF"
+  log "the verdict job of $REPO: its queued lands onto $STAGING, on main ${main:0:7}"
+  q="$(queued_lands)" || die "could not read $REPO's branches"
+  while read -r _ n id sha; do
+    [[ -n "$n" ]] || continue
+    rc=0; judge_land "$n" "$id" "$sha" "$VERDICT_DIR/$n-$id" || rc=$?
+    (( rc != LAND_DEFERRED )) || { log "the verdict job stops: its time is short; the next batch judges what is left"; break; }
+    (( rc == 0 )) || continue
+    echo "$n $id $sha $JUDGE_RC" >> "$VERDICT_DIR/lands"
+    if (( JUDGE_RC == 0 )); then log "#$n: green"; else log "#$n: not merged (exit $JUDGE_RC)"; fi
+  done <<<"$q"
+  staging="$(git -C "$CHECKOUT" rev-parse "$STAGING_REF")"
+  git -C "$CHECKOUT" push -q -f origin "$staging:refs/heads/$STAGING" || die "could not push $STAGING"
+  printf 'main=%s\nstaging=%s\njob=%s\n' "$main" "$staging" "${CI_JOB_URL:-}" > "$VERDICT_DIR/verdict"
+  log "the verdict: $STAGING at ${staging:0:7}, $(grep -c ' 0$' "$VERDICT_DIR/lands" || true) of $(wc -l < "$VERDICT_DIR/lands") lands green; the manager job fast-forwards main to it"
+}
+
+merge_batch() {
+  local v main staging job remote n id sha rc tags t new=() lines
+  v="$VERDICT_DIR/verdict"
+  [[ -f "$v" ]] || die "no verdict in $VERDICT_DIR: the verdict job wrote none"
+  main="$(sed -n 's/^main=//p' "$v")"; staging="$(sed -n 's/^staging=//p' "$v")"; job="$(sed -n 's/^job=//p' "$v")"
+  [[ "$main" =~ ^[0-9a-f]{40}$ && "$staging" =~ ^[0-9a-f]{40}$ ]] || die "not a verdict: $v"
+  [[ "$job" =~ ^https://[^[:space:]\`]+$ ]] && VERDICT_JOB="$job"
+  MANAGER_RUN="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-manager"; mkdir -p "$MANAGER_RUN"
+  sync_checkout
+  ensure_labels "$REPO"
+  log "the manager of $REPO: main to $STAGING ${staging:0:7}, the verdict's"
+  remote="$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$STAGING" | cut -f1)"
+  [[ "$remote" == "$staging" ]] ||
+    die "nothing merged: $STAGING moved since the verdict (it is ${remote:-gone}, the verdict named $staging); the lands stay queued for the next batch"
+  fetch "$CHECKOUT" "+refs/heads/$STAGING:refs/remotes/origin/$STAGING" main || die "could not fetch $STAGING"
+  [[ "$(git -C "$CHECKOUT" rev-parse origin/main)" == "$main" ]] ||
+    die "nothing merged: main moved since the verdict (it is $(git -C "$CHECKOUT" rev-parse --short origin/main), the verdict was on ${main:0:7}); the lands stay queued for the next batch"
+  git -C "$CHECKOUT" merge-base --is-ancestor "$main" "$staging" || die "nothing merged: $STAGING is not on main ${main:0:7}"
+  if [[ "$staging" != "$main" ]]; then
+    ( flock 8; LOOPER_LANDING=1 git -C "$CHECKOUT" push -q origin "$staging:refs/heads/main" ) 8>"$LAND_LOCK" ||
+      die "nothing merged: main did not fast-forward to $STAGING ${staging:0:7} (it moved); the lands stay queued for the next batch"
+    log "main fast-forwarded: ${main:0:7}..${staging:0:7}"
+  fi
+  # Main moves only now: the planning files after the fast-forward.
+  land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
+  fetch "$CHECKOUT" main || true
+  while read -r n id sha rc; do
+    [[ "$n" =~ ^[0-9]+$ && "$id" =~ ^[A-Za-z0-9_-]+$ && "$sha" =~ ^[0-9a-f]{40}$ && "$rc" =~ ^[0-9]+$ ]] || continue
+    if land_verdict "$n" "$id" >/dev/null; then log "#$n: its verdict is given already"; continue; fi
+    fetch "$CHECKOUT" "+refs/heads/$(wip_branch "$n"):refs/remotes/origin/$(wip_branch "$n")" 2>/dev/null || true
+    # The land the verdict names is the one its branch queued.
+    git -C "$CHECKOUT" show "$sha:.looper/land" 2>/dev/null | grep -qx "id=$id" ||
+      { log "#$n: the verdict names land $id at ${sha:0:7}, which its branch did not queue; no verdict given"; continue; }
+    post_land "$n" "$id" "$sha" "$rc" "$VERDICT_DIR/$n-$id"
+  done < "$VERDICT_DIR/lands"
+  git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$STAGING:$staging" origin --delete "$STAGING" 2>/dev/null || true
+  tags="$(cat "$VERDICT_DIR/tags" 2>/dev/null || true)"
+  for t in $(release_tags | grep -vxF -f <(sed '/^$/d' <<<"$tags") || true); do
+    new+=("- $(date -u +%F) looper release $t ($(forge_web "$REPO" release "$t"))")
+  done
+  if (( ${#new[@]} )); then land "HISTORY.md: releases (looper)" append_history "${new[@]}"; fi
+  log "the manager job of $REPO is done"
 }
 
 # A run's last landing, as "<main before>..<main after>, on the gates <set>".
@@ -2958,6 +3124,8 @@ case "$MODE" in
   scan) trap disk_log EXIT; scan ;;
   think) think_issue "$ISSUE" ;;
   manage) trap disk_log EXIT; manage ;;
+  verdict) trap disk_log EXIT; verdict_batch ;;
+  merge) merge_batch ;;
   one)
     forge_issue_view "$REPO" "$ISSUE" labels '.labels[].name' | grep -qx "$LABEL_APPROVED" \
       || die "#$ISSUE is not labeled $LABEL_APPROVED"
