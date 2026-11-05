@@ -75,7 +75,8 @@
 # was killed outright (looper#20).
 #
 # The manager's checkout, LOOPER_WORK/NAME/checkout, and each report's clone,
-# LOOPER_WORK/NAME/issues/N, are kept across runs. Claude may run sub-agents
+# LOOPER_WORK/NAME/issues/N, are kept across runs; the manager's scratch
+# worktrees are under LOOPER_WORK/NAME/scratch (looper#79). Claude may run sub-agents
 # in its clone for independent parts; only the report's top-level run commits
 # and lands, through the manager, on main (pre-production rule, Jody 2026-10-26).
 #
@@ -335,6 +336,12 @@ WORK="${LOOPER_WORK:-/work}/$REPO"
 MAIN_CHECKOUT="$WORK/checkout"
 CHECKOUT="$MAIN_CHECKOUT"; BRANCH=main
 report_dir() { echo "$WORK/issues/$1"; } # issue
+# A scratch worktree's directory, under WORK, never the job's /tmp: the gates
+# and regenerations run there start the tacplus compiler as a sibling
+# container, which mounts it at its own path on the host, and of the job's
+# files only LOOPER_WORK is there (the runner's /builds bind mount). Elsewhere
+# it saw an empty directory (looper#79).
+scratch_dir() { mkdir -p "$WORK/scratch" && mktemp -d "$WORK/scratch/XXXXXX"; }
 # A report, and the model's --checkpoint and --land from a report's clone.
 if [[ "$MODE" == one ]] || [[ "$MODE" =~ ^(checkpoint|land|build)$ && -e "$(report_dir "$ISSUE")/.git" ]]; then
   CHECKOUT="$(report_dir "$ISSUE")"; BRANCH="looper/$REPO-$ISSUE"
@@ -587,7 +594,7 @@ LAND_LOCK="$WORK/.land.lock"
 # Holds the landing lock. Never fatal.
 land() { # message command [args...]
   local msg="$1" wt; shift
-  wt="$(mktemp -d)"; mkdir -p "$WORK"
+  wt="$(scratch_dir)"
   # A scan's commits are the manager's (looper#83): its token for this alone.
   ( [[ -z "$MANAGER_GH" ]] || export GH_CONFIG_DIR="$MANAGER_GH"
     flock 8
@@ -1194,7 +1201,7 @@ merge_report() { # issue id sha
   gates="$(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^gates=//p')"
   lines="$(git -C "$CHECKOUT" show "$sha:.looper/history" 2>/dev/null || true)"
   rec="$MANAGER_RUN/$n-$id"; mkdir -p "$rec"
-  wt="$(mktemp -d)"; rm -rf "$wt"
+  wt="$(scratch_dir)"; rm -rf "$wt"
   git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$sha^" || { log "#$n: cannot check out $b's commits"; return 1; }
   land_set "$wt"
   local ahead; ahead="$(git -C "$wt" rev-list --count origin/main..HEAD)"

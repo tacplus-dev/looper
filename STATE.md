@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by looper (#83).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#79).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -21,7 +21,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-04 by lo
   on its branch (`.looper/land`, the issue `looper:landing` until the verdict) and waits for the manager's verdict
   comment; the manager (`repo-looper --manage`, `resource_group: looper-<repo>-main`) merges the queued branches
   oldest first: rebased on main, a conflict only in files `generated.yaml` maps resolved by regenerating them (never
-  a hand merge), any other sent back with the files named, the gates its diff calls for, pushed only on green, the
+  a hand merge), any other sent back with the files named, the gates its diff calls for (in a scratch worktree under its work directory,
+  which the host shares, so the tacplus compiler's sibling container sees it: not the job's /tmp, #79), pushed only on green, the
   merged branch deleted, every merge, resolution and send-back a comment on the issue with the gate verdict; it adds
   the planning files and `HISTORY.md`'s lines (closed issues', queued by their reports, and releases'); a land still
   queued when its report's time runs out is merged after it; a land its job has no time for (the last land's time

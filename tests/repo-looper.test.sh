@@ -1675,6 +1675,42 @@ lacks "$OUT" "not found"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
+# The manager's land of a tacplus project (looper#79): its gates run the
+# tacplus wrapper, whose compiler is a sibling container on the host's docker,
+# mounting the checkout at its own path. Of the job's files the host has only
+# LOOPER_WORK (the runner's /builds bind mount): a land in a scratch worktree
+# elsewhere (the job's /tmp) had the compiler see an empty directory, and
+# `generate` failed with "tacplus.yaml must declare a language". Here docker
+# is that host: a run whose -w is outside LOOPER_WORK gets an empty directory.
+scenario manager-tacplus-generate
+mkdir -p "$FIX/bin" "$FIX/work/.tacplus-home/.cache/tacplus/2.5.11"
+cat > "$FIX/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == run ]] || exit 0
+shift; w=""
+while [[ "$1" == -* ]]; do case "$1" in -e|-u|-v) shift 2 ;; -w) w="$2"; shift 2 ;; *) shift ;; esac; done
+shift   # the image
+case "$w/" in "$FIX/work"/*) cd "$w" ;; *) echo "$w" >> "$FIX/docker-empty"; cd "$(mktemp -d)" ;; esac
+exec "$@"
+EOF
+cat > "$FIX/work/.tacplus-home/.cache/tacplus/2.5.11/tacplus" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == generate ]] || exit 2
+grep -q '^language:' tacplus.yaml 2>/dev/null || { echo "INFO	No proto source configured"; echo "Error: tacplus.yaml must declare a language" >&2; exit 1; }
+echo "generated in $PWD" > "$FIX/generated"
+EOF
+chmod +x "$FIX/bin/docker" "$FIX/work/.tacplus-home/.cache/tacplus/2.5.11/tacplus"
+ln -s "$ROOT/tacplus" "$FIX/bin/tacplus"
+printf 'tacplus: "2.5"\nlanguage: go\nsrc: proto\n' > "$FIX/seed/tacplus.yaml"; echo 'tacplus: 2.5.11' > "$FIX/seed/tacplus.lock"
+git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm tacplus; git -C "$FIX/seed" push -q origin main
+queue 4 2026-11-03T10:00:00Z four.txt 4 "tacplus generate"
+manage PATH="$FIX/bin:$TMP/bin:$PATH" LOOPER_TACPLUS_HOME="$FIX/work/.tacplus-home"
+[[ ! -e "$FIX/docker-empty" ]] || fail "the compiler saw an empty directory at $(cat "$FIX/docker-empty")"
+has "$(cat "$FIX/generated" 2>/dev/null)" "generated in $FIX/work/alpha/"
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main); $OUT"
+has "$(cat "$FIX/comments")" "alpha#4 The manager merged"
+pass
+
 # A code conflict is sent back: nothing merges, the branch stays with its work,
 # the issue says which files and is no longer held, and the report's --land
 # says so and exits 3.

@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The tacplus wrapper refuses a directory the host cannot see** (2026-11-05, #79): its compiler is a sibling
+  container mounting the checkout at its own path, so a checkout outside the runner's `/builds` bind mount (the
+  manager's scratch worktrees in the job's `/tmp`, until #79) showed it an empty directory, and every land of a
+  tacplus project failed with `tacplus.yaml must declare a language`, far from the cause. The wrapper could check
+  that the container sees the checkout (its `tacplus.yaml`, say, with a cheap `test -e` in the same image) and
+  otherwise fail with "<root> is not on the docker host: run it under LOOPER_WORK".
 - **A hold that did not take is reported** (2026-11-04, #80): every label edit of the looper is `|| true`, so
   `looper:landing` was missing from every repository from #70 until #80 and no land's hold was set, without one line
   in a log anyone read (the manager's stderr had it, among its merge's lines). Labels are now created before a run
