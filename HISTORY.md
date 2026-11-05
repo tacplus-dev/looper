@@ -67,3 +67,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-05 looper issue looper-docker: a model's docker build fails with 'mkdir /.docker: permission denied' (the broker's HOME is /) (#89, 41737a1; gates: full)
 - 2026-11-05 looper issue Plan: per-repository tags apply to report jobs only; tacplus's manager and scan go to the 8-CPU pool (#91, b27aae6; gates: full)
 - 2026-11-05 looper issue Security: split the manager so the job that runs a batch's gates never holds the tacplus-manager token (#90, 67bc786; gates: full)
+- 2026-11-05 looper issue Recap: count a repository as at its cap only by running reports; otherwise report the pool's queue (#92, 56994ac; gates: full)
