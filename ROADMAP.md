@@ -34,6 +34,9 @@ Unreleased (no tags); the image is the tacplus 2.4 build environment (#1).
 - Looper jobs on the in-cluster runner: normal-pool tags, builds on spot with retry:, requests per job type, no Docker in any pod (#84). Agent, at Jody's request, 2026-11-04 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 - Recap: read tacplus-dev/build's jobs; drop the Cloud Build source (#85). Agent, at Jody's request, 2026-11-04 (`tacplus-dev/roadmap:suggestions/2026-11-04-let-the-recap-see-the-build-pipeline.md`).
 - The manager lands in batches (merge train): one build per batch on a staging candidate, main fast-forwarded on green, bisect and send back on red (#86). Agent, at Jody's request, 2026-11-04 (`tacplus-dev/roadmap:decisions/merge-train-2026-11-04.md`).
+- Security: split the manager, so the job that runs a batch's gates never holds the tacplus-manager token (#90). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
+- Per-repository job tags for reports only: tacplus's manager and scan off its reports' pool (#91). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
+- The recap's cap advice counts running reports only (#92). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
