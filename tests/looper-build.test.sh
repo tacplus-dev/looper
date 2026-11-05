@@ -149,6 +149,39 @@ spec:
       image: nginx
       securityContext:
         privileged: true'
+# Formal verification (looper#74; tacplus-dev/tacplus#275): `just verify` is
+# red when the commit has a file red (printed as tacplus verify's report);
+# `just verify-changed SHA` prints skip only when it has SHA (fetched) and
+# deps/ is unchanged since, else run, as tacplus's does.
+VERIFY_JUST='gates:
+    echo gates
+verify:
+    echo "verify ran job-token=${CI_JOB_TOKEN:-none} key=${TACPLUS_READER_APP_KEY:-none}"
+    if [ -f red ]; then cat red; exit 1; fi
+verify-changed SHA="":
+    @if [ -n "{{SHA}}" ] && git cat-file -e "{{SHA}}^{commit}" 2>/dev/null && git diff --quiet "{{SHA}}" -- deps/; then echo "skip: unchanged since {{SHA}}, verified then"; else echo run; fi'
+case_commit verify1 "$VERIFY_JUST" "$LOCK"
+vcommit() { # name path content
+  mkdir -p "$(dirname "$work/$2")"; printf '%s\n' "$3" > "$work/$2"
+  git -C "$work" add -A; git -C "$work" commit -qm "$1"; SHA[$1]="$(git -C "$work" rev-parse HEAD)"
+}
+vcommit verify1 deps/a 1
+vcommit verify2 other.txt x     # nothing verification depends on
+vcommit verify3 deps/a 2        # something it depends on
+vcommit verifyred red '=== verify rust ===
+## Rust -- kani (Bounded Model Checking)
+
+### com.example.Msg -- verify_ok
+**Status:** VERIFIED
+
+### com.example.Msg -- verify_port_bounds
+**Status:** FAILED
+**Detail:**
+```
+Counterexample: port = 65536
+```
+
+=== verify rust: FAIL (rc=1; report: target/verify/rust/verification-report.md) ==='
 git -C "$work" branch -q main scanclean
 git clone -q --bare "$work" "$SRV/repos/github.com/tacplus-dev/demo.git"
 git -C "$SRV/repos/github.com/tacplus-dev/demo.git" config uploadpack.allowAnySHA1InWant true
@@ -199,6 +232,11 @@ case "\$method \$url" in
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/previous.json" ]] || exit 22
     cp "$TMP/previous.json" "\$out" ;;
+  # The last formal verification's record (looper#74): \$TMP/verify-record.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/verify-demo/latest/record")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/verify-record" ]] || exit 22
+    cp "$TMP/verify-record" "\$out" ;;
   "PUT https://gitlab.example/api/v4/projects/42/packages/generic/"*)
     echo "package-put \$auth \${url#*/generic/} \$(sha256sum < "\$up" | cut -c1-12)" >> "$TMP/api.log" ;;
   *) echo "curl stub: \$method \$url" >&2; exit 22 ;;
@@ -420,7 +458,7 @@ pass
 
 NAME="a job that holds a write credential refuses to run, and asks GitHub for nothing"
 for c in GH_TOKEN=ghp_x GITHUB_TOKEN=x GITLAB_TOKEN=x CLAUDE_CODE_OAUTH_TOKEN=x GHCR_PUSH_TOKEN=x SOME_VAR=glpat-x OTHER=github_pat_x GCP_ID_TOKEN=x; do
-  for cmd in plan gates "status success"; do
+  for cmd in plan gates verify "status success"; do
     # shellcheck disable=SC2086
     if build BUILD_SHA="${SHA[pass]}" "$c" -- $cmd 2>"$TMP/err"; then fail "$cmd ran with $c"; fi
     verdict_is "fail: this job holds a write credential (${c%%=*})"
@@ -618,6 +656,125 @@ pass
 NAME="publish: no write credential either, but its GCP identity"
 if build "${REL[@]}" GH_TOKEN=ghp_x -- publish 2>"$TMP/err"; then fail "published with GH_TOKEN"; fi
 verdict_is "fail: this job holds a write credential (GH_TOKEN)"
+pass
+
+# --- formal verification (looper#74) -------------------------------------------------
+# The build project's API (its package registry, the last record) at gitlab.example.
+VAPI=(CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42)
+RUN400=https://gitlab.com/tacplus-dev/build/-/pipelines/400
+rec() { sed -n "s/^$1 //p" "$OUT/verify/record" | tail -n 1; } # key
+
+NAME="plan: a verify run is the verify job alone, of main's head, with the last record's commit and result"
+printf 'repo demo\nkind nightly\nchecked %s\nverified %s\nresult pass\nrun %s\n' "${SHA[verify1]}" "${SHA[verify1]}" "$RUN400" > "$TMP/verify-record"
+build BUILD_SHA= BUILD_VERIFY=true "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "verify plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+y="$OUT/build-gates.yml"
+sed -n '/^verify-demo:$/,/^verify-report:$/p' "$y" > "$TMP/v.yml"
+grep -qxF "  image: \"us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A\"" "$TMP/v.yml" || fail "not the pinned image: $(cat "$TMP/v.yml" | head -20)"
+grep -qxF "  tags: [arm64, build]" "$TMP/v.yml" || fail "not on the build runner"
+grep -qxF "    BUILD_SHA: \"$(git -C "$work" rev-parse main)\"" "$TMP/v.yml" || fail "not main's head"
+grep -qxF "    BUILD_VERIFY_SINCE: \"${SHA[verify1]}\"" "$TMP/v.yml" || fail "not the last verified commit: $(grep BUILD_ "$TMP/v.yml")"
+grep -qxF '    BUILD_VERIFY_RESULT: "pass"' "$TMP/v.yml" && grep -qxF "    BUILD_VERIFY_RUN: \"$RUN400\"" "$TMP/v.yml" || fail "not the last result and run"
+grep -qF 'bash "$CI_PROJECT_DIR/looper-build" verify' "$TMP/v.yml" || fail "the job does not run looper-build verify"
+grep -qxF '    paths: [verify/]' "$TMP/v.yml" || fail "the record is not the job's artifact"
+sed -n '/^verify-report:$/,$p' "$y" | grep -qxF '    - looper-build verify-report' || fail "no report job"
+sed -n '/^verify-report:$/,$p' "$y" | grep -qxF '  needs: [{job: "verify-demo", artifacts: true}]' || fail "the report does not read the verify job's record"
+! grep -qE '^(gates|security-demo):$' "$y" || fail "a verify run runs the gates or the security checks: $(grep -E '^[a-z]' "$y")"
+grep -qxF "package-get JOB-TOKEN: glcbt-stub verify-demo/latest/record" "$TMP/api.log" || fail "the record was not read with the job token: $(cat "$TMP/api.log")"
+pass
+
+NAME="plan: a missing or unreadable record leaves no last commit: the job runs"
+rm -f "$TMP/verify-record"
+build BUILD_SHA= BUILD_VERIFY=true "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "plan failed"
+grep -qxF '    BUILD_VERIFY_SINCE: ""' "$OUT/build-gates.yml" || fail "$(grep BUILD_VERIFY "$OUT/build-gates.yml")"
+printf 'verified %s\nresult maybe\nrun %s\n' "${SHA[verify1]}" "$RUN400" > "$TMP/verify-record"
+build BUILD_SHA= BUILD_VERIFY=true "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "plan failed"
+grep -qxF '    BUILD_VERIFY_SINCE: ""' "$OUT/build-gates.yml" || fail "an unreadable record: $(grep BUILD_VERIFY "$OUT/build-gates.yml")"
+printf 'verified %s\nresult pass\nrun "; evil\n' "${SHA[verify1]}" > "$TMP/verify-record"
+build BUILD_SHA= BUILD_VERIFY=true "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "plan failed"
+grep -qxF '    BUILD_VERIFY_SINCE: ""' "$OUT/build-gates.yml" || fail "a record whose run is no URL: $(grep BUILD_VERIFY "$OUT/build-gates.yml")"
+rm -f "$TMP/verify-record"
+pass
+
+NAME="plan: a release runs the verification beside the gates, with no change check; a verify run is no release, nor a nightly scan"
+printf 'verified %s\nresult pass\nrun %s\n' "${SHA[verify1]}" "$RUN400" > "$TMP/verify-record"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "release plan failed"
+y="$OUT/build-gates.yml"
+grep -qx 'gates:' "$y" && grep -qx 'security-demo:' "$y" && grep -qx 'verify-demo:' "$y" && grep -qx 'verify-report:' "$y" ||
+  fail "a release lacks a job: $(grep -E '^[a-z]' "$y")"
+grep -qxF '    BUILD_VERIFY_SINCE: ""' "$y" || fail "a release asked for a change check: $(grep BUILD_VERIFY "$y")"
+grep -qxF '    BUILD_TAG: "v1.2.3"' <(sed -n '/^verify-demo:$/,/^verify-report:$/p' "$y") || fail "the verify job is not the release's"
+build BUILD_SHA="${SHA[pass]}" "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "build plan failed"
+! grep -q '^verify' "$OUT/build-gates.yml" || fail "a build runs the verification"
+build BUILD_SHA= BUILD_NIGHTLY=true "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "nightly plan failed"
+! grep -q '^verify' "$OUT/build-gates.yml" || fail "the nightly security checks run the verification"
+rm -f "$TMP/verify-record"
+if build BUILD_SHA="${SHA[release]}" BUILD_VERIFY=true BUILD_TAG=v1.2.3 -- plan 2>"$TMP/err"; then fail "a verify run that is a release"; fi
+verdict_is "fail: a verify run is not a release"
+if build BUILD_SHA= BUILD_VERIFY=true BUILD_NIGHTLY=true -- plan 2>"$TMP/err"; then fail "a verify run that is a nightly scan"; fi
+verdict_is "fail: a verify run is not the nightly security checks"
+if build BUILD_SHA="${SHA[verify2]}" BUILD_VERIFY=true BUILD_VERIFY_SINCE=main -- verify 2>"$TMP/err"; then fail "verified"; fi
+verdict_is "fail: BUILD_VERIFY_SINCE 'main' is not a full commit hash"
+pass
+
+NAME="verify: a nightly with nothing changed since the last verified commit skips, its record that one's"
+build BUILD_SHA="${SHA[verify2]}" BUILD_VERIFY=true BUILD_VERIFY_SINCE="${SHA[verify1]}" BUILD_VERIFY_RESULT=pass BUILD_VERIFY_RUN="$RUN400" \
+  -- verify 2>"$TMP/err" || fail "the skip failed: $(cat "$TMP/err")"
+verdict_is pass
+! grep -q "verify ran" "$TMP/err" || fail "just verify ran"
+[[ "$(rec verified) $(rec result) $(rec run) $(rec checked)" == "${SHA[verify1]} pass $RUN400 ${SHA[verify2]}" ]] || fail "$(cat "$OUT/verify/record")"
+grep -q "^skipped unchanged since ${SHA[verify1]}" "$OUT/verify/record" || fail "$(cat "$OUT/verify/record")"
+build BUILD_SHA="${SHA[verify2]}" BUILD_VERIFY=true BUILD_VERIFY_SINCE="${SHA[verify1]}" BUILD_VERIFY_RESULT=fail BUILD_VERIFY_RUN="$RUN400" \
+  -- verify 2>"$TMP/err" || fail "the skip failed"
+[[ "$(rec result)" == fail ]] || fail "a skip did not keep the last result: $(cat "$OUT/verify/record")"
+pass
+
+NAME="verify: a nightly runs on a change, with no record, and when the change check cannot tell"
+for since in "${SHA[verify2]}" "" "$(printf '9%.0s' {1..40})"; do
+  build BUILD_SHA="${SHA[verify3]}" BUILD_VERIFY=true BUILD_VERIFY_SINCE="$since" BUILD_VERIFY_RESULT="${since:+pass}" BUILD_VERIFY_RUN="${since:+$RUN400}" \
+    CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/401 -- verify 2>"$TMP/err" || fail "since '$since': $(cat "$TMP/err")"
+  verdict_is pass
+  grep -qxF "verify ran job-token=none key=none" "$OUT/verify/verify.log" || fail "since '$since': $(cat "$OUT/verify/verify.log" 2>/dev/null)"
+  [[ "$(rec verified) $(rec result) $(rec run)" == "${SHA[verify3]} pass https://gitlab.com/tacplus-dev/build/-/pipelines/401" ]] || fail "$(cat "$OUT/verify/record")"
+  ! grep -q '^skipped' "$OUT/verify/record" || fail "$(cat "$OUT/verify/record")"
+done
+pass
+
+NAME="verify: a release tag always runs, with no change check"
+build BUILD_SHA="${SHA[verify2]}" BUILD_TAG=v1.2.3 BUILD_VERIFY_SINCE="${SHA[verify1]}" BUILD_VERIFY_RESULT=pass BUILD_VERIFY_RUN="$RUN400" \
+  -- verify 2>"$TMP/err" || fail "the release's verification failed: $(cat "$TMP/err")"
+grep -qxF "verify ran job-token=none key=none" "$OUT/verify/verify.log" || fail "just verify did not run"
+[[ "$(rec kind) $(rec verified) $(rec result)" == "release ${SHA[verify2]} pass" ]] || fail "$(cat "$OUT/verify/record")"
+pass
+
+NAME="verify: a red run fails, its record red, its failed harness and counterexample kept"
+if build BUILD_SHA="${SHA[verifyred]}" BUILD_VERIFY=true -- verify 2>"$TMP/err"; then fail "a red verification passed"; fi
+verdict_is "fail: just verify exited 1"
+[[ "$(rec verified) $(rec result)" == "${SHA[verifyred]} fail" ]] || fail "$(cat "$OUT/verify/record")"
+grep -qxF '### com.example.Msg -- verify_port_bounds' "$OUT/verify/failures.md" && grep -qxF 'Counterexample: port = 65536' "$OUT/verify/failures.md" ||
+  fail "failures: $(cat "$OUT/verify/failures.md")"
+! grep -q verify_ok "$OUT/verify/failures.md" || fail "a verified harness is a failure: $(cat "$OUT/verify/failures.md")"
+grep -q 'verify rust: FAIL' "$OUT/verify/log-tail" || fail "no log tail"
+RED_OUT="$OUT"
+pass
+
+NAME="verify: a repository with no verify recipe has nothing to verify"
+build BUILD_SHA="${SHA[pass]}" BUILD_TAG=v1.2.3 -- verify 2>"$TMP/err" || fail "failed: $(cat "$TMP/err")"
+verdict_is pass
+[[ "$(rec result)" == none ]] || fail "$(cat "$OUT/verify/record")"
+pass
+
+NAME="verify-report: the record, the failures and the log's tail as the repository's latest, with the job's token"
+build BUILD_SHA="${SHA[verifyred]}" BUILD_OUT="$RED_OUT" "${VAPI[@]}" -- verify-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+for f in record failures.md log-tail; do
+  grep -q "^package-put JOB-TOKEN: glcbt-stub verify-demo/latest/$f " "$TMP/api.log" || fail "$f not published: $(cat "$TMP/api.log")"
+done
+build BUILD_SHA="${SHA[verify2]}" BUILD_VERIFY=true BUILD_VERIFY_SINCE="${SHA[verify1]}" BUILD_VERIFY_RESULT=fail BUILD_VERIFY_RUN="$RUN400" -- verify 2>"$TMP/err"
+SKIP_OUT="$OUT"
+build BUILD_SHA="${SHA[verify2]}" BUILD_OUT="$SKIP_OUT" "${VAPI[@]}" -- verify-report 2>"$TMP/err" || fail "the report failed"
+[[ "$(grep -c '^package-put' "$TMP/api.log")" == 1 ]] && grep -q "verify-demo/latest/record " "$TMP/api.log" ||
+  fail "a skip publishes more than its record (the last run's failures stand): $(cat "$TMP/api.log")"
+build BUILD_SHA="${SHA[verify2]}" "${VAPI[@]}" -- verify-report 2>"$TMP/err" || fail "no record failed the report"
+! grep -q '^package-put' "$TMP/api.log" || fail "published without a record: $(cat "$TMP/api.log")"
 pass
 
 # --- the security checks (looper-scan, looper#49) ------------------------------------

@@ -295,9 +295,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   the children go on; the child whose land it is waits meanwhile, so its share is mostly free, but a gate heavier
   than a child (Kani) can still press the VM. The capacity could keep one child's memory for the lander, or the
   lander run the gates through `looper-docker` with a land's own limit.
-- **Size a child by its issue, not its repository** (2026-10-31, #41): every child of a repository whose gates run
-  Kani gets 12 GB, even one that changes only docs. The plan's model, which already names each issue's areas,
-  could say which need the heavy steps, and the plan size only those.
+- **Size a child by its issue, not its repository** (2026-10-31, #41; narrowed 2026-11-05, #74): a report is now
+  sized by the gate set its land runs (`gates.yaml`'s `memory:`), but a fresh report's set is not known until it has
+  a diff, so it gets full's. Re-sizing it once its branch has a diff (its containers' limit is set when its run
+  starts), or the plan naming the issue's areas, would size even a fresh docs-only report by docs.
+- **Verify-run follow-ups** (2026-11-05, #74): a red verification is filed by the nightly scan, so a bug can wait up
+  to a day after a red nightly or a red release; a credential the build project may use to write issues (the
+  tacplus-reader app with `issues: write`, which would break "a build holds no credential that can change a
+  repository" only for issues) would file it at once. And the scan reads only `verify-<repo>/latest`: two red runs
+  between two scans file only the last.
 - **Wrapped issue text when the model reads it again** (2026-10-31, #40): the prompt carries the issue's text in
   nonce blocks, but a comment posted during the run, a linked issue or a pull request the model reads itself
   (`gh issue view`) comes unwrapped: there only the prompt's rule (its author's association) stands between it and

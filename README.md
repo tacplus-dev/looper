@@ -250,8 +250,9 @@ lander are gone. One job per issue needs none of them.
   checkpoints and resume, time limit, idle and done, outcomes. **It never touches main**: a push to main from its
   clone is refused (its pre-push hook). Its job's timeout is its issue's limit and an hour
   (`repo-looper --job-timeout N`), and its limit is capped at the job's deadline (looper#35). Its containers are
-  limited to `LOOPER_CHILD_MEMORY_GB` (4; `LOOPER_KANI_MEMORY_GB`, 12, in a repository whose gates run Kani),
-  through `looper-docker` (looper#41). In a repository that pins its build image it has no containers at all: it
+  limited to `LOOPER_CHILD_MEMORY_GB` (4), or more when the gate set its land runs asks it in `gates.yaml`
+  (`memory:`, below; the set its branch's diff calls for, full for a fresh report, looper#74), through
+  `looper-docker` (looper#41). No word in a justfile sizes it: formal verification is no land's (tacplus-dev/tacplus#275). In a repository that pins its build image it has no containers at all: it
   builds with build jobs ([Build jobs](#build-jobs), looper#71).
 - **Landing is queuing.** The model's `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository
   has no `gates.yaml` and no justfile) pushes a checkpoint whose `.looper/land` names the land (its id, gates and
@@ -350,12 +351,14 @@ tests/looper-build.test.sh      # the gate set asked for, from the commit's gate
 A land runs the gates its diff calls for, not always the full suite (Jody, 2026-11-01, looper#48: a
 `PROPOSALS.md` note on tacplus ran the full gates, about 3 hours, and deferred the next land). Each repository
 declares its **gate map** in a checked-in `gates.yaml`, at its root: its gate sets, each the command it runs,
-the minutes it is expected to take and the paths that call for it.
+the minutes it is expected to take, the memory in GB a report needs to run it (optional: `LOOPER_CHILD_MEMORY_GB`,
+4, when none; a report gets the most of the sets its land runs, looper#74) and the paths that call for it.
 
 ```yaml
 full:                                # required: the full gates
   run: just gates
   minutes: 180
+  memory: 8                          # optional
   paths: [pkg/**, proto/**, /justfile] # optional: these always run full
 docs:
   run: just docs
@@ -455,7 +458,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 ```sh
 tests/looper-docker.test.sh                # a child's docker: the limit added, a lower one kept, a higher one or none refused, the image's own arguments left alone, other commands passed through; with a docker daemon, a container over its limit OOM-killed alone while the one beside it carries on (#41)
 tests/looper-pkill.test.sh                 # a model's pkill: its run's own processes signalled, another run's and the lander's spared and named, pkill's signal and -e options, the real pkill outside a run (#61)
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged oldest first; a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more for a repository whose gates run Kani (#41); each model as its own user (#68) (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged oldest first; a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68) (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -780,6 +783,45 @@ custom executor runs each job in a fresh macOS VM cloned from the job's `image:`
 pipeline variables forbidden; job tokens cannot push to the project; group runners off, so only the build runner
 takes its jobs; release tags `*/v*` protected (Maintainers create them); `.gitlab-ci.yml` from `ci/build.gitlab-ci.yml`.
 Left to the hub: the build runner above, and `GCP_WIF_PROVIDER` with its binding (tacplus-dev/tacplus#223).
+
+### Formal verification
+
+Formal verification (Kani for Rust, JBMC for Java) is no gate (tacplus-dev/tacplus#275; looper#74): it needs far
+more memory and time than a land, so the build pipeline runs it, a repository's `just verify`, on **every release
+tag** and **nightly when something it depends on changed**. A repository opts in with two recipes: `verify` (exits
+non-zero on a failure, printing tacplus verify's report: each harness, its status and its counterexample) and
+`verify-changed SHA` (prints `run` when anything `verify` depends on changed since SHA, or it cannot tell, else
+`skip: ...`). One without a `verify` recipe has nothing to verify, and its verify job passes.
+
+- **A release** (`tag`): `plan` writes `verify-<repo>` beside `gates`, in the pinned build image, with no change
+  check. It fails the release, as a gate does: no release ships unverified.
+- **A verify run**: a scheduled (or API) run with inputs `repo` and `"verify": true`, no `sha` (main's head) and no
+  `tag` or `nightly`. `plan` reads the repository's last **record** (the generic package `verify-<repo>`, `latest/record`,
+  with the job's token) and writes `verify-<repo>` alone. The job fetches the last verified commit too and runs
+  `just verify-changed <it>`; only `run` runs `just verify`. With no record, or one it cannot read, it runs. It
+  sets no commit status.
+- **The record**, `verify/record`, the job's artifact (a year): `checked` (this commit), `verified` and `result`
+  (the last commit verified and pass, fail or none), `run` (the pipeline that verified it), and `skipped` when it
+  did not run (a skip keeps the last verification's commit, result and run). A red run adds `failures.md` (each
+  failed harness's section of the report, with its counterexample) and `log-tail`. **`verify-report`** (looper
+  image) publishes them as `verify-<repo>/latest` (a skip, its record alone), the next run's last record.
+- **A red verification is a `bug`**: the build holds no credential that can write an issue, so the nightly scan
+  (`repo-looper --scan`, before its model) reads the latest record with `GITLAB_TOKEN` and runs `looper-verify
+  file`: one `bug` a failed harness, `Formal verification fails: <harness>`, naming it and its counterexample and
+  the run; when an open bug already names the harness, a comment on it instead. Each carries the run it is from, so
+  a run read twice, or a skip after it, files nothing again. A red run with no harness report files one bug with
+  the log's tail. At most `LOOPER_VERIFY_MAX_ISSUES` (10) new bugs a run; the rest the next night.
+
+```sh
+looper-build verify | verify-report       # the jobs
+looper-verify file DIR OWNER/REPO         # the scan's filing, of a record read into DIR
+tests/looper-build.test.sh                # the plan of a verify run and of a release, a skip with nothing changed, a run on a change, with no record and when the check cannot tell, a release always, a red run's record and failures, the report
+tests/looper-verify.test.sh               # a red run files one bug a harness, a second comments on it, the same run nothing, an open bug naming the harness commented on, green, skipped and missing records nothing (stub gh)
+```
+
+Left to the hub: a pipeline schedule on tacplus-dev/build per repository that verifies (inputs `repo: tacplus`,
+`verify: true`), **created inactive**: it stays off until tacplus-dev/tacplus#211 and #257 make verification pass,
+since a nightly red every night would only repeat those bugs.
 
 ### Security checks
 
@@ -1349,7 +1391,7 @@ plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 `runner-arm64-t2a8-v5`, t2a-standard-8; `runner-arm64-t2a8-v7`, booting the image family `runner-arm64-docker`, once
 the hub applies [A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)): up to 5 workers, size 0 at rest.
 
-**Two pools** (looper#55). tacplus's gates run Kani at 12 GB a child, so on a t2a-standard-8 (8 CPUs, 31 GB) its job
+**Two pools** (looper#55). tacplus's gates ran Kani at 12 GB a child (no longer, looper#74: its reports get 4 GB unless its `gates.yaml` asks more; the pools stand until the recap says otherwise), so on a t2a-standard-8 (8 CPUs, 31 GB) its job
 gets two children; every other repository fits four. tacplus's reports therefore run on a larger pool, the others stay, and so
 do tacplus's manager and nightly scan (looper#91): that pool runs one job per VM on 1 VM, so behind a running report the
 manager waited for the VM and the 2-hour scan held it while reports queued:

@@ -52,6 +52,17 @@
 # Workload Identity Federation as the service account GCP_RUNNER_IMAGE_SA. On
 # the build runner, as every job here: it holds a GCP identity, so never on a VM
 # an agent's job ran on. README: Infrastructure.
+#
+# Formal verification (looper#74; tacplus-dev/tacplus#275), which no land
+# runs: every release runs `just verify` beside the gates, with no change
+# check, and fails without it. A verify run is a scheduled (or API) run with
+# inputs repo and "verify": true, and no sha: the plan reads main's head and
+# the repository's last record (the generic package verify-<repo>), and its
+# one job runs `just verify` only when `just verify-changed <the last
+# verified commit>` prints run, or there is no record to read. The record
+# (verified commit, result, run) is the job's artifact and the package; the
+# nightly scan files a red one as bugs (looper-verify). It sets no commit
+# status. README: Formal verification.
 spec:
   inputs:
     repo:
@@ -86,6 +97,10 @@ spec:
       description: "The nightly security checks of repo's main branch (no tag; sha empty: main's head now)"
       type: boolean
       default: false
+    verify:
+      description: "The nightly formal verification of repo's main branch, when changed since the last verified commit (no tag or nightly; sha empty: main's head now)"
+      type: boolean
+      default: false
 ---
 workflow:
   name: $BUILD_PIPELINE_NAME
@@ -96,6 +111,11 @@ workflow:
       when: never
     - if: $BUILD_NIGHTLY == "true" && ($BUILD_TAG || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
       when: never
+    - if: $BUILD_VERIFY == "true" && ($BUILD_TAG || $BUILD_NIGHTLY == "true" || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
+      when: never
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_VERIFY == "true"
+      variables:
+        BUILD_PIPELINE_NAME: "verify $[[ inputs.repo ]] $[[ inputs.sha ]]"
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_NIGHTLY == "true"
       variables:
         BUILD_PIPELINE_NAME: "nightly $[[ inputs.repo ]] $[[ inputs.sha ]]"
@@ -120,6 +140,7 @@ variables:
   BUILD_SMOKE: "$[[ inputs.smoke ]]"
   BUILD_RUNNER_IMAGE: "$[[ inputs.runner_image ]]"
   BUILD_NIGHTLY: "$[[ inputs.nightly ]]"
+  BUILD_VERIFY: "$[[ inputs.verify ]]"
   GIT_STRATEGY: none
 
 default:
@@ -134,10 +155,10 @@ default:
   rules:
     - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true"
 
-# The commit status: a build's verdict, never a nightly's.
+# The commit status: a build's verdict, never a nightly's or a verify run's.
 .status-run:
   rules:
-    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
 
 # The commit is marked pending while it builds.
 pending:
@@ -148,9 +169,9 @@ pending:
   script:
     - looper-build status pending
 
-# Fetch exactly the commit (a nightly: main's head), read its pin (tacplus.lock, or build.lock),
-# write the gates job in the pinned image and the security checks' jobs. No
-# pin, or a bad one, is a fail verdict.
+# Fetch exactly the commit (a nightly or a verify run: main's head), read its pin (tacplus.lock, or
+# build.lock), write the gates job in the pinned image and the security checks' jobs, and on a
+# release the formal verification's (a verify run: those alone). No pin, or a bad one, is a fail verdict.
 plan:
   extends: .build-run
   stage: plan
@@ -195,7 +216,7 @@ publish:
 report-pass:
   stage: report
   rules:
-    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
       when: on_success
   script:
     - looper-build status success
@@ -203,7 +224,7 @@ report-pass:
 report-fail:
   stage: report
   rules:
-    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true"
+    - if: $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
       when: on_failure
   script:
     - looper-build status failure

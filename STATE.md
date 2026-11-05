@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#94).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#74).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -29,7 +29,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   on its gate set, #38) waits for the next manager; with nothing queued, the manager lingers only for report jobs
   running, never for ones created or pending, which on a one-VM pool wait for its VM (#82); the parent and its in-job children (#32), its area plan and
   conflict holds (#39), its time-left holds and re-plans (#33, #59) and its in-job lander (#34, #38, #44) are
-  retired; each report's model's containers limited to its memory (4 GB, 12 in a repository whose gates run Kani)
+  retired; each report's model's containers limited to its memory (4 GB, or the `memory:` its land's gate set asks in `gates.yaml`, #74)
   without swap by `looper-docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone (#41); a
   report's limit capped at its job's deadline (its job sized for its issue's limit and an hour, #35); every model's
   `pkill` is `looper-pkill`, which signals only its run's own processes (tacplus#222, #61); each report's model runs
@@ -80,7 +80,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
-  and run by hand (`looper-scan local`) on tacplus and kernel. Nightly suggestions (#50, README: Suggestions): the
+  and run by hand (`looper-scan local`) on tacplus and kernel; formal verification out of the gates (#74,
+  tacplus-dev/tacplus#275, README: Formal verification): every release runs `just verify` beside the gates, and a
+  verify run (input `verify: true`, main's head, no commit status) runs it only when `just verify-changed <the last
+  verified commit>` says run or there is no record; its record (the job's artifact and the package `verify-<repo>`)
+  keeps the last verified commit and result, and the nightly scan files a red one with `looper-verify` (one `bug` a
+  failed harness with its counterexample, a comment on an open bug that names it). Nightly suggestions (#50, README: Suggestions): the
   platform roadmap's nightly scan is the suggestion pass for the whole platform: the looper reads the pipelines' failed
   jobs of the week and every repository's security report for the model, which writes up to 5 ranked, evidenced
   suggestions with `looper-suggest` (in the image), and the looper commits them to tacplus-dev/roadmap's main as one
@@ -204,7 +209,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   or accepted in a `security-exceptions.yaml` (PROPOSALS.md), and tacplus has no `generated` recipe yet, so its
   cross-test models are not scanned; the suggestion pass (#50) has run only against a stub roadmap: it starts with
   the next looper image, on the roadmap's nightly scan, and the hub's daily review (the sitrep, `looper-suggest
-  decide`) is the hub's to wire; no release line yet
+  decide`) is the hub's to wire; formal verification (#74) has run only against stubs: it starts with the next
+  looper image and the hub's copy of `ci/build.gitlab-ci.yml`, and its schedule (`verify: true`, tacplus) stays
+  inactive until tacplus-dev/tacplus#211 and #257 make it pass; until then a tacplus release fails its verify job;
+  no release line yet
 - **Blocked on:** "only the manager writes main" (#83) is enforced once Jody creates and installs the two apps,
   imports their keys to KMS with their bindings, applies the ruleset and swaps `GH_TOKEN` for the apps' variables
   (README, Only the manager writes main, Setting it up); until then every job uses `GH_TOKEN` as before, and the

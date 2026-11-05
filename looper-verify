@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-verify: a red formal verification filed as bugs (looper#74;
+# tacplus-dev/tacplus#275). The build pipeline runs `just verify` on every
+# release tag and nightly when something it depends on changed (looper-build
+# verify), and publishes its record as the build project's generic package
+# verify-<repo>; the build holds no credential that can write an issue, so the
+# nightly scan (repo-looper --scan), which does, reads that record into a
+# directory and runs this on it:
+#
+#   looper-verify file DIR OWNER/REPO
+#
+# DIR holds `record` (a "key value" line each: checked, verified, result
+# pass|fail|none, kind, run: the pipeline that verified), and on a red run
+# `failures.md` (each failed harness's section of tacplus verify's
+# verification-report.md: `### <message> -- <harness>`, its status and its
+# counterexample) or else `log-tail`. A red run files one `bug` a failed
+# harness, naming it and its counterexample; when an open bug already names
+# the harness, it comments on that one instead. Each says which run it is
+# from (a marker), so a run read again, or a skipped nightly whose record is
+# still that run's, files nothing twice. GH_TOKEN: issues write on OWNER/REPO.
+set -euo pipefail
+
+LIMIT="${LOOPER_VERIFY_MAX_ISSUES:-10}"   # new bugs a run files at most; the rest wait for the next run
+
+log() { printf '[%s] looper-verify: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+
+# A record's value (the last line of that key).
+field() { sed -n "s/^$2 //p" "$1/record" | tail -n 1; } # dir key
+
+# The failed harnesses' sections of failures.md, each as one file of DIR/h/,
+# named by its order; its harness (the heading after its message's " -- ") on
+# the first line of DIR/h/<n>.name.
+split_failures() { # dir
+  rm -rf "$1/h"; mkdir -p "$1/h"
+  [[ -s "$1/failures.md" ]] || return 0
+  awk -v d="$1/h" '
+    /^### / { n++; f = d "/" n ".md"; h = substr($0, 5); sub(/^.* -- /, "", h); print h > (d "/" n ".name"); close(d "/" n ".name") }
+    n { print > f }' "$1/failures.md"
+}
+
+marker() { echo "<!-- looper-verify run=$1 harness=$2 -->"; } # run harness
+
+file_record() { # dir repo
+  local dir="$1" repo="$2" result run checked kind verified open i name section title body n created=0 texts
+  [[ -f "$dir/record" ]] || { log "no record: nothing to file"; return 0; }
+  result="$(field "$dir" result)"; run="$(field "$dir" run)"
+  verified="$(field "$dir" verified)"; checked="$(field "$dir" checked)"; kind="$(field "$dir" kind)"
+  case "$result" in
+    pass|none) log "the last verification of $repo is $result: nothing to file"; return 0 ;;
+    fail) ;;
+    *) log "the record of $repo is unreadable (result '$result'): nothing to file"; return 0 ;;
+  esac
+  [[ -n "$run" ]] || { log "the record of $repo names no run: nothing to file"; return 0; }
+  split_failures "$dir"
+  open="$(gh issue list --repo "$repo" --state open --label bug --limit 500 --json number,title,body)"
+  shopt -s nullglob
+  local names=("$dir"/h/*.name)
+  if ((${#names[@]} == 0)); then
+    # No harness report (generation failed, or no harness ran): one bug for the run.
+    printf 'just verify\n' > "$dir/h/0.name"
+    { echo "No harness report: the tail of the log."; echo; echo '```'; cat "$dir/log-tail" 2>/dev/null || echo "(no log)"; echo '```'; } > "$dir/h/0.md"
+    names=("$dir/h/0.name")
+  fi
+  for i in "${names[@]}"; do
+    name="$(head -n 1 "$i")"; section="$(head -n 200 "${i%.name}.md")"
+    body="Formal verification of \`$repo\` (\`just verify\`, ${kind:-nightly}) fails at ${verified:-$checked}: **$name**.
+
+Run: $run
+
+$section
+
+$(marker "$run" "$name")"
+    # An open bug that names the harness (the run with no report: one titled so).
+    if [[ "$name" == "just verify" ]]; then
+      n="$(jq -r '[.[] | select(.title == "Formal verification fails: just verify (no harness report)")][0].number // empty' <<<"$open")"
+    else
+      n="$(jq -r --arg h "$name" '[.[] | select((.title | contains($h)) or ((.body // "") | contains($h)))] | sort_by(.number) | .[0].number // empty' <<<"$open")"
+    fi
+    if [[ -n "$n" ]]; then
+      texts="$(gh issue view "$n" --repo "$repo" --json body,comments --jq '.body, .comments[].body')"
+      if grep -qF -- "$(marker "$run" "$name")" <<<"$texts"; then log "#$n already has $name of $run"; continue; fi
+      gh issue comment "$n" --repo "$repo" --body "$body" >/dev/null
+      log "$name: commented on #$n"
+    elif (( created >= LIMIT )); then
+      log "$name: not filed, $LIMIT new bugs already this run (LOOPER_VERIFY_MAX_ISSUES): the next run files it"
+    else
+      if [[ "$name" == "just verify" ]]; then title="Formal verification fails: just verify (no harness report)"
+      else title="Formal verification fails: $name"; fi
+      gh issue create --repo "$repo" --title "$title" --label bug --body "$body" >/dev/null
+      created=$((created + 1)); log "$name: filed"
+    fi
+  done
+}
+
+case "${1:-}" in
+  file) [[ $# -eq 3 ]] || { usage >&2; exit 2; }; file_record "$2" "$3" ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

@@ -164,6 +164,10 @@ case "$url" in
   */packages/generic/security-*/latest/*)
     if [[ -f "$FIX/security/${url##*/}" ]]; then reply 200 "$(cat "$FIX/security/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
+  # The last formal verification's record (looper#74): $FIX/verify/<file>.
+  */packages/generic/verify-*/latest/*)
+    if [[ -f "$FIX/verify/${url##*/}" ]]; then reply 200 "$(cat "$FIX/verify/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
+    exit 0 ;;
   */packages\?*)
     if [[ -f "$FIX/packages.json" ]]; then reply 200 "$(cat "$FIX/packages.json")"; else reply 200 '[]'; fi
     exit 0 ;;
@@ -1071,6 +1075,34 @@ grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/p
 rm -rf "$FIX/security" "$FIX"/project/looper-runs/*-scan
 OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "security report of alpha could not be read"
+pass
+
+# The nightly scan files the build pipeline's red formal verification
+# (looper#74): the repository's latest record, read with GITLAB_TOKEN, filed
+# by looper-verify before the model runs, one bug a failed harness; the same
+# record read again files nothing; no record, nothing.
+scenario scan-verify-record
+templates
+: > "$FIX/scan.sh"
+mkdir -p "$FIX/verify"
+printf 'repo alpha\nkind nightly\nchecked %s\nverified %s\nresult fail\nrun https://gitlab.com/tacplus-dev/build/-/pipelines/9\n' \
+  "$(printf 'a%.0s' {1..40})" "$(printf 'a%.0s' {1..40})" > "$FIX/verify/record"
+printf '### m.Msg -- verify_x\n**Status:** FAILED\n**Detail:**\n```\nCounterexample: x = 1\n```\n' > "$FIX/verify/failures.md"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/verify-alpha/latest/record" "$FIX/gitlab" ||
+  fail "$(cat "$FIX/gitlab")"
+v="$(jq -s '[.[] | select(.title == "Formal verification fails: verify_x")]' "$FIX"/issues/alpha-*.json)"
+[[ "$(jq length <<<"$v")" == 1 ]] || fail "not one bug: $(jq -s 'map(.title)' "$FIX"/issues/alpha-*.json) $OUT"
+has "$(jq -r '.[0].body' <<<"$v")" "Counterexample: x = 1"
+has "$(jq -r '.[0].labels | map(.name) | join(",")' <<<"$v")" "bug"
+n="$(ls "$FIX"/issues/alpha-*.json | wc -l)"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == "$n" ]] || fail "the same record filed again"
+[[ "$(jq '.comments | length' <<<"$(jq -s '.[] | select(.title == "Formal verification fails: verify_x")' "$FIX"/issues/alpha-*.json)")" == 0 ]] ||
+  fail "the same record commented"
+rm -rf "$FIX/verify"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == "$n" ]] || fail "filed without a record"
 pass
 
 # Trace propagation is a standing rule (looper#51): the work prompt states it
@@ -2066,8 +2098,10 @@ has "$(cat "$FIX/comments")" "runs no repository code"
 pass
 
 # A report's model sees its memory (looper#41): containers it starts are
-# limited to it, through looper-docker; in a repository whose gates run Kani,
-# to LOOPER_KANI_MEMORY_GB.
+# limited to it, through looper-docker. It is sized by the gate set its land
+# runs (looper#74): the most any of the sets' `memory:` in gates.yaml asks,
+# else LOOPER_CHILD_MEMORY_GB; full for a fresh report, the set its branch's
+# diff calls for once it has one. A justfile that names Kani sizes nothing.
 scenario report-memory
 echo 'echo "$LOOPER_CHILD_MEMORY $(readlink -f "$(command -v docker)")" > "$FIX/mem"' > "$FIX/claude.sh"
 run LOOPER_CHILD_MEMORY_GB=2
@@ -2078,9 +2112,20 @@ has "$p" "leave Kani to the land's gates"
 printf 'gates:\n    cargo kani --tests\n' > "$FIX/seed/justfile"
 git -C "$FIX/seed" add justfile && git -C "$FIX/seed" commit -qm kani && git -C "$FIX/seed" push -q origin main
 issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
-run LOOPER_CHILD_MEMORY_GB=2 LOOPER_KANI_MEMORY_GB=3
-[[ "$(cat "$FIX/mem")" == "3072m $ROOT/looper-docker" ]] || fail "the Kani report's docker: $(cat "$FIX/mem")"
+run LOOPER_CHILD_MEMORY_GB=2
+[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "a justfile naming Kani sized the report: $(cat "$FIX/mem")"
+printf 'full:\n  run: just gates\n  memory: 3\ndocs:\n  run: "true"\n  paths: ["*.md"]\n' > "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" add gates.yaml && git -C "$FIX/seed" commit -qm "gate map" && git -C "$FIX/seed" push -q origin main
+issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
+run LOOPER_CHILD_MEMORY_GB=2
+[[ "$(cat "$FIX/mem")" == "3072m $ROOT/looper-docker" ]] || fail "a fresh report is not sized by full: $(cat "$FIX/mem")"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "limited to 3072m of memory"
+git -C "$FIX/seed" checkout -q -b looper/alpha-4 && echo docs > "$FIX/seed/NOTES.md"
+git -C "$FIX/seed" add NOTES.md && git -C "$FIX/seed" commit -qm docs && git -C "$FIX/seed" push -q -f origin looper/alpha-4
+git -C "$FIX/seed" checkout -q main
+issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
+run LOOPER_CHILD_MEMORY_GB=2
+[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "a report whose land runs docs got full's memory: $(cat "$FIX/mem")"
 pass
 
 # Each model as its own user (looper#68): two reports at once, each model as

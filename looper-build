@@ -17,6 +17,14 @@
 #            recipe), for the security checks
 #   (the security checks, looper#49, are looper-scan's: the child pipeline's
 #            security-<repo> and security-report jobs, in the looper image)
+#   verify   in that image too, on a release tag and on a verify run (the
+#            nightly's, looper#74): `just verify`, the formal verification,
+#            which no land runs (tacplus-dev/tacplus#275); a verify run skips
+#            it when `just verify-changed <the last verified commit>` does not
+#            print run. Its record is the job's artifact verify/
+#   verify-report  the record as the repository's latest (the next verify
+#            run's last verified commit), which the nightly scan files as bugs
+#            when it is red (looper-verify)
 #   status   the GitHub commit status (context tacplus-dev/build)
 #   publish  on a release tag: the image, pushed to Artifact Registry through
 #            Workload Identity Federation, its digest and its SBOM
@@ -56,8 +64,12 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build gates                 just gates on the commit, in this directory's checkout
        looper-build status STATE [TEXT]   the commit status: pending, success or failure
        looper-build publish [--dry-run]   the release image and its digest (--dry-run: build only)
+       looper-build verify                just verify on the commit (a verify run: when verify-changed says run)
+       looper-build verify-report         the verify job's record, published as the repository's latest
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
-nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty), BUILD_GATES
+nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty), BUILD_VERIFY
+(true: the formal verification of the main branch, likewise; BUILD_VERIFY_SINCE, _RESULT and _RUN: the last
+record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
 LOOPER_GATES_BASE, a full hash), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
@@ -82,15 +94,27 @@ verdict() { # pass | fail <why>
 check_inputs() {
   [[ "${BUILD_REPO:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$BUILD_REPO" != *..* ]] ||
     verdict fail "BUILD_REPO '${BUILD_REPO:-}' is not a repository name"
-  [[ "${BUILD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || [[ "${1:-}" == plan && -z "${BUILD_SHA:-}" && "${BUILD_NIGHTLY:-}" == true ]] ||
+  [[ "${BUILD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+    [[ "${1:-}" == plan && -z "${BUILD_SHA:-}" && ("${BUILD_NIGHTLY:-}" == true || "${BUILD_VERIFY:-}" == true) ]] ||
     verdict fail "BUILD_SHA '${BUILD_SHA:-}' is not a full commit hash"
   [[ -z "${BUILD_TAG:-}" || "$BUILD_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     verdict fail "BUILD_TAG '$BUILD_TAG' is not a release tag vX.Y.Z"
   [[ "${BUILD_NIGHTLY:-}" != true || -z "${BUILD_TAG:-}" ]] || verdict fail "a nightly build is not a release (BUILD_TAG $BUILD_TAG)"
+  if [[ "${BUILD_VERIFY:-}" == true ]]; then
+    [[ -z "${BUILD_TAG:-}" ]] || verdict fail "a verify run is not a release (BUILD_TAG $BUILD_TAG): a release verifies in its own pipeline"
+    [[ "${BUILD_NIGHTLY:-}" != true ]] || verdict fail "a verify run is not the nightly security checks (BUILD_NIGHTLY)"
+  fi
+  [[ -z "${BUILD_VERIFY_SINCE:-}" || "$BUILD_VERIFY_SINCE" =~ ^[0-9a-f]{40}$ ]] ||
+    verdict fail "BUILD_VERIFY_SINCE '$BUILD_VERIFY_SINCE' is not a full commit hash"
+  [[ "${BUILD_VERIFY_RESULT:-}" =~ ^(pass|fail)?$ ]] || verdict fail "BUILD_VERIFY_RESULT '$BUILD_VERIFY_RESULT' is not pass or fail"
+  [[ "${BUILD_VERIFY_RUN:-}" =~ $RUN_URL ]] || verdict fail "BUILD_VERIFY_RUN '$BUILD_VERIFY_RUN' is not a pipeline's URL"
   [[ "${BUILD_GATES:-}" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] ||
     verdict fail "BUILD_GATES '${BUILD_GATES:-}' is not a gate set (gates.yaml's set names, joined by +)"
   [[ -z "${BUILD_BASE:-}" || "$BUILD_BASE" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_BASE '$BUILD_BASE' is not a full commit hash"
 }
+
+# A run's URL, as a record names it (written into the child pipeline).
+RUN_URL='^(https://[A-Za-z0-9./_~%-]+)?$'
 
 # The kind of the security checks (looper-scan): release, nightly or build.
 scan_kind() {
@@ -231,29 +255,56 @@ cmd_plan() {
     verdict fail "no read-only GitHub token (the tacplus-reader app)"
   export BUILD_GITHUB_TOKEN; git_credentials
   local src="$BUILD_OUT/plan-src" image
-  if [[ -z "${BUILD_SHA:-}" ]]; then   # a nightly: the main branch as it is now
+  if [[ -z "${BUILD_SHA:-}" ]]; then   # a nightly or a verify run: the main branch as it is now
     # From a repository of its own: the one it runs in (an Actions checkout's
     # extraheader, looper#58) has no say in what GitHub is sent.
     rm -rf "$src"; git init -q "$src"
     BUILD_SHA="$(git -C "$src" ls-remote "$(repo_url)" refs/heads/main 2>/dev/null | cut -f1)" || true
     [[ "$BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || verdict fail "$BUILD_ORG/$BUILD_REPO has no main branch to scan"
-    log "nightly: $BUILD_REPO main is $BUILD_SHA"
+    log "$([[ "${BUILD_VERIFY:-}" == true ]] && echo verify || echo nightly): $BUILD_REPO main is $BUILD_SHA"
   fi
+  # A verify run's change check is against the last record's verified commit;
+  # a release verifies with no change check.
+  BUILD_VERIFY_SINCE=""; BUILD_VERIFY_RESULT=""; BUILD_VERIFY_RUN=""
+  [[ "${BUILD_VERIFY:-}" != true ]] || verify_last
   fetch_commit "$src"
   check_release "$src"
   image="$(read_pin "$src")"
   rm -rf "$src"
   write_gates_pipeline "$image" > "$BUILD_OUT/build-gates.yml"
-  log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE"
+  if [[ "${BUILD_VERIFY:-}" == true ]]; then
+    log "plan: $BUILD_REPO $BUILD_SHA: the formal verification in $image, if changed since ${BUILD_VERIFY_SINCE:-(no record: it runs)}"
+  else
+    log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE${BUILD_TAG:+, the formal verification}"
+  fi
 }
 
 # The child pipeline: the gates job, in the pinned image, running this
 # script; the security checks (looper-scan, looper#49) in the looper image,
-# on the commit and on the code the gates generated.
+# on the commit and on the code the gates generated; and on a release, the
+# formal verification (looper#74). A verify run's is the verification alone.
 write_gates_pipeline() { # image
+  echo "# Written by looper-build plan: $BUILD_REPO at $BUILD_SHA, in its pinned build image."
+  if [[ "${BUILD_VERIFY:-}" != true ]]; then gates_jobs "$1"; fi
+  if [[ "${BUILD_VERIFY:-}" == true || -n "${BUILD_TAG:-}" ]]; then verify_jobs "$1"; fi
+}
+
+# A job's script: this very script, embedded, run with the command given.
+embedded_script() { # command
+  cat <<'EOF'
+  script:
+    - |
+      cat > "$CI_PROJECT_DIR/looper-build" <<'LOOPER_BUILD_EOF'
+EOF
+  sed 's/^/      /' "$SELF"
   cat <<EOF
-# Written by looper-build plan: the gates of $BUILD_REPO at $BUILD_SHA, in its pinned build image,
-# and its security checks.
+      LOOPER_BUILD_EOF
+      bash "\$CI_PROJECT_DIR/looper-build" $1
+EOF
+}
+
+gates_jobs() { # image
+  cat <<EOF
 gates:
   image: "$1"
   tags: [$BUILD_RUNNER_TAGS]
@@ -265,14 +316,9 @@ gates:
     BUILD_ORG: "$BUILD_ORG"
     BUILD_GATES: "${BUILD_GATES:-}"
     BUILD_BASE: "${BUILD_BASE:-}"
-  script:
-    - |
-      cat > "\$CI_PROJECT_DIR/looper-build" <<'LOOPER_BUILD_EOF'
 EOF
-  sed 's/^/      /' "$SELF"
+  embedded_script gates
   cat <<'EOF'
-      LOOPER_BUILD_EOF
-      bash "$CI_PROJECT_DIR/looper-build" gates
   artifacts:
     when: always
     expire_in: 30 days
@@ -312,6 +358,72 @@ security-report:
   script:
     - looper-scan report
 EOF
+}
+
+# The formal verification (looper#74): its job in the pinned image (the
+# verifiers are the build image's), and the report publishing its record.
+verify_jobs() { # image
+  cat <<EOF
+verify-$BUILD_REPO:
+  image: "$1"
+  tags: [$BUILD_RUNNER_TAGS]
+  timeout: 6h
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_TAG: "${BUILD_TAG:-}"
+    BUILD_ORG: "$BUILD_ORG"
+    BUILD_VERIFY: "${BUILD_VERIFY:-false}"
+    BUILD_VERIFY_SINCE: "$BUILD_VERIFY_SINCE"
+    BUILD_VERIFY_RESULT: "$BUILD_VERIFY_RESULT"
+    BUILD_VERIFY_RUN: "$BUILD_VERIFY_RUN"
+EOF
+  embedded_script verify
+  cat <<EOF
+  artifacts:
+    when: always
+    expire_in: 1 year
+    paths: [verify/]
+verify-report:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: "verify-$BUILD_REPO", artifacts: true}]
+  when: always
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+  script:
+    - looper-build verify-report
+EOF
+}
+
+# The repository's last record (looper#74): the build project's generic
+# package verify-<repo>, read and written with a job's token.
+verify_url() { echo "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/verify-$BUILD_REPO/latest/$1"; } # file
+
+# The last record's verified commit, result and run, into BUILD_VERIFY_SINCE,
+# _RESULT and _RUN; none when there is no record or it cannot be read: the
+# verification runs.
+verify_last() {
+  local f v r u
+  if [[ -z "${CI_JOB_TOKEN:-}" || -z "${CI_API_V4_URL:-}" || -z "${CI_PROJECT_ID:-}" ]]; then
+    log "verify: no job token to read the last record with: it runs"; return 0
+  fi
+  f="$(mktemp)"
+  if ! curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$f" "$(verify_url record)" 2>/dev/null; then
+    rm -f "$f"; log "verify: no record of a verification of $BUILD_REPO: it runs"; return 0
+  fi
+  v="$(sed -n 's/^verified //p' "$f" | tail -n 1)"; r="$(sed -n 's/^result //p' "$f" | tail -n 1)"
+  u="$(sed -n 's/^run //p' "$f" | tail -n 1)"; rm -f "$f"
+  if [[ "$v" =~ ^[0-9a-f]{40}$ && "$r" =~ ^(pass|fail)$ && "$u" =~ $RUN_URL ]]; then
+    BUILD_VERIFY_SINCE="$v"; BUILD_VERIFY_RESULT="$r"; BUILD_VERIFY_RUN="$u"
+    log "verify: last verified $v ($r, ${u:-no run named})"
+  else
+    log "verify: the record of $BUILD_REPO cannot be read: it runs"
+  fi
 }
 
 # --- gates ------------------------------------------------------------------
@@ -421,6 +533,97 @@ generated() { # src
   (cd "$1" && just generated "$out") 2>&1 | tee -a "$BUILD_OUT/gates.log" >&2 || rc="${PIPESTATUS[0]}"
   ((rc == 0)) || verdict fail "just generated exited $rc (gates.log)"
   [[ -z "$(git -C "$1" status --porcelain --untracked-files=no)" ]] || verdict fail "just generated changed tracked files"
+}
+
+# --- verify -----------------------------------------------------------------
+
+# The formal verification (looper#74; tacplus-dev/tacplus#275), in the
+# pinned build image, as the gates job runs: `just verify` on the commit, on
+# a release tag always, on a verify run only when `just verify-changed <the
+# last verified commit>` prints run (no record, or a check that cannot tell,
+# runs it too). Its record, verify/record (a "key value" line each: repo,
+# kind, checked, verified, result pass|fail|none, run, and skipped when it
+# did not run), is the job's artifact; a skip keeps the last verification's
+# commit, result and run. A red run keeps its failed harnesses (failures.md:
+# each one's section of tacplus verify's report, with its counterexample) and
+# the log's tail, and fails the job.
+cmd_verify() {
+  refuse_write_credentials
+  check_inputs
+  local out="$BUILD_OUT/verify" key="${TACPLUS_READER_APP_KEY:-}" src="$BUILD_OUT/src" kind=nightly rc=0 ans
+  local since="${BUILD_VERIFY_SINCE:-}"
+  [[ -z "${BUILD_TAG:-}" ]] || kind=release
+  rm -rf "$out"; mkdir -p "$out"
+  BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"')" ||
+    verdict fail "no read-only GitHub token (the tacplus-reader app)"
+  [[ -n "$key" ]] && rm -f "$key"
+  unset TACPLUS_READER_APP_KEY TACPLUS_READER_APP_ID TACPLUS_READER_INSTALLATION_ID
+  drop_job_credentials
+  export BUILD_GITHUB_TOKEN; git_credentials
+  export GOPRIVATE="${GOPRIVATE:-github.com/$BUILD_ORG/*}"
+  fetch_commit "$src"
+  refuse_push_credential "$src"
+  verify_record() { # result verified run [skipped]
+    { echo "repo $BUILD_REPO"; echo "kind $kind"; echo "checked $BUILD_SHA"; echo "verified $2"; echo "result $1"
+      echo "run $3"; [[ -z "${4:-}" ]] || echo "skipped $4"; echo "checked_by ${CI_PIPELINE_URL:-}"; } > "$out/record"
+  }
+  if ! (cd "$src" && just --summary 2>/dev/null | tr ' ' '\n' | grep -qx verify); then
+    log "verify: $BUILD_REPO's justfile has no \`verify\` recipe at $BUILD_SHA: nothing to verify"
+    verify_record none "" "${CI_PIPELINE_URL:-}"; verdict pass; return 0
+  fi
+  if [[ "$kind" == nightly ]]; then
+    if [[ -n "$since" && -n "${BUILD_VERIFY_RESULT:-}" ]]; then
+      git -C "$src" fetch -q --depth 1 origin "$since" 2>&1 | tail -5 >&2 || true
+      ans="$(cd "$src" && just verify-changed "$since" 2>/dev/null | head -n 1)" || ans=""
+      if [[ "$ans" == skip* ]]; then
+        log "verify: $ans"
+        verify_record "$BUILD_VERIFY_RESULT" "$since" "${BUILD_VERIFY_RUN:-}" "unchanged since $since"
+        verdict pass; return 0
+      fi
+      log "verify: just verify-changed $since: ${ans:-no answer}: it runs"
+    else
+      log "verify: no record of a verification: it runs"
+    fi
+  fi
+  log "verify: $BUILD_REPO $BUILD_SHA ($kind): just verify"
+  (cd "$src" && just verify) 2>&1 | tee "$out/verify.log" >&2 || rc="${PIPESTATUS[0]}"
+  failed_harnesses < "$out/verify.log" > "$out/failures.md"
+  tail -n 80 "$out/verify.log" > "$out/log-tail"
+  if ((rc == 0)); then verify_record pass "$BUILD_SHA" "${CI_PIPELINE_URL:-}"; verdict pass
+  else verify_record fail "$BUILD_SHA" "${CI_PIPELINE_URL:-}"; verdict fail "just verify exited $rc (verify/verify.log)"; fi
+}
+
+# The sections of tacplus verify's report (verification-report.md, which
+# just verify prints on a failure) whose harness did not verify: from its
+# `### <message> -- <harness>` to the next heading or `===` line.
+failed_harnesses() {
+  awk '
+    function flush() { if (sec != "" && failed) printf "%s\n", sec; sec = ""; failed = 0 }
+    /^### / { flush(); sec = $0; next }
+    /^(## |# |=== )/ { flush(); next }
+    sec != "" { sec = sec "\n" $0
+                if ($0 ~ /^\*\*Status:\*\* / && $0 !~ /^\*\*Status:\*\* (VERIFIED|PASSED|SUCCESS)/) failed = 1 }
+    END { flush() }'
+}
+
+# The verify job's record as the repository's latest (the build project's
+# generic package verify-<repo>, with the job's token): the next verify run's
+# last verified commit, and what the nightly scan files (looper-verify). A
+# skip publishes its record alone: the failures beside it stay those of the
+# run it names.
+cmd_verify_report() {
+  check_inputs
+  local d="$BUILD_OUT/verify" f files=(record)
+  [[ -f "$d/record" ]] || { log "the verify job left no record: nothing to publish"; return 0; }
+  cat "$d/record" >&2
+  grep -q '^skipped ' "$d/record" || files+=(failures.md log-tail)
+  : "${CI_JOB_TOKEN:?no job token: the report publishes with it}" "${CI_API_V4_URL:?}" "${CI_PROJECT_ID:?}"
+  for f in "${files[@]}"; do
+    [[ -s "$d/$f" ]] || echo "(none)" > "$d/$f"
+    curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$d/$f" "$(verify_url "$f")" ||
+      { log "the package registry refused $f"; exit 1; }
+  done
+  log "published as verify-$BUILD_REPO/latest: ${files[*]}"
 }
 
 # --- status -----------------------------------------------------------------
@@ -588,6 +791,8 @@ case "${1:-}" in
   gates) cmd_gates ;;
   status) shift; cmd_status "$@" ;;
   publish) shift; cmd_publish "$@" ;;
+  verify) cmd_verify ;;
+  verify-report) cmd_verify_report ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

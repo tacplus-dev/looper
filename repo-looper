@@ -192,7 +192,7 @@
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
 # LOOPER_LAND_POLL (seconds between a waiting --land's reads of its issue, default 30),
 # LOOPER_MANAGER_POLL (the manager's, seconds, default 30), LOOPER_MANAGER_LINGER,
-# LOOPER_CHILD_MEMORY_GB and LOOPER_KANI_MEMORY_GB (a report's), LOOPER_JOB_MAX_HOURS (the longest
+# LOOPER_CHILD_MEMORY_GB (a report's, unless its gate set's memory: asks more), LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
 # roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
 # job's user, not each as its own, looper#68) and LOOPER_USER_PREFIX (their
@@ -646,11 +646,14 @@ land_gates() {
 }
 
 # The gate map (looper#48): a repository's gates.yaml names its gate sets, each
-# the command it runs, its expected minutes and the paths that call for it:
+# the command it runs, its expected minutes, the memory in GB a report needs
+# to run it (looper#74; none: LOOPER_CHILD_MEMORY_GB) and the paths that call
+# for it:
 #
 #   full:                      # required: the full gates
 #     run: just gates
 #     minutes: 180
+#     memory: 12
 #   docs:
 #     run: just docs
 #     minutes: 5
@@ -666,8 +669,8 @@ land_gates() {
 # gates.yaml runs land_gates; one whose gates.yaml cannot be read lands nothing.
 # The map is read from the tree being landed. Comments are lines of their own.
 GATE_MAP=gates.yaml
-GM_SETS=(); declare -A GM_RUN=() GM_MIN=() GM_PATHS=()
-read_gate_map() { # file: GM_SETS (in order), GM_RUN, GM_MIN, GM_PATHS (patterns, one per line)
+GM_SETS=(); declare -A GM_RUN=() GM_MIN=() GM_MEM=() GM_PATHS=()
+read_gate_map() { # file: GM_SETS (in order), GM_RUN, GM_MIN, GM_MEM, GM_PATHS (patterns, one per line)
   local s
   read_sets "$1" || return 1
   [[ -n "${GM_RUN[full]:-}" ]] || { echo "no full gate set with a run: command" >&2; return 1; }
@@ -677,9 +680,9 @@ read_gate_map() { # file: GM_SETS (in order), GM_RUN, GM_MIN, GM_PATHS (patterns
   done
 }
 # A file of sets in the gate map's format (gates.yaml, generated.yaml), unchecked.
-read_sets() { # file: GM_SETS, GM_RUN, GM_MIN, GM_PATHS
+read_sets() { # file: GM_SETS, GM_RUN, GM_MIN, GM_MEM, GM_PATHS
   local s k v rows
-  GM_SETS=(); GM_RUN=(); GM_MIN=(); GM_PATHS=()
+  GM_SETS=(); GM_RUN=(); GM_MIN=(); GM_MEM=(); GM_PATHS=()
   rows="$(awk '
     function unq(v) {
       sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
@@ -691,7 +694,7 @@ read_sets() { # file: GM_SETS, GM_RUN, GM_MIN, GM_PATHS
     /^[ \t]*(#.*)?$/ { next }
     /^[A-Za-z0-9_-]+:[ \t]*$/ { set = $0; sub(/:.*/, "", set); list = 0; if (seen[set]++) bad("gate set " set " twice"); print set "\tset\t"; next }
     /^[ \t]+- / { if (!list) bad("a list item outside paths:"); v = $0; sub(/^[ \t]+- /, "", v); print set "\tpath\t" unq(v); next }
-    /^[ \t]+(run|minutes|paths):/ {
+    /^[ \t]+(run|minutes|memory|paths):/ {
       if (set == "") bad("a key outside a gate set")
       k = $0; sub(/^[ \t]+/, "", k); v = k; sub(/:.*/, "", k); sub(/^[a-z]+:/, "", v); sub(/^[ \t]+/, "", v); list = 0
       if (k != "paths") { print set "\t" k "\t" unq(v); next }
@@ -701,13 +704,14 @@ read_sets() { # file: GM_SETS, GM_RUN, GM_MIN, GM_PATHS
       for (i = 1; i <= n; i++) if (unq(items[i]) != "") print set "\tpath\t" unq(items[i])
       next
     }
-    { bad("not a gate set, run:, minutes: or paths: " $0) }' "$1")" || return 1
+    { bad("not a gate set, run:, minutes:, memory: or paths: " $0) }' "$1")" || return 1
   while IFS=$'\t' read -r s k v; do
     [[ -n "$s" ]] || continue
     case "$k" in
-      set) GM_SETS+=("$s"); GM_RUN[$s]=""; GM_MIN[$s]=""; GM_PATHS[$s]="" ;;
+      set) GM_SETS+=("$s"); GM_RUN[$s]=""; GM_MIN[$s]=""; GM_MEM[$s]=""; GM_PATHS[$s]="" ;;
       run) GM_RUN[$s]="$v" ;;
       minutes) [[ "$v" =~ ^[0-9]+$ ]] || { echo "$s: minutes: '$v' is not a whole number" >&2; return 1; }; GM_MIN[$s]="$v" ;;
+      memory) [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "$s: memory: '$v' is not a number of GB" >&2; return 1; }; GM_MEM[$s]="$v" ;;
       path) GM_PATHS[$s]+="$v"$'\n' ;;
     esac
   done <<<"$rows"
@@ -807,12 +811,12 @@ glob_regex() { # pattern: the ERE matching the paths it names
 }
 
 # The gate set a land of the tree in dir runs, for its paths changed since
-# base (looper#48): GATES_SET (full, or the sets' names joined by +), GATES_RUN
+# base (to HEAD, or the commit given: looper#48): GATES_SET (full, or the sets' names joined by +), GATES_RUN
 # (the command) and GATES_WHY, and GATES_MAPPED when a gate map decided.
 # Without a gates.yaml, full is the fallback command; a gates.yaml that cannot
 # be read fails, GATES_WHY saying why.
-choose_gates() { # dir base fallback
-  local dir="$1" base="$2" fallback="$3" err f s p hit sets=() seen=" " k
+choose_gates() { # dir base fallback [head]
+  local dir="$1" base="$2" fallback="$3" head="${4:-HEAD}" err f s p hit sets=() seen=" " k
   GATES_SET=full; GATES_RUN="$fallback"; GATES_WHY=""; GATES_MAPPED=""
   if [[ ! -f "$dir/$GATE_MAP" ]]; then GATES_WHY="no $GATE_MAP"; return 0; fi
   err="$(mktemp)"
@@ -821,7 +825,7 @@ choose_gates() { # dir base fallback
   fi
   rm -f "$err"
   GATES_RUN="${GM_RUN[full]}"; GATES_MAPPED=1
-  local changed; changed="$(git -C "$dir" diff --name-only --no-renames "$base" HEAD 2>/dev/null)" ||
+  local changed; changed="$(git -C "$dir" diff --name-only --no-renames "$base" "$head" 2>/dev/null)" ||
     { GATES_WHY="the changed paths cannot be read (since $base)"; return 0; }
   [[ -n "$changed" ]] || { GATES_WHY="no changed path"; return 0; }
   if grep -qxF "$GATE_MAP" <<<"$changed"; then GATES_WHY="$GATE_MAP changed"; return 0; fi
@@ -2791,6 +2795,27 @@ security_report() { # run-dir [repo, into run-dir/security-<repo>]
   echo "$out"
 }
 
+# The build pipeline's last formal verification of the repository (looper#74):
+# its record, as looper-build verify-report publishes it (the build project's
+# generic package verify-<repo>), read with GITLAB_TOKEN into the run's
+# directory; a red one filed as bugs by looper-verify (one a failed harness, or
+# a comment on the open bug that names it), before the model runs. The build
+# pipeline builds GitHub's repositories: nothing on another forge.
+VERIFY="$(dirname "$LOOPER_SELF")/looper-verify"
+verify_bugs() { # run-dir
+  local api="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}" project="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}" f out="$1/verify"
+  [[ "$LOOPER_FORGE" == github ]] || return 0
+  [[ -n "${GITLAB_TOKEN:-}" ]] || { log "scan: no GITLAB_TOKEN: the build's formal verification record is not read"; return 0; }
+  mkdir -p "$out"
+  for f in record failures.md log-tail; do
+    curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") -o "$out/$f" \
+      "$api/projects/$project/packages/generic/verify-$REPO/latest/$f" 2>/dev/null && continue
+    rm -f "$out/$f"
+    [[ "$f" != record ]] || { log "scan: no formal verification record of $REPO from the build pipeline"; rm -rf "$out"; return 0; }
+  done
+  "$VERIFY" file "$out" "$LOOPER_ORG/$REPO" 2>&1 | tee "$1/verify.log" || log "scan: looper-verify failed ($1/verify.log)"
+}
+
 # The scan's first item: the build's security report, or that there is none.
 security_item() { # report-dir or ""
   if [[ -n "$1" ]]; then cat <<IT
@@ -3052,6 +3077,7 @@ scan() {
   if [[ "$REPO" == "$LOOPER_ROADMAP_REPO" ]]; then suggest_scan "$run"; return; fi
   report="$(security_report "$run")"
   ensure_labels "$REPO"
+  verify_bugs "$run"
   before="$(forge_issue_list "$REPO" all 1 number '.[0].number // 0')" || before=""
   cat > "$run/prompt.md" <<PR
 You are the nightly scanner of $LOOPER_ORG/$REPO. Your working directory is its checkout at origin/main.
@@ -3089,15 +3115,26 @@ PR
 
 # --- the report (looper#70) ----------------------------------------------------
 
-# A report's memory, in GB (looper#41): LOOPER_CHILD_MEMORY_GB, default 4; in a
-# repository whose gates run Kani (the word in a justfile, a Makefile or a CI
-# workflow on main), at least LOOPER_KANI_MEMORY_GB, default 12: Kani's proofs
-# need many GB (tacplus#196). Prints "<GB>[ (why)]".
+# A report's memory, in GB (looper#41): LOOPER_CHILD_MEMORY_GB, default 4, or
+# more when the gate set its land runs asks it (looper#74): the most `memory:`
+# of those sets in main's gates.yaml. The set is its branch's on origin (the
+# diff of a report that resumes), else full: a fresh report's land is not
+# known yet, and its verification runs full. Kani's proofs, which needed 12 GB
+# (tacplus#196), are no gate's (tacplus-dev/tacplus#275). Prints "<GB>[ (why)]".
 child_memory() {
-  local gb="${LOOPER_CHILD_MEMORY_GB:-4}" kani="${LOOPER_KANI_MEMORY_GB:-12}"
-  if git -C "$CHECKOUT" grep -qiwI kani -- justfile '*/justfile' '*.just' Makefile '.github/workflows/*' 2>/dev/null &&
-     awk -v a="$gb" -v b="$kani" 'BEGIN { exit !(b > a) }'; then
-    echo "$kani (its gates run Kani)"
+  local gb="${LOOPER_CHILD_MEMORY_GB:-4}" m="" s rev="origin/looper/$REPO-${ISSUE:-}"
+  if [[ -f "$CHECKOUT/$GATE_MAP" ]]; then
+    if [[ -n "${ISSUE:-}" ]] && git -C "$CHECKOUT" rev-parse -q --verify "$rev^{commit}" >/dev/null; then
+      choose_gates "$CHECKOUT" "$(git -C "$CHECKOUT" merge-base origin/main "$rev" 2>/dev/null || echo origin/main)" "" "$rev" ||
+        GATES_SET=full
+    elif read_gate_map "$CHECKOUT/$GATE_MAP" 2>/dev/null; then GATES_SET=full
+    else GATES_SET=""; fi
+    for s in ${GATES_SET//+/ }; do
+      if [[ -n "${GM_MEM[$s]:-}" ]] && awk -v a="${m:-0}" -v b="${GM_MEM[$s]}" 'BEGIN { exit !(b > a) }'; then m="${GM_MEM[$s]}"; fi
+    done
+  fi
+  if [[ -n "$m" ]] && awk -v a="$gb" -v b="$m" 'BEGIN { exit !(b > a) }'; then
+    echo "$m (its land's gates, $GATES_SET, ask it in $GATE_MAP)"
   else echo "$gb"; fi
 }
 
