@@ -14,6 +14,9 @@
 # serves every host itself and logs the credentials it gets.
 # Run: tests/tacplus.test.sh
 set -euo pipefail
+# The test's own environment, not the model run's it may run in (looper#81):
+# a model user's LOOPER_TACPLUS_HOME would put the cache outside $TMP/work.
+unset LOOPER_TACPLUS_HOME LOOPER_DOCKER_BROKER LOOPER_DOCKER_BROKERED LOOPER_DOCKER_OWNER
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRV="$(mktemp -d)"; pid=""
 trap '[[ -n "$pid" ]] && kill "$pid" 2>/dev/null; rm -rf "$TMP" "$SRV"' EXIT

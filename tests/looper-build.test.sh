@@ -19,7 +19,9 @@ set -euo pipefail
 command -v just >/dev/null || { echo "FAIL: these tests run the gates with just, and there is none here" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRV="$(mktemp -d)"; pid=""
-trap '[[ -n "$pid" ]] && kill "$pid" 2>/dev/null; rm -rf "$TMP" "$SRV"' EXIT
+# Go's module cache, under the temporary home, is read-only: as a model user
+# (looper#68), not root, rm -rf cannot remove it without u+w (looper#81).
+trap '[[ -n "$pid" ]] && kill "$pid" 2>/dev/null; chmod -R u+w "$TMP" "$SRV" 2>/dev/null; rm -rf "$TMP" "$SRV"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 READ_TOKEN="ghs_read$RANDOM$RANDOM"; WRITE_TOKEN="ghs_write$RANDOM$RANDOM"
 APP_ID=4242; INSTALLATION=777

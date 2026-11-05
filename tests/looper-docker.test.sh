@@ -21,8 +21,12 @@ pass() { echo "ok $NAME"; }
 # The test's own environment, not the child's it may run in (looper#52): a
 # child's docker is a looper-docker first on its PATH, with LOOPER_REAL_DOCKER
 # set. Drop both, so the shim under test finds the stub, or the real docker.
+# A model run's (looper#68, looper#81) sets LOOPER_DOCKER_BROKER, which sends
+# the shim to the broker: drop it and the broker's others too; the broker's
+# scenarios set what they need.
 is_shim() { [[ -f "$1" ]] && head -n 10 "$1" | grep -qa '^# looper-docker: '; }
-unset LOOPER_REAL_DOCKER LOOPER_CHILD_MEMORY
+unset LOOPER_REAL_DOCKER LOOPER_CHILD_MEMORY LOOPER_DOCKER_BROKER LOOPER_DOCKER_BROKERED LOOPER_DOCKER_OWNER \
+  LOOPER_DOCKER_ROOTS LOOPER_TACPLUS_HOME
 path=""; IFS=: read -ra dirs <<< "$PATH"
 for d in "${dirs[@]}"; do is_shim "$d/docker" || path="${path:+$path:}$d"; done
 PATH="$path"
