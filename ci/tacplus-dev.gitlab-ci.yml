@@ -165,3 +165,29 @@ looper-ruleset-probe:
   script:
     - 'test -z "${GH_TOKEN:-}" || { echo "this project still has GH_TOKEN, Jody''s token: delete it first (README)"; exit 1; }'
     - GH_TOKEN="$(looper-token mint report)" looper-ruleset probe looper
+
+# The diagnosis of the apps' signing (looper#95): what GCP sees of a job in each
+# environment that signs (its id_token's claims, the attribute.role the
+# provider gitlab-looper computes from them) and each key's answer to a
+# signature, against what its binding should give that environment
+# (looper-token diagnose; no app, no GitHub). Played by hand from a web
+# pipeline, before the probe: a job fails when a key's answer is not the
+# expected one, and says why (gcloud's own error, its class).
+looper-token-diagnose:
+  stage: plan
+  image: ghcr.io/tacplus-dev/looper:main
+  tags: [arm64, autoscale]
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+      allow_failure: true
+  extends: .looper-identity
+  parallel:
+    matrix:
+      - LOOPER_ENVIRONMENT: [looper-plan, kicker, looper-report, looper-manager, looper-scan]
+  environment: {name: $LOOPER_ENVIRONMENT, action: prepare}
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - looper-token diagnose

@@ -119,7 +119,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   and a live `probe` (the CI file's manual `looper-ruleset-probe`, whose script GitLab could not read until #94: the file
   on GitLab is still a691d64's until the hub copies main's); with the apps' variables set, every job's GitHub
   token is an app's, minted by `looper-token` from its id_token through WIF and KMS (its environment naming the key it
-  may use) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
+  may use; its key's version named whole since #95: the first cutover's `--key=... --version=1` was refused by
+  gcloud itself, before any call to GCP; a refusal now logs gcloud's error, its class and the id_token's claims, and
+  the CI file's manual `looper-token-diagnose` gives each environment's claims and each key's answer, the cutover not
+  yet retried) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
   scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;
   a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan` and leaves
   its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes

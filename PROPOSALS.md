@@ -89,6 +89,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   commit job, which mints once, drops its own at once (SYNTHESIS 21). GitLab's id_token lives for the job's timeout,
   so a refresh after it fails (the job ends first). A shorter-lived chain (a GCP service account's own credentials,
   impersonated once) would not need it kept.
+- **gcloud's own parsing in the tests** (2026-11-05, #95): the first App cutover failed on `gcloud kms
+  asymmetric-sign --key=<whole path> --version=1`, which gcloud refuses before any call (`argument --location: Must be
+  specified`), and both stubs (looper-token's, looper-identity's) had accepted it. They now parse `--version` as gcloud
+  does, but only for that flag. A gate that runs the image's real gcloud on each command looper-token and
+  looper-identity give it, with a credential that cannot authenticate, and requires the failure to be the call's (an
+  auth or permission error), not gcloud's usage, would catch the next such slip.
+- **The kernel pilot's setup still names jody1-328023's `us` key ring** (2026-11-05, #95): README, Setting it up (the
+  hub, looper#28) creates `kernel-looper` and `tacplus-reader` in jody1-328023, `us`; tacplus-dev/cloud#19 moved the
+  reader to tacplus-ci's `us-central1` key ring (its signers' move is cloud's follow-up). That section, and kernel's
+  `LOOPER_KMS_KEYRING`, follow once cloud's move is applied.
 - **Require the build's status on main** (2026-11-04, #83): main's ruleset restricts who updates it; a required
   status check (`tacplus-dev/build` from `tacplus-reader`, as kernel's protection has) would also refuse a manager's
   push whose build did not pass, once every repository builds in tacplus-dev/build (only looper is pinned today).

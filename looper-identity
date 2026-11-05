@@ -164,9 +164,12 @@ app_token() { # key app-id installation-id permissions-json-members [repo...]
   header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
   payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app" | b64url)"
   printf '%s' "$header.$payload" > "$GCP_TMP/jwt-input"
-  gcloud kms asymmetric-sign --key="$LOOPER_KMS_KEYRING/cryptoKeys/$key" --version=1 --digest-algorithm=sha256 \
-      --input-file="$GCP_TMP/jwt-input" --signature-file="$GCP_TMP/jwt-sig" >/dev/null 2>&1 ||
-    { log "Cloud KMS refused to sign with $key"; return 1; }
+  # The version named whole: gcloud reads a bare --version=1 relative to
+  # --key, --keyring and --location, and refuses it before any call without
+  # them (looper#95). Its error goes to the log.
+  gcloud kms asymmetric-sign --version="$LOOPER_KMS_KEYRING/cryptoKeys/$key/cryptoKeyVersions/1" --digest-algorithm=sha256 \
+      --input-file="$GCP_TMP/jwt-input" --signature-file="$GCP_TMP/jwt-sig" >/dev/null 2>"$GCP_TMP/kms-err" ||
+    { log "Cloud KMS refused to sign with $key: $(tr '\n' ' ' < "$GCP_TMP/kms-err")"; return 1; }
   sig="$(b64url < "$GCP_TMP/jwt-sig")"; rm -f "$GCP_TMP/jwt-input" "$GCP_TMP/jwt-sig"
   resp="$(curl -fsS -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
             -d "{\"permissions\":{$perms}${repos:+,\"repositories\":[$repos]}}" \

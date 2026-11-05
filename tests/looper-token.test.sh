@@ -10,7 +10,10 @@
 # (it verifies each app's JWT against that app's public key). The report's
 # token is gh's configuration, which gh reads; it is refreshed while its job
 # lives and no longer; a job may not mint another role's token; an id_token
-# that is not the project's protected main is refused.
+# that is not the project's protected main is refused. A refusal says why
+# (looper#95): gcloud's own error, its class (the token exchange, the key's
+# binding, a quota project, the key's path, gcloud's own usage) and the
+# id_token's claims, never the token; `diagnose` gives the hub each key's answer.
 # Run: tests/looper-token.test.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,7 +23,7 @@ export TMP
 # gh reads the token from GH_CONFIG_DIR only when no token is in its environment.
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN
 PROVIDER=projects/1/locations/global/workloadIdentityPools/gitlab-loopers/providers/gitlab-looper
-RING=projects/jody1-328023/locations/us/keyRings/looper
+RING=projects/tacplus-ci/locations/us-central1/keyRings/looper
 
 mkdir -p "$TMP/keys" "$TMP/bin"
 for k in tacplus-looper tacplus-manager; do
@@ -41,17 +44,38 @@ case "$*" in
         --output-file=*) echo '{}' > "${a#*=}" ;;
       esac
     done ;;
-  "auth login "*) [[ -s "$src" && -s "$(cat "$src")" ]] || exit 1 ;;
+  "auth login "*)
+    [[ "${STUB_FAIL:-}" != login ]] || { echo "ERROR: (gcloud.auth.login) There was a problem refreshing your current auth tokens: ('Error code unauthorized_client: The given credential is rejected by the attribute condition.', '{\"error\":\"unauthorized_client\"}')" >&2; exit 1; }
+    [[ -s "$src" && -s "$(cat "$src")" ]] || exit 1 ;;
   "kms asymmetric-sign "*)
-    key="" in="" sig=""
+    ver="" key="" ring="" loc="" in="" sig=""
     for a in "$@"; do
-      case "$a" in --key=*) key="${a##*/}" ;; --input-file=*) in="${a#*=}" ;; --signature-file=*) sig="${a#*=}" ;; esac
+      case "$a" in
+        --version=*) ver="${a#*=}" ;; --key=*) key="${a#*=}" ;; --keyring=*) ring="${a#*=}" ;; --location=*) loc="${a#*=}" ;;
+        --input-file=*) in="${a#*=}" ;; --signature-file=*) sig="${a#*=}" ;;
+      esac
     done
+    # As gcloud parses it: --version is the resource, a bare one relative to
+    # --key, --keyring and --location, refused before any call without them.
+    if [[ "$ver" != projects/*/cryptoKeyVersions/* ]]; then
+      for f in location keyring key; do
+        [[ -n "${!f}" ]] || { echo "ERROR: (gcloud.kms.asymmetric-sign) argument --$f: Must be specified." >&2; exit 1; }
+      done
+      echo "stub: a relative --version" >&2; exit 1
+    fi
+    key="${ver%/cryptoKeyVersions/*}"; key="${key##*/}"
     # Exchanged again on each call: the token file must still be there.
     [[ -s "$(cat "$src")" ]] || { echo "no credential source" >&2; exit 1; }
+    case "${STUB_FAIL:-}" in
+      sts) echo "ERROR: (gcloud.kms.asymmetric-sign) There was a problem refreshing your current auth tokens: ('Error code invalid_grant: The audience in ID Token [x] does not match the expected audience.', '{\"error\":\"invalid_grant\"}')" >&2; exit 1 ;;
+      quota) echo "ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED: Caller does not have required permission to use project 1. Grant the caller the roles/serviceusage.serviceUsageConsumer role. reason: USER_PROJECT_DENIED" >&2; exit 1 ;;
+    esac
+    [[ "$ver" == "$STUB_RING/cryptoKeys/$key/cryptoKeyVersions/1" && -f "$TMP/keys/$key.pem" ]] ||
+      { echo "ERROR: (gcloud.kms.asymmetric-sign) NOT_FOUND: $ver not found." >&2; exit 1; }
     p="$(cut -d. -f2 < "$(cat "$src")" | tr '_-' '/+')"; while ((${#p} % 4)); do p+="="; done
     env="$(base64 -d <<<"$p" | jq -r '.environment // ""')"
-    grep -qE "^$key( .*)? $env( |\$)" "$TMP/iam" || { echo "kms-denied $key $env" >> "$TMP/api.log"; echo "PERMISSION_DENIED" >&2; exit 1; }
+    grep -qE "^$key( .*)? $env( |\$)" "$TMP/iam" || { echo "kms-denied $key $env" >> "$TMP/api.log"
+      echo "ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED: Permission 'cloudkms.cryptoKeyVersions.useToSign' denied on resource '${ver%/cryptoKeyVersions/*}' (or it may not exist)." >&2; exit 1; }
     echo "signed $key $env" >> "$TMP/api.log"
     openssl dgst -sha256 -sign "$TMP/keys/$key.pem" -out "$sig" "$in" ;;
   *) exit 3 ;;
@@ -100,7 +124,7 @@ pass() { echo "ok $NAME"; }
 tok() { # environment [VAR=value...] -- args
   local env="$1" e=(); shift; while [[ "$1" != -- ]]; do e+=("$1"); shift; done; shift
   : > "$TMP/api.log"
-  env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" TMPDIR="$TMP" CI_PROJECT_PATH=tacplus-dev/looper \
+  env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" TMPDIR="$TMP" STUB_RING="$RING" CI_PROJECT_PATH=tacplus-dev/looper \
     GCP_WIF_PROVIDER="$PROVIDER" LOOPER_KMS_KEYRING="$RING" LOOPER_TOKEN_REFRESH="${REFRESH:-2700}" \
     LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 LOOPER_MANAGER_APP_ID=401 LOOPER_MANAGER_INSTALLATION_ID=41 \
     GCP_ID_TOKEN="$(id_token "$env")" "${e[@]+"${e[@]}"}" "$ROOT/looper-token" "$@"
@@ -146,7 +170,9 @@ pass
 NAME=roles
 ! tok looper-report -- mint manager >/dev/null 2>"$TMP/err" || fail "a report minted the manager's token"
 grep -q 'kms-denied tacplus-manager looper-report' "$TMP/api.log" || fail "api: $(cat "$TMP/api.log")"
-grep -q 'may not be manager' "$TMP/err" || fail "log: $(cat "$TMP/err")"
+grep -q 'Cloud KMS refused this job the key tacplus-manager: its signer binding does not name' "$TMP/err" &&
+  grep -q "gcloud: .*PERMISSION_DENIED: Permission 'cloudkms.cryptoKeyVersions.useToSign'" "$TMP/err" &&
+  grep -q 'attribute.role=900:main:true:looper-report' "$TMP/err" || fail "log: $(cat "$TMP/err")"
 for e in looper-manager looper-scan; do
   t="$(tok "$e" -- mint manager 2>"$TMP/err")" || fail "$e could not mint the manager's token"
   [[ "$t" == ghs_manager_* ]] && grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" ||
@@ -168,6 +194,50 @@ for bad in '.ref = "feature"' '.ref_protected = "false"' '.aud = "https://iam.go
 done
 ! tok looper-report GCP_ID_TOKEN= -- mint report >/dev/null 2>"$TMP/err" || fail "minted with no id_token"
 grep -q 'no id_tokens GCP_ID_TOKEN' "$TMP/err" || fail "log: $(cat "$TMP/err")"
+pass
+
+# Each refusal says why (looper#95): its class, gcloud's own error and the
+# claims GCP maps, never the id_token.
+NAME=errors
+while IFS='|' read -r what want said; do
+  ! tok looper-report ${what:+"$what"} -- mint report >/dev/null 2>"$TMP/err" || fail "$what: minted"
+  grep -qF "$want" "$TMP/err" || fail "$what: no '$want'"
+  grep -F "gcloud: " "$TMP/err" | grep -qF "$said" || fail "$what: not gcloud's error '$said'"
+  grep -qF 'project_id=900 ref=main ref_protected=true environment=looper-report attribute.role=900:main:true:looper-report' "$TMP/err" ||
+    fail "$what: no claims"
+  grep -qF eyJhbGciOiJSUzI1NiJ9 "$TMP/err" && fail "$what: the id_token is in the log"
+done <<EOF
+STUB_FAIL=sts|the token exchange (STS) refused this job's id_token|ERROR: (gcloud.kms.asymmetric-sign) There was a problem refreshing
+STUB_FAIL=quota|counted against a project that refuses it|USER_PROJECT_DENIED
+STUB_RING=projects/other/locations/us/keyRings/looper|Cloud KMS has no version 1 of $RING/cryptoKeys/tacplus-looper|NOT_FOUND
+LOOPER_KMS_KEYRING=looper|gcloud refused the command itself, before any call to GCP|argument --location: Must be specified
+EOF
+! tok looper-report STUB_FAIL=login -- mint report >/dev/null 2>"$TMP/err" || fail "login: minted"
+grep -qF "Workload Identity Federation refused this job ($PROVIDER): the token exchange (STS) refused this job's id_token" "$TMP/err" &&
+  grep -qF 'gcloud: ERROR: (gcloud.auth.login) There was a problem refreshing your current auth tokens' "$TMP/err" &&
+  grep -qF 'the id_token: project_id=900 ref=main ref_protected=true environment=looper-report' "$TMP/err" ||
+  fail "login: $(cat "$TMP/err")"
+# An environment the id_token lacks is named as such.
+! env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" TMPDIR="$TMP" STUB_RING="$RING" GCP_WIF_PROVIDER="$PROVIDER" LOOPER_KMS_KEYRING="$RING" \
+    LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 GCP_ID_TOKEN="$(id_token "" 'del(.environment)')" \
+    "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "minted with no environment"
+grep -qF 'environment=(none) attribute.role=(none: no environment claim)' "$TMP/err" || fail "no environment: $(cat "$TMP/err")"
+pass
+
+# The hub's diagnosis (looper#95): the claims, the attribute.role GCP
+# computes, and each key's answer, against what each key's binding should be.
+NAME=diagnose
+out="$(tok looper-plan LOOPER_REPORT_APP_ID= -- diagnose 2>"$TMP/err")" || fail "looper-plan: $out"
+grep -qF 'attribute.role=900:main:true:looper-plan' <<<"$out" &&
+  grep -qx 'tacplus-looper: signed (expected: signed)' <<<"$out" &&
+  grep -qx 'tacplus-manager: refused (expected: refused)' <<<"$out" &&
+  grep -qF "gcloud: ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED" <<<"$out" || fail "looper-plan: $out"
+out="$(tok looper-scan -- diagnose 2>"$TMP/err")" || fail "looper-scan: $out"
+grep -qx 'tacplus-looper: signed (expected: signed)' <<<"$out" && grep -qx 'tacplus-manager: signed (expected: signed)' <<<"$out" ||
+  fail "looper-scan: $out"
+! out="$(tok looper-report STUB_FAIL=sts -- diagnose 2>"$TMP/err")" || fail "sts: exit 0: $out"
+grep -qx 'tacplus-looper: refused (expected: signed)' <<<"$out" && grep -qF "the token exchange (STS) refused" <<<"$out" || fail "sts: $out"
+grep -qF eyJhbGciOiJSUzI1NiJ9 <<<"$out" && fail "the id_token is in the diagnosis"
 pass
 
 echo "looper-token: all scenarios pass"

@@ -31,6 +31,15 @@
 #   looper-token mint ROLE        one token on stdout
 #   looper-token configured       exits 0 when this deployment's jobs use the
 #                                 apps (LOOPER_REPORT_APP_ID is set)
+#   looper-token diagnose         the hub's diagnosis (looper#95): the id_token's
+#                                 claims, the attribute.role GCP computes from
+#                                 them, and each key's answer to a signature,
+#                                 against what its binding should give this
+#                                 job's environment; exits 1 when one differs
+#
+# A refusal says why: gcloud's own error, its class (the token exchange, the
+# key's binding, a quota project, the key's path, gcloud's usage) and the
+# claims GCP maps, never the id_token itself.
 #
 # Which job may sign with which key is GCP's to enforce: each key's IAM
 # binding names the environments of the pipeline's jobs that may use it
@@ -78,13 +87,34 @@ role_app() { # role
   esac
 }
 
+# The id_token's claims (its payload, JSON).
+claims_json() { IFS=. read -r _ p _ <<<"${GCP_ID_TOKEN:-}"; b64url_decode "$p" 2>/dev/null; }
+
+# The claims the provider gitlab-looper maps, and its attribute.role, for the
+# log: never the token.
+claims() {
+  jq -r 'def v(k): .[k] // "(none)" | tostring;
+    "project_id=\(v("project_id")) ref=\(v("ref")) ref_protected=\(v("ref_protected")) environment=\(v("environment")) attribute.role=" +
+    if .environment then "\(.project_id):\(.ref):\(.ref_protected):\(.environment)" else "(none: no environment claim)" end' \
+    <<<"$(claims_json)" 2>/dev/null || echo "GCP_ID_TOKEN is not a JWT"
+}
+
+# Which job environments each key's binding names (README, Only the manager
+# writes main; tacplus-dev/cloud's ci stack): what `diagnose` expects.
+signers() { # key
+  case "$1" in
+    tacplus-looper) echo "looper-report looper-scan looper-plan kicker" ;;
+    tacplus-manager) echo "looper-manager looper-scan" ;;
+  esac
+}
+
 # The id_token's claims, checked before GCP sees it: GitLab's issuer, the
 # provider's audience, and GitLab's own word for the project and its protected
 # main, which no variable overrides. (Its signature and the environment are
 # GCP's to check: the key's binding.)
 check_id_token() {
   local c
-  c="$(IFS=. read -r _ p _ <<<"$GCP_ID_TOKEN"; b64url_decode "$p" 2>/dev/null)" || true
+  c="$(claims_json)" || true
   jq -e 'type == "object"' <<<"$c" >/dev/null 2>&1 || fail "GCP_ID_TOKEN is not a JWT"
   [[ "$(jq -r .iss <<<"$c")" == "$GITLAB_ISSUER" ]] || fail "the id_token's issuer is $(jq -r .iss <<<"$c"), not $GITLAB_ISSUER"
   jq -e --arg a "https://iam.googleapis.com/$GCP_WIF_PROVIDER" '.aud | if type == "array" then index($a) != null else . == $a end' <<<"$c" >/dev/null ||
@@ -96,34 +126,72 @@ check_id_token() {
 }
 
 # gcloud federated with the job's id_token, its configuration in DIR/gcloud
-# (the job's user's alone): every later call exchanges the token again.
+# (the job's user's alone): its login is the first exchange (STS), and every
+# later call exchanges the token again.
 gcp_login() { # dir
   : "${GCP_ID_TOKEN:?this job has no id_tokens GCP_ID_TOKEN (README, Only the manager writes main)}"
   : "${GCP_WIF_PROVIDER:?the project variable GCP_WIF_PROVIDER is not set}"
   check_id_token
   export CLOUDSDK_CONFIG="$1/gcloud" CLOUDSDK_CORE_DISABLE_PROMPTS=1
+  local err="$1/gcloud-err"
   ( umask 077; mkdir -p "$CLOUDSDK_CONFIG"
     printf '%s' "$GCP_ID_TOKEN" > "$CLOUDSDK_CONFIG/oidc-token"
     gcloud iam workload-identity-pools create-cred-config "$GCP_WIF_PROVIDER" \
-      --credential-source-file="$CLOUDSDK_CONFIG/oidc-token" --output-file="$CLOUDSDK_CONFIG/federation.json" >/dev/null ) ||
-    fail "no credential configuration for $GCP_WIF_PROVIDER"
-  gcloud auth login --cred-file="$CLOUDSDK_CONFIG/federation.json" --quiet >/dev/null 2>&1 ||
-    fail "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER)"
+      --credential-source-file="$CLOUDSDK_CONFIG/oidc-token" --output-file="$CLOUDSDK_CONFIG/federation.json" >/dev/null 2>"$err" ) ||
+    fail "no credential configuration for $GCP_WIF_PROVIDER$(gcloud_said < "$err")"
+  gcloud auth login --cred-file="$CLOUDSDK_CONFIG/federation.json" --quiet >/dev/null 2>"$err" ||
+    fail "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER): $(refusal "" < "$err")$(gcloud_said < "$err")
+  the id_token: $(claims)"
+  rm -f "$err"
+}
+
+# gcloud's error, on lines of its own after the caller's sentence.
+gcloud_said() { local l; while IFS= read -r l; do printf '\n  gcloud: %s' "$l"; done; }
+
+# Why gcloud did not sign with KEY, from its error on stdin: the class first.
+# STS's errors come through gcloud's token refresh; a quota project's are
+# PERMISSION_DENIED too (tacplus-dev/cloud#16), so they are told apart first.
+refusal() { # key
+  local e; e="$(cat)"
+  case "$e" in
+    *invalid_grant*|*unauthorized_client*|*invalid_request*|*invalid_target*|*sts.googleapis.com*|*"refreshing your current auth tokens"*)
+      echo "the token exchange (STS) refused this job's id_token: the provider's audience or attribute condition ($GCP_WIF_PROVIDER)" ;;
+    *USER_PROJECT_DENIED*|*SERVICE_DISABLED*|*serviceusage*|*"quota project"*)
+      echo "the call was counted against a project that refuses it: a quota project (tacplus-dev/cloud#16)" ;;
+    *PERMISSION_DENIED*|*"HTTPError 403"*)
+      echo "Cloud KMS refused this job the key $1: its signer binding does not name the attribute.role below, or the key is not at ${LOOPER_KMS_KEYRING:-}" ;;
+    *NOT_FOUND*|*"HTTPError 404"*)
+      echo "Cloud KMS has no version 1 of ${LOOPER_KMS_KEYRING:-}/cryptoKeys/$1" ;;
+    *"Must be specified"*|*"unrecognized arguments"*|*"argument --"*|*"Invalid value"*)
+      echo "gcloud refused the command itself, before any call to GCP: a bug in looper-token" ;;
+    *) echo "gcloud failed" ;;
+  esac
+}
+
+# KMS signs IN with KEY's version 1 into SIG. The version is named whole:
+# gcloud reads a bare --version=1 relative to --key, --keyring and --location
+# and, given a whole --key alone, refuses it before any call (looper#95). On a
+# refusal, why on stdout: its class, gcloud's error, the claims.
+kms_sign() { # key in sig dir
+  local err="$4/kms-err"
+  gcloud kms asymmetric-sign --version="$LOOPER_KMS_KEYRING/cryptoKeys/$1/cryptoKeyVersions/1" --digest-algorithm=sha256 \
+      --input-file="$2" --signature-file="$3" >/dev/null 2>"$err" && { rm -f "$err"; return 0; }
+  printf '%s%s\n  the id_token: %s\n' "$(refusal "$1" < "$err")" "$(gcloud_said < "$err")" "$(claims)"
+  rm -f "$err"; return 1
 }
 
 # A one-hour installation token of the role's app, on stdout: KMS signs the
 # app's JWT (only a job whose binding allows it may), GitHub mints the token.
 mint() { # role dir
-  local key app inst perms now header payload sig resp token
+  local key app inst perms now header payload sig resp token why
   read -r key app inst perms < <(role_app "$1")
   : "${LOOPER_KMS_KEYRING:?the project variable LOOPER_KMS_KEYRING is not set}"
   now="$(date +%s)"
   header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
   payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app" | b64url)"
   ( umask 077; printf '%s' "$header.$payload" > "$2/jwt-input" )
-  gcloud kms asymmetric-sign --key="$LOOPER_KMS_KEYRING/cryptoKeys/$key" --version=1 --digest-algorithm=sha256 \
-      --input-file="$2/jwt-input" --signature-file="$2/jwt-sig" >/dev/null 2>&1 ||
-    { rm -f "$2/jwt-input" "$2/jwt-sig"; log "Cloud KMS refused to sign with $key: this job's environment may not be $1"; return 1; }
+  why="$(kms_sign "$key" "$2/jwt-input" "$2/jwt-sig" "$2")" ||
+    { rm -f "$2/jwt-input" "$2/jwt-sig"; log "no signature with $key ($1's key): $why"; return 1; }
   sig="$(b64url < "$2/jwt-sig")"; rm -f "$2/jwt-input" "$2/jwt-sig"
   resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
             -d "{\"permissions\":{$perms}}" "$GITHUB_API/app/installations/$inst/access_tokens")" ||
@@ -166,6 +234,27 @@ start() { # role dir [pid]
   echo $!
 }
 
+# The hub's diagnosis (looper#95; the web pipeline's manual
+# looper-token-diagnose, one job per environment): what GCP sees of this job,
+# and each key's answer. Needs no app.
+diagnose() { # dir
+  local env k want got why rc=0
+  echo "id_token: $(claims)"
+  echo "provider: ${GCP_WIF_PROVIDER:-(unset)}  key ring: ${LOOPER_KMS_KEYRING:-(unset)}"
+  gcp_login "$1"
+  : "${LOOPER_KMS_KEYRING:?the project variable LOOPER_KMS_KEYRING is not set}"
+  env="$(claims_json | jq -r '.environment // ""')"
+  printf 'looper-token diagnose' > "$1/diagnose-input"
+  for k in tacplus-looper tacplus-manager; do
+    want=refused; [[ -n "$env" && " $(signers "$k") " == *" $env "* ]] && want=signed
+    if why="$(kms_sign "$k" "$1/diagnose-input" "$1/diagnose-sig" "$1")"; then got=signed; else got=refused; fi
+    echo "$k: $got (expected: $want)"
+    [[ -z "$why" ]] || sed 's/^/  /' <<<"$why"
+    [[ "$got" == "$want" ]] || rc=1
+  done
+  return "$rc"
+}
+
 case "${1:-}" in
   start) [[ $# -eq 3 || $# -eq 4 ]] || fail "start ROLE DIR [PID]"; start "$2" "$3" "${4:-$PPID}" ;;
   mint)
@@ -173,6 +262,9 @@ case "${1:-}" in
     d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
     gcp_login "$d"; mint "$2" "$d" ;;
   configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;
+  diagnose)
+    d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+    diagnose "$d" ;;
   -h|--help|help|"") usage ;;
   *) fail "unknown command: $1 (see --help)" ;;
 esac

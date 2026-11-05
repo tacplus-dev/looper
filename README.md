@@ -1210,6 +1210,10 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
   Federation, and KMS signs its app's JWT (`looper-token`). Which key a job may use is GCP's to enforce: each key's
   binding names the job environments the plan gives (`looper-report`, `looper-manager`, `looper-scan`; the plan's
   `looper-plan`, the kicker's `kicker`).
+  - A refusal says why (looper#95): gcloud's own error, its class (the token exchange refused, the key's binding not
+    naming the job, a quota project, the key's path, gcloud refusing the command) and the claims the provider maps
+    (`project_id`, `ref`, `ref_protected`, `environment`, and the `attribute.role` they make), never the id_token. The
+    web pipeline's manual `looper-token-diagnose`, one job per environment, prints them and each key's answer.
   - The token is gh's configuration (`GH_CONFIG_DIR`), which gh, git (`gh auth git-credential`) and the `tacplus`
     wrapper read on every call. It is refreshed every 45 minutes for the job's life.
   - A job that still holds `GH_TOKEN`, or anything shaped like a personal token, refuses to run.
@@ -1256,13 +1260,18 @@ through the manager job's checks, or hold the bypass.
 looper-token start report|manager DIR [PID]   # a job's token, as DIR/hosts.yml, fresh until PID ends (repo-looper, looper-dispatch)
 looper-ruleset apply | check [REPO...]        # main's ruleset on the public repositories (Jody, by hand)
 looper-ruleset probe REPO                     # with a report's token: a contents write and a push to main both refused
-tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; an id_token not the project's protected main refused
+looper-token diagnose                         # the job's claims, its attribute.role and each key's answer, against its binding (the hub, looper-token-diagnose)
+tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names, a version parsed as gcloud does) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; an id_token not the project's protected main refused; each refusal says why (gcloud's error, its class: STS, the key's binding, a quota project, the key's path, gcloud's usage; the claims, never the token); the diagnosis
 tests/looper-ruleset.test.sh  # the ruleset created on the public repositories and the private ones skipped, a second apply writes nothing, a drifted one put back, check; the probe passes on refusals and fails when main accepts a write
 ```
 
-**Setting it up** (Jody; `P=jody1-328023`, `PN` and `PROVIDER` as in [Setting it up](#setting-it-up-the-hub-with-jodys-approval-as-recorded-on-looper28),
-the pool `gitlab-loopers` already there, `LP` the id of the GitLab project tacplus-dev/looper,
-`curl -sH "PRIVATE-TOKEN: <Jody's>" https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper | jq .id`):
+**Setting it up** (Jody; `P=tacplus-ci`, `PN=79638967213` its number, `LOC=us-central1`, `LP` the id of the GitLab
+project tacplus-dev/looper (88136765,
+`curl -sH "PRIVATE-TOKEN: <Jody's>" https://gitlab.com/api/v4/projects/tacplus-dev%2Flooper | jq .id`). The pool
+`gitlab-loopers`, its provider `gitlab-looper`, the key ring `looper`, the two keys, their import jobs and their signer
+bindings are tacplus-dev/cloud's, applied by its ci stack (tacplus-dev/cloud#19, its README's "The GitHub Apps' keys"):
+steps 2 and 3 below are what it applies, for reference, all but the keys' import, which is by hand. Not jody1-328023's
+`us`: the keys live in tacplus-ci, `us-central1`):
 
 1. **The apps.** On github.com, under tacplus-dev's Settings, Developer settings, GitHub Apps, New GitHub App, create
    two private apps with no webhook:
@@ -1275,12 +1284,12 @@ the pool `gitlab-loopers` already there, `LP` the id of the GitLab project tacpl
 
    ```sh
    for k in tacplus-manager tacplus-looper; do
-     gcloud kms keys create $k --keyring=looper --location=us --project=$P --purpose=asymmetric-signing \
+     gcloud kms keys create $k --keyring=looper --location=$LOC --project=$P --purpose=asymmetric-signing \
        --default-algorithm=rsa-sign-pkcs1-2048-sha256 --protection-level=software --import-only --skip-initial-version-creation
-     gcloud kms import-jobs create $k-import --keyring=looper --location=us --project=$P \
+     gcloud kms import-jobs create $k-import --keyring=looper --location=$LOC --project=$P \
        --import-method=rsa-oaep-3072-sha256-aes-256 --protection-level=software
      openssl pkcs8 -topk8 -nocrypt -inform PEM -outform DER -in $k.private-key.pem -out $k.der
-     gcloud kms keys versions import --import-job=$k-import --keyring=looper --location=us --project=$P \
+     gcloud kms keys versions import --import-job=$k-import --keyring=looper --location=$LOC --project=$P \
        --key=$k --algorithm=rsa-sign-pkcs1-2048-sha256 --target-key-file=$k.der   # version 1
      shred -u $k.private-key.pem $k.der
    done
@@ -1295,11 +1304,11 @@ the pool `gitlab-loopers` already there, `LP` the id of the GitLab project tacpl
      --attribute-condition="assertion.project_id == \"$LP\" && assertion.ref_protected == \"true\""
    R="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/attribute.role/$LP:main:true"
    for e in looper-report looper-scan looper-plan kicker; do
-     gcloud kms keys add-iam-policy-binding tacplus-looper --keyring=looper --location=us --project=$P \
+     gcloud kms keys add-iam-policy-binding tacplus-looper --keyring=looper --location=$LOC --project=$P \
        --role=roles/cloudkms.signer --member="$R:$e"
    done
    for e in looper-manager looper-scan; do
-     gcloud kms keys add-iam-policy-binding tacplus-manager --keyring=looper --location=us --project=$P \
+     gcloud kms keys add-iam-policy-binding tacplus-manager --keyring=looper --location=$LOC --project=$P \
        --role=roles/cloudkms.signer --member="$R:$e"
    done
    ```
@@ -1315,15 +1324,19 @@ the pool `gitlab-loopers` already there, `LP` the id of the GitLab project tacpl
 
    ```sh
    for v in "GCP_WIF_PROVIDER=projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/providers/gitlab-looper" \
-            "LOOPER_KMS_KEYRING=projects/$P/locations/us/keyRings/looper" \
+            "LOOPER_KMS_KEYRING=projects/$P/locations/$LOC/keyRings/looper" \
             LOOPER_MANAGER_APP_ID=<tacplus-manager's app id> LOOPER_MANAGER_INSTALLATION_ID=<its installation id> \
             LOOPER_REPORT_APP_ID=<tacplus-looper's app id> LOOPER_REPORT_INSTALLATION_ID=<its installation id>; do
      curl -sfH "PRIVATE-TOKEN: <Jody's>" -X POST $G/projects/$L/variables -d key="${v%%=*}" --data-urlencode value="${v#*=}" -d protected=true >/dev/null
    done
    curl -sfH "PRIVATE-TOKEN: <Jody's>" -X DELETE $G/projects/$L/variables/GH_TOKEN
    ```
-6. **Checked.** First, a web pipeline's manual job `looper-ruleset-probe`: with the report app's token, a contents API
-   write to looper's main and a push to it are both refused. Then the next kicker's log has no `this job holds`, and
+6. **Checked.** First, a web pipeline's manual jobs `looper-token-diagnose` (looper#95), one per environment: each
+   prints its id_token's claims and `attribute.role`, and each key's answer, and fails when one is not what the key's
+   binding should give that environment (the report's key for `looper-plan`, `kicker`, `looper-report` and
+   `looper-scan`, the manager's for `looper-manager` and `looper-scan`), saying why. Then its manual job
+   `looper-ruleset-probe`: with the report app's token, a contents API write to looper's main and a push to it are both
+   refused. Then the next kicker's log has no `this job holds`, and
    the next land's verdict comment is `tacplus-manager[bot]`'s, its merge on main. Then Jody revokes, on github.com, the
    personal token the project held as `GH_TOKEN`.
 

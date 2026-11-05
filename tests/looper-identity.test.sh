@@ -75,10 +75,14 @@ case "$*" in
   "auth login "*) [[ -s "$TMP/federated" ]] || exit 1 ;;
   "auth print-access-token") [[ -s "$TMP/federated" ]] && echo ya29.stub ;;
   "kms asymmetric-sign "*)
-    key="" in="" sig=""
+    ver="" in="" sig="" loc=""
     for a in "$@"; do
-      case "$a" in --key=*) key="${a##*/}" ;; --input-file=*) in="${a#*=}" ;; --signature-file=*) sig="${a#*=}" ;; esac
+      case "$a" in --version=*) ver="${a#*=}" ;; --location=*) loc="${a#*=}" ;; --input-file=*) in="${a#*=}" ;; --signature-file=*) sig="${a#*=}" ;; esac
     done
+    # As gcloud parses it (looper#95): a bare --version needs --key, --keyring and --location.
+    [[ "$ver" == projects/*/cryptoKeyVersions/1 || -n "$loc" ]] ||
+      { echo "ERROR: (gcloud.kms.asymmetric-sign) argument --location: Must be specified." >&2; exit 1; }
+    key="${ver%/cryptoKeyVersions/*}"; key="${key##*/}"
     p="$(cut -d. -f2 < "$TMP/federated" | tr '_-' '/+')"; while ((${#p} % 4)); do p+="="; done
     project="$(base64 -d <<<"$p" | jq -r .project_id)"
     allowed="$(awk -v k="$key" '$1 == k { print $2 }' "$TMP/iam")"
