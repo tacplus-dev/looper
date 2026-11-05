@@ -252,14 +252,18 @@ EOF2
   rd="$(command -v docker || true)" img="${LOOPER_TEST_IMAGE:-alpine:3}"
   if [[ -n "$rd" && -S /var/run/docker.sock ]] && docker info >/dev/null 2>&1 && { docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null 2>&1; }; then
     printf 'owner=%s\nroots=%s\nmemory=64m\n' "$u_m" "$TMP/wt" > "$TMP/conf/$(id -u "$u_m")"
-    rm -f "$TMP/sock/s"
-    setpriv --reuid "$u_b" --regid "$(id -g "$u_b")" --groups "$(stat -c %g /var/run/docker.sock)" env -i PATH="$PATH" HOME=/ \
+    rm -f "$TMP/sock/s"; mkdir -m 0700 "$TMP/bhome"; chown "$u_b" "$TMP/bhome"
+    # Its HOME its own, as repo-looper gives it: `docker build` keeps its config there (looper#89).
+    setpriv --reuid "$u_b" --regid "$(id -g "$u_b")" --groups "$(stat -c %g /var/run/docker.sock)" env -i PATH="$PATH" HOME="$TMP/bhome" \
       python3 -I "$ROOT/looper-docker-broker" serve "$TMP/sock/s" "$TMP/conf" "$rd" & BROKER=$!
     for _ in $(seq 50); do [[ -S "$TMP/sock/s" ]] && break; sleep 0.1; done
     out="$(echo hi | as "$u_m" docker run --rm -i "$img" sh -c 'cat; echo there' 2>"$TMP/err")" || fail "the real docker: $(cat "$TMP/err")"
     [[ "$out" == $'hi\nthere' ]] || fail "the real docker: $out"
     rc=0; as "$u_m" docker run --rm -v /etc:/e "$img" true </dev/null 2>"$TMP/err" || rc=$?
     (( rc == 125 )) || fail "the real docker mounted /etc: exit $rc"
+    printf 'FROM %s\n' "$img" > "$TMP/wt/Dockerfile"; chown "$u_m" "$TMP/wt/Dockerfile"
+    as "$u_m" docker build -q -t "lpdt-build$$" . </dev/null >/dev/null 2>"$TMP/err" || fail "the real docker build: $(cat "$TMP/err")"
+    docker rmi -f "lpdt-build$$" >/dev/null 2>&1 || true
     kill "$BROKER"; wait "$BROKER" 2>/dev/null || true; BROKER=""
   else
     echo "skip $NAME (the real docker): no docker daemon or $img"

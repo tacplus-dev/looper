@@ -1456,16 +1456,18 @@ report_reown() { # issue
 # The broker of a model's run (looper#68): the looper-docker user, in the
 # group of the Docker socket and the model's own (to read a build's context in
 # its worktree), serving that model's uid alone on DIR/broker/sock. None
-# without a docker. BROKER_PID.
+# without a docker. BROKER_PID. Its HOME is DIR/broker/home, its own: the
+# docker CLI keeps its config there (~/.docker), and `docker build` needs it
+# (looper#89: with HOME=/, 'mkdir /.docker: permission denied').
 broker_start() { # dir
   local real bu sock groups i; bu="$(model_user docker)"
   real="$(command -v docker)" || return 1
   user_add "$bu" /usr/sbin/nologin / || return 1
   groups="$MODEL_GID"; sock="$(docker_sock_gid)"; groups+="${sock:+,$sock}"
-  mkdir -p "$1/broker/conf"; chown "$bu:" "$1/broker"
+  mkdir -p "$1/broker/conf" "$1/broker/home"; chown "$bu:" "$1/broker" "$1/broker/home"; chmod 0700 "$1/broker/home"
   printf 'owner=%s\nroots=%s\nmemory=%s\n' "$MODEL_USER" "$MODEL_ROOTS" "${LOOPER_CHILD_MEMORY:-}" > "$1/broker/conf/$MODEL_UID"
   setpriv --reuid "$bu" --regid "$(id -g "$bu")" --groups "$groups" \
-    env -i PATH="$PATH" HOME=/ ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
+    env -i PATH="$PATH" HOME="$1/broker/home" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
     python3 -I "$(dirname "$LOOPER_SELF")/looper-docker-broker" serve "$1/broker/sock" "$1/broker/conf" "$real" &
   BROKER_PID=$!
   for i in $(seq 50); do [[ -S "$1/broker/sock" ]] && return 0; sleep 0.1; done

@@ -1878,7 +1878,9 @@ else
         getent group "${P}dockersock" >/dev/null && groupdel "${P}dockersock"; rm -rf "$TMP"' EXIT
   R="$TMP/root"; mkdir -p "$R" "$TMP/dk"
   cp "$ROOT"/{repo-looper,looper-lib.sh,caps.yaml,looper-docker,looper-docker-broker,looper-pkill} "$R/"
-  printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n' "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
+  # The broker's docker has a config directory it may write (looper#89): ~/.docker.
+  printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n[[ "$(id -un)" != %q ]] || mkdir -p "$HOME/.docker" || echo "no config dir: HOME=$HOME" >> %q\n' \
+    "$TMP/dk/log" "${P}docker" "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
   chmod 755 "$TMP" "$TMP/bin" "$TMP/dk/docker"; chmod 666 "$TMP/dk/log"; chmod -R a+rX "$R" "$TMP/bin" "$TMP/dk"
   useradd -M -U "${P}next" && SG="$(id -g "${P}next")" && userdel "${P}next" || fail "useradd -U"
   ! getent group "${P}next" >/dev/null || groupdel "${P}next"
@@ -1907,6 +1909,7 @@ done
 [[ " $(id -G) " != *" $(stat -c %g "${DOCKER_HOST#unix://}") "* ]] || echo "holds the docker socket's gid" >> "$p"
 docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused its clone" >> "$p"
 ! docker run --rm -v /etc:/e img true 2>> "$p.docker" || echo "docker mounted /etc" >> "$p"
+docker build -t "img-$ISSUE" . 2>> "$p.docker" || echo "docker build failed" >> "$p"
 touch "$FIX/probed-$ISSUE"
 for i in $(seq 300); do [[ -e "$FIX/probed-$o" ]] && break; sleep 0.1; done
 kill "$(cat "$FIX/pid-$ISSUE")" || echo "could not stop its own process" >> "$p"
@@ -1928,6 +1931,7 @@ EOS
     grep -q "outside this child's own directories" "$FIX/probe-$n.docker" || fail "#$n's docker: $(cat "$FIX/probe-$n.docker")"
     grep -qxF "${P}docker run --memory $LOOPER_MEM --memory-swap $LOOPER_MEM --label io.tacplus.looper.owner=$P$n --rm -v $FIX/work/alpha/issues/$n:/w img true" "$TMP/dk/log" ||
       fail "#$n's docker ran: $(cat "$TMP/dk/log")"
+    grep -qxF "${P}docker build -t img-$n ." "$TMP/dk/log" || fail "#$n's docker build: $(cat "$TMP/dk/log")"
     [[ "$(stat -c %U "$FIX/work/alpha/issues/$n")" == "$P$n" ]] || fail "#$n's clone is $(stat -c %U "$FIX/work/alpha/issues/$n")'s"
   done
   for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do
@@ -1935,6 +1939,7 @@ EOS
     [[ "$(id -g "$u")" == "$i" && "$(id -G "$u")" == "$i" && "$i" != "$SG" ]] && (( i >= 61000 && i < 64000 )) || fail "$u: $(id "$u")"
   done
   ! grep -q /etc "$TMP/dk/log" || fail "a container mounted /etc: $(cat "$TMP/dk/log")"
+  ! grep -q "no config dir" "$TMP/dk/log" || fail "the broker's docker has no config dir: $(cat "$TMP/dk/log")"
   has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "You run as your own user, ${P}4 (looper#68)"
   [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main); $OUT"
   closed 4; closed 5

@@ -36,7 +36,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   as its own unprivileged user (`looper-<issue>`; uid and gid from a reserved range, never the Docker socket's gid,
   #69), owning its clone, home and run directory, so it cannot signal or read another run's processes or files,
   and its `docker` goes through `looper-docker-broker`, which serves it only its own containers, unprivileged,
-  mounting only its clone and home (#68); `repo-looper` works each repository's
+  mounting only its clone and home (#68), and builds with `docker build` (the broker's HOME its own, #89); `repo-looper` works each repository's
   `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, done only once the run reported on its closed issue and a stopped one reported by the looper, #54, Blocked-by outcomes, one or more,
   also from a run that pushed nothing because the issue waits on another, #22, a blocker closed by now dropped and one
   naming only closed ones resumed, #46; a run that ends with its land
