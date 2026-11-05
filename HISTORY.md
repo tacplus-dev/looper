@@ -60,3 +60,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-04 looper issue Manager and reports deadlock on a one-VM pool: the manager lingers for pending reports that need its VM (tacplus manager idle 1h+ after its last merge) (#82, cb226ba; gates: full)
 - 2026-11-04 looper issue Enforce 'only the manager writes main': a ruleset on main in the public repos, a manager App as the only writer, reports on a non-bypass token, Jody's PAT out of every job (#83, fc8b2f9; gates: full)
 - 2026-11-04 looper issue Recap: read tacplus-dev/build's jobs with its read-only token; drop the Cloud Build source (#85, 29593f0; gates: docs+recap)
+- 2026-11-05 looper issue Syft 1.56.0's release binary in the image has golang.org/x/net GO-2026-6860/6866 (fixed in v0.62.0); no newer release, clean when built from source (#88, 50b258d; gates: full)
