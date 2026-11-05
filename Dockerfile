@@ -62,6 +62,10 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # here, its go.sum from sum.golang.org, which replaces github.com/ulikunitz/xz
 # with GITLEAKS_XZ_VERSION (gitleaks pins v0.5.12, GO-2025-3922), a version
 # upstream did not test: the smoke below proves it still finds a secret.
+# Syft so too (looper#88: its 1.56.0 release binary has x/net v0.61.0, GO-2026-6860/6866,
+# and its go.mod still requires it): its module requires x/net SYFT_XNET_VERSION, its
+# version set as the release sets it (.goreleaser.yaml), its symbol table kept as
+# Trivy's. Drop SYFT_XNET_VERSION when a Syft release requires x/net >= v0.62.0.
 # Trivy built so reports GO-2026-4919 alone, not applicable: the compromised
 # v0.69.4 release (CVE-2026-33634), whose range has no fix event and so matches
 # every later version. Trivy is a long build: its own layer, before the others,
@@ -79,7 +83,7 @@ RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod g
     go clean -cache -modcache; trivy --version | grep -qx "Version: $TRIVY_VERSION"
 ARG OSV_SCANNER_VERSION=2.7.0
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
-ARG SYFT_VERSION=1.56.0 SYFT_SHA256=ace61b9397ae28189c674ae332d67a8074dafd71e87724dfb8b22412d8253bb5
+ARG SYFT_VERSION=1.56.0 SYFT_XNET_VERSION=0.62.0
 ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15
 ARG GOSEC_VERSION=2.30.0 GOSEC_SHA256=0867994920453070a5d6a713e35921a3058473e5c3bf777fdd5a2d6f95313fda
 ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc47824faf662f4fad005343d96007e
@@ -89,8 +93,6 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
     get deny.tgz "$gh/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl.tar.gz" "$CARGO_DENY_SHA256"; \
     tar -xzf "$d/deny.tgz" -C "$d"; install -m 0755 "$d/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny; \
-    get syft.tgz "$gh/anchore/syft/releases/download/v$SYFT_VERSION/syft_${SYFT_VERSION}_linux_arm64.tar.gz" "$SYFT_SHA256"; \
-    tar -xzf "$d/syft.tgz" -C "$d" syft; install -m 0755 "$d/syft" /usr/local/bin/syft; \
     get gosec.tgz "$gh/securego/gosec/releases/download/v$GOSEC_VERSION/gosec_${GOSEC_VERSION}_linux_arm64.tar.gz" "$GOSEC_SHA256"; \
     tar -xzf "$d/gosec.tgz" -C "$d" gosec; install -m 0755 "$d/gosec" /usr/local/bin/gosec; \
     get spotbugs.tgz "$gh/spotbugs/spotbugs/releases/download/$SPOTBUGS_VERSION/spotbugs-$SPOTBUGS_VERSION.tgz" "$SPOTBUGS_SHA256"; \
@@ -104,6 +106,12 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
       go mod edit -require "$gl@v$GITLEAKS_VERSION" -tool "$gl" -replace "github.com/ulikunitz/xz=github.com/ulikunitz/xz@v$GITLEAKS_XZ_VERSION"; \
       go mod tidy; go build -ldflags "-w -X $gl/version.Version=$GITLEAKS_VERSION" -o /usr/local/bin/gitleaks "$gl"); \
     gitleaks version | grep -qx "$GITLEAKS_VERSION"; \
+    mkdir "$d/syft"; (cd "$d/syft"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod CGO_ENABLED=0; sy=github.com/anchore/syft/cmd/syft; \
+      go mod init looper.local/syft 2>/dev/null; \
+      go mod edit -require "github.com/anchore/syft@v$SYFT_VERSION" -require "golang.org/x/net@v$SYFT_XNET_VERSION" -tool "$sy"; \
+      go mod tidy; go build -ldflags "-w -X main.version=$SYFT_VERSION" -o /usr/local/bin/syft "$sy"); \
+    syft --version | grep -qx "syft $SYFT_VERSION"; \
+    go version -m /usr/local/bin/syft | grep -q "golang.org/x/net[[:space:]]*v$SYFT_XNET_VERSION[[:space:]]"; \
     go clean -cache -modcache; \
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.
