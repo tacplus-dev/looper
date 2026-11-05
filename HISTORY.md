@@ -70,3 +70,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-05 looper issue Recap: count a repository as at its cap only by running reports; otherwise report the pool's queue (#92, 56994ac; gates: full)
 - 2026-11-05 looper issue ci/tacplus-dev.gitlab-ci.yml on main is invalid GitLab CI (looper-ruleset-probe script); lint the CI file as a gate (#94, 381ceb3; gates: full)
 - 2026-11-05 looper issue A stale looper:landing (a blocked run that pushed nothing) holds the manager forever: tacplus's manager idled 10 h on the only VM (#93, 7381968; gates: full)
+- 2026-11-05 looper issue looper-ruleset check: every fresh ruleset 'differs' because GitHub omits update_allows_fetch_and_merge=false (#96, 85e1b8d; gates: docs+token)
