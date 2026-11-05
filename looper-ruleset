@@ -93,13 +93,18 @@ wanted() {
 }
 
 # A ruleset reduced to the fields set here, in one order: what is compared. A
-# rule without parameters and one with {} are the same; so is an
+# rule without parameters and one with {} are the same, and a parameter at its
+# default is no parameter: GitHub does not return update_allows_fetch_and_merge
+# when it is false (looper#96). So is an
 # OrganizationAdmin actor with any actor_id (GitHub ignores it); a missing
 # bypass_actors (a reader without write access is not shown them) is none.
 NORMAL='{name, target, enforcement,
   conditions: {ref_name: {include: (.conditions.ref_name.include // [] | sort),
                           exclude: (.conditions.ref_name.exclude // [] | sort)}},
-  rules: ([.rules // [] | .[] | {type, parameters: (.parameters // {})}] | sort_by(.type)),
+  rules: ([.rules // [] | .[] | {type, parameters: (.parameters // {}
+                                    | if .update_allows_fetch_and_merge == false
+                                      then del(.update_allows_fetch_and_merge) else . end)}]
+          | sort_by(.type)),
   bypass_actors: ([.bypass_actors // [] | .[]
                    | {actor_type, actor_id: (if .actor_type == "OrganizationAdmin" then null else .actor_id end),
                       bypass_mode: (.bypass_mode // "always")}] | sort_by(.actor_type, .actor_id))}'

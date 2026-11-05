@@ -18,7 +18,9 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # $FIX/repos.json: the org's repositories ({name, visibility}). Each
 # repository's rulesets are $FIX/rulesets/<repo>/<id>.json, with the fields
 # GitHub adds (id, source, source_type, node_id, current_user_can_bypass,
-# _links, created_at) and bypass_actors' OrganizationAdmin actor_id as 1.
+# _links, created_at), bypass_actors' OrganizationAdmin actor_id as 1, and
+# the update rule's parameters without update_allows_fetch_and_merge when it
+# is false, its default, which GitHub does not return (looper#96).
 # Every call is appended to $FIX/gh ("<METHOD> <path>"), every write's body
 # to $FIX/bodies. The contents API: $FIX/refuse-contents refuses a write as a
 # ruleset does (HTTP 409); an accepted one is $FIX/contents/<repo>.
@@ -45,7 +47,8 @@ store() { # file body id
   jq --argjson id "$3" '. + {id: $id, source: "tacplus-dev/x", source_type: "Repository", node_id: "RRS_x",
        current_user_can_bypass: "always", created_at: "2026-11-04T00:00:00Z", _links: {self: {href: "x"}}}
      | .bypass_actors |= map(if .actor_type == "OrganizationAdmin" then .actor_id = 1 else . end)
-     | .rules |= map(if .parameters == null then del(.parameters) else . end)' <<<"$2" > "$1"
+     | .rules |= map(if .parameters == null then del(.parameters) else . end
+                     | if .parameters.update_allows_fetch_and_merge == false then .parameters = {} else . end)' <<<"$2" > "$1"
 }
 case "$m $path" in
   "GET user") echo '{"login":"jody"}' | out ;;
@@ -115,7 +118,9 @@ B="$(grep '^POST repos/tacplus-dev/kernel/rulesets ' "$FIX/bodies" | cut -d' ' -
   || fail "ruleset: $B"
 grep -q 'bypass: the manager App (777) and jody (4242, User)' "$FIX/err" || fail "the bypass actors not logged: $(cat "$FIX/err")"
 
-# Idempotent: a second apply against what GitHub now holds makes no write.
+# Idempotent: a second apply against what GitHub now holds makes no write,
+# though GitHub omits update_allows_fetch_and_merge: false (looper#96).
+[[ "$(jq -c '.rules[] | select(.type == "update") | .parameters' "$FIX/rulesets/kernel/"*.json)" == '{}' ]] || fail "the stub kept the default"
 : > "$FIX/gh"
 ruleset apply >"$FIX/out" 2>"$FIX/err" || fail "second apply failed"
 [[ "$(writes)" == 0 ]] || fail "the second apply wrote: $(cat "$FIX/gh")"
@@ -144,6 +149,15 @@ ruleset apply >"$FIX/out" 2>"$FIX/err" || fail "apply failed"
 grep -q 'tacplus-dev/kernel: updated' "$FIX/out" && grep -q 'tacplus-dev/looper: unchanged' "$FIX/out" || fail "log: $(cat "$FIX/out")"
 ruleset check >/dev/null 2>&1 || fail "check failed after the fix"
 [[ "$(ls "$FIX/rulesets/kernel" | wc -l)" == 1 ]] || fail "a second ruleset was created"
+pass
+
+# Only the default is dropped: update_allows_fetch_and_merge true differs.
+scenario apply-fetch-and-merge
+ruleset apply kernel >/dev/null 2>&1 || fail "apply failed"
+K="$(ls "$FIX/rulesets/kernel/"*.json)"
+jq '(.rules[] | select(.type == "update") | .parameters) = {update_allows_fetch_and_merge: true}' "$K" > "$FIX/t" && mv "$FIX/t" "$K"
+! ruleset check kernel >"$FIX/out" 2>"$FIX/err" || fail "check passed with fetch-and-merge allowed"
+grep -qx 'kernel differs (ruleset [0-9]*)' "$FIX/out" || fail "check: $(cat "$FIX/out")"
 pass
 
 # A ruleset of another name is not ours: left alone, ours created beside it.

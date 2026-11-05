@@ -114,7 +114,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
   `LOOPER_TRIGGER_TOKEN` when it is set (#25); only the manager writes main, built and tested, not yet set up (#83;
   README, Only the manager writes main): `looper-ruleset apply` puts a ruleset on main in each public repository
-  (restricted updates, no force-push or deletion; bypass: the `tacplus-manager` app and Jody), idempotent, with `check`
+  (restricted updates, no force-push or deletion; bypass: the `tacplus-manager` app and Jody; applied to the 28 public
+  repositories 2026-11-05), idempotent (since #96: GitHub omits `update_allows_fetch_and_merge: false`), with `check`
   and a live `probe` (the CI file's manual `looper-ruleset-probe`, whose script GitLab could not read until #94: the file
   on GitLab is still a691d64's until the hub copies main's); with the apps' variables set, every job's GitHub
   token is an app's, minted by `looper-token` from its id_token through WIF and KMS (its environment naming the key it
