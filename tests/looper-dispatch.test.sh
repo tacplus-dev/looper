@@ -13,6 +13,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# The job's GitHub Apps (looper#83): a scenario with the apps sets them itself.
+unset LOOPER_REPORT_APP_ID LOOPER_REPORT_INSTALLATION_ID LOOPER_MANAGER_APP_ID LOOPER_MANAGER_INSTALLATION_ID GCP_WIF_PROVIDER
 
 # Issues: $FIX/issues/<repo>-<n>.json ({number,state,labels:[{name}],body,createdAt}).
 # Each call is appended to $FIX/gh. `api graphql` answers the aliased

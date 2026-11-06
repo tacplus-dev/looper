@@ -4,11 +4,10 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
-- **tests/forge.test.sh run inside a report's job** (2026-11-06, #101): its `dispatch` helper unsets some of the
-  job's variables but not `LOOPER_REPORT_APP_ID`, so `forge` fails `ready (github): looper-dispatch ready` when a
-  report runs the full gates in its own environment (it passes under `env -i`). Unsetting it there, or starting
-  `dispatch` from an emptied environment as `lib` nearly does, would make the gate the same in a report and in the
-  verdict job.
+- **The gates' helpers from an emptied environment** (2026-11-06, #101): tests/forge.test.sh's `dispatch` unset
+  some of the job's variables but not `LOOPER_REPORT_APP_ID`, so `forge` failed `ready (github)` once the gates job
+  held the Apps (#101 unsets it now). Starting each helper from `env -i` with only what it needs, rather than
+  unsetting what a job happens to hold, would keep the next variable a job gains from breaking a gate.
 - **The scanners' dependency overrides found before the nightly scan** (2026-11-06, #101): the image build pins
   overrides per tool (`*_XZ_VERSION`, `*_XNET_VERSION`, `*_COMPRESS_VERSION`, `*_BROTLI_VERSION`) that each go when
   an upstream release requires the fixed version, and only the nightly scan's govulncheck of the built binaries

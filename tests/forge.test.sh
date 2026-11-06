@@ -16,6 +16,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRVPID=""
 trap '[[ -z "$SRVPID" ]] || kill "$SRVPID" 2>/dev/null; rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+# The job's GitHub Apps (looper#83): a scenario with the apps sets them itself.
+unset LOOPER_REPORT_APP_ID LOOPER_REPORT_INSTALLATION_ID LOOPER_MANAGER_APP_ID LOOPER_MANAGER_INSTALLATION_ID GCP_WIF_PROVIDER
 TOKEN=glpat-forgetesttoken0123456789
 
 # The store: $FIX/issues/<repo, / as __>-<n>.json, gh's shape plus `repo` (the

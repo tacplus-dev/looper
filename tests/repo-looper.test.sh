@@ -11,6 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+# The job's GitHub Apps (looper#83): a scenario with the apps sets them itself.
+unset LOOPER_REPORT_APP_ID LOOPER_REPORT_INSTALLATION_ID LOOPER_MANAGER_APP_ID LOOPER_MANAGER_INSTALLATION_ID GCP_WIF_PROVIDER
 
 # Issues: $FIX/issues/<repo>-<n>.json ({number,title,state,labels:[{name}],body,createdAt}).
 # Comments are appended to the issue's `comments` and to $FIX/comments as "<repo>#<n> <body>".
