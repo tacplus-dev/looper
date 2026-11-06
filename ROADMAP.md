@@ -38,6 +38,7 @@ Done (moved from Next on 2026-11-05):
 - Security: split the manager, so the job that runs a batch's gates never holds the tacplus-manager token (#90). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
 - Per-repository job tags for reports only: tacplus's manager and scan off its reports' pool (#91). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
 - The recap's cap advice counts running reports only (#92). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
+- Retire looper-docker, its broker and the host socket's path once every repository is pinned (#73). Agent, at Jody's request, 2026-11-06.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
