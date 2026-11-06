@@ -1277,7 +1277,8 @@ repository code, and the plan gives a repository two jobs for a batch, both on m
   the files `generated.yaml` maps, and runs its gate set, with none of the job's credentials in the gates' environment.
   It pushes staging and writes the verdict (main, staging, each land's exit and record) as its artifacts. It comments on
   no issue and never touches main. A gate that asks for the manager's token gets none: KMS refuses `looper-report` the
-  manager's key.
+  manager's key. DIR records the job's id (`job-id`): a verdict another job left there, on a VM that ran one before
+  (the project dir is reused, uncleaned), is stale and cleared; one this job wrote is refused (looper#98).
 - **`looper-<repo>-manager`** (environment `looper-manager`, `needs:` the verdict's artifacts; `repo-looper --merge DIR`)
   runs no repository code: no rebase, no generator, no gate. A call to one there is a bug and fatal. It checks that
   `looper/staging` is the commit the verdict named and that main is still the one the verdict was built on. Then it
