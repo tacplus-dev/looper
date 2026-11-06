@@ -1528,9 +1528,10 @@ stack (tacplus-dev/cloud#4, landed as its 6ded61d) boot Container-Optimized OS f
 with no startup-script and nothing installed at boot. They keep the gate, as
 `instance_ready_command = "timeout 600 sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'"` (COS's own
 runtime, so there is no marker file), and one VM per job. `runner/`, `runner-image build` and `runner-image template`
-stay until the redesign's issues retire them. `runner-image measure` is still how looper#43's acceptance is
-measured (step 6), once the jobs run on those pools. The steps below are the procedure for jody1-328023's
-Ubuntu workers, kept as a record.
+stay until the redesign's issues retire them. The runner VMs themselves get no fix (Jody, 2026-11-06): they are
+retired, as looper#84 moves every looper job onto the in-cluster Kubernetes runners and the VMs are then deleted
+(no SSH in any form, and the docker-autoscaler VMs use it). looper#43 closes when they are gone, with no
+`runner-image measure` tables. The steps below are the procedure for jody1-328023's Ubuntu workers, kept as a record.
 
 1. **The bake's identity.** It gets a service account that can only manage the bake's own VMs, disks and images, and
    that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER`

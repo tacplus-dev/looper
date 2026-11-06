@@ -176,8 +176,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   baked image is superseded (roadmap `decisions/builds-in-containers-2026-11-03.md`; `runner/` and `runner-image
   build`/`template` stay until the redesign retires them, never run against GCP); until the jobs move onto those
   pools a fresh worker installs and restarts Docker at boot under its first job, which fails in preparation and is
-  retried, and #43's acceptance (twenty jobs on fresh VMs, before and after times, `runner-image measure`) waits on
-  that move; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
+  retried; the VMs get no fix (Jody, 2026-11-06): #84 moves every looper job onto the in-cluster Kubernetes runners
+  and the VMs are then deleted, and #43 closes when they are gone; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
   once it no longer answers SSH (tacplus, 2026-10-31); README's Credentials (#25) are applied (hub, checked 2026-11-03): the jobs' `GITLAB_TOKEN` is
   `tacplus-looper-bot`'s `read_api` token (`looper-jobs`, expires 2027-10-01), `looper-runtime` is revoked, and every
