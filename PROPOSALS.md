@@ -4,6 +4,16 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **tests/forge.test.sh run inside a report's job** (2026-11-06, #101): its `dispatch` helper unsets some of the
+  job's variables but not `LOOPER_REPORT_APP_ID`, so `forge` fails `ready (github): looper-dispatch ready` when a
+  report runs the full gates in its own environment (it passes under `env -i`). Unsetting it there, or starting
+  `dispatch` from an emptied environment as `lib` nearly does, would make the gate the same in a report and in the
+  verdict job.
+- **The scanners' dependency overrides found before the nightly scan** (2026-11-06, #101): the image build pins
+  overrides per tool (`*_XZ_VERSION`, `*_XNET_VERSION`, `*_COMPRESS_VERSION`, `*_BROTLI_VERSION`) that each go when
+  an upstream release requires the fixed version, and only the nightly scan's govulncheck of the built binaries
+  finds a new one. The image build could run `govulncheck -mode=binary` on the Go scanners it builds and fail on a
+  fixable finding, and tell when an override has become redundant.
 - **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
   its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
   which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges
