@@ -4,6 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The gates isolated from the report job's environment** (2026-11-06, #102): run in a report job (a run checking
+  its own change), the full gates fail on a clean main where the job's variables reach the scripts under test:
+  `tests/forge.test.sh`'s `dispatch()` keeps `LOOPER_REPORT_APP_ID` (`looper-dispatch ready` takes the App's way to
+  a token, `ready (github)` fails), and `tests/repo-looper.test.sh`'s `split-batch` keeps `CI_ENVIRONMENT_NAME`
+  (`looper-report`: its manager refuses, looper#90). They pass under `env -i PATH HOME TMPDIR`; the tests' helpers
+  could unset the App's and the environment's variables (`LOOPER_*_APP_ID`, `LOOPER_*_INSTALLATION_ID`,
+  `CI_ENVIRONMENT_*`) as they unset `LOOPER_SELF` and `CI_JOB_ID`.
 - **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
   its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
   which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges
