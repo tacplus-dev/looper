@@ -970,7 +970,7 @@ land_request() {
   else
     id="$(date -u +%Y%m%dT%H%M%SZ)-$n-$RANDOM$RANDOM"
     printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n' "$id" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run/land"
-    checkpoint "$n" "land queued" "$run"
+    checkpoint "$n" "land queued" "$run" || true
     fetch . "+refs/heads/$b:refs/remotes/origin/$b" || true
     m="$(git show "origin/$b:.looper/land" 2>/dev/null)" || m=""
     if ! grep -qx "id=$id" <<<"$m"; then
@@ -995,7 +995,7 @@ land_request() {
   rm -f "$run/land"
   # The verdict is the manager's comment, not the run's report (looper#54).
   [[ -z "${LOOPER_RUN:-}" ]] || comments_mark "$n" "$run"
-  [[ -z "${LOOPER_RUN:-}" ]] || checkpoint "$n" "land done" "$run"
+  [[ -z "${LOOPER_RUN:-}" ]] || checkpoint "$n" "land done" "$run" || true
   return "$rc"
 }
 
@@ -1112,7 +1112,7 @@ build_request() {
   sha="$(git rev-parse HEAD)"; base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse origin/main)"
   choose_gates . "$base" "" || die "nothing built: $GATES_WHY"
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
-  checkpoint "$ISSUE" "a build" "$run"
+  checkpoint "$ISSUE" "a build" "$run" || die "nothing built: the build job builds $(wip_branch "$ISSUE"), and the checkpoint to it did not push"
   id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
   printf 'sha=%s\ngates=%s\nbase=%s\n' "$sha" "$gates" "$base" > "$d/$id.new" && mv "$d/$id.new" "$d/$id.request"
   log "build requested: $REPO ${sha:0:7}, the gates ${gates:-full}${GATES_WHY:+ ($GATES_WHY)}"
@@ -1869,9 +1869,12 @@ wip_url() { forge_web "$REPO" tree "$(wip_branch "$1")"; } # issue
 # tail, secrets redacted), so a run killed outright still leaves its log behind.
 # Pushes nothing when there is nothing to keep (no record and the checkout's
 # tree is main's) or nothing new since the last checkpoint. A failed checkpoint
-# is logged, never fatal.
+# (a push origin rejects, say) logs git's reason to stderr and returns non-zero
+# (looper#99): its caller decides whether that is fatal. GitHub refuses an App
+# without the workflows permission any change under .github/workflows/: the
+# checkpoint says so and names them.
 checkpoint() { # issue why [run-dir]
-  local n="$1" why="$2" run="${3:-}" step="" b; b="$(wip_branch "$n")"
+  local n="$1" why="$2" run="${3:-}" step="" b rc=0; b="$(wip_branch "$n")"
   [[ -n "$run" && -s "$run/step" ]] && step="$(cat "$run/step")"
   # The run's nonce, for redact: the model's --checkpoint is another process.
   local NONCE="${NONCE:-}"; [[ -n "$run" && -s "$run/.nonce" ]] && NONCE="$(cat "$run/.nonce")"
@@ -1898,12 +1901,21 @@ checkpoint() { # issue why [run-dir]
     last="$(git rev-parse -q --verify "refs/looper/$b" || true)"
     [[ -z "$last" || "$tree" != "$(git rev-parse "$last^{tree}")" || "$head" != "$(git rev-parse "$last^")" ]] || exit 0
     c="$(git commit-tree "$tree" -p "$head" -m "looper: work in progress on #$n ($why)" ${step:+-m "$step"})"
-    prev="$(git ls-remote origin "refs/heads/$b" | cut -f1)"
-    git push -q --force-with-lease="refs/heads/$b:$prev" origin "$c:refs/heads/$b"
+    # Each step checked: set -e does not hold in a subshell under ||.
+    prev="$(git ls-remote origin "refs/heads/$b" | cut -f1)" || exit 1
+    if ! out="$(git push -q --force-with-lease="refs/heads/$b:$prev" origin "$c:refs/heads/$b" 2>&1)"; then
+      printf '%s\n' "$out" | redact >&2
+      if grep -q 'refusing to allow .* to create or update workflow' <<<"$out"; then
+        wf="$(git diff --name-only "origin/main...$c" -- .github/workflows/ | paste -sd' ' -)"
+        log "origin refuses the looper's credential any change under .github/workflows/ without the workflows permission; this branch changes ${wf:-a workflow}: a person pushes that part, or the change leaves it out" >&2
+      fi
+      exit 1
+    fi
     git update-ref "refs/looper/$b" "$c"
     log "checkpoint of #$n ($why) pushed to $b: $(git diff --shortstat origin/main "$c")"
-  ) 9>"$WORK/.checkpoint.lock" || log "checkpoint of #$n ($why) failed"
+  ) 9>"$WORK/.checkpoint.lock" || { rc=1; log "checkpoint of #$n ($why) failed: nothing pushed to $b, which keeps its last checkpoint" >&2; }
   [[ "$CHECKOUT" != "$(report_dir "$n")" ]] || report_reown "$n"
+  return "$rc"
 }
 
 # Checkpoints every LOOPER_CHECKPOINT_INTERVAL until killed.
@@ -1912,7 +1924,7 @@ checkpoint_ticker() { # issue run-dir
   trap 'kill "$s" 2>/dev/null; exit 0' TERM
   while :; do
     sleep "$CHECKPOINT_INTERVAL" & s=$!; wait "$s"
-    checkpoint "$1" hourly "$2"
+    checkpoint "$1" hourly "$2" || true
   done
 }
 
@@ -2432,7 +2444,7 @@ PR
   # checkpointed, nothing else pushed, no comment, the label kept, and no other
   # issue taken.
   if [[ "$stopped" == job-gone ]]; then
-    checkpoint "$n" "its job is no longer running" "$run"
+    checkpoint "$n" "its job is no longer running" "$run" || true
     report "$n" job-gone
     log "#$n left to the job's retry, from $(wip_branch "$n")"; exit 0
   fi
@@ -2488,7 +2500,7 @@ Run record: $(run_record "$run")." >/dev/null || true
     report "$n" blocked
     if [[ -n "$pending" ]]; then
       # Its land stays queued on the branch (looper#93): the manager merges it.
-      checkpoint "$n" blocked "$run"
+      checkpoint "$n" blocked "$run" || true
       what="Its commits are queued with the manager of $REPO, which merges them after the run and gives its verdict here (this issue is $LABEL_LANDING until then)"
       [[ -z "$head_after" ]] || what="The fix is pushed (main $head_before..$head_after$on), and its last commits are queued with the manager of $REPO, which merges them after the run and gives its verdict here (this issue is $LABEL_LANDING until then)"
       what+="; the run found this issue waits on another"
@@ -2497,7 +2509,7 @@ Run record: $(run_record "$run")." >/dev/null || true
       what="The fix is pushed (main $head_before..$head_after$on); the gates wait"
     else
       # Nothing landed: any work left in the checkout is kept on the branch.
-      checkpoint "$n" blocked
+      checkpoint "$n" blocked || true
       what="Nothing was pushed: the run found this issue waits on another"
     fi
     by="$(sed 's/.*/`&`/' <<<"$blocked" | paste -sd, - | sed 's/,/, /g')"
@@ -2514,7 +2526,7 @@ Run record: $(run_record "$run")." >/dev/null || true
   local timed_out="" why="the run's end"
   if [[ "$stopped" == idle ]]; then why="the run went idle"
   elif [[ "$rc" == 124 || "$rc" == 137 ]]; then timed_out=1; why="the time limit"; fi
-  checkpoint "$n" "$why" "$run"
+  local kept=1; checkpoint "$n" "$why" "$run" || kept=""
   local wip="" b; b="$(wip_branch "$n")"
   wip_on_origin "$n" && wip="[\`$b\`]($(wip_url "$n"))"
   if grep -qx "$LABEL_DECISION" <<<"$labels"; then report "$n" "$LABEL_DECISION"; log "#$n waits on a decision"; return 0; fi
@@ -2523,6 +2535,8 @@ Run record: $(run_record "$run")." >/dev/null || true
   # checkpointed other than the one it resumed from).
   local done_left where="It left no changes." ended progress=""
   [[ -n "$wip" ]] && where="Its work in progress is on $wip."
+  # A checkpoint origin rejected (looper#99): the branch lacks the work since.
+  [[ -n "$kept" ]] || where+=" Its last checkpoint did not push, so the branch lacks what the run did since: its log says why."
   if [[ -s "$run/step" ]]; then done_left="Its last checkpoint (what is done, what is left):
 
 $(sed 's/^/> /' "$run/step")"
@@ -3216,9 +3230,17 @@ case "$MODE" in
   checkpoint)
     # The model's step: what is done and what is left becomes the message of
     # every checkpoint after it.
+    # One that does not push fails (looper#99), and the run's last step stays
+    # the one on the branch.
+    last_step=""; [[ -n "${LOOPER_RUN:-}" && -f "$LOOPER_RUN/step" ]] && last_step="$(cat "$LOOPER_RUN/step")"
     [[ -n "${LOOPER_RUN:-}" ]] && printf '%s\n' "$STEP" > "$LOOPER_RUN/step"
     # A think job pushes nothing: its commit job keeps the work on the branch.
-    [[ -n "${LOOPER_THINK:-}" ]] || checkpoint "$ISSUE" "a step" "${LOOPER_RUN:-}" ;;
+    if [[ -z "${LOOPER_THINK:-}" ]] && ! checkpoint "$ISSUE" "a step" "${LOOPER_RUN:-}"; then
+      if [[ -z "${LOOPER_RUN:-}" ]]; then :
+      elif [[ -n "$last_step" ]]; then printf '%s\n' "$last_step" > "$LOOPER_RUN/step"
+      else rm -f "$LOOPER_RUN/step"; fi
+      exit 1
+    fi ;;
   scan) trap disk_log EXIT; scan ;;
   think) think_issue "$ISSUE" ;;
   manage) trap disk_log EXIT; manage ;;
