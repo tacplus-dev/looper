@@ -544,6 +544,12 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Refresh the vendored CI schema** (2026-11-05, #94): `ci/gitlab-ci.schema.json` is GitLab's `ci.json` at
   a38e1992; a keyword GitLab adds later is refused offline until it is refreshed. The nightly scan could compare it
   with GitLab's current file and propose the update.
+- **The security checks scan the binaries the image builds** (2026-11-06, #101): the build's checks scan the tree
+  and the Dockerfile's base images, not the Go tools the `Dockerfile` compiles into the looper image (osv-scanner,
+  trivy, gitleaks, syft, govulncheck, glab). The nightly scan found GO-2026-6865 and GO-2026-6888 in them only with
+  `govulncheck -mode=binary` by hand (#101, #47). Running govulncheck in binary mode on each Go binary of the image
+  `publish` pushes, under the same policy (a fixed version HIGH fails), would put a deterministic floor under
+  that check as well, and catch an override (looper#65, #88) that stopped working.
 
 ## Promoted / declined
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap
