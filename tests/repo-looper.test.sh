@@ -2012,6 +2012,34 @@ for n in 4 5 6; do lacks "$(labels alpha "$n")" "looper:landing"; done
 [[ "$(origin rev-parse main)" == "$m" && ! -s "$FIX/comments" ]] || fail "the second merge: $OUT"
 pass
 
+# The verdict dir is the job's project dir's, which a VM's next job reuses
+# (looper#98): a stale verdict there, another job's (its id recorded, or none
+# from before the record), is cleared and the job runs; one holding this job's
+# own verdict is still refused.
+scenario split-verdict-dir-reused
+queue 4 2026-11-03T10:00:00Z four.txt 4
+rm -rf "$FIX/verdict"; mkdir -p "$FIX/verdict/3-q3"
+printf 'main=%040d\nstaging=%040d\njob=https://gl.test/jobs/41\n' 0 0 > "$FIX/verdict/verdict"
+echo 41 > "$FIX/verdict/job-id"; echo "3 q3 $(printf '%040d' 0) 0" > "$FIX/verdict/lands"
+OUT="$(looper CI_JOB_ID=90 -- --repo alpha --verdict "$FIX/verdict" 2>&1)" || fail "a stale verdict refused: $OUT"
+has "$OUT" "another job's verdict (job 41)"
+has "$(cat "$FIX/verdict/verdict")" "staging=$(staging)"; [[ "$(cat "$FIX/verdict/job-id")" == 90 ]] || fail "job-id: $(cat "$FIX/verdict/job-id")"
+[[ "$(cut -d' ' -f1 "$FIX/verdict/lands")" == 4 && ! -e "$FIX/verdict/3-q3" ]] || fail "the stale verdict's lands are left: $(ls "$FIX/verdict")"
+# This job's own verdict: refused, untouched.
+v="$(cat "$FIX/verdict/verdict")"
+! OUT="$(looper CI_JOB_ID=90 -- --repo alpha --verdict "$FIX/verdict" 2>&1)" || fail "a verdict written twice: $OUT"
+has "$OUT" "holds this job's verdict already"; [[ "$(cat "$FIX/verdict/verdict")" == "$v" ]] || fail "this job's verdict changed"
+# A verdict from before the job id was recorded is another job's too.
+rm -f "$FIX/verdict/job-id"
+OUT="$(looper CI_JOB_ID=91 -- --repo alpha --verdict "$FIX/verdict" 2>&1)" || fail "a stale verdict with no job id refused: $OUT"
+has "$OUT" "another job's verdict (job unknown)"
+# Outside a job (no CI_JOB_ID) a verdict cannot be told stale: refused.
+! OUT="$(looper CI_JOB_ID= -- --repo alpha --verdict "$FIX/verdict" 2>&1)" || fail "a verdict overwritten outside a job: $OUT"
+has "$OUT" "holds a verdict already"
+merge CI_JOB_ID=92
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+pass
+
 # The manager job runs no repository code: not the gates, not a regeneration,
 # not a justfile, whatever the queued branches and main carry; main's are
 # the verdict job's to run.

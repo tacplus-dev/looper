@@ -1415,11 +1415,27 @@ manage() {
 STAGING=looper/staging
 STAGING_REF=refs/looper/staging
 
+# The verdict dir is in the job's project dir, which the next job on the same
+# VM reuses, uncleaned with GIT_STRATEGY none (looper#98). A verdict there that
+# another job wrote (its job-id another, or none: from before the record) is
+# stale: cleared. This job's own, or any outside a job (no CI_JOB_ID to tell),
+# is refused.
+verdict_dir_fresh() {
+  local had
+  [[ -e "$VERDICT_DIR/verdict" ]] || return 0
+  had="$(cat "$VERDICT_DIR/job-id" 2>/dev/null || true)"
+  [[ -n "${CI_JOB_ID:-}" ]] || die "$VERDICT_DIR holds a verdict already"
+  [[ "$had" != "$CI_JOB_ID" ]] || die "$VERDICT_DIR holds this job's verdict already (job $CI_JOB_ID)"
+  log "$VERDICT_DIR holds another job's verdict (job ${had:-unknown}), stale on this reused VM: cleared"
+  rm -rf "$VERDICT_DIR"
+}
+
 verdict_batch() {
   local q n id sha rc main staging
   MANAGER_RUN="$VERDICT_DIR"
-  [[ ! -e "$VERDICT_DIR/verdict" ]] || die "$VERDICT_DIR holds a verdict already"
+  verdict_dir_fresh
   mkdir -p "$VERDICT_DIR"; : > "$VERDICT_DIR/lands"
+  [[ -z "${CI_JOB_ID:-}" ]] || echo "$CI_JOB_ID" > "$VERDICT_DIR/job-id"
   sync_checkout
   ensure_labels "$REPO"
   # The tags before any gate runs: the releases since are the manager job's to note.
