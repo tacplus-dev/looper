@@ -133,7 +133,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes
   main): with the apps, a repository whose gates are not build jobs gets, for each batch, `looper-<repo>-verdict`
   (environment `looper-report`: its queued lands merged onto `looper/staging`, regenerated and gated, with no job
-  credential in the gates' environment, staging pushed with the report app's token, the verdict its artifacts) and
+  credential in the gates' environment, staging pushed with the report app's token, the verdict its artifacts, a
+  stale one another job left in the reused project dir cleared, #98) and
   `looper-<repo>-manager` (`looper-manager`, `needs:` the verdict: no repository code, staging checked to be the
   commit the verdict named on the main it was built on, main fast-forwarded, the verdicts and HISTORY.md lines
   posted; anything moved, nothing merged and the lands left queued); a pinned repository with the build trigger keeps
