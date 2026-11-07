@@ -11,6 +11,11 @@
 # `run --for SECONDS` repeats the pass every LOOPER_INTERVAL.
 # Run: tests/looper-dispatch.test.sh
 set -euo pipefail
+# The test's own environment, not that of the looper job it may run in
+# (looper#97): the job's LOOPER_*, CI_*, GH_*, GITHUB_* and GITLAB_* variables
+# (its apps, its token's gh config, its runner tags) change what the scripts
+# under test do.
+unset $(compgen -e | grep -E '^(LOOPER|CI|GH|GITHUB|GITLAB)_')
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 

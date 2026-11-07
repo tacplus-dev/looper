@@ -14,9 +14,10 @@
 # serves every host itself and logs the credentials it gets.
 # Run: tests/tacplus.test.sh
 set -euo pipefail
-# The test's own environment, not the model run's it may run in (looper#81):
-# a model user's LOOPER_TACPLUS_HOME would put the cache outside $TMP/work.
-unset LOOPER_TACPLUS_HOME LOOPER_DOCKER_BROKER LOOPER_DOCKER_BROKERED LOOPER_DOCKER_OWNER
+# The test's own environment, not that of the model run or looper job it may
+# run in (looper#81, looper#97): a model user's LOOPER_TACPLUS_HOME would put
+# the cache outside $TMP/work, the job's GH_CONFIG_DIR give git its token.
+unset $(compgen -e | grep -E '^(LOOPER|CI|GH|GITHUB|GITLAB)_')
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRV="$(mktemp -d)"; pid=""
 trap '[[ -n "$pid" ]] && kill "$pid" 2>/dev/null; rm -rf "$TMP" "$SRV"' EXIT

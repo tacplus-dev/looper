@@ -12,6 +12,11 @@
 # gitlab.com), and looper-dispatch's ready, plan and orphan release.
 # Run: tests/forge.test.sh
 set -euo pipefail
+# The test's own environment, not that of the looper job it may run in
+# (looper#97): the job's LOOPER_*, CI_*, GH_*, GITHUB_* and GITLAB_* variables
+# (its apps, its token's gh config, its runner tags) change what the scripts
+# under test do.
+unset $(compgen -e | grep -E '^(LOOPER|CI|GH|GITHUB|GITLAB)_')
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRVPID=""
 trap '[[ -z "$SRVPID" ]] || kill "$SRVPID" 2>/dev/null; rm -rf "$TMP"' EXIT
