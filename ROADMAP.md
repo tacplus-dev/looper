@@ -40,6 +40,7 @@ Done (moved from Next on 2026-11-05):
 - The recap's cap advice counts running reports only (#92). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
 - Retire looper-docker, its broker and the host socket's path once every repository is pinned (#73). Agent, at Jody's request, 2026-11-06.
 - No per-repository caps: a report for every ready issue, loopers never blocked (#107). Agent, at Jody's request, 2026-11-07 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
+- Security floor: services' SAST skips the tacplus-generated tree; tacplus scans its generated output once (#108). Agent, at Jody's request, 2026-11-07.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
