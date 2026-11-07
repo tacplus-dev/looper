@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#74).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by looper (#97).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -54,7 +54,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by lo
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); prompt provenance (#40): every
   prompt carries the issue's text (title and body, each comment) in blocks keyed by a per-prompt nonce (`openssl rand`)
-  with author and association, only an OWNER's or MEMBER's text, or a write COLLABORATOR's, directing the run and the
+  with author and association, only an OWNER's or MEMBER's text, or that of a COLLABORATOR, CONTRIBUTOR or NONE with write permission on the
+  repository (an org owner with private membership shows as CONTRIBUTOR, #97; looked up once a prompt), directing the run and the
   rest, with a tool's quoted source text (source-text markers), data; text holding the nonce refused, the
   nonce redacted from what leaves the job; the nightly scan; the `tacplus` wrapper with GitHub credentials for its container
   (#11), which runs the released tacplus (the repository's `tacplus.lock` pin, else its floor's newest patch,
