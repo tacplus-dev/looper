@@ -39,6 +39,7 @@ Done (moved from Next on 2026-11-05):
 - Per-repository job tags for reports only: tacplus's manager and scan off its reports' pool (#91). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
 - The recap's cap advice counts running reports only (#92). Agent, at Jody's request, 2026-11-05 (suggestion accepted).
 - Retire looper-docker, its broker and the host socket's path once every repository is pinned (#73). Agent, at Jody's request, 2026-11-06.
+- No per-repository caps: a report for every ready issue, loopers never blocked (#107). Agent, at Jody's request, 2026-11-07 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
