@@ -1779,6 +1779,43 @@ branch || fail "the branch is gone"
 lacks "$(labels alpha 4)" "looper:landing"
 pass
 
+# The append-only logs loopers write never block a land (looper#105): main and
+# the branch both appended to PROPOSALS.md and HISTORY.md, and the manager's
+# rebase keeps both entries, main's first (git's union merge, from the
+# looper's own attributes: the repository carries no .gitattributes).
+scenario manager-unions-logs
+printf '# Proposals\n\n- base\n' > "$FIX/seed/PROPOSALS.md"; printf '# History\n\n- base\n' > "$FIX/seed/HISTORY.md"
+git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm logs; git -C "$FIX/seed" push -q origin main
+cat > "$FIX/claude.sh" <<'EOS'
+printf -- '- mine\n' >> PROPOSALS.md && git add -A && git commit -qm "fix 4: a proposal"
+printf -- '- mine\n' >> HISTORY.md && echo x > x.txt && git add -A && git commit -qm "fix 4: history"
+(cd "$FIX/seed" && git pull -q && printf -- '- theirs\n' >> PROPOSALS.md && printf -- '- theirs\n' >> HISTORY.md && git add -A && git commit -qm "main: logs" && git push -q origin main)
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run
+has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0"
+[[ "$(landed PROPOSALS.md)" == $'# Proposals\n\n- base\n- theirs\n- mine' ]] || fail "main's PROPOSALS.md: $(landed PROPOSALS.md)"
+[[ "$(landed HISTORY.md | head -5)" == $'# History\n\n- base\n- theirs\n- mine' ]] || fail "main's HISTORY.md: $(landed HISTORY.md)"
+[[ "$(landed x.txt)" == x ]] || fail "main's x.txt: $(landed x.txt)"
+[[ -z "$(origin ls-tree main .gitattributes)" ]] || fail "main carries a .gitattributes"
+pass
+
+# The union is for those two logs alone: a conflict in any other file beside
+# them still sends the branch back, naming only that file.
+scenario manager-unions-logs-only
+printf -- '- base\n' > "$FIX/seed/PROPOSALS.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm logs; git -C "$FIX/seed" push -q origin main
+cat > "$FIX/claude.sh" <<'EOS'
+printf -- '- mine\n' >> PROPOSALS.md && echo mine > a.txt && git add -A && git commit -qm "fix 4"
+(cd "$FIX/seed" && git pull -q && printf -- '- theirs\n' >> PROPOSALS.md && echo theirs > a.txt && git add -A && git commit -qm "main" && git push -q origin main)
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run
+has "$(cat "$FIX/land-4")" "The manager sent [\`looper/alpha-4\`]"; has "$(cat "$FIX/land-4")" "conflicts in \`a.txt\`"; has "$(cat "$FIX/land-4")" "rc 3"
+has "$(grep '^alpha#4 The manager sent' "$FIX/comments")" "conflicts in \`a.txt\`, which"
+[[ "$(landed a.txt)" == theirs ]] || fail "main's a.txt: $(landed a.txt)"
+branch || fail "the branch is gone"
+pass
+
 # A conflict only in generated files is the manager's to resolve: it takes
 # main's side and regenerates them (generated.yaml's command), never a hand
 # merge, then runs the gates and merges.

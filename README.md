@@ -276,7 +276,10 @@ lander are gone. One job per issue needs none of them.
   - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
     (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
     resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
-    and the gates judge the result. Any other conflict it **sends back** to the report, the conflicting files
+    and the gates judge the result. `PROPOSALS.md` and `HISTORY.md`, the append-only logs loopers write, it
+    resolves with git's union merge (main's lines, then the branch's; from attributes of its own, so no repository
+    carries a `.gitattributes`, looper#105): the nightly scan's append on main never blocks a land. Any other
+    conflict it **sends back** to the report, the conflicting files
     named: the report's `--land` says so, and if the report has ended, the issue (no longer `looper:landing`) gets
     a new report job, which resumes from the branch with the conflicts marked.
   - **Logged:** every merge (its main range, gate set and why: green; any files it regenerated), send-back and red

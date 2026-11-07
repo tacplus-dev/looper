@@ -45,8 +45,9 @@
 # it on main, runs the gates its diff calls for (looper#48), pushes only on
 # green, and deletes the branch. A rebase that conflicts only in files the
 # repository's generated.yaml maps it resolves by regenerating them (main's
-# side, then the set's command: never a hand merge); any other conflict it
-# sends back to the report, the files named. Every merge, resolution and
+# side, then the set's command: never a hand merge); PROPOSALS.md and
+# HISTORY.md, append-only, it unions (git's union merge, looper#105); any
+# other conflict it sends back to the report, the files named. Every merge, resolution and
 # send-back is a comment on the issue, with the gate verdict. A report that
 # ended while its land was queued is landed all the same; the verdict frees
 # the issue, and its next report finishes it from the branch. The manager adds
@@ -729,7 +730,16 @@ read_sets() { # file: GM_SETS, GM_RUN, GM_MIN, GM_MEM, GM_PATHS
 # them, never by a hand merge: rebase_on_main.
 GEN_MAP=generated.yaml
 
-# Rebases the checkout's HEAD on origin/main (looper#70). A commit whose
+# The append-only logs loopers write (looper#105): main's nightly scan and a
+# report both append to PROPOSALS.md (HISTORY.md, alike), and their appends
+# conflict on every land. The manager's rebase resolves those two with git's
+# union merge (main's lines, then the branch's), from attributes of its own:
+# no repository carries a .gitattributes for it.
+LOG_ATTRS='/PROPOSALS.md merge=union
+/HISTORY.md merge=union'
+
+# Rebases the checkout's HEAD on origin/main (looper#70), LOG_ATTRS's logs
+# unioned (looper#105). A commit whose
 # replay conflicts only in files main's generated.yaml maps is resolved by
 # regenerating them: main's side of each, then each of their sets' commands,
 # once, at the root, every tracked file it changes taken; the rebase goes on.
@@ -740,10 +750,12 @@ GEN_MAP=generated.yaml
 # repository code (looper#90): it regenerates nothing.
 ONTO=origin/main
 rebase_on_main() {
-  local map files f s p hit sets i
+  local map files f s p hit sets i attrs
   REGENERATED=""; CONFLICTS=""; REGEN_REFUSED=""
   no_repo_code "a rebase"
-  git rebase -q "$ONTO" >/dev/null 2>&1 && return 0
+  attrs="$(mktemp)"; printf '%s\n' "$LOG_ATTRS" > "$attrs"
+  local -a union=(-c "core.attributesFile=$attrs")
+  git "${union[@]}" rebase -q "$ONTO" >/dev/null 2>&1 && { rm -f "$attrs"; return 0; }
   map="$(mktemp)"
   git show "$ONTO:$GEN_MAP" > "$map" 2>/dev/null || : > "$map"
   if [[ -n "$MANAGER_TOKEN" && -s "$map" ]]; then
@@ -774,10 +786,10 @@ rebase_on_main() {
     done
     git add -u && git add -- $files 2>/dev/null || true
     CONFLICTS=""
-    if git diff --cached --quiet; then GIT_EDITOR=true git rebase --skip >/dev/null 2>&1 && { rm -f "$map"; return 0; }
-    else GIT_EDITOR=true git rebase --continue >/dev/null 2>&1 && { rm -f "$map"; return 0; }; fi
+    if git diff --cached --quiet; then GIT_EDITOR=true git "${union[@]}" rebase --skip >/dev/null 2>&1 && { rm -f "$map" "$attrs"; return 0; }
+    else GIT_EDITOR=true git "${union[@]}" rebase --continue >/dev/null 2>&1 && { rm -f "$map" "$attrs"; return 0; }; fi
   done
-  rm -f "$map"
+  rm -f "$map" "$attrs"
   [[ -n "$CONFLICTS" ]] || CONFLICTS="$(git diff --name-only --diff-filter=U | paste -sd' ' -)"
   CONFLICTS+="${REGEN_REFUSED:-}"
   git rebase --abort >/dev/null 2>&1 || true
@@ -1254,7 +1266,7 @@ $(sed 's/^/> /' <<<"$step")"
   elif [[ "$rc" == 0 ]]; then
     what="The manager had nothing to merge from [\`$b\`]($url): main has its commits already."
   elif [[ "$rc" == 3 ]]; then
-    what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
+    what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates, and PROPOSALS.md and HISTORY.md it unions; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
   elif [[ "$rc" == 4 ]]; then
     what="The manager did not merge [\`$b\`]($url): red, nothing merges without green gates. Nothing is merged; the branch stays. The end of its output:
 

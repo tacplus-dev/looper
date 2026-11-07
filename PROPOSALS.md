@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The logs unioned on a report's resume too** (2026-11-07, #105): the manager's rebase now unions PROPOSALS.md
+  and HISTORY.md (`LOG_ATTRS`), but a report resuming from its branch (`resume`) still rebases it on main
+  with plain git: a branch whose only conflict is a PROPOSALS.md append falls back to main merged in, its conflict
+  marked for the model to resolve by hand. The same attributes on that rebase (and on the model's own
+  `git rebase origin/main`, via the checkout's config) would spare that run its hand merge.
 - **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
   its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
   which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges
