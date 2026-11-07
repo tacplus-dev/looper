@@ -548,16 +548,42 @@ manager_job() { echo "looper-$1-manager"; } # repo
 # How many reports of a repository run at once (looper#70): its line in the
 # committed caps file (LOOPER_CAPS, default caps.yaml beside this file), else
 # the file's `default`, else 3. A line is `<repo>: <n>`; comments are lines of
-# their own.
+# their own; an indented line is a pool's (pool_capacity), and `reserve` is
+# no repository.
 LOOPER_CAPS="${LOOPER_CAPS:-$(dirname "${BASH_SOURCE[0]}")/caps.yaml}"
 repo_cap() { # repo
   local c
-  c="$(awk -v r="$1" -F: '/^[ \t]*(#|$)/ { next }
+  c="$(awk -v r="$1" -F: '/^[ \t]*(#|$)/ || /^[ \t]/ || /^reserve[ \t]*:/ { next }
     { k = $1; v = $2; gsub(/[ \t"\047]/, "", k); gsub(/[ \t]/, "", v); sub(/#.*/, "", v)
       if (v !~ /^[0-9]+$/) next
       if (k == r) { print v; found = 1; exit } else if (k == "default") d = v }
     END { if (!found && d != "") print d }' "$LOOPER_CAPS" 2>/dev/null)" || c=""
   echo "${c:-3}"
+}
+
+# The shared VM pools (looper#104): a pool the control jobs (the kicker, the
+# plan, the managers and verdicts) share with reports is an indented line of
+# caps.yaml's `pools:`, `  <runner tags>: <jobs it runs at once>`, and the
+# plan keeps caps.yaml's `reserve` (default 0) of its slots free of reports, so
+# a control job never waits behind them. Tags compare as a set: pool_tags
+# gives the form both sides use, sorted, comma-separated, without blanks.
+pool_tags() { # "tag, tag..."
+  tr ',' '\n' <<<"$1" | tr -d ' \t' | grep . | sort -u | paste -sd, -
+}
+# A pool's capacity; nothing for a pool caps.yaml does not name.
+pool_capacity() { # "tag, tag..."
+  local t; t="$(pool_tags "$1")"
+  awk -v t="$t" '/^pools[ \t]*:/ { p = 1; next } /^[^ \t#]/ { p = 0 }
+    p && /^[ \t]+[^ \t#]/ { v = $0; sub(/.*:/, "", v); sub(/#.*/, "", v); gsub(/[ \t]/, "", v)
+      k = $0; sub(/:[^:]*$/, "", k); gsub(/[ \t"\047]/, "", k)
+      n = split(k, a, ","); for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++) if (a[j] < a[i]) { x = a[i]; a[i] = a[j]; a[j] = x }
+      k = ""; for (i = 1; i <= n; i++) if (a[i] != "" && a[i] != a[i - 1]) k = k (k == "" ? "" : ",") a[i]
+      if (k == t && v ~ /^[0-9]+$/) { print v; exit } }' "$LOOPER_CAPS" 2>/dev/null || true
+}
+caps_reserve() {
+  local c
+  c="$(awk -F: '/^reserve[ \t]*:/ { v = $2; sub(/#.*/, "", v); gsub(/[ \t]/, "", v); if (v ~ /^[0-9]+$/) print v; exit }' "$LOOPER_CAPS" 2>/dev/null)" || c=""
+  echo "${c:-0}"
 }
 
 # GitHub credentials for a container that clones from GitHub (the tacplus

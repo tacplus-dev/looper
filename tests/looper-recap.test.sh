@@ -119,6 +119,10 @@ lacks "$(q 'keys | join(" ")')" cloud
 [[ "$(q '[.longest.queues[0:3][] | "\(.job) \(.minutes)"] | join(", ")')" == "looper-tacplus-16 97, looper-kernel-4 50, looper-tacplus-12 20" ]] || fail "longest queue: $(q .longest.queues)"
 [[ "$(q '.projects["tacplus-dev/looper"].queue_s | "\(.max) \(.p90)"')" == "5820 1200" ]] || fail "queue: $(q '.projects["tacplus-dev/looper"].queue_s')"
 has "$(q '.items[] | select(.key == "queue/tacplus-dev/looper") | .summary')" "queue time p90 20 min over 22 jobs (p50 1, max 97; threshold 15 min)"
+# The control jobs' queues, each its own (looper#104): the kicks' 30 s; the plan canceled before it started, after a minute.
+[[ "$(q '.control["looper-kick"] | "\(.jobs) \(.unstarted) \(.queue_minutes.p90) \(.longest.url)"')" == "2 0 0.5 https://gitlab.com/tacplus-dev/looper/-/jobs/1500" ]] || fail "kick: $(q .control)"
+[[ "$(q '.control["looper-plan"] | "\(.jobs) \(.unstarted) \(.queue_minutes.max)"')" == "1 1 1" ]] || fail "plan: $(q .control)"
+lacks "$(q '.items[].key')" "control-queue/"
 [[ "$(q '[.failed_jobs[] | select(.class == "image_pull") | select(.before_ready and .recovered)] | length')" == 6 ]] || fail "image pulls: $(q .failed_jobs)"
 [[ "$(q '.items[] | select(.key == "failures/tacplus-dev/looper/image_pull") | "\(.count) \(.over) \(.recovered)"')" == "6 true true" ]] || fail "$(q .items)"
 # tacplus: one child at a time; #14 held 7.2 h for want of a slot, then 2.42 h by its limit.
@@ -245,6 +249,8 @@ has "$R" "Failures by class: image_pull 6, gate_failure 1,"
 has "$R" "Slot use: tacplus peak 1 of 1 (mean use 0.67, 3 plans)."
 has "$R" "Hours ready issues waited: tacplus 17.32 h (conflict 7.2, no_free_slot 7.2, limit_outlasts_job 2.42, behind_a_land 0.5)."
 has "$R" "Image: ghcr.io/tacplus-dev/looper:main is 2 commits behind main (aaaaaaaaaaaa against cccccccccccc); the latest image run: [cancelled](https://github.com/tacplus-dev/looper/actions/runs/777)."
+has "$R" "Plan queue: p50 1, p90 1, max 1 min over 1 job (1 canceled before starting); the longest [1 min](https://gitlab.com/tacplus-dev/looper/-/jobs/1600)."
+has "$R" "Kick queue: p50 0.5, p90 0.5, max 0.5 min over 2 jobs; the longest [0.5 min](https://gitlab.com/tacplus-dev/looper/-/jobs/1500)."
 has "$R" "Longest lands: [tacplus #12 full](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 150 min."
 has "$R" "Not read: gitlab:tacplus-dev/cluster"
 # The managers' scores, the caps and the capacity numbers (looper#72).
@@ -303,6 +309,16 @@ NAME=scan-on-another-pool
 variant 1300 "" 'map(if .name == "looper-scan-tacplus" then .runner.description = "tacplus-dev arm64 autoscaler" else . end)'
 lacks "$(v '.items[].key')" "scan_holds_repo"
 [[ "$(v '.capacity.waiting_for_vm.jobs[] | select(.issue == 16) | "\(.minutes) \(.pool)"')" == "97 tacplus-dev arm64 autoscale-16" ]] || fail "VM waits: $(v .capacity.waiting_for_vm)"
+pass
+
+# The plan pending 100 minutes behind reports (looper#104, 2026-11-06: 1h40m), and a kick
+# 5 hours behind older kicks: each control job's queue its own item, over its threshold.
+NAME=control-queues
+variant 1600 "" 'map(if .id == 1600 then .created_at = "2026-11-01T21:20:00.000Z" | .started_at = "2026-11-01T23:00:00.000Z" | .status = "success"
+                     elif .id == 1501 then .created_at = "2026-11-01T18:16:00.000Z" else . end)'
+[[ "$(v '.control["looper-plan"] | "\(.unstarted) \(.queue_minutes.max)"')" == "0 100" ]] || fail "plan: $(v .control)"
+has "$(v '.items[] | select(.key == "control-queue/looper-plan") | "\(.over) \(.summary)"')" "true looper-plan queued up to 100 min (p90 100, over 1 job; threshold 10 min): a control job waited for a runner, behind reports or an older kick"
+has "$(v '.items[] | select(.key == "control-queue/looper-kick") | "\(.wait_hours) \(.summary)"')" "5.01 looper-kick queued up to 300 min (p90 300, over 2 jobs;"
 pass
 
 NAME=collect-without-credentials

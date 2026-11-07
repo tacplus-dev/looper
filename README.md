@@ -17,8 +17,10 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
   fails at the end if a pass failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
   `looper-lib.sh`: one search, one GraphQL query for the blockers' states), since the per-repository
-  reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`): the next
-  hour's waits for the last. Nothing else runs when there is no ready issue.
+  reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`), and
+  only the newest runs (looper#104): a kick stops before any pass once a newer one is created, pending, waiting or
+  running (`a newer kick (job N) is queued; this one stops`), so kicks that waited for a runner no longer run their
+  hours back to back. Nothing else runs when there is no ready issue.
 - **The pipeline** plans one job per ready issue (`looper-<repo>-<issue>`, its report), in
   [priority](#priority) order, up to each repository's cap (`caps.yaml`), and each such repository's manager
   (`looper-<repo>-manager`), the only job that merges to its main
@@ -237,7 +239,12 @@ lander are gone. One job per issue needs none of them.
   *direct report*, `looper-<repo>-<n>` running `repo-looper --repo <repo> --issue <n>`, in
   [priority](#priority) order, up to the repository's **cap** less its reports already active. The caps are
   committed in `caps.yaml` (in the image beside `looper-lib.sh`): 6 for tacplus, 3 for every other repository
-  (`default`). The nightly recap says when one needs adjusting ([Nightly recap](#nightly-recap), looper#72). An issue whose report is created, pending,
+  (`default`). Its `pools:` names the VM pools the control jobs share with reports, by runner tags, with how many
+  jobs each runs at once (`arm64, autoscale: 5`), and the plan keeps the reports active on such a pool, every
+  repository's together, its `reserve` (1) below that (looper#104): the runner gives a freed slot to the oldest
+  queued job, and reports queued before the plan had kept it pending 1h40m. The plan's log says so
+  (`alpha#7 waits: the pool arm64,autoscale is full, its 5 slots less the reserve of 1 for the control jobs`), and
+  the kicker starts no pipeline for a report its pool has no slot for. The nightly recap says when one needs adjusting ([Nightly recap](#nightly-recap), looper#72). An issue whose report is created, pending,
   waiting or running gets no other (`resource_group: looper-<repo>-<n>`), and the plan's log says why an issue
   waits (`alpha#7 waits: alpha is at its cap of 3 reports`). The kicker starts the pipeline when a ready issue has
   no report and its repository is under its cap, or when commits are queued to land and the repository has no
@@ -633,6 +640,10 @@ login; a secret it cannot read is named in `sources` and the project is not read
   item over `LOOPER_RECAP_VM_WAIT_HOURS`, 1) and one more VM's cost a day (`LOOPER_RECAP_VM_MACHINE`, t2a-standard-8,
   at `LOOPER_RECAP_VM_USD_HOUR`, 0.308, its on-demand list price: set it from the billing). Capacity is manual: the
   advice is a scale-up for Jody to decide, never an autoscaling change.
+- **The control jobs' queues** (`control`, looper#104): `looper-plan`'s and `looper-kick`'s, created to started (to
+  canceled, for one canceled before it started), each its own line of the report (`Plan queue: ...`, `Kick queue:
+  ...`), and an item, `control-queue/<job>`, when the longest is `LOOPER_RECAP_CONTROL_QUEUE` (600 seconds) or more:
+  the pool's reserve or the newest-kick rule did not hold.
 
 **Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
 `suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3
@@ -654,7 +665,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the caps from the kicker's passes (raise, lower, advised two nights running only) and the capacity (waits for a VM, one more VM's cost)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the caps from the kicker's passes (raise, lower, advised two nights running only) and the capacity (waits for a VM, one more VM's cost), the plan's and the kick's queues each its own (#104)
 ```
 
 ## Build pipeline
@@ -1093,7 +1104,7 @@ looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL 
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
 looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
-tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; a repository at its cap (caps.yaml) starts none; a report per ready issue up to the cap and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; a repository at its cap (caps.yaml) starts none; a report per ready issue up to the cap and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop; of three kicks queued only the newest runs a pass, and a pool's reports stay its reserve below its capacity (caps.yaml's `pools:`, #104) (stub gh and curl)
 ```
 
 **The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is

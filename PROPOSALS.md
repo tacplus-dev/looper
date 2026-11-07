@@ -4,6 +4,15 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The kicker resource group's `newest_first`** (2026-11-07, #104): a kick now stops once a newer one is queued, but
+  GitLab's default `unordered` process mode may still hand the `kicker` group to a stale kick first, which takes a VM
+  to start and stop. `PUT /projects/:id/resource_groups/kicker` with `process_mode=newest_first` (a token with `api`
+  scope, the hub's one-time step) gives it to the newest at once; it is a setting of the project, not of the CI file.
+- **caps.yaml's pool capacity against the runner's** (2026-11-07, #104): `pools: arm64, autoscale: 5` repeats
+  runner 57939705's `max_instances` (README, Infrastructure); a change to one without the other either wastes slots
+  or loses the reserve. The recap could compare the jobs it saw running at once on a pool against caps.yaml's number.
+  Once looper#84 moves the control jobs to the in-cluster runner (cluster#13), the pool no longer needs the reserve
+  (`reserve: 0`); the newest-kick rule stays.
 - **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
   its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
   which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges

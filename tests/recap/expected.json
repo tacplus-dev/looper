@@ -129,6 +129,36 @@
    "waiting_hours": 2
   }
  },
+ "control": {
+  "looper-kick": {
+   "jobs": 2,
+   "longest": {
+    "minutes": 0.5,
+    "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1500"
+   },
+   "queue_minutes": {
+    "max": 0.5,
+    "n": 2,
+    "p50": 0.5,
+    "p90": 0.5
+   },
+   "unstarted": 0
+  },
+  "looper-plan": {
+   "jobs": 1,
+   "longest": {
+    "minutes": 1,
+    "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1600"
+   },
+   "queue_minutes": {
+    "max": 1,
+    "n": 1,
+    "p50": 1,
+    "p90": 1
+   },
+   "unstarted": 1
+  }
+ },
  "failed_jobs": [
   {
    "before_ready": false,
@@ -857,6 +887,7 @@
  "thresholds": {
   "backlog": 3,
   "cap_wait_hours": 1.0,
+  "control_queue_s": 600,
   "count": 3,
   "disk_pct": 85,
   "hold_hours": 1.0,

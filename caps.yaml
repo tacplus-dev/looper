@@ -4,3 +4,14 @@
 # one needs adjusting. `default` is every repository not named.
 default: 3
 tacplus: 6
+
+# The shared VM pools (looper#104): a pool the control jobs (looper-kick,
+# looper-plan, the managers and the verdicts) share with reports, by its runner
+# tags, and how many jobs it runs at once (its max_instances: README,
+# Infrastructure). The plan keeps `reserve` of its slots free of reports, all
+# repositories' together, so a control job never waits behind them for a VM:
+# the runner gives a freed slot to the oldest queued job. A pool not named here
+# (tacplus's reports' autoscale-16) is limited by the caps alone.
+pools:
+  arm64, autoscale: 5
+reserve: 1

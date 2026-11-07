@@ -14,7 +14,8 @@
 #
 #   looper-dispatch run                one pass: start the pipeline if a repository needs it
 #   looper-dispatch run --for SECONDS  a pass every LOOPER_INTERVAL seconds (default 180) for
-#                                      SECONDS (the kicker job); fails at the end if a pass failed
+#                                      SECONDS (the kicker job); fails at the end if a pass failed;
+#                                      stops once a newer kick is queued (looper#104)
 #   looper-dispatch status             the looper jobs in GitLab, and what is ready
 #   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
 #                                      order the plan takes them: priority:high first (looper#31)
@@ -89,9 +90,46 @@ start_pipeline() {
 active_jobs() {
   gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[].name'
 }
-# The same, as "<name> <status>".
-active_job_statuses() {
-  gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[] | "\(.name) \(.status)"'
+# The same, as "<name> <status> <tags>", the tags as pool_tags gives them
+# (looper#104); cut -d' ' -f1,2 for "<name> <status>".
+active_job_rows() {
+  gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" \
+    | jq -r '.[] | "\(.name) \(.status) \([(.tag_list // [])[] | gsub("[ \t]"; "")] | unique | join(","))"'
+}
+
+# Only the newest kicker runs (looper#104): a kick that waited for a runner, or
+# for the kicker resource_group behind an older kick, used to run its hour
+# after the others, back to back, each pass finding the plan under way. A kick
+# stops (exit 0) once a newer one (a later job id of its name, CI_JOB_NAME) is
+# created, pending, waiting for the resource_group or running, before its
+# first pass or any later one, so the newest takes the group. Outside a job
+# (no CI_JOB_ID), or with GitLab unreadable, it goes on: the pass says so.
+newer_kick() {
+  [[ -n "${CI_JOB_ID:-}" ]] || return 1
+  gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" 2>/dev/null \
+    | jq -er --arg n "${CI_JOB_NAME:-looper-kick}" --argjson id "$CI_JOB_ID" \
+        '[.[] | select(.name == $n and .id > $id) | .id] | max // empty' 2>/dev/null
+}
+
+# The report slots left on a report's pool (looper#104): its capacity
+# (caps.yaml's pools) less the reserve less the active reports (ROWS,
+# active_job_rows') that run on it; nothing for a pool caps.yaml does not name,
+# whose reports only their caps limit.
+pool_free() { # tags rows
+  local t c k; t="$(pool_tags "$1")"; c="$(pool_capacity "$t")"
+  [[ -n "$c" ]] || return 0
+  k="$(awk -v t="$t" '$1 ~ /^looper-.+-[0-9]+$/ && $3 == t' <<<"$2" | grep -c . || true)"
+  echo $(( c - $(caps_reserve) - k ))
+}
+
+# The runner tags of a planned job (looper#55, looper#91): a manager's
+# LOOPER_MANAGER_TAGS_<repo>, a scan's LOOPER_SCAN_TAGS_<repo>, any other's
+# (a report, a verdict) LOOPER_JOB_TAGS_<repo>, else LOOPER_JOB_TAGS, else the
+# default.
+job_tags() { # repo repo-looper-args...
+  local v repo="$1"; shift
+  case " $* " in *" --manage "*) v=LOOPER_MANAGER_TAGS ;; *" --scan "*) v=LOOPER_SCAN_TAGS ;; *) v=LOOPER_JOB_TAGS ;; esac
+  v="${v}_${repo//[^A-Za-z0-9_]/_}"; echo "${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
 }
 
 # A run killed outright (its runner gone, looper#20) never removes
@@ -131,7 +169,7 @@ landing_repos() {
 # `capacity: <repo> reports=N running=N cap=N waiting=<n,...> landing=N; ...`,
 # for every repository with any of them (`capacity: none` for none): the
 # nightly recap reads it from the kicker's log, a pass every LOOPER_INTERVAL
-# (looper#72). STATUSES is active_job_statuses' "<name> <status>" lines.
+# (looper#72). STATUSES is active_job_rows' "<name> <status>", its first two fields.
 capacity_line() { # jobs ready landing statuses
   local repo n k r cap w l out=()
   for repo in $( { grep -E '^looper-.+-[0-9]+$' <<<"$1" | sed -E 's/^looper-(.+)-[0-9]+$/\1/'
@@ -151,11 +189,11 @@ capacity_line() { # jobs ready landing statuses
 
 # One pass: release the orphans, then start the pipeline for the first
 # repository with a ready issue no report job holds and a free report (its
-# cap, caps.yaml), in the order of ready_all_by_repo (priority:high first,
-# looper#31), or with commits queued to land and no manager job (looper#70).
+# cap, caps.yaml, and a slot on its pool above the reserve, looper#104), in
+# the order of ready_all_by_repo (priority:high first, looper#31), or with commits queued to land and no manager job (looper#70).
 pass() {
-  local statuses jobs ready repo n landing
-  statuses="$(active_job_statuses)"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
+  local rows statuses jobs ready repo n landing f
+  rows="$(active_job_rows)"; statuses="$(cut -d' ' -f1,2 <<<"$rows")"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
@@ -166,6 +204,8 @@ pass() {
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" "$n" >/dev/null && continue
     (( $(free_reports "$repo" "$jobs") > 0 )) || continue
+    f="$(pool_free "$(job_tags "$repo" --issue "$n")" "$rows")"
+    [[ -z "$f" ]] || (( f > 0 )) || continue
     start_pipeline
     log "started the $PIPELINE pipeline ($repo#$n is ready)"
     return 0
@@ -187,7 +227,10 @@ pass() {
 # report per ready issue, looper-<repo>-<issue> running repo-looper --issue N,
 # in the order of ready_all_by_repo (priority:high first, looper#31), none for
 # an issue whose report is active, and at most the repository's cap
-# (caps.yaml) active at once (when GitLab cannot be read, the cap alone), each
+# (caps.yaml) active at once (when GitLab cannot be read, the cap alone), and on
+# a pool caps.yaml names at most its capacity less the reserve active at once,
+# every repository's reports on it together, so a control job always finds a
+# slot (looper#104: the plan waited 1h40m behind reports queued before it), each
 # sized by `repo-looper --job-timeout` and one at a time per issue
 # (resource_group looper-<repo>-<issue>); and for each repository with a report
 # planned or commits queued to land (looper:landing), its manager,
@@ -217,15 +260,21 @@ plan() {
     ready="$(forge_repos)"   # a forge it cannot read fails the plan: never an empty scan
     for repo in $ready; do plan_job "looper-scan-$repo" 5h "looper-$repo" --repo "$repo" --scan; any=1; done
   else
-    local statuses="" landing free managed=" " reports=""; local -A left=()
-    if statuses="$(active_job_statuses)"; then jobs="$(cut -d' ' -f1 <<<"$statuses")"
-    else log "could not read $PIPELINE's jobs; planning each repository's ready issues up to its cap" >&2; jobs=""; fi
+    local rows="" statuses="" landing free managed=" " reports="" tags; local -A left=() pool=()
+    if rows="$(active_job_rows)"; then statuses="$(cut -d' ' -f1,2 <<<"$rows")"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
+    else log "could not read $PIPELINE's jobs; planning each repository's ready issues up to its cap" >&2; rows=""; jobs=""; fi
     ready="$(ready_all_by_repo)"
     while read -r repo n; do
       [[ -n "$repo" ]] || continue
       if busy "$repo" "$jobs" "$n" >/dev/null; then log "$repo#$n already has its report job; not planned again" >&2; continue; fi
       [[ -n "${left[$repo]:-}" ]] || left[$repo]="$(free_reports "$repo" "$jobs")"
       if (( ${left[$repo]} <= 0 )); then log "$repo#$n waits: $repo is at its cap of $(repo_cap "$repo") reports" >&2; continue; fi
+      tags="$(pool_tags "$(job_tags "$repo" --issue "$n")")"
+      [[ -n "${pool[$tags]+x}" ]] || pool[$tags]="$(pool_free "$tags" "$rows")"
+      if [[ -n "${pool[$tags]}" ]] && (( ${pool[$tags]} <= 0 )); then
+        log "$repo#$n waits: the pool $tags is full, its $(pool_capacity "$tags") slots less the reserve of $(caps_reserve) for the control jobs" >&2; continue
+      fi
+      [[ -z "${pool[$tags]}" ]] || pool[$tags]=$(( ${pool[$tags]} - 1 ))
       left[$repo]=$(( ${left[$repo]} - 1 ))
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
@@ -292,9 +341,8 @@ split_manager() { # repo
 # One job of the plan, its repository's; repo-looper's arguments are names and
 # numbers, unquoted in its script.
 plan_job() { # name timeout resource-group --repo REPO repo-looper-args...
-  local name="$1" t="$2" group="$3" repo="$5" v tags; shift 3
-  case " $* " in *" --manage "*) v=LOOPER_MANAGER_TAGS ;; *" --scan "*) v=LOOPER_SCAN_TAGS ;; *) v=LOOPER_JOB_TAGS ;; esac
-  v="${v}_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
+  local name="$1" t="$2" group="$3" repo="$5" tags; shift 3
+  tags="$(job_tags "$repo" "$@")"
   log "planned $name ($t, tags $tags, resource_group $group)" >&2
   cat <<YML
 $name:
@@ -337,6 +385,7 @@ case "${1:-}" in
       # The clock is `date +%s` and `sleep`, not $SECONDS, so a test can fake it (looper#78).
       end=$(( $(date +%s) + $3 )); failed=0
       while :; do
+        if k="$(newer_kick)"; then log "a newer kick (job $k) is queued; this one stops so it runs (looper#104)"; break; fi
         next=$(( $(date +%s) + INTERVAL ))   # from this pass's start: a slow pass does not stretch the interval
         # Its own process: errexit holds in the pass, so GitLab unreadable is never "no jobs".
         "${BASH_SOURCE[0]}" run || { failed=1; log "pass failed"; }

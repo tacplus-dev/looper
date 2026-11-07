@@ -120,8 +120,10 @@ scenario() { # name: alpha has a ready issue #4
     > "$FIX/issues/alpha-4.json"
 }
 jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1]}' | jq -s . > "$FIX/jobs.json"; } # "name status"...
+# "name status id tag,tag"...: jobs with their ids and runner tags (looper#104).
+tagged_jobs() { printf '%s\n' "$@" | jq -R 'split(" ") | {name: .[0], status: .[1], id: (.[2] | tonumber), tag_list: (.[3] | split(","))}' | jq -s . > "$FIX/jobs.json"; }
 run_dispatch() {
-  OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u LOOPER_TRIGGER_TOKEN ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
+  OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u CI_JOB_ID -u CI_JOB_NAME -u LOOPER_TRIGGER_TOKEN ${JOB_ID:+CI_JOB_ID="$JOB_ID" CI_JOB_NAME=looper-kick} ${TRIGGER:+LOOPER_TRIGGER_TOKEN="$TRIGGER"} ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN="${TOKEN-tok}" LOOPER_INTERVAL="${INTERVAL:-180}" \
     "$ROOT/looper-dispatch" "$@" 2>&1)"
 }
 dispatch() { run_dispatch "$@" || { echo "$OUT"; fail "looper-dispatch exited non-zero"; }; }
@@ -279,7 +281,8 @@ for k in 5 6 7 8; do issue alpha "$k" OPEN "Go." approved; done
 for k in 1 2 3 4 5 6 7; do issue tacplus "$k" OPEN "Go." approved; done
 jobs "looper-alpha-4 running" "looper-alpha-manager running"
 printf '#!/usr/bin/env bash\nexec "%s/repo-looper" "$@"\n' "$ROOT" > "$TMP/bin/repo-looper"; chmod +x "$TMP/bin/repo-looper"
-plan_jobs() { PLAN="$(env -u CI_PIPELINE_SOURCE ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+# tacplus's reports on their own pool, as in tacplus-dev's pipeline: caps.yaml's shared pool (looper#104) holds alpha's.
+plan_jobs() { PLAN="$(env -u CI_PIPELINE_SOURCE -u CI_JOB_ID ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
   "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
 plan_jobs
 [[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-manager looper-alpha-5 looper-alpha-6" ]] \
@@ -325,6 +328,73 @@ jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-4.json" > "$FIX/x"
 PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
   "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed"
 [[ "$(grep -E '^looper-' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-manager:" ]] || fail "planned: $(grep '^looper-' <<<"$PLAN")"
+pass
+
+# Only the newest kicker runs (looper#104): three kicks queued (one waiting
+# for a runner, two for the kicker resource_group behind it), and each but the
+# newest stops before its first pass, saying which one it leaves to run; the
+# newest makes its passes. Kicks that had waited all morning used to run their
+# hours back to back, each finding the plan under way.
+scenario kick-newest-only
+echo 1000 > "$FIX/clock"
+tagged_jobs "looper-kick pending 101 arm64,autoscale" "looper-kick waiting_for_resource 102 arm64,autoscale" \
+  "looper-kick waiting_for_resource 103 arm64,autoscale"
+for id in 101 102; do
+  JOB_ID=$id INTERVAL=180 dispatch run --for 360
+  grep -q "a newer kick (job 103) is queued; this one stops" <<<"$OUT" || fail "kick $id: $OUT"
+  ! started || fail "kick $id made a pass: $OUT"
+  ! grep -q 'search issues' "$FIX/gh" 2>/dev/null || fail "kick $id read the issues: $(cat "$FIX/gh")"
+done
+JOB_ID=103 INTERVAL=180 dispatch run --for 360
+started || fail "the newest kick made no pass: $OUT"
+[[ "$(grep -c 'search issues' "$FIX/gh")" -ge 3 ]] || fail "the newest kick's passes: $(cat "$FIX/gh"): $OUT"
+! grep -q 'a newer kick' <<<"$OUT" || fail "the newest kick stopped: $OUT"
+# A running kick stops at its next pass once a newer one is queued.
+rm -f "$FIX/started" "$FIX/gh"
+tagged_jobs "looper-kick running 103 arm64,autoscale" "looper-kick created 104 arm64,autoscale"
+JOB_ID=103 INTERVAL=180 dispatch run --for 360
+grep -q "a newer kick (job 104) is queued" <<<"$OUT" && ! started || fail "the older kick ran on: $OUT"
+pass
+
+# The pool's reserve (looper#104): the control jobs (the kicker, the plan, the
+# managers, the verdicts) share caps.yaml's pools with reports, and the runner
+# gives a freed slot to the oldest queued job, so reports queued before the
+# plan kept it pending 1h40m. The plan keeps the reports active on a pool, every
+# repository's together, `reserve` below its capacity: none beyond it, the next
+# waiting with the reason. A pool caps.yaml does not name (tacplus's
+# autoscale-16 here) only the caps limit; jobs other than reports take no slot.
+scenario plan-pool-reserve
+for k in 5 6; do issue alpha "$k" OPEN "Go." approved; done
+issue tacplus 7 OPEN "Go." approved
+printf 'default: 3\npools:\n  arm64, autoscale: 5\nreserve: 1\n' > "$FIX/caps.yaml"
+tagged_jobs "looper-beta-1 running 11 arm64,autoscale" "looper-beta-2 pending 12 autoscale,arm64" "looper-gamma-3 created 13 arm64,autoscale" \
+  "looper-tacplus-9 running 14 arm64,autoscale-16" "looper-beta-manager running 15 arm64,autoscale" "looper-kick running 16 arm64,autoscale"
+pool_plan() { PLAN="$(env -u CI_PIPELINE_SOURCE -u CI_JOB_ID LOOPER_CAPS="$FIX/caps.yaml" LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" LOOPER_LIB="$ROOT/looper-lib.sh" \
+  PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
+pool_plan
+[[ "$(grep -oE '^looper-[a-z]+-[0-9]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-5 looper-tacplus-7" ]] || fail "planned: $(grep '^looper-' <<<"$PLAN")"
+grep -q 'alpha#6 waits: the pool arm64,autoscale is full, its 5 slots less the reserve of 1 for the control jobs' "$FIX/err" || fail "log: $(cat "$FIX/err")"
+# The pool's slots full of reports, less the reserve: no report on it, nor its manager.
+tagged_jobs "looper-beta-1 running 11 arm64,autoscale" "looper-beta-2 pending 12 arm64,autoscale" "looper-gamma-3 created 13 arm64,autoscale" \
+  "looper-gamma-4 waiting_for_resource 17 arm64,autoscale"
+pool_plan
+[[ "$(grep -E '^looper-' <<<"$PLAN" | paste -sd' ')" == "looper-tacplus-manager: looper-tacplus-7:" ]] || fail "planned at the pool's reserve: $(grep '^looper-' <<<"$PLAN")"
+grep -q 'alpha#5 waits: the pool arm64,autoscale is full' "$FIX/err" || fail "log: $(cat "$FIX/err")"
+# Without a reserve, the capacity itself.
+printf 'default: 3\npools:\n  arm64, autoscale: 5\n' > "$FIX/caps.yaml"
+pool_plan
+[[ "$(grep -oE '^looper-alpha-[0-9]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-5" ]] || fail "planned without a reserve: $(grep '^looper-' <<<"$PLAN")"
+# The kicker starts no pipeline for a report the pool has no slot for.
+printf 'default: 3\npools:\n  arm64, autoscale: 5\nreserve: 1\n' > "$FIX/caps.yaml"
+rm "$FIX/issues/tacplus-7.json"
+CAPS="$FIX/caps.yaml" dispatch run
+! started || fail "started a pipeline with the pool at its reserve: $OUT"
+tagged_jobs "looper-beta-1 running 11 arm64,autoscale" "looper-beta-2 pending 12 arm64,autoscale" "looper-gamma-3 created 13 arm64,autoscale"
+CAPS="$FIX/caps.yaml" dispatch run
+started || fail "no pipeline with a slot above the reserve: $OUT"
+# The committed pools: the shared one, 5 VMs, a slot reserved.
+[[ "$(LOOPER_CAPS="$ROOT/caps.yaml" bash -c "source '$ROOT/looper-lib.sh'; pool_capacity 'autoscale, arm64'; caps_reserve; pool_capacity 'arm64, autoscale-16'; repo_cap reserve" | paste -sd' ')" == "5 1 3" ]] \
+  || fail "caps.yaml's pools"
 pass
 
 # Blocked-by: ready only when every issue it names is closed; a missing one

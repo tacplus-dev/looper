@@ -1,14 +1,14 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-05 by looper (#74).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-07 by looper (#104).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
 - **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a
-  pass every 3 minutes that reads GitHub for the whole org in three requests, never two kicker jobs at once, nothing on
+  pass every 3 minutes that reads GitHub for the whole org in three requests, never two kicker jobs at once and only the newest (a kick stops once a newer one is queued, #104), nothing on
   the Mac (#24); it starts the pipeline for a ready issue with no report job under its repository's cap, or a
   queued land with no manager; the pipeline's plan (`looper-dispatch plan`) starts **one report job per ready
-  issue**, up to the repository's cap in `caps.yaml` (tacplus 6, the others 3), never a second for an issue whose
+  issue**, up to the repository's cap in `caps.yaml` (tacplus 6, the others 3) and, on a VM pool its `pools:` names (`arm64, autoscale`: 5), every repository's reports together its `reserve` (1) below the pool's capacity, so the control jobs always find a slot (#104; the nightly recap reports the plan's and the kick's queues each on its own line), never a second for an issue whose
   report is created, pending, waiting or running, and the repository's **manager** job, the only one that merges
   to its main, planned ahead of every report so the runner starts it first, and a report pending from an earlier pipeline yields to a manager waiting for a runner (#70, below; #16; #75); priority labels (#31): ready issues are taken `priority:high`, then unlabelled, then
   `priority:low`, oldest first within each, and across repositories `looper-dispatch ready` (the kicker's order)
