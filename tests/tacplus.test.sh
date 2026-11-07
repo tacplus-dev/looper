@@ -14,10 +14,11 @@
 # serves every host itself and logs the credentials it gets.
 # Run: tests/tacplus.test.sh
 set -euo pipefail
-# The test's own environment, not that of the model run or looper job it may
-# run in (looper#81, looper#97): a model user's LOOPER_TACPLUS_HOME would put
-# the cache outside $TMP/work, the job's GH_CONFIG_DIR give git its token.
-unset $(compgen -e | grep -E '^(LOOPER|CI|GH|GITHUB|GITLAB)_')
+# The test's own environment, not the job's or model run's it may run in
+# (looper#81, looper#97, looper#103): a model user's LOOPER_TACPLUS_HOME would put the
+# cache outside $TMP/work, and a job's gh configuration or git credential
+# helper would send its token where this test asserts none is sent.
+source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRV="$(mktemp -d)"; pid=""
 trap '[[ -n "$pid" ]] && kill "$pid" 2>/dev/null; rm -rf "$TMP" "$SRV"' EXIT
@@ -86,11 +87,14 @@ git config -f "$TMP/work/.tacplus-home/.gitconfig" credential.helper store
 cd "$TMP/work/checkout"
 
 NAME=""
-fail() { echo "FAIL $NAME: $*" >&2; cat "$SRV/log" >&2; exit 1; }
+# The server's log, its credentials' secrets redacted (looper#103): a gate's
+# output is published, and a credential this test did not make is a real one.
+fail() { echo "FAIL $NAME: $*" >&2; redact < "$SRV/log" >&2; exit 1; }
+redact() { sed -E "s/^([^ ]+ [^ :]+):${TOKEN}( |\$)/\1:<the test's token>\2/; t; s/^([^ ]+ [^ :]+):[^ ]+/\1:<redacted>/"; }
 pass() { echo "ok $NAME"; }
 tacplus() { # env... -- args: the wrapper, as a looper run calls it
   local e=(); while [[ "$1" != -- ]]; do e+=("$1"); shift; done; shift
-  env -u GH_TOKEN -u GITHUB_TOKEN PATH="$TMP/bin:$PATH" TMPDIR="$TMP" TACPLUS_MINOR=2.4 \
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR PATH="$TMP/bin:$PATH" TMPDIR="$TMP" TACPLUS_MINOR=2.4 \
     TACPLUS_RELEASES_URL="file://$REL/releases.json" TACPLUS_DOWNLOAD_URL="file://$REL/dl" \
     LOOPER_WORK="$TMP/work" LOOPER_LIB="$ROOT/looper-lib.sh" GIT_TERMINAL_PROMPT=0 "${e[@]}" "$ROOT/tacplus" "$@"
 }
@@ -132,6 +136,18 @@ NAME="no token, no credential"
 if tacplus -- clone -q https://github.com/org/repo.git none 2>"$TMP/err"; then fail "clone without a token succeeded"; fi
 grep -q "could not read Username for 'https://github.com'" "$TMP/err" || { cat "$TMP/err"; fail "expected git to find no credential"; }
 ! grep -v '^github.com -$' "$SRV/log" | grep -q . || fail "a credential was sent without a token"
+pass
+
+NAME="a failure prints no credential's value"
+real="ghs_notthetests$RANDOM$RANDOM"
+printf 'github.com -\ngithub.com x-access-token:%s\ngithub.com x-access-token:%s push refused\ngithub.com x-access-token:%s\n' \
+  "$real" "$real" "$TOKEN" > "$SRV/log"
+out="$( (NAME=inner; fail "as a test does") 2>&1 || true)"
+! grep -qF "$real" <<<"$out" || fail "printed a credential: ${out//$real/<it>}"
+grep -qxF "github.com x-access-token:<redacted> push refused" <<<"$out" || fail "redacted wrong: ${out//$real/<it>}"
+grep -qxF "github.com x-access-token:<the test's token>" <<<"$out" || fail "the test's own token: ${out//$real/<it>}"
+grep -qxF "github.com -" <<<"$out" || fail "dropped a line: ${out//$real/<it>}"
+: > "$SRV/log"
 pass
 
 BINS="$TMP/work/.tacplus-home/.cache/tacplus"

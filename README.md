@@ -76,7 +76,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   `docker run` of something that clones from GitHub passes the same `"${DOCKER_GITHUB_CREDS[@]}"`.
 
 ```sh
-tests/tacplus.test.sh                      # which tacplus: the pin, else the floor's newest patch (looked up at most every ten minutes), in build:<line>, never tacplus/tacplus; a checksum mismatch refused; its credentials against a stub git server: github.com gets the token, any other host none, nothing on disk or command line holds it
+tests/tacplus.test.sh                      # which tacplus: the pin, else the floor's newest patch (looked up at most every ten minutes), in build:<line>, never tacplus/tacplus; a checksum mismatch refused; its credentials against a stub git server: github.com gets the token, any other host none, nothing on disk or command line holds it; a failure prints the server's log with every credential's secret redacted
 ```
 
 ## Issues
@@ -395,6 +395,10 @@ read from that tree.
 
 This repository's own map is [`gates.yaml`](gates.yaml): the planning files check for `*.md`, each script's own
 test for the scripts no other test drives, and full for `repo-looper`, `looper-lib.sh` and the rest.
+Its gates run in looper jobs (a land, the nightly scan), whose environment holds the apps, the job tags, gh's
+configuration and a git credential helper: the tests those would change (forge, repo-looper, looper-dispatch,
+tacplus) source `tests/hermetic.sh` first, which runs them again under `env -i` with only `PATH`, `USER`, the
+locale, `TMPDIR` and a `HOME` of their own (looper#103).
 
 ```sh
 tests/repo-looper.test.sh   # gates-*: a docs-only diff runs only docs (named in the land's output and HISTORY.md); an unmapped path, a path of full's, a gates.yaml change run full; several sets run each once; an unreadable map lands nothing; a docs land fits a budget full does not; the prompts name full; this repository's own map

@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Every gate hermetic** (2026-11-07, #103): forge, repo-looper, looper-dispatch and tacplus now run under
+  `env -i` (`tests/hermetic.sh`); the other fourteen gates pass in a looper job today but still read its
+  environment (its apps, job tags, gh's configuration, git's credential helper), so a new scenario in one of them
+  can fail only in a job, or send the job's token to a stub. Sourcing the helper in every test file (and a
+  planning-files check that each does) would close it; the tests that drive a real docker (looper-docker,
+  runner-image, looper-build) need checking for what they read from the job first (`DOCKER_HOST`, the broker).
 - **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
   its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
   which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges

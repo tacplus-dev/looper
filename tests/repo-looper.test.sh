@@ -8,11 +8,7 @@
 # script in the checkout, and origin is a local bare repository.
 # Run: tests/repo-looper.test.sh
 set -euo pipefail
-# The test's own environment, not that of the looper job it may run in
-# (looper#97): the job's LOOPER_*, CI_*, GH_*, GITHUB_* and GITLAB_* variables
-# (its apps, its token's gh config, its runner tags) change what the scripts
-# under test do.
-unset $(compgen -e | grep -E '^(LOOPER|CI|GH|GITHUB|GITLAB)_')
+source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"   # the test's own environment, not the job's (looper#97, looper#103)
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
