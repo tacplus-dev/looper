@@ -1,0 +1,343 @@
+= init
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short && git log --oneline -3 && git diff --stat && gh issue view 97 --repo tacplus-dev/looper --comments | tail -20
+<  M PROPOSALS.md  M README.md  M STATE.md  M repo-looper  M tests/repo-looper.test.sh 0f33d51 README, STATE.md: #43's runner VMs get no fix, they are retired by #84 d8457dd ROADMAP: approved by Jody 2026-11-06 (#73) 988bdfc The verdict job clears a stale verdict another job left in its reused project...
+> Bash git diff; grep -rn "ready (github)\|FAIL ready\|ready (" tests/*.sh | head
+< diff --git a/PROPOSALS.md b/PROPOSALS.md index 772e3a4..5fd957d 100644 --- a/PROPOSALS.md +++ b/PROPOSALS.md @@ -544,6 +544,13 @@ the looper then marks it `promoted` or `declined` here with the date.  - **Refresh the vendored CI schema** (2026-11-05, #94): `ci/gitlab-ci.schema.json` is GitLab's `ci....
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n '"ready"\|ready' tests/forge.test.sh | head -30; git log --oneline -8 origin/main -- tests/forge.test.sh looper-dispatch | head
+< 7:# over one store of issues: listing the ready issues (one repository and the 12:# gitlab.com), and looper-dispatch's ready, plan and orphan release. 92:    ! grep -qxF -- "$n" "$FIX/labels/${repo//\//__}" 2>/dev/null || { echo "label with name \"$n\" already exists; use \`--force\` to update its c...
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 240,275p tests/forge.test.sh; tests/forge.test.sh > /tmp/forge.log 2>&1; echo rc=$?; grep -v '^ok' /tmp/forge.log | tail
+< } dispatch() { # args...   env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_ROADMAP_REPO -u LOOPER_FORGE_URL -u CI_PROJECT_ID -u CI_JOB_ID \     PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" ORG="$ORG" PIPELINE="$ORG/tools/looper" TOKEN="$TOKEN" CI_PIPELINE_SOURCE="${SOURCE:-}" \     LOOPER_F...
+= thinking_tokens
+= thinking_tokens
+> Bash env | grep -E '^(LOOPER|CI|GH|GITLAB)_' | cut -d= -f1 | sort | tr '\n' ' '; echo; env -i PATH="$PATH" HOME="$HOME" bash tests/forge.test.sh > /tmp/forge2.log 2>&1; echo rc=$?
+= task_started
+= task_notification
+< CI_API_GRAPHQL_URL CI_API_V4_URL CI_BUILDS_DIR CI_COMMIT_AUTHOR CI_COMMIT_BEFORE_SHA CI_COMMIT_BRANCH CI_COMMIT_DESCRIPTION CI_COMMIT_MESSAGE CI_COMMIT_MESSAGE_IS_TRUNCATED CI_COMMIT_REF_NAME CI_COMMIT_REF_PROTECTED CI_COMMIT_REF_SLUG CI_COMMIT_SHA CI_COMMIT_SHORT_SHA CI_COMMIT_TIMESTAMP CI_COMMIT_T...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Rerunning the failing forge gate: it fails in this job's environment but passes under `env -i`. Narrowing down which variable causes it.
+> Bash for v in LOOPER_REPORT_APP_ID LOOPER_MANAGER_APP_ID GH_CONFIG_DIR LOOPER_JOB_TAGS_tacplus LOOPER_MODEL_RUN LOOPER_RUN; do env -u $v bash tests/forge.test.sh >/dev/null 2>&1; echo "$v unset rc=$?"; done; grep -n 'REPORT_APP_ID\|MANAGER_APP_ID' looper-dispatch looper-lib.sh | head
+= task_started
+= task_notification
+< LOOPER_REPORT_APP_ID unset rc=0 LOOPER_MANAGER_APP_ID unset rc=1 GH_CONFIG_DIR unset rc=1 LOOPER_JOB_TAGS_tacplus unset rc=1 LOOPER_MODEL_RUN unset rc=1 LOOPER_RUN unset rc=1
+> Bash grep -rn 'REPORT_APP_ID' --include=* . 2>/dev/null | grep -v '^./.git' | head -20; git log -3 --format='%h %ad %s' --date=iso origin/main -- looper-dispatch looper-lib.sh looper-token
+< ./tests/looper-dispatch.test.sh:608:  '  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;' \ ./tests/looper-dispatch.test.sh:612:APPS=(LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/r) ./tests/repo-lo...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 225,240p tests/forge.test.sh; for t in repo-looper looper-dispatch tacplus; do tests/$t.test.sh > /tmp/$t.log 2>&1; echo "$t rc=$?"; grep FAIL /tmp/$t.log | head -3; done
+< } issue() { # repo n state body label...   local r="$1" n="$2" st="$3" b="$4"; shift 4   jq -n --arg r "$r" --argjson n "$n" --arg st "$st" --arg b "$b" --arg c "2026-10-$(printf %02d "$n")T00:00:00Z" '$ARGS.positional as $l |     {repo: $r, number: $n, title: "Issue \($n)", state: $st, labels: [$l[...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash git log -6 --format='%h %ad %s' --date=iso origin/main; grep -n 'env -i\|gates_env\|run_gates' repo-looper | head -20
+< 0f33d51 2026-11-06 20:15:14 +0000 README, STATE.md: #43's runner VMs get no fix, they are retired by #84 d8457dd 2026-11-06 14:36:24 -0700 ROADMAP: approved by Jody 2026-11-06 (#73) 988bdfc 2026-11-06 07:42:04 +0000 The verdict job clears a stale verdict another job left in its reused project dir (#...
+> Bash grep -n 'gates' ci/*.yml | head -30; grep -n 'run the gates\|gates_cmd\|"\$gates"' repo-looper | head
+< ci/build.gitlab-ci.yml:21:# A build may name the gate set to run (looper#71): "gates": the commit's ci/build.gitlab-ci.yml:22:# gates.yaml sets, joined by + (empty: its full, or `just gates` without a ci/build.gitlab-ci.yml:23:# gates.yaml), and "base": the commit their LOOPER_GATES_BASE names (the ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+The other gates (repo-looper, looper-dispatch, tacplus) also fail in this environment. Running every gate separately to see the full set that breaks:
+> Bash for t in looper-docker looper-pkill planning-files looper-build looper-identity runner-image looper-suggest looper-trace image-failed looper-recap looper-token looper-ruleset looper-ci-lint looper-verify; do timeout 900 tests/$t.test.sh > /tmp/$t.log 2>&1; echo "$t rc=$?"; done
+= task_started
+= task_notification
+< looper-docker rc=0 looper-pkill rc=0 planning-files rc=0 looper-build rc=0 looper-identity rc=0 runner-image rc=0 looper-suggest rc=0 looper-trace rc=0 image-failed rc=0 looper-recap rc=0 looper-token rc=0 looper-ruleset rc=0 looper-ci-lint rc=0 looper-verify rc=0
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash for t in forge repo-looper looper-dispatch tacplus; do echo "== $t"; sed -n 1,30p tests/$t.test.sh | grep -n 'set -\|^export\|^unset\|env -u\|ROOT=' ; grep -n '\${\(LOOPER\|CI\|GH\|GITLAB\)_[A-Za-z_]*:-' tests/$t.test.sh | head -5; done
+< == forge 14:set -euo pipefail 15:ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 18:export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t == repo-looper 10:set -euo pipefail 11:ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 13:export GIT_AUTHOR_N...
+> Bash sed -n 14,20p tests/tacplus.test.sh; grep -n 'DOCKER_HOST\|docker' tests/tacplus.test.sh | head -5
+< # serves every host itself and logs the credentials it gets. # Run: tests/tacplus.test.sh set -euo pipefail # The test's own environment, not the model run's it may run in (looper#81): # a model user's LOOPER_TACPLUS_HOME would put the cache outside $TMP/work. unset LOOPER_TACPLUS_HOME LOOPER_DOCKER...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+There's precedent in tacplus.test.sh (looper#81), which unsets a few variables by name. I'll generalise it and add the same line to all four tests.
+> Bash python3 - <<'EOF' import re block = '''# The test's own environment, not that of the looper job it may run in # (looper#97): the job's LOOPER_*, CI_*, GH_*, GITHUB_* and GITLAB_* variables # (its apps, its token's gh config, its runner tags) change what the scripts # under test do. unset $(compgen -...
+< TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT  # Issues: $FIX/issues/<repo>-<n>.json ({number,state,labels:[{name}],body,createdAt}). # Each call is appended to $FIX/gh. `api graphql` answers the aliased # `repository(...) { issue(number: N) { state } }` queries from the issue files, # null (and exi...
+= thinking_tokens
+= thinking_tokens
+> Bash git diff tests/looper-dispatch.test.sh tests/tacplus.test.sh tests/forge.test.sh | head -60; for t in forge repo-looper looper-dispatch tacplus; do tests/$t.test.sh > /tmp/$t.log 2>&1; echo "$t rc=$?"; grep FAIL /tmp/$t.log | head -3; done
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: b6c6k19e2). Output is being written to: /builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/b6c6k19e2.output. You will be notified when ...
+> Bash cat /builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/b6c6k19e2.output | tail -20; ls -la /tmp/*.log | head; tail -3 /tmp/repo-looper.log /tmp/looper-dispatch.log
+< Exit code 1   diff --git a/tests/tacplus.test.sh b/tests/tacplus.test.sh index 0e19352..7a7f8c1 100755 --- a/tests/tacplus.test.sh +++ b/tests/tacplus.test.sh @@ -14,9 +14,10 @@  # serves every host itself and logs the credentials it gets.  # Run: tests/tacplus.test.sh  set -euo pipefail -# The test...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+forge now passes. repo-looper is still running in the background. Meanwhile I'm dropping the PROPOSALS note this branch added, since this change fixes what it proposed:
+> Bash git checkout PROPOSALS.md && git status --short
+< Updated 1 path from the index  M README.md  M STATE.md  M repo-looper  M tests/forge.test.sh  M tests/looper-dispatch.test.sh  M tests/repo-looper.test.sh  M tests/tacplus.test.sh
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+While the tests run, checking the issue's other ask: whether the report App's token can read collaborator permissions.
+> Bash cd /tmp && gh api repos/tacplus-dev/tacplus/collaborators/jodydadescott/permission --jq '{permission, role_name}' 2>&1; gh api repos/tacplus-dev/looper/collaborators/jodydadescott/permission --jq .permission 2>&1; gh api installation/repositories --jq '.total_count' 2>&1 | head -2; gh auth status 2>...
+< {"permission":"admin","role_name":"admin"} admin 32 github.com   ✓ Logged in to github.com account x-access-token (/tmp/looper-tokens.7uwanh/report/hosts.yml)   - Active account: true   - Git operations protocol: https   - Token: ghs_******************************************************************...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sleep 240; cat /builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/b6c6k19e2.output | grep -E 'rc=|FAIL'
+< <tool_use_error>Blocked: sleep 240 followed by: cat /builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/b6c6k19e2.output grep -E 'rc=|FAIL'. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do ...
+> Bash F=/builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/b6c6k19e2.output; until grep -q 'tacplus rc=' $F; do sleep 5; done; grep -E 'rc=|FAIL' $F
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< forge rc=0 repo-looper rc=0 looper-dispatch rc=0 tacplus rc=0
+= thinking_tokens
+= thinking_tokens
+All four pass in the job's own environment now. Running looper-trace (rule 13), then committing in two commits: the fix, and the test hermeticity.
+> Bash /usr/local/bin/looper-trace check 2>&1 | tail -3; git add README.md STATE.md repo-looper tests/repo-looper.test.sh && git commit -q -F - <<'EOF' Provenance: a CONTRIBUTOR or NONE with write permission directs (#97)  GitHub reports an org owner whose membership is private as CONTRIBUTOR (or NONE), so...
+< looper-trace: /builds/looper/looper/issues/97 verdict: pass (0 handlers, 0 findings) Current branch looper/looper-97 is up to date. 09316ea Gates: four tests clear the looper job's environment they may run in (#97) 842d5ed Provenance: a CONTRIBUTOR or NONE with write permission directs (#97) 0f33d51...
+= thinking_tokens
+= thinking_tokens
+Every one of the 18 gates has passed in this job's environment, on this tree. Checkpointing and landing:
+> Bash /usr/local/bin/repo-looper --repo looper --issue 97 --checkpoint "fix 842d5ed + gate hermeticity 09316ea committed; all 18 gates green in the job env; left: land, requeue tacplus#315, comment, close" 2>&1 | tail -2; nohup /usr/local/bin/repo-looper --repo looper --issue 97 --land > /tmp/land.log 2>&...
+< [2026-11-07T08:22:06Z] checkpoint of #97 (a step) pushed to looper/looper-97:  9 files changed, 427 insertions(+), 19 deletions(-) pid=196127
+While the land runs: tacplus#315 needs requeueing. Checking its state:
+> Bash gh issue view 315 --repo tacplus-dev/tacplus --json state,labels,title --jq '{state,title,labels:[.labels[].name]}'; gh issue view 315 --repo tacplus-dev/tacplus --comments | tail -25; grep -n -i 'requeue' /builds/looper/looper/issues/97/README.md | head
+< {"labels":["approved","looper:in-progress","feature","priority:high"],"state":"OPEN","title":"Build image: rootless BuildKit for image builds inside the container; shared build caches; cold and warm give identical results"} **Decision (Jody, 2026-11-06):** the tacplus-looper App now holds `workflows...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash until ! kill -0 196127 2>/dev/null; do sleep 15; done; tail -15 /tmp/land.log
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: bmm5dx8vv). Output is being written to: /builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/bmm5dx8vv.output. You will be notified when ...
+> Bash tail -5 /tmp/land.log
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash until ! kill -0 196127 2>/dev/null; do sleep 20; done; tail -8 /tmp/land.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bc9mp2wcq. Output is being written to: /builds/looper/looper/homes/looper-97/tmp/claude-61000/-builds-looper-looper-issues-97/ee35b207-2891-4d85-a4eb-2a689e8c9951/tasks/bc9mp2wcq.output. You will be notified when it completes. To check interim output, use Read ...
+> ToolSearch {"query":"select:Monitor","max_results":1}
+< 
+> Monitor until ! kill -0 196127 2>/dev/null; do sleep 20; done; echo "land exited"; tail -4 /tmp/land.log
+= permission_denied
+< This Bash command contains multiple operations. The following parts require approval: kill -0 196127, tail -4 /tmp/land.log
+= thinking_tokens
+= thinking_tokens
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+Still waiting for the manager's verdict. The land is queued.
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -6 /tmp/land.log
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -6 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -6 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -6 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+Still queued with the manager, after about 75 minutes. Checking whether the queue is moving:
+> Bash gh api 'repos/tacplus-dev/looper/issues?labels=looper:landing&state=open' --jq '.[] | "\(.number) \(.title[0:60])"'; git -C /builds/looper/looper/issues/97 fetch -q origin; git -C /builds/looper/looper/issues/97 log --oneline -3 origin/main
+< 97 Provenance (#40): an org owner with private membership shows 0f33d51 README, STATE.md: #43's runner VMs get no fix, they are retired by #84 d8457dd ROADMAP: approved by Jody 2026-11-06 (#73) 988bdfc The verdict job clears a stale verdict another job left in its reused project dir (#98)
+Ours is the only land queued, so it is probably waiting on a runner or running its gates. I'll keep waiting.
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+= thinking_tokens
+= thinking_tokens
+The land has been queued for over two hours with no verdict yet. Checking the issue for a manager comment:
+> Bash gh api repos/tacplus-dev/looper/issues/97/comments --jq '.[-2:][] | "\(.created_at) \(.user.login): \(.body[0:300])"'
+< 2026-11-07T04:28:21Z tacplus-manager[bot]: The manager did not merge [`looper/looper-97`](https://github.com/tacplus-dev/looper/tree/looper/looper-97): red, nothing merges without green gates. Nothing is merged; the branch stays. The end of its output:  ~~~~~~ [2026-11-07T04:25:34Z] looper pins its ...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+About 45 minutes remain and there's still no verdict. Updating the checkpoint so the next run knows exactly what's left:
+> Bash /usr/local/bin/repo-looper --repo looper --issue 97 --checkpoint "fix 842d5ed + gate hermeticity 09316ea (forge/repo-looper/looper-dispatch/tacplus tests unset the job's LOOPER_/CI_/GH_/GITHUB_/GITLAB_ vars: the last land failed on forge's dispatch ready with LOOPER_REPORT_APP_ID set) queued with th...
+< [2026-11-07T11:02:22Z] checkpoint of #97 (a step) pushed to looper/looper-97:  10 files changed, 554 insertions(+), 19 deletions(-)
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+> Bash for i in $(seq 1 28); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -4 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+= thinking_tokens
+= thinking_tokens
+About 10 minutes are left. The land stays queued, and the manager lands it after the run ends. One last short wait:
+> Bash for i in $(seq 1 18); do kill -0 196127 2>/dev/null || break; sleep 20; done; tail -3 /tmp/land.log; date -u
+= task_started
+= task_notification
+< [2026-11-07T08:22:08Z] checkpoint of #97 (land queued) pushed to looper/looper-97:  10 files changed, 432 insertions(+), 19 deletions(-) [2026-11-07T08:22:09Z] queued: the manager of looper merges looper/looper-97 after the lands queued before it, one at a time, and says on the issue what came of it...
+#97's fix is committed and queued with the manager, but it has not landed yet. After 3h20m in the queue (from 08:22Z) there is still no verdict, and the run hits its time limit now. The manager will land it after the run and post its verdict on the issue. The next run then posts the outcome comment and closes #97.
+
+**What's queued on `looper/looper-97`:**
+- **842d5ed, the fix:** an author GitHub reports as `CONTRIBUTOR` or `NONE` now directs a run if their permission on the repository is `write`, `maintain` or `admin`, the same check a `COLLABORATOR` already got.
+  - Each author is looked up once per prompt, and a failed lookup is not cached and leaves the text as data.
+  - The tests cover all five cases the issue asks for: CONTRIBUTOR with admin directs; CONTRIBUTOR with read, NONE, a failed lookup and the injected comment all stay data.
+  - README.md and STATE.md are updated to match.
+- **09316ea, why the previous land went red:**
+  - `tests/forge.test.sh` failed in the manager's gate job because `LOOPER_REPORT_APP_ID` was set there, which made looper-dispatch try to get an App token.
+  - The repo-looper, looper-dispatch and tacplus tests broke the same way inside a looper job.
+  - Each of the four tests now clears the `LOOPER_*`, `CI_*`, `GH_*`, `GITHUB_*` and `GITLAB_*` variables it inherits.
+  - Since this fixes what the previous run had written up as a proposal, I removed that note from PROPOSALS.md.
+
+**Checks:**
+- All 18 gates in gates.yaml's full set pass in this job's own environment. The four changed tests were re-run after the change; the other 14 were run on this same code just before it (their files didn't change).
+- `looper-trace check` passes: no handlers touched.
+- The report App's token can already read collaborator permissions: it returns `admin` for jodydadescott on tacplus and looper. It needs no new GitHub permission.
+
+**tacplus#315:** there was nothing to requeue. It had already been picked up again (`looper:in-progress`), and Jody has since marked it `Blocked-by: tacplus-dev/looper#106`. I left its labels alone.
+
+The last checkpoint on the branch records all of this for the next run.
+= success: #97's fix is committed and queued with the manager, but it has not landed yet. After 3h20m in the queue (from 08:22Z) there is still no verdict, and the run hits its time limit now. The manager will land it after the run and post its verdict on the issue. The next run then posts the outcome comment and closes #97.
+
+**What's queued on `looper/looper-97`:**
+- **842d5ed, the fix:** an author GitHub reports as `CONTRIBUTOR` or `NONE` now directs a run if their permission on the repository is `write`, `maintain` or `admin`, the same check a `COLLABORATOR` already got.
+  - Each author is looked up once per prompt, and a failed lookup is not cached and leaves the text as data.
+  - The tests cover all five cases the issue asks for: CONTRIBUTOR with admin directs; CONTRIBUTOR with read, NONE, a failed lookup and the injected comment all stay data.
+  - README.md and STATE.md are updated to match.
+- **09316ea, why the previous land went red:**
+  - `tests/forge.test.sh` failed in the manager's gate job because `LOOPER_REPORT_APP_ID` was set there, which made looper-dispatch try to get an App token.
+  - The repo-looper, looper-dispatch and tacplus tests broke the same way inside a looper job.
+  - Each of the four tests now clears the `LOOPER_*`, `CI_*`, `GH_*`, `GITHUB_*` and `GITLAB_*` variables it inherits.
+  - Since this fixes what the previous run had written up as a proposal, I removed that note from PROPOSALS.md.
+
+**Checks:**
+- All 18 gates in gates.yaml's full set pass in this job's own environment. The four changed tests were re-run after the change; the other 14 were run on this same code just before it (their files didn't change).
+- `looper-trace check` passes: no handlers touched.
+- The report App's token can already read collaborator permissions: it returns `admin` for jodydadescott on tacplus and looper. It needs no new GitHub permission.
+
+**tacplus#315:** there was nothing to requeue. It had already been picked up again (`looper:in-progress`), and Jody has since marked it `Blocked-by: tacplus-dev/looper#106`. I left its labels alone.
+
+The last checkpoint on the branch records all of this for the next run.
