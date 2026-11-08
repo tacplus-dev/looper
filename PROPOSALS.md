@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
+  issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
+  kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from
+  `approved` (or its last blocker closed) to its report's start, from GitHub's timeline, would be the whole wait in
+  one number.
 - **Every gate hermetic** (2026-11-07, #103): forge, repo-looper, looper-dispatch and tacplus now run under
   `env -i` (`tests/hermetic.sh`); the other fourteen gates pass in a looper job today but still read its
   environment (its apps, job tags, gh's configuration, git's credential helper), so a new scenario in one of them
@@ -19,10 +24,11 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **A stale `looper:landing` told on its issue** (2026-11-05, #93): a manager that clears a `looper:landing` with no
   land queued logs it in its job; a comment on the issue would tell whoever reads it why it lost the hold (a land
   unqueued, a verdict given by a manager that stopped before clearing it).
-- **Each pool's own VM in the recap's scale-up** (2026-11-05, #92): `capacity/<pool>` names the pool a cap's queued
-  reports waited for, but prices one more VM as `LOOPER_RECAP_VM_MACHINE` (t2a-standard-8) whatever the pool: the
-  16-CPU pool's VM is another machine and price. A machine and price per runner description (a map beside caps.yaml,
-  say) would make each pool's advice cost what its scale-up costs.
+- **Each pool's own VM in the recap's scale-up** (2026-11-05, #92; its `capacity/<pool>` item went with the caps in
+  #107, 2026-11-08): `capacity/vm` names each waiting report's pool, but prices one more VM as
+  `LOOPER_RECAP_VM_MACHINE` (t2a-standard-8) whatever the pool: the 16-CPU pool's VM is another machine and price. A
+  machine and price per runner description (a map in the recap's environment, say) would make each pool's advice cost
+  what its scale-up costs.
 - **A plan's resource groups from the plan's own job** (2026-11-05, #92): the recap reads each job's resource group
   from the plan's `planned ... resource_group` lines when the plan's job falls in the night; a scan planned before
   the window falls back to the plan's rule (`looper-<repo>`). Should a scan ever share a report's group again, the
@@ -125,10 +131,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   comments; a waiting `--land` reads its issue's comments every `LOOPER_LAND_POLL` (30s). With 15 reports at once
   that is about 2000 requests an hour on the shared `GH_TOKEN`. A longer poll while nothing is queued, or a
   `repository_dispatch`-style wake-up, would cut it.
-- **Caps against the VM** (2026-11-03, #70): `caps.yaml` caps each repository's reports (tacplus 6, the others 3),
-  not the always-on VM: three busy repositories and tacplus can ask for 15 report containers at once on one VM.
-  The recap (#72) reports at-cap waits, saturation and the issues that waited for a VM; a cap on the pool's jobs
-  (the runner's `limit`) bounds it.
+- **Every report at once on the runner VMs** (2026-11-03, #70; since #107, 2026-11-08, no repository has a cap):
+  every ready issue's report is planned at once, and until #84 moves the gates to build jobs each report still runs
+  its gates inline in a 4-CPU/14 GB slot of a runner VM, so a burst of ready issues queues reports for VMs (the
+  recap's `capacity/vm` and its `concurrency` say how many and how long) rather than for a cap. Nothing to change
+  while those numbers stay small (Jody: "If we have a problem we will look to address it"); the runner's `limit` or
+  pod requests (decisions/only-vms-are-k8s-nodes-2026-11-04.md) are where a bound would go, never a per-repository
+  cap.
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47): the build's checks scan the tree and Trivy the
   Dockerfiles' base images, never the tools our Dockerfile downloads (glab, OSV-Scanner, Trivy, Syft, gitleaks,
   gosec, cargo-deny). The nightly scan found reachable vulnerabilities in four of them by running

@@ -7,8 +7,8 @@
 # tacplus-dev/looper; looper#24): nothing runs on the Mac. Each pass clears
 # looper:in-progress from issues no looper job holds any more, then starts that
 # pipeline when a tacplus-dev repository has a ready issue no report job holds
-# and fewer reports than its cap (caps.yaml, looper#70), or commits queued to
-# land (an issue labelled looper:landing) and no manager job; the pipeline's
+# (however many reports it has: no per-repository cap, looper#107), or commits
+# queued to land (an issue labelled looper:landing) and no manager job; the pipeline's
 # plan runs repo-looper in ghcr.io/tacplus-dev/looper:main. The nightly scan
 # is its other schedule.
 #
@@ -18,8 +18,8 @@
 #   looper-dispatch status             the looper jobs in GitLab, and what is ready
 #   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
 #                                      order the plan takes them: priority:high first (looper#31)
-#   looper-dispatch plan               the pipeline's child jobs: a report per ready issue, up to each
-#                                      repository's cap, and its manager (with the apps, its verdict
+#   looper-dispatch plan               the pipeline's child jobs: a report per ready issue (every
+#                                      one, looper#107), and its manager (with the apps, its verdict
 #                                      and manager jobs, looper#90; on a schedule, a scan per
 #                                      repository), as YAML
 #                                      on stdout (ci/instance.gitlab-ci.yml, ci/tacplus-dev.gitlab-ci.yml)
@@ -110,39 +110,30 @@ release_orphans() { # active jobs
     done
 }
 
-# The reports a repository may still start (looper#70): its cap less its
-# active report jobs.
-free_reports() { # repo jobs
-  local k; k="$(busy "$1" "$2" | grep -c . || true)"
-  echo $(( $(repo_cap "$1") - k ))
-}
-
 # The repositories with commits queued to land (an open issue labelled
 # looper:landing, looper#70), one a line.
 landing_repos() {
   forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name' | sort -u
 }
 
-# Each repository's reports against its cap, how many of them are running
-# (the rest created, pending or waiting: a cap they fill waits for a VM, not
-# for a raise, looper#92), its ready issues with no report waiting at the cap
-# and its lands queued (open issues labelled looper:landing, a line each in
+# Each repository's reports, how many of them are running (the rest created,
+# pending or waiting: for a VM, looper#92), its ready issues with no report job
+# yet and its lands queued (open issues labelled looper:landing, a line each in
 # LANDING; `?` when GitHub could not say), as one line,
-# `capacity: <repo> reports=N running=N cap=N waiting=<n,...> landing=N; ...`,
+# `capacity: <repo> reports=N running=N waiting=<n,...> landing=N; ...`,
 # for every repository with any of them (`capacity: none` for none): the
 # nightly recap reads it from the kicker's log, a pass every LOOPER_INTERVAL
-# (looper#72). STATUSES is active_job_statuses' "<name> <status>" lines.
+# (looper#72), for how many reports ran at once and how long ready issues
+# waited (looper#107). STATUSES is active_job_statuses' "<name> <status>" lines.
 capacity_line() { # jobs ready landing statuses
-  local repo n k r cap w l out=()
+  local repo n k r w l out=()
   for repo in $( { grep -E '^looper-.+-[0-9]+$' <<<"$1" | sed -E 's/^looper-(.+)-[0-9]+$/\1/'
                    cut -d' ' -f1 <<<"$2"; [[ "$3" == "?" ]] || printf '%s\n' "$3"; } | grep . | sort -u); do
-    k="$(busy "$repo" "$1" | grep -c . || true)"; cap="$(repo_cap "$repo")"; w=""
+    k="$(busy "$repo" "$1" | grep -c . || true)"; w=""
     r="$(busy "$repo" "$(awk '$2 == "running" {print $1}' <<<"$4")" | grep -c . || true)"
-    if (( k >= cap )); then
-      while read -r _ n; do busy "$repo" "$1" "$n" >/dev/null || w+="${w:+,}$n"; done < <(awk -v r="$repo" '$1 == r' <<<"$2")
-    fi
+    while read -r _ n; do busy "$repo" "$1" "$n" >/dev/null || w+="${w:+,}$n"; done < <(awk -v r="$repo" '$1 == r' <<<"$2")
     if [[ "$3" == "?" ]]; then l="?"; else l="$(grep -cxF -- "$repo" <<<"$3" || true)"; fi
-    out+=("$repo reports=$k running=$r cap=$cap waiting=$w landing=$l")
+    out+=("$repo reports=$k running=$r waiting=$w landing=$l")
   done
   (( ${#out[@]} )) || out=(none)
   l="$(printf '%s; ' "${out[@]}")"
@@ -150,8 +141,7 @@ capacity_line() { # jobs ready landing statuses
 }
 
 # One pass: release the orphans, then start the pipeline for the first
-# repository with a ready issue no report job holds and a free report (its
-# cap, caps.yaml), in the order of ready_all_by_repo (priority:high first,
+# repository with a ready issue no report job holds, in the order of ready_all_by_repo (priority:high first,
 # looper#31), or with commits queued to land and no manager job (looper#70).
 pass() {
   local statuses jobs ready repo n landing
@@ -165,7 +155,6 @@ pass() {
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" "$n" >/dev/null && continue
-    (( $(free_reports "$repo" "$jobs") > 0 )) || continue
     start_pipeline
     log "started the $PIPELINE pipeline ($repo#$n is ready)"
     return 0
@@ -176,7 +165,7 @@ pass() {
     log "started the $PIPELINE pipeline ($repo has commits queued to land and no manager)"
     return 0
   done
-  log "no ready issue has a free report, and no queued land lacks a manager; nothing to start"
+  log "no ready issue lacks a report, and no queued land lacks a manager; nothing to start"
 }
 
 # The pipeline's plan (looper#29; ci/instance.gitlab-ci.yml, and
@@ -186,9 +175,9 @@ pass() {
 # --scan (resource_group looper-<repo>). Any other's (looper#70) is a
 # report per ready issue, looper-<repo>-<issue> running repo-looper --issue N,
 # in the order of ready_all_by_repo (priority:high first, looper#31), none for
-# an issue whose report is active, and at most the repository's cap
-# (caps.yaml) active at once (when GitLab cannot be read, the cap alone), each
-# sized by `repo-looper --job-timeout` and one at a time per issue
+# an issue whose report is active, every other ready issue (no per-repository
+# cap, looper#107: "loopers are never blocked"; when GitLab cannot be read,
+# every ready issue), each sized by `repo-looper --job-timeout` and one at a time per issue
 # (resource_group looper-<repo>-<issue>); and for each repository with a report
 # planned or commits queued to land (looper:landing), its manager,
 # looper-<repo>-manager running repo-looper --manage, the only job that merges
@@ -217,16 +206,13 @@ plan() {
     ready="$(forge_repos)"   # a forge it cannot read fails the plan: never an empty scan
     for repo in $ready; do plan_job "looper-scan-$repo" 5h "looper-$repo" --repo "$repo" --scan; any=1; done
   else
-    local statuses="" landing free managed=" " reports=""; local -A left=()
+    local statuses="" landing managed=" " reports=""
     if statuses="$(active_job_statuses)"; then jobs="$(cut -d' ' -f1 <<<"$statuses")"
-    else log "could not read $PIPELINE's jobs; planning each repository's ready issues up to its cap" >&2; jobs=""; fi
+    else log "could not read $PIPELINE's jobs; planning every ready issue" >&2; jobs=""; fi
     ready="$(ready_all_by_repo)"
     while read -r repo n; do
       [[ -n "$repo" ]] || continue
       if busy "$repo" "$jobs" "$n" >/dev/null; then log "$repo#$n already has its report job; not planned again" >&2; continue; fi
-      [[ -n "${left[$repo]:-}" ]] || left[$repo]="$(free_reports "$repo" "$jobs")"
-      if (( ${left[$repo]} <= 0 )); then log "$repo#$n waits: $repo is at its cap of $(repo_cap "$repo") reports" >&2; continue; fi
-      left[$repo]=$(( ${left[$repo]} - 1 ))
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
       reports+="$(plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n")"$'\n'; any=1

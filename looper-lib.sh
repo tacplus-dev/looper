@@ -545,21 +545,6 @@ busy() { # repo jobs [issue]
 # The manager's job of a repository (looper#70), which alone merges to its main.
 manager_job() { echo "looper-$1-manager"; } # repo
 
-# How many reports of a repository run at once (looper#70): its line in the
-# committed caps file (LOOPER_CAPS, default caps.yaml beside this file), else
-# the file's `default`, else 3. A line is `<repo>: <n>`; comments are lines of
-# their own.
-LOOPER_CAPS="${LOOPER_CAPS:-$(dirname "${BASH_SOURCE[0]}")/caps.yaml}"
-repo_cap() { # repo
-  local c
-  c="$(awk -v r="$1" -F: '/^[ \t]*(#|$)/ { next }
-    { k = $1; v = $2; gsub(/[ \t"\047]/, "", k); gsub(/[ \t]/, "", v); sub(/#.*/, "", v)
-      if (v !~ /^[0-9]+$/) next
-      if (k == r) { print v; found = 1; exit } else if (k == "default") d = v }
-    END { if (!found && d != "") print d }' "$LOOPER_CAPS" 2>/dev/null)" || c=""
-  echo "${c:-3}"
-}
-
 # GitHub credentials for a container that clones from GitHub (the tacplus
 # compiler resolving `depends` through the private tacplus-dev/registry,
 # looper#11): `docker run "${DOCKER_GITHUB_CREDS[@]}" ...`. Git in the

@@ -71,63 +71,74 @@
    ]
   }
  },
- "caps": {
-  "alpha": {
-   "all_busy": 0.0,
-   "all_busy_hours": 0,
-   "all_running": 0.0,
-   "all_running_hours": 0,
-   "backlog": {
-    "max": 0,
-    "p90": 0
-   },
-   "cap": 3,
-   "passes": 39,
-   "pool": "tacplus-dev arm64 autoscaler",
-   "queued": {},
-   "queued_hours": 0,
-   "waiting": {},
-   "waiting_hours": 0
+ "concurrency": {
+  "hours": 1.95,
+  "passes": 39,
+  "reports": {
+   "max": 8,
+   "mean": 6.92
   },
-  "kernel": {
-   "all_busy": 0.0,
-   "all_busy_hours": 0,
-   "all_running": 0.0,
-   "all_running_hours": 0,
-   "backlog": {
-    "max": 3,
-    "p90": 3
+  "repos": {
+   "alpha": {
+    "backlog": {
+     "max": 0,
+     "p90": 0
+    },
+    "pool": "tacplus-dev arm64 autoscaler",
+    "reports": {
+     "max": 1,
+     "mean": 0.64
+    },
+    "running": {
+     "max": 1,
+     "mean": 0.64
+    },
+    "waiting": {},
+    "waiting_hours": 0
    },
-   "cap": 3,
-   "passes": 39,
-   "pool": "tacplus-dev arm64 autoscaler",
-   "queued": {},
-   "queued_hours": 0,
-   "waiting": {},
-   "waiting_hours": 0
+   "kernel": {
+    "backlog": {
+     "max": 3,
+     "p90": 3
+    },
+    "pool": "tacplus-dev arm64 autoscaler",
+    "reports": {
+     "max": 1,
+     "mean": 0.64
+    },
+    "running": {
+     "max": 1,
+     "mean": 0.64
+    },
+    "waiting": {},
+    "waiting_hours": 0
+   },
+   "tacplus": {
+    "backlog": {
+     "max": 2,
+     "p90": 2
+    },
+    "pool": "tacplus-dev arm64 autoscale-16",
+    "reports": {
+     "max": 6,
+     "mean": 5.64
+    },
+    "running": {
+     "max": 6,
+     "mean": 5.13
+    },
+    "waiting": {
+     "25": 1,
+     "26": 1.25
+    },
+    "waiting_hours": 2.25
+   }
   },
-  "tacplus": {
-   "all_busy": 0.64,
-   "all_busy_hours": 1.25,
-   "all_running": 0.51,
-   "all_running_hours": 1,
-   "backlog": {
-    "max": 2,
-    "p90": 2
-   },
-   "cap": 6,
-   "passes": 39,
-   "pool": "tacplus-dev arm64 autoscale-16",
-   "queued": {
-    "26": 0.25
-   },
-   "queued_hours": 0.25,
-   "waiting": {
-    "25": 1,
-    "26": 1
-   },
-   "waiting_hours": 2
-  }
+  "running": {
+   "max": 8,
+   "mean": 6.41
+  },
+  "waiting_hours": 2.25
  },
  "failed_jobs": [
   {
@@ -260,30 +271,6 @@
   {
    "count": 3,
    "evidence": [
-    "caps.yaml"
-   ],
-   "key": "cap/kernel/lower",
-   "over": true,
-   "recovered": false,
-   "running": 2,
-   "summary": "kernel: lower its cap of 3 in caps.yaml, its manager behind: all its reports busy in 0% of the kicker's 39 passes (0 h), running in 0% (0 h); merge backlog p90 3, max 3 lands (threshold 3)",
-   "wait_hours": 0
-  },
-  {
-   "count": 2,
-   "evidence": [
-    "caps.yaml"
-   ],
-   "key": "cap/tacplus/raise",
-   "over": true,
-   "recovered": false,
-   "running": 2,
-   "summary": "tacplus: raise its cap of 6 in caps.yaml: ready issues waited 2 h at it with all its reports running (#25 1 h, #26 1 h), 0.25 h more with some of them queued for a VM; all its reports busy in 64% of the kicker's 39 passes (1.25 h), running in 51% (1 h); merge backlog p90 2, max 2 lands (threshold 1 h)",
-   "wait_hours": 2
-  },
-  {
-   "count": 3,
-   "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1200",
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1310",
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
@@ -403,6 +390,18 @@
   {
    "count": 3,
    "evidence": [
+    "https://gitlab.com/tacplus-dev/looper/-/jobs"
+   ],
+   "key": "manager/kernel/backlog",
+   "over": true,
+   "recovered": false,
+   "running": 2,
+   "summary": "kernel: its manager behind: merge backlog p90 3, max 3 lands; 1 reports at once at most (mean 0.64), 1 running (mean 0.64) over the kicker's 39 passes (threshold 3)",
+   "wait_hours": 0
+  },
+  {
+   "count": 3,
+   "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1700"
    ],
    "key": "manager/tacplus/merge-time",
@@ -460,6 +459,17 @@
    "over": true,
    "recovered": false,
    "summary": "tacplus: its nightly scan held the repository 125 min (threshold 60 min)"
+  },
+  {
+   "count": 2,
+   "evidence": [
+    "https://gitlab.com/tacplus-dev/looper/-/jobs"
+   ],
+   "key": "wait/tacplus",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus: ready issues waited 2.25 h with no report job (#25 1 h, #26 1.25 h): no cap holds them back (looper#107), so the kicker, the plan or its runner did not start them; 6 reports at once at most (mean 5.64), 6 running (mean 5.13) over the kicker's 39 passes (threshold 1 h)",
+   "wait_hours": 2.25
   }
  ],
  "longest": {
@@ -856,7 +866,6 @@
  },
  "thresholds": {
   "backlog": 3,
-  "cap_wait_hours": 1.0,
   "count": 3,
   "disk_pct": 85,
   "hold_hours": 1.0,
@@ -867,7 +876,8 @@
   "queue_p90_s": 900,
   "scan_minutes": 60,
   "vm_wait_hours": 1.0,
-  "vm_wait_s": 300
+  "vm_wait_s": 300,
+  "wait_hours": 1.0
  },
  "window": {
   "from": "2026-11-01T03:00:00Z",

@@ -3,32 +3,32 @@
 [0Ksection_start:1793575000:prepare_script
 [0KRunning on runner-vm-1501 via gitlab-runner-mgr...
 [2026-11-01T23:16:00Z] work
-[2026-11-01T23:17:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:17:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:17:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:20:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:20:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:20:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:23:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:23:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:23:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:26:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:26:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:26:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:29:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:29:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:29:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:32:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:32:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:32:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:35:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:35:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:35:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:38:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:38:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:38:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:41:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:41:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:41:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:44:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:44:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:44:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:47:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:47:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:47:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:50:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:50:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:50:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:53:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:53:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:53:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
-[2026-11-01T23:56:00Z] capacity: kernel reports=0 cap=3 waiting= landing=3; tacplus reports=5 cap=6 waiting= landing=1
+[2026-11-01T23:56:00Z] capacity: kernel reports=0 waiting= landing=3; tacplus reports=5 waiting= landing=1
 [2026-11-01T23:56:00Z] no ready issue has a free report, and no queued land lacks a manager; nothing to start
 [2026-11-02T00:00:00Z] disk at the end: 21% used of 100G (/builds)

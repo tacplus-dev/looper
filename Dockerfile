@@ -151,7 +151,7 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
     rm "$g/env.txt"; echo clean > "$g/ok.txt"; \
     gitleaks dir --no-banner "$g/ok.txt" 2>/dev/null || { echo "gitleaks: a clean file exited $?" >&2; exit 1; }; \
     rm -rf "$g" /tmp/smoke.json
-COPY looper-lib.sh caps.yaml /usr/local/lib/looper/
+COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
 COPY repo-looper looper-dispatch looper-build looper-scan looper-identity looper-token looper-ruleset looper-suggest looper-recap looper-trace looper-verify tacplus looper-smoke looper-docker looper-docker-broker looper-pkill runner-image /usr/local/bin/

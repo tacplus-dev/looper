@@ -1266,9 +1266,11 @@ lacks "$pp" "security report of other"
 has "$pp" "the nightly recap of $d, the last 24 hours' performance data: $run_dir/context/recap.json"
 has "$pp" "(1 recurring, 0 transient, 0 once)"
 has "$pp" "--recap \"$d <the item's key>\" --cause"; has "$pp" "ranked by \`wait_hours\`, the hours of waiting it would remove"
-# The managers, caps and capacity (looper#72): a cap's advice changes caps.yaml after two nights running; a scale-up is Jody's call.
-has "$pp" "each manager's score (\`managers\`"; has "$pp" "only two nights running"; has "$pp" "\`--change \"caps.yaml: <repo>: <n>\"\`"
-has "$pp" "\`capacity/vm\`'s advice is a scale-up"; has "$pp" "never an autoscaling change"; has "$pp" "So is \`capacity/<pool>\`'s"
+# The managers, concurrency and capacity (looper#72, looper#107): a backlog's advice after two nights running, never a
+# cap on a repository's reports; a scale-up is Jody's call.
+has "$pp" "each manager's score (\`managers\`"; has "$pp" "only two nights running"; has "$pp" "the concurrency (\`concurrency\`"
+has "$pp" "Never advise a cap on a"; lacks "$pp" "caps.yaml"
+has "$pp" "\`capacity/vm\`'s advice is a scale-up"; has "$pp" "never an autoscaling change"; lacks "$pp" "capacity/<pool>"
 has "$pp" "to $run_dir/covered instead"; has "$pp" "Security first"
 # A night with nothing to suggest commits nothing.
 : > "$FIX/scan.sh"; before="$(origin rev-parse main)"
@@ -2205,7 +2207,7 @@ else
   trap 'for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do userdel "$u" 2>/dev/null; done
         getent group "${P}dockersock" >/dev/null && groupdel "${P}dockersock"; rm -rf "$TMP"' EXIT
   R="$TMP/root"; mkdir -p "$R" "$TMP/dk"
-  cp "$ROOT"/{repo-looper,looper-lib.sh,caps.yaml,looper-docker,looper-docker-broker,looper-pkill} "$R/"
+  cp "$ROOT"/{repo-looper,looper-lib.sh,looper-docker,looper-docker-broker,looper-pkill} "$R/"
   # The broker's docker has a config directory it may write (looper#89): ~/.docker.
   printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n[[ "$(id -un)" != %q ]] || mkdir -p "$HOME/.docker" || echo "no config dir: HOME=$HOME" >> %q\n' \
     "$TMP/dk/log" "${P}docker" "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"

@@ -4,8 +4,8 @@
 # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub
 # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper:main); this project only runs them, on the
 # autoscaled runner registered to the tacplus-dev group. `looper-plan` lists the ready issues across
-# tacplus-dev and writes a child pipeline with a report job per ready issue, up to each repository's
-# cap (caps.yaml), and each such repository's manager (`looper-dispatch plan`, the code
+# tacplus-dev and writes a child pipeline with a report job per ready issue, every one (no
+# per-repository cap, looper#107), and each such repository's manager (`looper-dispatch plan`, the code
 # github.com/tacplus-dev/looper tests: looper#56, looper#70); `looper-run` triggers it.
 # This file is kept in github.com/tacplus-dev/looper as ci/tacplus-dev.gitlab-ci.yml and copied into
 # this project as is, on its protected main, by the hub (README, Credentials).
@@ -23,8 +23,8 @@ stages:
 # as a pipeline variable.
 #
 # api/web/trigger (looper#70): one report job per ready issue (approved, not
-# held, every Blocked-by closed), looper-<repo>-<issue>, up to the repository's
-# cap, each on its own branch and never on main (resource_group per issue), and
+# held, every Blocked-by closed), looper-<repo>-<issue>, every one (no cap,
+# looper#107), each on its own branch and never on main (resource_group per issue), and
 # the repository's manager, looper-<repo>-manager, the only job that merges to
 # its main (resource_group looper-<repo>-main); with the apps, unless the
 # repository's gates are build jobs, after its verdict job,

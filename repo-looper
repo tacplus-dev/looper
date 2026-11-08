@@ -32,8 +32,8 @@
 #
 # Managers and direct reports (looper#70; tacplus-dev/roadmap
 # decisions/looper-job-per-issue-2026-11-03.md). The pipeline's plan
-# (looper-dispatch plan) starts a report job per ready issue, up to the
-# repository's cap (caps.yaml), and the repository's manager job. A report
+# (looper-dispatch plan) starts a report job per ready issue, every one (no
+# per-repository cap, looper#107), and the repository's manager job. A report
 # works its issue in a clone of its own, LOOPER_WORK/NAME/issues/N, on its
 # branch looper/NAME-N, and never pushes to main: --land queues its commits
 # with the manager (the branch's last checkpoint carries .looper/land: the
@@ -2942,22 +2942,22 @@ a land, a scan holding the repository), the lands by gate set, the scans, the ru
 Cloud Build builds and the looper image against main; and (tacplus-dev/looper#72; Jody: "recap should let us know if
 we need to adjust", "if builds are backing up somebody tells me") each manager's score (\`managers\`: report to merge
 time, conflicts resolved against sent back, red gates, a red main after its merges, reverts, redone work), each
-repository's cap (\`caps\`: the hours ready issues waited at it while all its reports ran, and behind reports queued
-for a VM, how often all its reports were busy and running, its merge backlog) and the capacity (\`capacity\`: the queue p90, the issues that waited for a VM, one more VM's cost a day).
+the concurrency (\`concurrency\`, tacplus-dev/looper#107: no repository has a cap, so a problem shows up as a number:
+how many reports were active and running at once, in all and per repository, the hours ready issues waited with no
+report job, each repository's merge backlog) and the capacity (\`capacity\`: the queue p90, the issues that waited for a VM, one more VM's cost a day).
 $ctx/recap-classes.json classifies its items: \`transient\` and \`once\` are only noted (no advice); each
-\`recurring\` item (seen on 2 of 7 nights, or over a threshold tonight; a cap's, \`cap/<repo>/raise\` or \`lower\`,
+\`recurring\` item (seen on 2 of 7 nights, or over a threshold tonight; a merge backlog's, \`manager/<repo>/backlog\`,
 only two nights running), ranked by \`wait_hours\`, the hours of waiting it would remove, gets advice: a
 Performance, Operability or Cost suggestion, written with the options above plus
     --recap "$night <the item's key>" --cause <its cause> --change <the concrete change: which file, setting or issue> \\
     --gain <the expected gain, in hours or failures a night>
 its \`--cost\` the cost, and an \`--evidence\` with the numbers from recap.json (no advice without numbers). Say where
 work that was serialized could have run in parallel and what would make it safe (the item's \`parallel\`: file-level
-conflicts instead of areas, a fresh job instead of idling, parallel lands of disjoint diffs). A cap's advice changes
-caps.yaml in tacplus-dev/looper (\`--change "caps.yaml: <repo>: <n>"\`, the new cap from the hours waited and the
-backlog). Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
+conflicts instead of areas, a fresh job instead of idling, parallel lands of disjoint diffs). Never advise a cap on a
+repository's reports: loopers are never blocked (Jody, 2026-11-07); a \`wait/<repo>\`'s advice fixes why the kicker, the
+plan or its runner did not start them, a backlog's what slows its manager. Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
 for Jody to decide, its \`--cost\` one more VM a day from \`capacity.one_more_vm\`, its gain the hours of waiting for a
-VM; never an autoscaling change. So is \`capacity/<pool>\`'s: ready issues waited at a cap full of reports queued for
-that pool's VMs, where a raise of the cap would only queue more (looper#92). A manager's red main or revert names the merges. Advice counts toward
+VM; never an autoscaling change. A manager's red main or revert names the merges. Advice counts toward
 the night's $SUGGEST_MAX, ranked with the rest, Security first, then the hours of waiting removed. When an open
 issue already covers a cause, file nothing for it: write the line \`<the item's key> <owner/repo#n> <why it covers
 it>\` to $1/covered instead. The looper writes the recap file itself (suggestions/recap/$night.md, for Jody's daily

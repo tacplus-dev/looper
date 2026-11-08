@@ -233,27 +233,20 @@ started || fail "no pipeline started: $OUT"
 pass
 
 # The kicker (looper#70) starts the pipeline for a ready issue with no report
-# job of its own while its repository is under its cap (caps.yaml), not at it;
-# and for commits queued to land (looper:landing) with no manager job.
-scenario kick-under-cap
-issue alpha 5 OPEN "Go." approved
-jobs "looper-alpha-4 running" "looper-alpha-7 running"
-printf 'default: 3\n' > "$FIX/caps.yaml"
-CAPS="$FIX/caps.yaml" dispatch run
-started || fail "no pipeline started under the cap: $OUT"
-grep -q 'alpha#5 is ready' <<<"$OUT" || fail "log: $OUT"
-pass
-
-scenario kick-at-cap
+# job of its own, however many reports its repository has (no per-repository
+# cap, looper#107: "loopers are never blocked"); and for commits queued to land
+# (looper:landing) with no manager job.
+scenario kick-no-cap
 issue alpha 5 OPEN "Go." approved
 jobs "looper-alpha-4 running" "looper-alpha-7 running" "looper-alpha-8 pending"
-printf 'default: 3\n' > "$FIX/caps.yaml"
+printf 'default: 1\n' > "$FIX/caps.yaml"
 CAPS="$FIX/caps.yaml" dispatch run
-! started || fail "started a pipeline at the cap: $OUT"
-# Each pass logs each repository's reports against its cap, how many of them
-# run (the rest pending for a VM: no raise of the cap, looper#92), the ready
-# issues waiting at it and the lands queued: the nightly recap's numbers (looper#72).
-grep -q 'capacity: alpha reports=3 running=2 cap=3 waiting=5 landing=0$' <<<"$OUT" || fail "capacity: $OUT"
+started || fail "no pipeline started beside 3 reports: $OUT"
+grep -q 'alpha#5 is ready' <<<"$OUT" || fail "log: $OUT"
+# Each pass logs each repository's reports, how many of them run (the rest
+# pending for a VM, looper#92), the ready issues with no report yet and the
+# lands queued: the nightly recap's numbers (looper#72, looper#107).
+grep -q 'capacity: alpha reports=3 running=2 waiting=5 landing=0$' <<<"$OUT" || fail "capacity: $OUT"
 pass
 
 scenario kick-landing
@@ -261,38 +254,40 @@ issue alpha 4 OPEN "Done, its land queued." approved looper:landing
 dispatch run
 started || fail "no pipeline for a queued land without a manager: $OUT"
 grep -q 'queued to land and no manager' <<<"$OUT" || fail "log: $OUT"
-grep -q 'capacity: alpha reports=0 running=0 cap=3 waiting= landing=1$' <<<"$OUT" || fail "capacity: $OUT"
+grep -q 'capacity: alpha reports=0 running=0 waiting= landing=1$' <<<"$OUT" || fail "capacity: $OUT"
 rm "$FIX/started"
 jobs "looper-alpha-manager running"
 dispatch run
 ! started || fail "started a pipeline while the manager runs: $OUT"
 pass
 
-# The plan (looper#70): a report job per ready issue, in order, up to the
-# repository's cap less its active reports (caps.yaml: tacplus 6, the others
-# 3), none for an issue whose report is active, each one at a time per issue;
+# The plan (looper#70): a report job per ready issue, in order, every one of
+# them (no per-repository cap, looper#107), none for an issue whose report is
+# active, each one at a time per issue;
 # and the repository's manager, the only job on its main's resource group,
 # unless one already waits to start, ahead of its reports (looper#75): the
 # runner starts a pool's pending jobs in id order, the plan's order, and a
 # manager behind reports it has no VM for left their work unmerged for hours.
-scenario plan-reports-up-to-cap
+scenario plan-a-report-per-ready-issue
 for k in 5 6 7 8; do issue alpha "$k" OPEN "Go." approved; done
-for k in 1 2 3 4 5 6 7; do issue tacplus "$k" OPEN "Go." approved; done
+for k in 1 2 3 4 5 6 7 8 9 10; do issue tacplus "$k" OPEN "Go." approved; done
 jobs "looper-alpha-4 running" "looper-alpha-manager running"
 printf '#!/usr/bin/env bash\nexec "%s/repo-looper" "$@"\n' "$ROOT" > "$TMP/bin/repo-looper"; chmod +x "$TMP/bin/repo-looper"
 plan_jobs() { PLAN="$(env -u CI_PIPELINE_SOURCE ${CAPS:+LOOPER_CAPS="$CAPS"} LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
   "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
 plan_jobs
-[[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-manager looper-alpha-5 looper-alpha-6" ]] \
+[[ "$(grep -oE '^looper-alpha-[0-9a-z]+' <<<"$PLAN" | paste -sd' ')" == "looper-alpha-manager looper-alpha-5 looper-alpha-6 looper-alpha-7 looper-alpha-8" ]] \
   || fail "alpha's jobs: $(grep '^looper-' <<<"$PLAN")"
-[[ "$(grep -cE '^looper-tacplus-[0-9]+:' <<<"$PLAN")" == 6 ]] || fail "tacplus's reports: $(grep '^looper-' <<<"$PLAN")"
+# Ten ready issues in one repository plan ten reports.
+[[ "$(grep -oE '^looper-tacplus-[0-9]+' <<<"$PLAN" | sort -V | paste -sd' ')" == "$(printf 'looper-tacplus-%s\n' {1..10} | paste -sd' ')" ]] \
+  || fail "tacplus's reports: $(grep '^looper-' <<<"$PLAN")"
 grep -qx 'looper-tacplus-manager:' <<<"$PLAN" || fail "no tacplus manager: $PLAN"
-# Its cap (6) above its VMs: the manager is ahead of every report of its repository.
+# Its reports above its VMs: the manager is ahead of every report of its repository.
 [[ "$(grep -E '^looper-tacplus-' <<<"$PLAN" | head -1)" == 'looper-tacplus-manager:' ]] || fail "tacplus's manager behind its reports: $(grep '^looper-' <<<"$PLAN")"
 # No manager is behind any report.
 [[ "$(grep -E '^looper-' <<<"$PLAN" | awk '/-manager:$/ {if (r) bad=1; next} {r=1} END {print bad+0}')" == 0 ]] \
   || fail "a manager behind a report: $(grep '^looper-' <<<"$PLAN")"
-grep -q 'alpha#7 waits: alpha is at its cap of 3 reports' "$FIX/err" || fail "log: $(cat "$FIX/err")"
+! grep -q 'waits' "$FIX/err" || fail "a ready issue waits: $(cat "$FIX/err")"
 group_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  resource_group:/ {print $2}' <<<"$PLAN"; }
 script_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^    - / {sub(/^    - /, ""); print}' <<<"$PLAN"; }
 [[ "$(group_of looper-alpha-5)" == looper-alpha-5 ]] || fail "alpha-5's group: $(group_of looper-alpha-5)"
@@ -310,14 +305,12 @@ plan_jobs
 grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "the yielded report not planned again: $PLAN"
 ! grep -qx 'looper-alpha-manager:' <<<"$PLAN" || fail "a second manager waits: $PLAN"
 jobs "looper-alpha-4 running" "looper-alpha-manager waiting_for_resource"
-# A cap from the committed file.
-printf 'default: 1\nalpha: 4\n' > "$FIX/caps.yaml"
+# No caps file is read, nor shipped (looper#107): a stale one caps nothing.
+printf 'default: 1\nalpha: 1\n' > "$FIX/caps.yaml"
 CAPS="$FIX/caps.yaml" plan_jobs
-[[ "$(grep -cE '^looper-alpha-[0-9]+:' <<<"$PLAN")" == 3 ]] || fail "alpha's reports at a cap of 4: $(grep '^looper-' <<<"$PLAN")"
-[[ "$(grep -cE '^looper-tacplus-[0-9]+:' <<<"$PLAN")" == 1 ]] || fail "tacplus's at the default 1: $(grep '^looper-' <<<"$PLAN")"
-# The committed caps: tacplus 6, the others 3.
-[[ "$(LOOPER_CAPS="$ROOT/caps.yaml" bash -c "source '$ROOT/looper-lib.sh'; repo_cap tacplus; repo_cap kernel" | paste -sd' ')" == "6 3" ]] \
-  || fail "caps.yaml's caps"
+[[ "$(grep -cE '^looper-alpha-[0-9]+:' <<<"$PLAN")" == 4 && "$(grep -cE '^looper-tacplus-[0-9]+:' <<<"$PLAN")" == 10 ]] \
+  || fail "a caps file capped the plan: $(grep '^looper-' <<<"$PLAN")"
+[[ ! -e "$ROOT/caps.yaml" ]] || fail "caps.yaml is still in the repository"
 pass
 
 # A queued land alone (looper:landing, no ready issue) plans the manager alone.

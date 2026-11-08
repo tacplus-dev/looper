@@ -1,6 +1,0 @@
-# The cap on concurrent reports per repository (looper#70; tacplus-dev/roadmap
-# decisions/looper-job-per-issue-2026-11-03.md): how many report jobs, one per
-# ready issue, the planner runs at once for each. The nightly recap says when
-# one needs adjusting. `default` is every repository not named.
-default: 3
-tacplus: 6

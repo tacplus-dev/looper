@@ -10,8 +10,8 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   in this image as jobs of the GitLab pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (see
   [Infrastructure](#infrastructure)).
 - **The kicker** (`looper-dispatch`) does no work itself: every 3 minutes, when a ready issue has no report
-  job of its own created, pending, waiting for its `resource_group` or running and its repository is under
-  its cap, or commits are queued to land and the repository has no manager job, it starts that pipeline
+  job of its own created, pending, waiting for its `resource_group` or running (however many reports its
+  repository has: there are no caps, looper#107), or commits are queued to land and the repository has no manager job, it starts that pipeline
   ([Managers and direct reports](#managers-and-direct-reports)). It is the pipeline's kicker schedule (description containing `kicker`), hourly,
   since gitlab.com runs this group's schedules at most once an hour (Free tier): its job, `looper-kick`,
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
@@ -20,7 +20,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`): the next
   hour's waits for the last. Nothing else runs when there is no ready issue.
 - **The pipeline** plans one job per ready issue (`looper-<repo>-<issue>`, its report), in
-  [priority](#priority) order, up to each repository's cap (`caps.yaml`), and each such repository's manager
+  [priority](#priority) order, every one of them (no per-repository cap, looper#107), and each such repository's manager
   (`looper-<repo>-manager`), the only job that merges to its main
   ([Managers and direct reports](#managers-and-direct-reports), looper#70). An issue whose report is
   created, pending, waiting or running in the project gets no other one, and the plan's log says so (it reads
@@ -138,7 +138,7 @@ unlabelled, then `priority:low`, oldest first within each (`approved_issues` in 
 looper creates both labels with `bug` and `feature`. Across repositories, the kicker and the plan take a repository
 whose next ready issue is `priority:high` before the others, so it gets a runner first when they are short
 (`looper-dispatch ready`). Priority only decides what starts next: a running issue is never pre-empted, and a blocked
-issue waits whatever its priority; a repository at its cap of reports starts its next issue when one ends. To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
+issue waits whatever its priority. To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
 real dependency, not for ordering.
 
 ### Bug or feature
@@ -237,15 +237,18 @@ lander are gone. One job per issue needs none of them.
 
 - **The planner** (`looper-dispatch plan`) writes the child pipeline with **one job per ready issue**, its
   *direct report*, `looper-<repo>-<n>` running `repo-looper --repo <repo> --issue <n>`, in
-  [priority](#priority) order, up to the repository's **cap** less its reports already active. The caps are
-  committed in `caps.yaml` (in the image beside `looper-lib.sh`): 6 for tacplus, 3 for every other repository
-  (`default`). The nightly recap says when one needs adjusting ([Nightly recap](#nightly-recap), looper#72). An issue whose report is created, pending,
-  waiting or running gets no other (`resource_group: looper-<repo>-<n>`), and the plan's log says why an issue
-  waits (`alpha#7 waits: alpha is at its cap of 3 reports`). The kicker starts the pipeline when a ready issue has
-  no report and its repository is under its cap, or when commits are queued to land and the repository has no
-  manager job. Each pass logs a `capacity:` line, for the recap: every repository's active reports against its cap,
-  how many of them are running (the rest created or pending, waiting for a VM, looper#92), its ready issues waiting at
-  the cap and its lands queued (`alpha reports=3 running=2 cap=3 waiting=5 landing=1; ...`). Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
+  [priority](#priority) order, **every ready issue**: there are **no per-repository caps** (looper#107; Jody,
+  2026-11-07: "loopers are never blocked. We start as many as we need. If we have a problem we will look to address
+  it."; `tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`, addendum). `caps.yaml`, which capped
+  each repository at 3 reports (tacplus 6), is gone, and nothing reads one. What still serializes: one report per
+  issue (`resource_group: looper-<repo>-<n>`: an issue whose report is created, pending, waiting or running gets no
+  other, and the plan's log says so), and a repository's merges (its manager, or its verdict and manager, on
+  `looper-<repo>-main`). The kicker starts the pipeline when a ready issue has no report, or when commits are queued
+  to land and the repository has no manager job. Each pass logs a `capacity:` line, for the recap: every repository's
+  active reports, how many of them are running (the rest created or pending, waiting for a VM, looper#92), its ready
+  issues with no report job yet and its lands queued (`alpha reports=3 running=2 waiting=5 landing=1; ...`); the
+  [Nightly recap](#nightly-recap) turns them into how many reports ran at once and how long ready issues waited, so a
+  real problem shows up as a number. Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
   tacplus-dev/cloud's pools (whose containers share VMs) once it exists: until then their runner tags are as before.
 - **A report** works its issue alone, in its own clone (`LOOPER_WORK/<repo>/issues/<n>`) on its own branch
   (`looper/<repo>-<n>`), as its own unprivileged user (looper#68), with the per-issue flow below unchanged:
@@ -265,7 +268,7 @@ lander are gone. One job per issue needs none of them.
   --manage`, `resource_group: looper-<repo>-main`), is **the only merger** of the repository's main. The planner
   adds it beside the reports it starts (unless one already waits to start) and for any queued land, **ahead of
   every report** in the plan (looper#75): a pool's runner starts its pending jobs in id order, the plan's, and a
-  manager written after its reports waited for every one of them to get a VM (tacplus, a cap of 6 on one 16-CPU
+  manager written after its reports waited for every one of them to get a VM (tacplus, 6 reports on one 16-CPU
   VM: 5h+) while their finished work stayed unmerged and the later ones started from a stale main. The plan orders
   only its own jobs: a report pending from an earlier pipeline has a lower id still. So a report that starts while
   its manager waits for a runner (created or pending, not waiting for main's resource behind a manager that merges)
@@ -299,7 +302,7 @@ lander are gone. One job per issue needs none of them.
     ends: the kicker starts the next one.
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-reports-up-to-cap, plan-manager-for-landing, kick-*: a report per issue up to the cap, the manager on main's group and ahead of every report, the pass's capacity line
+tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line
 tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-report-pending, manager-report-running
 ```
 
@@ -613,7 +616,7 @@ anything sensitive, the project gets a read-only token of its own (option A), re
 login; a secret it cannot read is named in `sources` and the project is not read. Cloud Build is not read: nothing builds there
 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 
-**Managers, caps and capacity** (looper#72; `tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`; Jody:
+**Managers, concurrency and capacity** (looper#72, looper#107; `tacplus-dev/roadmap:decisions/looper-job-per-issue-2026-11-03.md`; Jody:
 "recap should let us know if we need to adjust", "if builds are backing up somebody tells me"):
 
 - **Per manager** (`managers`, from its job's log, [Managers and direct reports](#managers-and-direct-reports)):
@@ -623,17 +626,17 @@ login; a secret it cannot read is named in `sources` and the project is not read
   a send-back or red), and from GitHub each merge's build status (`LOOPER_RECAP_BUILD_CONTEXT`, `tacplus-dev/build`:
   failure or error is a red main after it) and the reverts on main (`Revert "...`, `This reverts commit ...`). Items:
   a red main and a revert always; a report-to-merge p90 over `LOOPER_RECAP_MERGE_MINUTES` (120); 3 send-backs.
-- **Per repository's cap** (`caps`, from the kicker's `capacity:` lines, each standing for the time to the next pass of
-  its job, `LOOPER_RECAP_PASS` 180 seconds for the last): the hours its ready issues waited at the cap, by issue, how
-  often (and how long) all its reports were busy and all of them running, its merge backlog (lands queued, p90 and max
-  over the passes). A pass is at the cap by its **running** reports only (looper#92): the hours issues waited at a
-  cap some of whose reports were created or pending (`queued`) are the hours of the pool they wait for a VM of (the
-  repository's reports' runner, `pool`), not the cap's. It advises raising the cap (`cap/<repo>/raise`) when ready
-  issues waited `LOOPER_RECAP_CAP_WAIT_HOURS` (1) at it with all its reports running and the backlog is under
-  `LOOPER_RECAP_BACKLOG` (3), lowering it (`cap/<repo>/lower`) when the backlog is over, the manager the bottleneck;
-  either only after **two nights running** over the threshold (classify's `running`). Issues that waited as long
-  behind queued reports give the pool's item instead, `capacity/<pool>`, with that pool's reports' VM wait: a raise
-  would only queue more reports on the same VMs.
+- **Concurrency** (`concurrency`, looper#107, from the kicker's `capacity:` lines, each standing for the time to the
+  next pass of its job, `LOOPER_RECAP_PASS` 180 seconds for the last). There is no cap to adjust (`caps.yaml` is
+  gone: loopers are never blocked), so the recap reports what a real problem would show up as: in all and per
+  repository, **how many reports ran at once** (active, created, pending or running, and of them running: the peak
+  and the mean over the passes' time), **how long ready issues waited** with no report job (by issue: for the
+  kicker's pass, the plan and its runner), and each repository's merge backlog (lands queued, p90 and max over the
+  passes). Items: `wait/<repo>` when its ready issues waited `LOOPER_RECAP_WAIT_HOURS` (1) with no report job (the
+  kicker, the plan or its runner did not start them); `manager/<repo>/backlog` when its backlog's p90 is
+  `LOOPER_RECAP_BACKLOG` (3) or more, the manager behind, advised only after **two nights running** over it
+  (classify's `running`). A report's own wait for a VM is the capacity's, below. A kicker's line from before looper#107
+  (its `cap=`, its `waiting=` only the issues at that cap) is read with the cap left out.
 - **Capacity** (`capacity`), the numbers the hub brings Jody for a manual scale-up: the queue p90 of every job, the
   issues whose report waited for a VM, and on which pool (its queue less a scan's that held it, `LOOPER_RECAP_VM_WAIT` 300 seconds or more; an
   item over `LOOPER_RECAP_VM_WAIT_HOURS`, 1) and one more VM's cost a day (`LOOPER_RECAP_VM_MACHINE`, t2a-standard-8,
@@ -655,12 +658,12 @@ the model names the issue instead.
 
 **The recap file**, `suggestions/recap/<YYYY-MM-DD>.md` (`looper-recap report`), committed with the night's
 suggestions and its `.json`: the one-screen summary (jobs, failures by class, slot use, the hours waited and why, the
-longest queues, lands and holds, the managers, the caps, the capacity, the image), the recurring items with links to their advice or the issue that covers
+longest queues, lands and holds, the managers, the concurrency, the capacity, the image), the recurring items with links to their advice or the issue that covers
 them, and the transient list. The hub reads it into Jody's daily report. A night already recorded is left as it is.
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the caps from the kicker's passes (raise, lower, advised two nights running only) and the capacity (waits for a VM, one more VM's cost)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for a VM, one more VM's cost)
 ```
 
 ## Build pipeline
@@ -1099,7 +1102,7 @@ looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL 
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
 looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
-tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; a repository at its cap (caps.yaml) starts none; a report per ready issue up to the cap and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; no cap: a ready issue beside any number of reports starts the pipeline, ten ready issues in one repository plan ten reports, a stale caps file caps nothing (#107); a report per ready issue and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
 ```
 
 **The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is

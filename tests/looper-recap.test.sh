@@ -155,11 +155,11 @@ has "$(q '.items[].key')" "scan/tacplus"
 lacks "$(q '.failed_jobs[].id')" 900
 pass
 
-# The managers, the caps and the capacity (looper#72), from the managers' logs (looper#70), the
+# The managers, the concurrency and the capacity (looper#72, looper#107), from the managers' logs (looper#70), the
 # kicker's capacity lines and GitHub: tacplus's manager merged #20, #22 (its Cargo.lock conflict
 # regenerated) and #21 (sent back once: redone), red gates on #23, #24 left for the next manager;
 # main red after #22's merge, and reverted.
-NAME=collect-managers-caps-capacity
+NAME=collect-managers-concurrency-capacity
 [[ "$(q '.managers.tacplus | "\(.lands) \(.merged) \(.resolved) \(.sent_back) \(.red_gates) \(.deferred) \(.redone) \(.red_main)"')" == '5 3 1 1 1 1 [21] ["3333333"]' ]] ||
   fail "tacplus's manager: $(q .managers.tacplus)"
 # Report to merge: queued to merged, 75, 240 and 80 minutes; the lands waited 155 minutes for it.
@@ -175,15 +175,20 @@ for k in manager/tacplus/red-main manager/tacplus/reverts manager/tacplus/merge-
 done
 has "$(q '.items[] | select(.key == "manager/tacplus/sent-back") | "\(.over) \(.recovered) \(.summary)"')" "false true tacplus: the manager sent 1 branch back on a conflict, resolved 1 by regenerating; redone: #21"
 lacks "$(q '.items[].key')" "manager/alpha"
-# The caps, from the kicker's 39 passes: tacplus at its cap of 6 in 25, its 6 reports running in 20 of
-# them (#25 waited 1 h, #26 1 h), 4 of them pending in 5 (#26 0.25 h more: the pool's, not the cap's,
-# looper#92), a backlog of 2 at most: raise it; kernel's manager 3 lands behind: lower it; alpha neither.
-# A line without running= (the kicker's before looper#92) counts its reports as running.
-[[ "$(q '.caps.tacplus | "\(.cap) \(.passes) \(.all_busy) \(.all_busy_hours) \(.all_running) \(.all_running_hours) \(.waiting_hours) \(.waiting["25"]) \(.waiting["26"]) \(.queued_hours) \(.queued["26"]) \(.pool) \(.backlog.p90)"')" == "6 39 0.64 1.25 0.51 1 2 1 1 0.25 0.25 tacplus-dev arm64 autoscale-16 2" ]] ||
-  fail "tacplus's cap: $(q .caps.tacplus)"
-has "$(q '.items[] | select(.key == "cap/tacplus/raise") | "\(.running) \(.wait_hours) \(.summary)"')" "2 2 tacplus: raise its cap of 6 in caps.yaml: ready issues waited 2 h at it with all its reports running (#25 1 h, #26 1 h), 0.25 h more with some of them queued for a VM; all its reports busy in 64% of the kicker's 39 passes (1.25 h), running in 51% (1 h); merge backlog p90 2, max 2 lands"
-has "$(q '.items[] | select(.key == "cap/kernel/lower") | .summary')" "kernel: lower its cap of 3 in caps.yaml, its manager behind: all its reports busy in 0% of the kicker's 39 passes (0 h), running in 0% (0 h); merge backlog p90 3, max 3 lands (threshold 3)"
-lacks "$(q '.items[].key')" "cap/alpha"
+# The concurrency (looper#107: no caps), from the kicker's 39 passes, 3 minutes each: trace-1500's
+# 25 (the kicker's before looper#107, its cap= not read), tacplus's 6 reports with 6 running in 20 and
+# 2 in 5, alpha's and kernel's 1; trace-1501's 14 (pre-looper#92: no running=, every report running),
+# tacplus's 5. #25 waited 1 h with no report job, #26 1.25 h: wait/tacplus. Kernel's manager 3 lands
+# behind: its backlog, advised after two nights running.
+[[ "$(q '.concurrency | "\(.passes) \(.hours) \(.reports.max) \(.reports.mean) \(.running.max) \(.running.mean) \(.waiting_hours)"')" == "39 1.95 8 6.92 8 6.41 2.25" ]] ||
+  fail "the concurrency: $(q .concurrency)"
+[[ "$(q '.concurrency.repos.tacplus | "\(.reports.max) \(.reports.mean) \(.running.max) \(.running.mean) \(.waiting_hours) \(.waiting["25"]) \(.waiting["26"]) \(.pool) \(.backlog.p90)"')" == "6 5.64 6 5.13 2.25 1 1.25 tacplus-dev arm64 autoscale-16 2" ]] ||
+  fail "tacplus's concurrency: $(q .concurrency.repos.tacplus)"
+[[ "$(q '.concurrency.repos.alpha | "\(.reports.max) \(.reports.mean) \(.waiting_hours) \(.backlog.p90)"')" == "1 0.64 0 0" ]] || fail "alpha's: $(q .concurrency.repos.alpha)"
+has "$(q '.items[] | select(.key == "wait/tacplus") | "\(.over) \(.wait_hours) \(.running) \(.summary)"')" "true 2.25 null tacplus: ready issues waited 2.25 h with no report job (#25 1 h, #26 1.25 h): no cap holds them back (looper#107), so the kicker, the plan or its runner did not start them; 6 reports at once at most (mean 5.64), 6 running (mean 5.13) over the kicker's 39 passes (threshold 1 h)"
+has "$(q '.items[] | select(.key == "manager/kernel/backlog") | "\(.running) \(.summary)"')" "2 kernel: its manager behind: merge backlog p90 3, max 3 lands; 1 reports at once at most (mean 0.64), 1 running (mean 0.64) over the kicker's 39 passes (threshold 3)"
+lacks "$(q '.items[].key')" "cap/"; lacks "$(q '.items[].key')" "wait/alpha"; lacks "$(q '.items[].key')" "manager/alpha/backlog"
+lacks "$(q '.items[].evidence[]')" "caps.yaml"
 # Capacity: the queue p90 of every job, the issues whose report waited for a VM (tacplus#16 97
 # minutes, the scan holding nothing; kernel#4 50), one more VM a day.
 [[ "$(q '.capacity | "\(.queue_minutes.p90) \(.waiting_for_vm.issues) \(.waiting_for_vm.hours) \(.one_more_vm.machine) \(.one_more_vm.usd_day)"')" == "20 3 2.78 t2a-standard-8 7.39" ]] ||
@@ -191,7 +196,6 @@ lacks "$(q '.items[].key')" "cap/alpha"
 has "$(q '.items[] | select(.key == "capacity/vm") | "\(.over) \(.summary)"')" "true 3 issues waited 2.78 h for a VM (tacplus#16 97 min, kernel#4 50 min, tacplus#12 20 min); queue p90 20 min; one more t2a-standard-8 is about \$7.39 a day"
 [[ "$(q '[.capacity.waiting_for_vm.jobs[] | "\(.repo)#\(.issue) \(.pool)"] | join(", ")')" == "tacplus#16 tacplus-dev arm64 autoscale-16, kernel#4 tacplus-dev arm64 autoscaler, tacplus#12 tacplus-dev arm64 autoscale-16" ]] ||
   fail "the VM waits' pools: $(q .capacity.waiting_for_vm)"
-# Under its threshold (0.25 h), the pool's wait at tacplus's cap is no item.
 lacks "$(q '.items[].key')" "capacity/tacplus-dev"
 [[ "$(LOOPER_RECAP_VM_USD_HOUR=1.5 LOOPER_RECAP_VM_MACHINE=t2a-standard-16 recap collect --until "$UNTIL" 2>/dev/null | jq -r '.capacity.one_more_vm | "\(.machine) \(.usd_day)"')" == "t2a-standard-16 36" ]] ||
   fail "the VM's price"
@@ -211,13 +215,18 @@ done
 # The send-back its report redid too.
 [[ "$(c '.transient | map(.key) | join(" ")')" == "actions/tacplus/nightly failures/tacplus-dev/looper/timeout manager/tacplus/sent-back" ]] || fail "transient: $(c .transient)"
 # Seen once, not recovered: noted, no advice.
-[[ "$(c '.once | map(.key) | join(" ")')" == "cap/kernel/lower failures/tacplus-dev/build/gate_failure" ]] || fail "once: $(c .once)"
+[[ "$(c '.once | map(.key) | join(" ")')" == "failures/tacplus-dev/build/gate_failure manager/kernel/backlog" ]] || fail "once: $(c .once)"
 lacks "$(c '.recurring[].key')" "timeout"
-# A cap is advised after two nights running over its threshold (looper#72): tacplus's, over last
-# night too; not kernel's, over tonight and the night before last only.
-[[ "$(c '.recurring[] | select(.key == "cap/tacplus/raise") | "\(.running) \(.needs)"')" == "2 2" ]] || fail "$(c .recurring)"
-[[ "$(c '.once[] | select(.key == "cap/kernel/lower") | "\(.running) \(.needs) \(.nights)"')" == "1 2 2" ]] || fail "$(c .once)"
+# A merge backlog is advised after two nights running over its threshold (looper#72): not kernel's,
+# over tonight and the night before last only; a wait with no report job tonight (looper#107).
+[[ "$(c '.once[] | select(.key == "manager/kernel/backlog") | "\(.running) \(.needs) \(.nights)"')" == "1 2 2" ]] || fail "$(c .once)"
+[[ "$(c '.recurring[] | select(.key == "wait/tacplus") | "\(.nights) \(.over)"')" == "2 true" ]] || fail "$(c .recurring)"
 for k in manager/tacplus/red-main manager/tacplus/reverts manager/tacplus/merge-time capacity/vm; do has "$(c '.recurring[].key')" "$k"; done
+# Over last night too (three nights running): kernel's backlog is advised.
+mkdir -p "$TMP/h"; cp "$FX"/history/*.json "$TMP/h/"
+jq '.items += [{key: "manager/kernel/backlog", count: 3, over: true, recovered: false, running: 2, summary: "x"}]' "$FX/history/2026-11-01.json" > "$TMP/h/2026-11-01.json"
+[[ "$(recap classify "$J" --history "$TMP/h" | jq -r '.recurring[] | select(.key == "manager/kernel/backlog") | "\(.running) \(.needs)"')" == "3 2" ]] ||
+  fail "kernel's backlog two nights running: $(recap classify "$J" --history "$TMP/h" | jq -c .once)"
 pass
 
 NAME=report
@@ -247,12 +256,13 @@ has "$R" "Hours ready issues waited: tacplus 17.32 h (conflict 7.2, no_free_slot
 has "$R" "Image: ghcr.io/tacplus-dev/looper:main is 2 commits behind main (aaaaaaaaaaaa against cccccccccccc); the latest image run: [cancelled](https://github.com/tacplus-dev/looper/actions/runs/777)."
 has "$R" "Longest lands: [tacplus #12 full](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 150 min."
 has "$R" "Not read: gitlab:tacplus-dev/cluster"
-# The managers' scores, the caps and the capacity numbers (looper#72).
+# The managers' scores, the concurrency and the capacity numbers (looper#72, looper#107).
 has "$R" "Managers: alpha 1 merged (report to merge p50 7, p90 7 min), conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0; tacplus 3 merged (report to merge p50 80, p90 240 min), conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next."
-has "$R" "Caps: alpha cap 3: waited at it 0 h, all busy 0% (running 0%) of 39 passes, merge backlog p90 0; kernel cap 3: waited at it 0 h, all busy 0% (running 0%) of 39 passes, merge backlog p90 3; tacplus cap 6: waited at it 2 h (#25, #26), 0.25 h more queued for a VM of tacplus-dev arm64 autoscale-16 (#26), all busy 64% (running 51%) of 39 passes, merge backlog p90 2."
+has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
+lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 has "$R" "Capacity: queue p90 20 min over 24 jobs; 3 issues waited 2.78 h for a VM ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min, [tacplus#12](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 20 min); one more t2a-standard-8 is about \$7.39 a day (\$0.308 an hour)."
-has "$R" "- \`cap/tacplus/raise\`: tacplus: raise its cap of 6 in caps.yaml: "; has "$R" "(2 nights running, over its threshold tonight, 2 h of waiting). No advice tonight."
-has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`cap/kernel/lower\`: kernel: lower its cap of 3 in caps.yaml, its manager behind: "
+has "$R" "- \`wait/tacplus\`: tacplus: ready issues waited 2.25 h with no report job "; has "$R" "(2 of 7 nights, over its threshold tonight, 2.25 h of waiting). No advice tonight."
+has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`manager/kernel/backlog\`: kernel: its manager behind: "
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "(1 night running; advice after 2)."
 has "$R" "- \`failures/tacplus-dev/looper/image_pull\`: gitlab.com/tacplus-dev/looper: 6 jobs failed with image_pull, 6 recovered on retry (2 of 7 nights, over its threshold tonight, 0.3 h of waiting). Advice: [Fresh VM image](../2026-11-02-fresh-vm-image.md)"
 has "$R" "- \`held/tacplus/limit_outlasts_job\`: "; has "$R" "Advice: covered by tacplus-dev/looper#33: the job sizing"
@@ -276,14 +286,14 @@ variant() { # trace-id sed-script jq-filter
 }
 v() { jq -r "$1" "$TMP/v.json"; }
 
-# A cap full of pending reports gives no raise (looper#92): tacplus's 6 at its cap, 1 of them running
-# in every pass, #25 and #26 waited 2.25 h behind reports queued for its pool's VM. The advice is that
-# pool's: its own VM wait beside it, and no cap item.
-NAME=cap-full-of-pending-reports
+# A ready issue with no report job, its repository's reports pending for a VM, waited for the
+# kicker, the plan or its runner: no cap holds it (looper#107); the report's own wait for a VM is the
+# capacity's, and no pool item.
+NAME=waiting-beside-pending-reports
 variant 1500 's/tacplus reports=6 running=[0-9]+/tacplus reports=6 running=1/'
-lacks "$(v '.items[].key')" "cap/tacplus"
-[[ "$(v '.caps.tacplus | "\(.all_busy) \(.all_running) \(.waiting_hours) \(.queued_hours) \(.queued["25"]) \(.queued["26"])"')" == "0.64 0.0 0 2.25 1 1.25" ]] || fail "tacplus's cap: $(v .caps.tacplus)"
-has "$(v '.items[] | select(.key == "capacity/tacplus-dev arm64 autoscale-16") | "\(.over) \(.wait_hours) \(.running) \(.summary)"')" "true 2.25 null tacplus-dev arm64 autoscale-16: ready issues waited 2.25 h at a full cap whose reports were queued for this pool's VMs, not running (tacplus at its cap of 6: #25 1 h, #26 1.25 h): the cap is not what limits them, and a raise would only queue more reports; its reports waited 1.95 h for a VM (tacplus#16 97 min, tacplus#12 20 min); one more t2a-standard-8 is about \$7.39 a day (threshold 1 h; the scale-up is Jody's call)"
+[[ "$(v '.concurrency.repos.tacplus | "\(.running.max) \(.running.mean) \(.waiting_hours)"')" == "5 2.44 2.25" ]] || fail "tacplus's concurrency: $(v .concurrency.repos.tacplus)"
+has "$(v '.items[].key')" "wait/tacplus"
+lacks "$(v '.items[].key')" "capacity/tacplus-dev"
 pass
 
 # A scan holds a queued report only when they share a resource group (looper#92): the plan's log names
