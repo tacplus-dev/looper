@@ -26,7 +26,6 @@ Done (moved from Next on 2026-11-05):
 ## Next
 - Gates scaled to the diff: a per-repo gate map picks what a land runs; unmapped paths, gate-map changes, nightly and releases run everything (#48) (Jody, 2026-11-01)
 - GitLab forge backend; a SeaBeam instance (kicker, runner, credentials) in the seabeam group (#29)
-- Looper identity, pilot on kernel: one identity per repository, think/commit split, app JWT signed in KMS (#28)
 - Retire GitHub Actions in every repo; a gate refuses any workflow file (#18, after #17)
 - Build pipeline: (repo, commit) → pinned build image, no agent, read-only source → pass/fail + image (#17)
 - Build pipeline: a manual macOS smoke job on the Mac runner (tag `macos`, Tart VM), the first piece of tacplus#195's macOS builds (#36) (Jody, 2026-10-30)
@@ -42,11 +41,13 @@ Done (moved from Next on 2026-11-05):
 - No per-repository caps: a report for every ready issue, loopers never blocked (#107). Agent, at Jody's request, 2026-11-07 (`tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`).
 - Security floor: services' SAST skips the tacplus-generated tree; tacplus scans its generated output once (#108). Agent, at Jody's request, 2026-11-07.
 
+- Remove the per-repository identity pilot's code (#111). Agent, at Jody's request, 2026-11-08.
 ## Later
 - A protected release line with review, instead of pushing to main (README)
 - Doppelganger decides resource requests (more loopers, new repositories) instead of fixed rules (README)
 - A project looper that works from roadmap epics and files issues to repo loopers (tacplus-dev/roadmap:items/looper-hierarchy.md)
 
 ## Not doing
+- The per-repository identity pilot (#28): superseded by the GitHub App cutover (#83), and its code is removed (#111). (Jody, 2026-11-06.)
 - Cloning or building on the Mac: all looper work runs as GitLab pipeline jobs (Jody, 2026-10-26, README)
 - Porting anything else from SeaBeam: since 2026-10-27 only stratum still comes over; every other unmapped source is retired, never ported or reported (#5, #6)
