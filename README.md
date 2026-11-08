@@ -1249,15 +1249,18 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
   force-pushes and deletion. Its only bypass actors are the `tacplus-manager` app and Jody's account; a repository's
   admins are not among them.
 - **Two GitHub Apps**, whose private keys are Cloud KMS signing keys, held like `tacplus-reader`'s ([Looper identity](#looper-identity)):
-  - `tacplus-manager` (contents and issues write) is the ruleset's bypass actor. It is held only by the managers'
+  - `tacplus-manager` (contents, issues and workflows write) is the ruleset's bypass actor. It is held only by the managers'
     jobs, and by the scans for their commits to main, after their model is done: a scan's `PROPOSALS.md`, the planning
     files, `HISTORY.md` and the roadmap's suggestions (`looper-suggest`'s commit through the roadmap scan).
-  - `tacplus-looper` (contents, issues and pull requests write) is no bypass actor. It is held by the reports and their
+  - `tacplus-looper` (contents, issues, pull requests and workflows write) is no bypass actor. It is held by the reports and their
     models, the scans' models, the kicker and the plan. It may push branches, comment and label, and nothing to main.
 - **No job holds Jody's token.** Each job exchanges its GitLab id_token (`GCP_ID_TOKEN`) through Workload Identity
   Federation, and KMS signs its app's JWT (`looper-token`). Which key a job may use is GCP's to enforce: each key's
   binding names the job environments the plan gives (`looper-report`, `looper-manager`, `looper-scan`; the plan's
   `looper-plan`, the kicker's `kicker`).
+  - Each token names `workflows: write` (looper#106): without it GitHub refuses any push that changes
+    `.github/workflows/`, whatever the installation grants. An installation that does not grant it is refused such a
+    token: `looper-token` then mints one without it, and logs that it cannot push a change under `.github/workflows/`.
   - A refusal says why (looper#95): gcloud's own error, its class (the token exchange refused, the key's binding not
     naming the job, a quota project, the key's path, gcloud refusing the command) and the claims the provider maps
     (`project_id`, `ref`, `ref_protected`, `environment`, and the `attribute.role` they make), never the id_token. The
@@ -1310,7 +1313,7 @@ looper-token start report|manager DIR [PID]   # a job's token, as DIR/hosts.yml,
 looper-ruleset apply | check [REPO...]        # main's ruleset on the public repositories (Jody, by hand)
 looper-ruleset probe REPO                     # with a report's token: a contents write and a push to main both refused
 looper-token diagnose                         # the job's claims, its attribute.role and each key's answer, against its binding (the hub, looper-token-diagnose)
-tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names, a version parsed as gcloud does) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; an id_token not the project's protected main refused; each refusal says why (gcloud's error, its class: STS, the key's binding, a quota project, the key's path, gcloud's usage; the claims, never the token); the diagnosis
+tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names, a version parsed as gcloud does) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; each role's token names workflows: write, and without the installation's grant is minted without it; an id_token not the project's protected main refused; each refusal says why (gcloud's error, its class: STS, the key's binding, a quota project, the key's path, gcloud's usage; the claims, never the token); the diagnosis
 tests/looper-ruleset.test.sh  # the ruleset created on the public repositories and the private ones skipped, a second apply writes nothing, a drifted one put back, check; the probe passes on refusals and fails when main accepts a write
 ```
 
@@ -1324,8 +1327,8 @@ steps 2 and 3 below are what it applies, for reference, all but the keys' import
 
 1. **The apps.** On github.com, under tacplus-dev's Settings, Developer settings, GitHub Apps, New GitHub App, create
    two private apps with no webhook:
-   - `tacplus-manager`: Repository permissions Contents read and write, Issues read and write, Metadata read.
-   - `tacplus-looper`: Contents read and write, Issues read and write, Pull requests read and write, Metadata read.
+   - `tacplus-manager`: Repository permissions Contents read and write, Issues read and write, Workflows read and write (to push a change under `.github/workflows/`, looper#106), Metadata read.
+   - `tacplus-looper`: Contents read and write, Issues read and write, Pull requests read and write, Workflows read and write, Metadata read.
 
    Install each on **all repositories** of tacplus-dev. Note each app's id (the app's page) and its installation's id
    (the number at the end of the installation's settings URL). Generate a private key for each and download it.

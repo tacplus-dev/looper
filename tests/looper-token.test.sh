@@ -102,6 +102,9 @@ case "$method $url" in
     printf '%s' "$h.$p" | openssl dgst -sha256 -verify "$TMP/keys/$app.pub" -signature "$TMP/sig" >/dev/null 2>&1 ||
       { echo "jwt-bad $app" >> "$TMP/api.log"; exit 22; }
     b64d "$p" | grep -q "\"iss\":\"$id\"" || { echo "jwt-iss $app" >> "$TMP/api.log"; exit 22; }
+    # An installation that does not grant a permission the request names: 422.
+    [[ " ${STUB_UNGRANTED:-} " == *" $app:workflows "* && "$data" == *'"workflows"'* ]] &&
+      { echo "ungranted $app workflows" >> "$TMP/api.log"; exit 22; }
     t="ghs_${app#tacplus-}_$RANDOM$RANDOM"
     echo "token $app $t $(jq -c .permissions <<<"$data")" >> "$TMP/api.log"
     printf '{"token": "%s", "expires_at": "2026-11-04T20:00:00Z"}\n' "$t" ;;
@@ -141,7 +144,7 @@ NAME=report-start
 d="$TMP/report"; sleep 300 & job=$!; kids+=("$job")
 pid="$(tok looper-report -- start report "$d" "$job" 2>"$TMP/err")" || fail "start failed"
 kids+=("$pid")
-grep -q '^token tacplus-looper ghs_looper_.* {"contents":"write","issues":"write","pull_requests":"write","metadata":"read"}$' "$TMP/api.log" ||
+grep -q '^token tacplus-looper ghs_looper_.* {"contents":"write","issues":"write","pull_requests":"write","workflows":"write","metadata":"read"}$' "$TMP/api.log" ||
   fail "token: $(cat "$TMP/api.log")"
 t1="$(awk '/^token / { print $3 }' "$TMP/api.log")"
 [[ "$(env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$d" gh auth token)" == "$t1" ]] || fail "gh does not read $d/hosts.yml"
@@ -175,10 +178,21 @@ grep -q 'Cloud KMS refused this job the key tacplus-manager: its signer binding 
   grep -q 'attribute.role=900:main:true:looper-report' "$TMP/err" || fail "log: $(cat "$TMP/err")"
 for e in looper-manager looper-scan; do
   t="$(tok "$e" -- mint manager 2>"$TMP/err")" || fail "$e could not mint the manager's token"
-  [[ "$t" == ghs_manager_* ]] && grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" ||
+  [[ "$t" == ghs_manager_* ]] && grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","workflows":"write","metadata":"read"}$' "$TMP/api.log" ||
     fail "$e: $t $(cat "$TMP/api.log")"
 done
 ! tok looper-manager -- mint other >/dev/null 2>&1 || fail "a role that is none"
+pass
+
+# workflows: write lets a token push a change under .github/workflows/
+# (looper#106). An installation that does not grant it still gets its token,
+# without it, and the log says what that token cannot push.
+NAME=workflows-ungranted
+t="$(tok looper-manager STUB_UNGRANTED=tacplus-manager:workflows -- mint manager 2>"$TMP/err")" || fail "no token without the grant"
+[[ "$t" == ghs_manager_* ]] && grep -q '^ungranted tacplus-manager workflows$' "$TMP/api.log" &&
+  grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" || fail "$t $(cat "$TMP/api.log")"
+grep -q 'tacplus-manager: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/' "$TMP/err" ||
+  fail "log: $(cat "$TMP/err")"
 pass
 
 # An id_token that is not the project's protected main, or for another

@@ -77,12 +77,12 @@ role_app() { # role
       : "${LOOPER_REPORT_APP_ID:?the project variable LOOPER_REPORT_APP_ID is not set (README, Only the manager writes main)}"
       : "${LOOPER_REPORT_INSTALLATION_ID:?the project variable LOOPER_REPORT_INSTALLATION_ID is not set}"
       echo "tacplus-looper $LOOPER_REPORT_APP_ID $LOOPER_REPORT_INSTALLATION_ID" \
-        '"contents":"write","issues":"write","pull_requests":"write","metadata":"read"' ;;
+        '"contents":"write","issues":"write","pull_requests":"write","workflows":"write","metadata":"read"' ;;
     manager)
       : "${LOOPER_MANAGER_APP_ID:?the project variable LOOPER_MANAGER_APP_ID is not set (README, Only the manager writes main)}"
       : "${LOOPER_MANAGER_INSTALLATION_ID:?the project variable LOOPER_MANAGER_INSTALLATION_ID is not set}"
       echo "tacplus-manager $LOOPER_MANAGER_APP_ID $LOOPER_MANAGER_INSTALLATION_ID" \
-        '"contents":"write","issues":"write","metadata":"read"' ;;
+        '"contents":"write","issues":"write","workflows":"write","metadata":"read"' ;;
     *) fail "no role '$1': report or manager" ;;
   esac
 }
@@ -193,8 +193,14 @@ mint() { # role dir
   why="$(kms_sign "$key" "$2/jwt-input" "$2/jwt-sig" "$2")" ||
     { rm -f "$2/jwt-input" "$2/jwt-sig"; log "no signature with $key ($1's key): $why"; return 1; }
   sig="$(b64url < "$2/jwt-sig")"; rm -f "$2/jwt-input" "$2/jwt-sig"
+  # An installation that does not grant workflows: write is refused a token
+  # that names it: one without it still pushes all but .github/workflows/.
   resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
             -d "{\"permissions\":{$perms}}" "$GITHUB_API/app/installations/$inst/access_tokens")" ||
+    { [[ "$perms" == *'"workflows":"write",'* ]] &&
+      resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
+                -d "{\"permissions\":{${perms/'"workflows":"write",'/}}}" "$GITHUB_API/app/installations/$inst/access_tokens")" &&
+      log "$key: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/ (looper#106)"; } ||
     { log "GitHub refused the app $key a token"; return 1; }
   token="$(jq -r '.token // empty' <<<"$resp")"
   [[ -n "$token" ]] || { log "no token in GitHub's answer"; return 1; }
