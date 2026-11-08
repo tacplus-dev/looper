@@ -1,0 +1,38 @@
+= init
+> Bash cd /builds/looper/looper/issues/28; gh issue view 28 --repo tacplus-dev/looper --comments | tail -60; echo ----; gh issue view 30 --repo tacplus-dev/looper --json state,title,closedAt,labels; gh issue view 30 --repo tacplus-dev/looper --comments | tail -80
+<   - The model leaves its change in the checkout and writes its comment and outcome: `pr`, `question` or `blocked`. A run that hits its limit or ends without an outcome is `timeout` or `stuck`, with its change kept.   - On `pr`, the looper appends the HISTORY.md line and runs the gates. They must pas...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/28; gh issue view 83 --repo tacplus-dev/looper --json state,title,body,closedAt | head -c 5000; echo; gh issue view 30 --repo tacplus-dev/looper --comments | grep -n "" | tail -150 | head -100; ls; ls ci; grep -n -i "identity\|kernel-looper\|pilot" STATE.md PROPOSALS....
+< {"body":"**Enforce \"only the manager writes main\" on GitHub** (Jody, 2026-11-04: yes to the roadmap suggestion `suggestions/2026-11-04-only-the-manager-can-write-main.md`; the design is `decisions/looper-job-per-issue-2026-11-03.md`, where the manager alone merges).\n\n**Today:** no repository's `...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/28; grep -rln "looper-identity" --exclude-dir=.git . ; grep -n "looper-identity\|identity" gates.yaml Dockerfile | head; grep -n -i "identity" ROADMAP.md | head; gh api repos/tacplus-dev/roadmap/contents/ROADMAP.md -H 'Accept: application/vnd.github.raw' | grep -n -i ...
+< ./gates.yaml ./repo-looper ./STATE.md ./Dockerfile ./ci/looper.gitlab-ci.yml ./ci/tacplus-dev.gitlab-ci.yml ./looper-identity ./looper-smoke ./.github/workflows/image.yml ./README.md ./tests/looper-identity.test.sh ./PROPOSALS.md gates.yaml:7:  run: tests/looper-docker.test.sh && tests/looper-pkill....
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/28; cat > /tmp/c28.md <<'EOF' Looper (run 20261108T163639Z): **this issue needs a decision before any more work.** I committed nothing.  ## Why This issue was waiting only on #30 (`Blocked-by: #30`). #30 is now closed, but as **superseded**, not done. Jody closed it o...
+< https://github.com/tacplus-dev/looper/issues/28#issuecomment-6724117717 https://github.com/tacplus-dev/looper/issues/28
+I stopped this run without changing anything: issue #28 now needs a decision from Jody, so I added the `needs-decision` label and left a comment on it.
+
+**Why it can't go on:** #28 was waiting only on #30, the setup for the kernel pilot (the `kernel-looper` app, the GitLab project, the access pool and the signing key). #30 is now closed, but as superseded, not done. Jody closed it on 2026-11-06 because #83 replaced it: every looper now gets its GitHub tokens from the tacplus-looper and tacplus-manager Apps. That setup will never be built, so #28's acceptance can't be met: one real kernel issue end to end, with a PR by `kernel-looper[bot]`. There is no other open issue it could wait on instead. Closing it unfinished, and deciding what happens to its code and its line in ROADMAP.md, are not my calls.
+
+**What I asked Jody to choose** (my recommendation first):
+- **(a)** Close #28 as superseded. Remove the pilot's code, which was merged in 5b4d031 but never deployed, through one cleanup follow-up issue, and drop line 29 of ROADMAP.md.
+- **(b)** Close #28 as superseded, but keep the code as a starting point for a later setup where the model holds no write credential.
+- **(c)** Rescope #28 so that split (the model holds no write credential) runs on the #83 Apps instead. That is new design work and would need its own decision and acceptance criteria.
+
+No gates ran, because there was nothing to verify.
+= success: I stopped this run without changing anything: issue #28 now needs a decision from Jody, so I added the `needs-decision` label and left a comment on it.
+
+**Why it can't go on:** #28 was waiting only on #30, the setup for the kernel pilot (the `kernel-looper` app, the GitLab project, the access pool and the signing key). #30 is now closed, but as superseded, not done. Jody closed it on 2026-11-06 because #83 replaced it: every looper now gets its GitHub tokens from the tacplus-looper and tacplus-manager Apps. That setup will never be built, so #28's acceptance can't be met: one real kernel issue end to end, with a PR by `kernel-looper[bot]`. There is no other open issue it could wait on instead. Closing it unfinished, and deciding what happens to its code and its line in ROADMAP.md, are not my calls.
+
+**What I asked Jody to choose** (my recommendation first):
+- **(a)** Close #28 as superseded. Remove the pilot's code, which was merged in 5b4d031 but never deployed, through one cleanup follow-up issue, and drop line 29 of ROADMAP.md.
+- **(b)** Close #28 as superseded, but keep the code as a starting point for a later setup where the model holds no write credential.
+- **(c)** Rescope #28 so that split (the model holds no write credential) runs on the #83 Apps instead. That is new design work and would need its own decision and acceptance criteria.
+
+No gates ran, because there was nothing to verify.
