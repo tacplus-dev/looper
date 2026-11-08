@@ -74,3 +74,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-05 looper issue App cutover (#83) failed: KMS sign refused for the plan job, and looper-token hides gcloud's error; surface it, add a diagnosis job, fix the cause (#95, 3c267e4; gates: full)
 - 2026-11-06 looper issue Build pipeline: nightly and release-tag formal verification (just verify, when changed); child sizing by gate set, not by grepping for kani (#74, de49983; gates: full)
 - 2026-11-07 looper issue Provenance (#40): an org owner with private membership shows as CONTRIBUTOR, so his own approved issues are taken as data (tacplus#315 skipped); check the repository permission (#97)
+- 2026-11-08 looper issue Gates not hermetic: forge, repo-looper, looper-dispatch and tacplus tests fail in a looper job (read its app ids, job tags and git credential helper) (#103)
