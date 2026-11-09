@@ -77,7 +77,7 @@ role_app() { # role
       : "${LOOPER_REPORT_APP_ID:?the project variable LOOPER_REPORT_APP_ID is not set (README, Only the manager writes main)}"
       : "${LOOPER_REPORT_INSTALLATION_ID:?the project variable LOOPER_REPORT_INSTALLATION_ID is not set}"
       echo "tacplus-looper $LOOPER_REPORT_APP_ID $LOOPER_REPORT_INSTALLATION_ID" \
-        '"contents":"write","issues":"write","pull_requests":"write","workflows":"write","metadata":"read"' ;;
+        '"contents":"write","issues":"write","pull_requests":"write","metadata":"read"' ;; # no workflows: write (#115)
     manager)
       : "${LOOPER_MANAGER_APP_ID:?the project variable LOOPER_MANAGER_APP_ID is not set (README, Only the manager writes main)}"
       : "${LOOPER_MANAGER_INSTALLATION_ID:?the project variable LOOPER_MANAGER_INSTALLATION_ID is not set}"

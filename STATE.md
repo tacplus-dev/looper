@@ -128,7 +128,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
   may use; its key's version named whole since #95: the first cutover's `--key=... --version=1` was refused by
   gcloud itself, before any call to GCP; a refusal now logs gcloud's error, its class and the id_token's claims, and
   the CI file's manual `looper-token-diagnose` gives each environment's claims and each key's answer, the cutover not
-  yet retried; each token names `workflows: write` since #106, minted without it, logged, where the installation does not grant it) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
+  yet retried; the manager's token names `workflows: write` since #106, minted without it, logged, where the installation does not grant it; a report's no longer does, #115) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
   scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;
   a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan` and leaves
   its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes

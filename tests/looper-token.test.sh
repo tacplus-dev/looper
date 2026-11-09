@@ -144,7 +144,7 @@ NAME=report-start
 d="$TMP/report"; sleep 300 & job=$!; kids+=("$job")
 pid="$(tok looper-report -- start report "$d" "$job" 2>"$TMP/err")" || fail "start failed"
 kids+=("$pid")
-grep -q '^token tacplus-looper ghs_looper_.* {"contents":"write","issues":"write","pull_requests":"write","workflows":"write","metadata":"read"}$' "$TMP/api.log" ||
+grep -q '^token tacplus-looper ghs_looper_.* {"contents":"write","issues":"write","pull_requests":"write","metadata":"read"}$' "$TMP/api.log" ||
   fail "token: $(cat "$TMP/api.log")"
 t1="$(awk '/^token / { print $3 }' "$TMP/api.log")"
 [[ "$(env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$d" gh auth token)" == "$t1" ]] || fail "gh does not read $d/hosts.yml"
