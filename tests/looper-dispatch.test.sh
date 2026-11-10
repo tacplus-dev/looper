@@ -667,13 +667,15 @@ done
 pass
 
 scenario apps-no-pat
-for v in GH_TOKEN=ghp_0123456789abcdef0123 GITHUB_TOKEN=x SOMETHING=github_pat_0123456789abcdef; do
+# Fake personal tokens, built at run time: no literal for the secret scan (looper#117).
+FAKE=0123456789abcdef
+for v in "GH_TOKEN=ghp_${FAKE}0123" GITHUB_TOKEN=x "SOMETHING=github_pat_$FAKE"; do
   ! OUT="$(env -u GH_TOKEN "${APPS[@]}" "$v" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" run 2>&1)" ||
     fail "ran holding ${v%%=*}: $OUT"
   grep -q "this job holds ${v%%=*}" <<<"$OUT" || fail "log: $OUT"
 done
 ! started || fail "started a pipeline holding a personal token"
-GH_TOKEN=ghp_0123456789abcdef0123 dispatch run
+GH_TOKEN="ghp_${FAKE}0123" dispatch run
 started || fail "without the apps a GH_TOKEN is as before: $OUT"
 pass
 

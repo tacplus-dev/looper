@@ -4,6 +4,10 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The secret scan on every gate set** (2026-11-10, #117): `tests/looper-secrets.test.sh` runs with full and its own
+  set, so a token-shaped literal added in a file only a smaller set maps (`tests/looper-recap.test.sh`, the recap set)
+  is caught by the build's `security-looper` job, not the gates. A set that every land runs beside the ones its paths
+  call for (gates.yaml has none) would close it, as would gitleaks in a pre-commit check the agents run.
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from
