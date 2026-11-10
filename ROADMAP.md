@@ -42,6 +42,7 @@ Done (moved from Next on 2026-11-05):
 - Security floor: services' SAST skips the tacplus-generated tree; tacplus scans its generated output once (#108). Agent, at Jody's request, 2026-11-07.
 
 - Remove the per-repository identity pilot's code (#111). Agent, at Jody's request, 2026-11-08.
+- The manager takes queued lands by priority, then oldest (#121). Agent, at Jody's request, 2026-11-10.
 ## Later
 - A protected release line with review, instead of pushing to main (README)
 - Doppelganger decides resource requests (more loopers, new repositories) instead of fixed rules (README)
