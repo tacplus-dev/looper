@@ -13,12 +13,14 @@
 # exchanged through Workload Identity Federation, KMS signs the app's JWT, and
 # GitHub gives a one-hour token. A role is an app:
 #
-#   report   tacplus-looper: contents, issues and pull requests write, no
-#            bypass of main's ruleset. The reports and their models, the
-#            scans' models, the kicker and the plan.
-#   manager  tacplus-manager: contents and issues write, the ruleset's bypass
-#            actor. The managers, and the commits to main of the scans (their
-#            planning files, the roadmap's suggestions) once their model is done.
+#   report   tacplus-looper: contents, issues and pull requests write (no
+#            workflows, looper#115), no bypass of main's ruleset. The reports
+#            and their models, the scans' models, the kicker and the plan.
+#   manager  tacplus-manager: contents and issues write (and workflows, with
+#            LOOPER_MANAGER_WORKFLOWS=write once the app holds it), the
+#            ruleset's bypass actor. The managers, and the commits to main of
+#            the scans (their planning files, the roadmap's suggestions) once
+#            their model is done.
 #
 #   looper-token start ROLE DIR [PID]
 #                                 mints ROLE's token into DIR/hosts.yml (gh's
@@ -54,13 +56,16 @@
 # LOOPER_KMS_KEYRING (projects/P/locations/L/keyRings/R), LOOPER_REPORT_APP_ID,
 # LOOPER_REPORT_INSTALLATION_ID, LOOPER_MANAGER_APP_ID,
 # LOOPER_MANAGER_INSTALLATION_ID; GCP_ID_TOKEN (the job's id_tokens, audience
-# https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_GITHUB_API (default
-# https://api.github.com).
+# https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_MANAGER_WORKFLOWS;
+# LOOPER_GITHUB_API (default https://api.github.com); LOOPER_NET_TIMEOUT (a
+# call to GitHub's bound, seconds, default 300).
 set -euo pipefail
 
 GITHUB_API="${LOOPER_GITHUB_API:-https://api.github.com}"
 GITLAB_ISSUER="${LOOPER_GITLAB_ISSUER:-https://gitlab.com}"
 REFRESH="${LOOPER_TOKEN_REFRESH:-2700}"
+# No call to GitHub without an end (looper#112).
+CURL_LIMITS=(--connect-timeout 30 --max-time "${LOOPER_NET_TIMEOUT:-300}")
 
 usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 # The log is stderr: stdout carries what a command returns.
@@ -81,8 +86,10 @@ role_app() { # role
     manager)
       : "${LOOPER_MANAGER_APP_ID:?the project variable LOOPER_MANAGER_APP_ID is not set (README, Only the manager writes main)}"
       : "${LOOPER_MANAGER_INSTALLATION_ID:?the project variable LOOPER_MANAGER_INSTALLATION_ID is not set}"
+      # workflows: write only once the app holds it (LOOPER_MANAGER_WORKFLOWS=write,
+      # looper#112): GitHub refuses a set that names a permission it lacks.
       echo "tacplus-manager $LOOPER_MANAGER_APP_ID $LOOPER_MANAGER_INSTALLATION_ID" \
-        '"contents":"write","issues":"write","workflows":"write","metadata":"read"' ;;
+        "\"contents\":\"write\",\"issues\":\"write\",${LOOPER_MANAGER_WORKFLOWS:+\"workflows\":\"write\",}\"metadata\":\"read\"" ;;
     *) fail "no role '$1': report or manager" ;;
   esac
 }
@@ -195,10 +202,10 @@ mint() { # role dir
   sig="$(b64url < "$2/jwt-sig")"; rm -f "$2/jwt-input" "$2/jwt-sig"
   # An installation that does not grant workflows: write is refused a token
   # that names it: one without it still pushes all but .github/workflows/.
-  resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
+  resp="$(curl -fsS --retry 2 "${CURL_LIMITS[@]}" -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
             -d "{\"permissions\":{$perms}}" "$GITHUB_API/app/installations/$inst/access_tokens")" ||
     { [[ "$perms" == *'"workflows":"write",'* ]] &&
-      resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
+      resp="$(curl -fsS --retry 2 "${CURL_LIMITS[@]}" -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
                 -d "{\"permissions\":{${perms/'"workflows":"write",'/}}}" "$GITHUB_API/app/installations/$inst/access_tokens")" &&
       log "$key: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/ (looper#106)"; } ||
     { log "GitHub refused the app $key a token"; return 1; }

@@ -4,6 +4,15 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Why the managers' builds never started** (2026-11-09, #112): from 00:57Z on 2026-11-09 the build pipelines six
+  managers triggered (blobstore#18's `a899bd5`, opa#9's, and four more) set no commit status at all, not even their
+  job's `pending`, for hours, and reports' `--build`s too (blobstore#14, looper#101). #112 makes that a verdict-less
+  land after `LOOPER_BUILD_START_WAIT` (30 minutes) instead of a silent wait, but not the cause: the build project's
+  runners (busy with the reports and managers waiting on them, as #104's control jobs were?) or the pipeline failing
+  before its first job. Reading the build pipeline's own status (GitLab's API, with a token that may read
+  tacplus-dev/build) would tell the two apart, and say which, on the issue. A land with no verdict is not merged
+  (exit 7) and waits for its report's next run to land again; leaving it queued for the next manager would be
+  kinder, if the next manager did not then trigger another build into the same stalled queue.
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from

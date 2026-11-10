@@ -323,7 +323,11 @@ pin issue (filed by the hub) commits one.
   merges on its pass alone. Its verdict comment carries the build's link and verdict line.
 - **A report requests a build** with `repo-looper --repo R --issue N --build`: it checkpoints (the commit is then on
   GitHub, under the issue's branch), asks for the gate set its diff since main calls for, prints the build's link
-  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours). The
+  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours; or
+  `LOOPER_BUILD_START_WAIT`, 30 minutes, when the pipeline sets no status at all, not even its job's pending: it has
+  not started, looper#112). While it waits it says what for, every `LOOPER_BUILD_SAY` (10 minutes), on stderr: the
+  manager's job log, where a land's log lines go too. A manager's land with no verdict is not merged (exit 7), and
+  its verdict comment says why. The
   model never holds the trigger: its request is a file in its run directory, which its report's looper, holding
   `BUILD_TRIGGER_TOKEN`, checks (a full hash, a gate set, a base; at most `LOOPER_BUILD_MAX`, 30, a run) and starts.
 - **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the
@@ -1252,7 +1256,7 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
   force-pushes and deletion. Its only bypass actors are the `tacplus-manager` app and Jody's account; a repository's
   admins are not among them.
 - **Two GitHub Apps**, whose private keys are Cloud KMS signing keys, held like `tacplus-reader`'s ([Looper identity](#looper-identity)):
-  - `tacplus-manager` (contents, issues and workflows write) is the ruleset's bypass actor. It is held only by the managers'
+  - `tacplus-manager` (contents and issues write; workflows write once it holds it) is the ruleset's bypass actor. It is held only by the managers'
     jobs, and by the scans for their commits to main, after their model is done: a scan's `PROPOSALS.md`, the planning
     files, `HISTORY.md` and the roadmap's suggestions (`looper-suggest`'s commit through the roadmap scan).
   - `tacplus-looper` (contents, issues, pull requests and workflows write) is no bypass actor. It is held by the reports and their
@@ -1261,11 +1265,16 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
   Federation, and KMS signs its app's JWT (`looper-token`). Which key a job may use is GCP's to enforce: each key's
   binding names the job environments the plan gives (`looper-report`, `looper-manager`, `looper-scan`; the plan's
   `looper-plan`, the kicker's `kicker`).
-  - The manager's token names `workflows: write` (looper#106): without it GitHub refuses any push that changes
-    `.github/workflows/`, whatever the installation grants. An installation that does not grant it is refused such a
-    token: `looper-token` then mints one without it, and logs that it cannot push a change under `.github/workflows/`.
-    A report's token does not name it (looper#115): a branch's own copy of `image.yml` could otherwise publish the
-    looper image every manager runs. Until #115's label lands, a report cannot push a change under `.github/workflows/`.
+  - The manager's token names `workflows: write` (looper#106) only with the project variable
+    `LOOPER_MANAGER_WORKFLOWS=write`, set once `tacplus-manager` holds it (looper#112): without it GitHub refuses any
+    push that changes `.github/workflows/`, whatever the installation grants. An installation that does not grant it is
+    refused such a token (422): `looper-token` then mints one without it, and logs that it cannot push a change under
+    `.github/workflows/`. A report's token does not name it (looper#115): a branch's own copy of `image.yml` could
+    otherwise publish the looper image every manager runs. Until #115's label lands, a report cannot push a change
+    under `.github/workflows/`.
+  - Every call to the network ends (looper#112): each `gh` call and each of curl's attempts after
+    `LOOPER_NET_TIMEOUT` (300 seconds), and git gives up on a transfer that moves nothing for as long, with its own
+    error, and never prompts for a credential.
   - A refusal says why (looper#95): gcloud's own error, its class (the token exchange refused, the key's binding not
     naming the job, a quota project, the key's path, gcloud refusing the command) and the claims the provider maps
     (`project_id`, `ref`, `ref_protected`, `environment`, and the `attribute.role` they make), never the id_token. The
@@ -1318,7 +1327,7 @@ looper-token start report|manager DIR [PID]   # a job's token, as DIR/hosts.yml,
 looper-ruleset apply | check [REPO...]        # main's ruleset on the public repositories (Jody, by hand)
 looper-ruleset probe REPO                     # with a report's token: a contents write and a push to main both refused
 looper-token diagnose                         # the job's claims, its attribute.role and each key's answer, against its binding (the hub, looper-token-diagnose)
-tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names, a version parsed as gcloud does) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; the manager's token names workflows: write and a report's does not (#115), and without the installation's grant the manager's is minted without it; an id_token not the project's protected main refused; each refusal says why (gcloud's error, its class: STS, the key's binding, a quota project, the key's path, gcloud's usage; the claims, never the token); the diagnosis
+tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names, a version parsed as gcloud does) and a stub GitHub (each app's JWT verified): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; a report's token does not name workflows: write (#115), the manager's only with LOOPER_MANAGER_WORKFLOWS, and without the installation's grant (422) is minted without it, at start and on each refresh; every call to GitHub has an end; an id_token not the project's protected main refused; each refusal says why (gcloud's error, its class: STS, the key's binding, a quota project, the key's path, gcloud's usage; the claims, never the token); the diagnosis
 tests/looper-ruleset.test.sh  # the ruleset created on the public repositories and the private ones skipped, a second apply writes nothing, a drifted one put back, check; the probe passes on refusals and fails when main accepts a write
 ```
 
@@ -1332,7 +1341,7 @@ steps 2 and 3 below are what it applies, for reference, all but the keys' import
 
 1. **The apps.** On github.com, under tacplus-dev's Settings, Developer settings, GitHub Apps, New GitHub App, create
    two private apps with no webhook:
-   - `tacplus-manager`: Repository permissions Contents read and write, Issues read and write, Workflows read and write (to push a change under `.github/workflows/`, looper#106), Metadata read.
+   - `tacplus-manager`: Repository permissions Contents read and write, Issues read and write, Workflows read and write (to push a change under `.github/workflows/`, looper#106; once it holds it, set the project variable `LOOPER_MANAGER_WORKFLOWS=write`, looper#112), Metadata read.
    - `tacplus-looper`: Contents read and write, Issues read and write, Pull requests read and write, Workflows read and write, Metadata read.
 
    Install each on **all repositories** of tacplus-dev. Note each app's id (the app's page) and its installation's id

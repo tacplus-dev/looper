@@ -22,104 +22,10 @@ trap 'for k in "${kids[@]+"${kids[@]}"}"; do kill "$k" 2>/dev/null || true; done
 export TMP
 # gh reads the token from GH_CONFIG_DIR only when no token is in its environment.
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN
-PROVIDER=projects/1/locations/global/workloadIdentityPools/gitlab-loopers/providers/gitlab-looper
-RING=projects/tacplus-ci/locations/us-central1/keyRings/looper
 
-mkdir -p "$TMP/keys" "$TMP/bin"
-for k in tacplus-looper tacplus-manager; do
-  openssl genrsa -out "$TMP/keys/$k.pem" 2048 2>/dev/null
-  openssl rsa -in "$TMP/keys/$k.pem" -pubout -out "$TMP/keys/$k.pub" 2>/dev/null
-done
-# Each key's binding: the environments of the looper project's jobs that may sign with it.
-printf 'tacplus-looper looper-report looper-scan kicker looper-plan\ntacplus-manager looper-manager looper-scan\n' > "$TMP/iam"
-cat > "$TMP/bin/gcloud" <<'EOF'
-#!/usr/bin/env bash
-echo "gcloud $*" >> "$TMP/gcloud.log"
-src="$CLOUDSDK_CONFIG/source"
-case "$*" in
-  "iam workload-identity-pools create-cred-config "*)
-    for a in "$@"; do
-      case "$a" in
-        --credential-source-file=*) echo "${a#*=}" > "$src" ;;
-        --output-file=*) echo '{}' > "${a#*=}" ;;
-      esac
-    done ;;
-  "auth login "*)
-    [[ "${STUB_FAIL:-}" != login ]] || { echo "ERROR: (gcloud.auth.login) There was a problem refreshing your current auth tokens: ('Error code unauthorized_client: The given credential is rejected by the attribute condition.', '{\"error\":\"unauthorized_client\"}')" >&2; exit 1; }
-    [[ -s "$src" && -s "$(cat "$src")" ]] || exit 1 ;;
-  "kms asymmetric-sign "*)
-    ver="" key="" ring="" loc="" in="" sig=""
-    for a in "$@"; do
-      case "$a" in
-        --version=*) ver="${a#*=}" ;; --key=*) key="${a#*=}" ;; --keyring=*) ring="${a#*=}" ;; --location=*) loc="${a#*=}" ;;
-        --input-file=*) in="${a#*=}" ;; --signature-file=*) sig="${a#*=}" ;;
-      esac
-    done
-    # As gcloud parses it: --version is the resource, a bare one relative to
-    # --key, --keyring and --location, refused before any call without them.
-    if [[ "$ver" != projects/*/cryptoKeyVersions/* ]]; then
-      for f in location keyring key; do
-        [[ -n "${!f}" ]] || { echo "ERROR: (gcloud.kms.asymmetric-sign) argument --$f: Must be specified." >&2; exit 1; }
-      done
-      echo "stub: a relative --version" >&2; exit 1
-    fi
-    key="${ver%/cryptoKeyVersions/*}"; key="${key##*/}"
-    # Exchanged again on each call: the token file must still be there.
-    [[ -s "$(cat "$src")" ]] || { echo "no credential source" >&2; exit 1; }
-    case "${STUB_FAIL:-}" in
-      sts) echo "ERROR: (gcloud.kms.asymmetric-sign) There was a problem refreshing your current auth tokens: ('Error code invalid_grant: The audience in ID Token [x] does not match the expected audience.', '{\"error\":\"invalid_grant\"}')" >&2; exit 1 ;;
-      quota) echo "ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED: Caller does not have required permission to use project 1. Grant the caller the roles/serviceusage.serviceUsageConsumer role. reason: USER_PROJECT_DENIED" >&2; exit 1 ;;
-    esac
-    [[ "$ver" == "$STUB_RING/cryptoKeys/$key/cryptoKeyVersions/1" && -f "$TMP/keys/$key.pem" ]] ||
-      { echo "ERROR: (gcloud.kms.asymmetric-sign) NOT_FOUND: $ver not found." >&2; exit 1; }
-    p="$(cut -d. -f2 < "$(cat "$src")" | tr '_-' '/+')"; while ((${#p} % 4)); do p+="="; done
-    env="$(base64 -d <<<"$p" | jq -r '.environment // ""')"
-    grep -qE "^$key( .*)? $env( |\$)" "$TMP/iam" || { echo "kms-denied $key $env" >> "$TMP/api.log"
-      echo "ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED: Permission 'cloudkms.cryptoKeyVersions.useToSign' denied on resource '${ver%/cryptoKeyVersions/*}' (or it may not exist)." >&2; exit 1; }
-    echo "signed $key $env" >> "$TMP/api.log"
-    openssl dgst -sha256 -sign "$TMP/keys/$key.pem" -out "$sig" "$in" ;;
-  *) exit 3 ;;
-esac
-EOF
-cat > "$TMP/bin/curl" <<'EOF'
-#!/usr/bin/env bash
-method=GET data="" auth="" url=""
-while (($#)); do
-  case "$1" in
-    -X) method="$2"; shift 2 ;;
-    -H) [[ "$2" == Authorization:* ]] && auth="${2#Authorization: Bearer }"; shift 2 ;;
-    -d) data="$2"; shift 2 ;; --retry) shift 2 ;;
-    -*) shift ;;
-    *) url="$1"; shift ;;
-  esac
-done
-b64d() { local s; s="$(tr '_-' '/+' <<<"$1")"; while ((${#s} % 4)); do s+="="; done; base64 -d <<<"$s"; }
-case "$method $url" in
-  "POST https://api.github.com/app/installations/"*/access_tokens)
-    inst="${url#*/installations/}"; inst="${inst%%/*}"
-    case "$inst" in 31) app=tacplus-looper id=301 ;; 41) app=tacplus-manager id=401 ;; *) exit 22 ;; esac
-    IFS=. read -r h p s <<<"$auth"; b64d "$s" > "$TMP/sig"
-    printf '%s' "$h.$p" | openssl dgst -sha256 -verify "$TMP/keys/$app.pub" -signature "$TMP/sig" >/dev/null 2>&1 ||
-      { echo "jwt-bad $app" >> "$TMP/api.log"; exit 22; }
-    b64d "$p" | grep -q "\"iss\":\"$id\"" || { echo "jwt-iss $app" >> "$TMP/api.log"; exit 22; }
-    # An installation that does not grant a permission the request names: 422.
-    [[ " ${STUB_UNGRANTED:-} " == *" $app:workflows "* && "$data" == *'"workflows"'* ]] &&
-      { echo "ungranted $app workflows" >> "$TMP/api.log"; exit 22; }
-    t="ghs_${app#tacplus-}_$RANDOM$RANDOM"
-    echo "token $app $t $(jq -c .permissions <<<"$data")" >> "$TMP/api.log"
-    printf '{"token": "%s", "expires_at": "2026-11-04T20:00:00Z"}\n' "$t" ;;
-  *) echo "curl stub: $method $url" >&2; exit 22 ;;
-esac
-EOF
-chmod +x "$TMP/bin/"*
-
-# GitLab's id_token for a job of the looper project: claims as GitLab signs them.
-id_token() { # environment [jq assignments]
-  local c; c="$(jq -cn --arg aud "https://iam.googleapis.com/$PROVIDER" --argjson now "$(date +%s)" --arg env "$1" \
-    "{iss: \"https://gitlab.com\", aud: \$aud, iat: \$now, exp: (\$now + 39600), project_id: \"900\", project_path: \"tacplus-dev/looper\",
-      ref: \"main\", ref_protected: \"true\", pipeline_source: \"parent_pipeline\", job_id: \"5\", environment: \$env} ${2:+| $2}")"
-  printf 'eyJhbGciOiJSUzI1NiJ9.%s.c2ln' "$(printf '%s' "$c" | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
-}
+source "$ROOT/tests/github-app-stub.sh"
+app_stub "$TMP"
+APP_STUB="$TMP"   # each env -i below passes it
 
 NAME=""
 fail() { echo "FAIL $NAME: $*" >&2; [[ -f "$TMP/err" ]] && cat "$TMP/err" >&2; [[ -f "$TMP/api.log" ]] && cat "$TMP/api.log" >&2; exit 1; }
@@ -127,7 +33,7 @@ pass() { echo "ok $NAME"; }
 tok() { # environment [VAR=value...] -- args
   local env="$1" e=(); shift; while [[ "$1" != -- ]]; do e+=("$1"); shift; done; shift
   : > "$TMP/api.log"
-  env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" TMPDIR="$TMP" STUB_RING="$RING" CI_PROJECT_PATH=tacplus-dev/looper \
+  env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" APP_STUB="$TMP" TMPDIR="$TMP" STUB_RING="$RING" CI_PROJECT_PATH=tacplus-dev/looper \
     GCP_WIF_PROVIDER="$PROVIDER" LOOPER_KMS_KEYRING="$RING" LOOPER_TOKEN_REFRESH="${REFRESH:-2700}" \
     LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 LOOPER_MANAGER_APP_ID=401 LOOPER_MANAGER_INSTALLATION_ID=41 \
     GCP_ID_TOKEN="$(id_token "$env")" "${e[@]+"${e[@]}"}" "$ROOT/looper-token" "$@"
@@ -178,21 +84,44 @@ grep -q 'Cloud KMS refused this job the key tacplus-manager: its signer binding 
   grep -q 'attribute.role=900:main:true:looper-report' "$TMP/err" || fail "log: $(cat "$TMP/err")"
 for e in looper-manager looper-scan; do
   t="$(tok "$e" -- mint manager 2>"$TMP/err")" || fail "$e could not mint the manager's token"
-  [[ "$t" == ghs_manager_* ]] && grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","workflows":"write","metadata":"read"}$' "$TMP/api.log" ||
+  [[ "$t" == ghs_manager_* ]] && grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" ||
     fail "$e: $t $(cat "$TMP/api.log")"
 done
 ! tok looper-manager -- mint other >/dev/null 2>&1 || fail "a role that is none"
 pass
 
 # workflows: write lets a token push a change under .github/workflows/
-# (looper#106). An installation that does not grant it still gets its token,
-# without it, and the log says what that token cannot push.
+# (looper#106). The manager's set names it only once its app holds it
+# (LOOPER_MANAGER_WORKFLOWS=write, looper#112). An installation that does not
+# grant it still gets its token, without it, and the log says what that token
+# cannot push.
 NAME=workflows-ungranted
-t="$(tok looper-manager STUB_UNGRANTED=tacplus-manager:workflows -- mint manager 2>"$TMP/err")" || fail "no token without the grant"
+t="$(tok looper-manager LOOPER_MANAGER_WORKFLOWS=write -- mint manager 2>"$TMP/err")" || fail "no token with the grant"
+grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","workflows":"write","metadata":"read"}$' "$TMP/api.log" || fail "$t $(cat "$TMP/api.log")"
+t="$(tok looper-manager LOOPER_MANAGER_WORKFLOWS=write STUB_UNGRANTED=tacplus-manager:workflows -- mint manager 2>"$TMP/err")" || fail "no token without the grant"
 [[ "$t" == ghs_manager_* ]] && grep -q '^ungranted tacplus-manager workflows$' "$TMP/api.log" &&
   grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" || fail "$t $(cat "$TMP/api.log")"
 grep -q 'tacplus-manager: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/' "$TMP/err" ||
   fail "log: $(cat "$TMP/err")"
+pass
+
+# A manager whose request GitHub refuses with 422 (looper#112): its job still
+# gets its token at once, and each refresh too, without workflows; gh reads
+# the last. Every call to GitHub has an end.
+NAME=manager-start-ungranted
+d="$TMP/manager"; mkdir -m 0700 "$d"; sleep 300 & job=$!; kids+=("$job"); : > "$TMP/curl-limits"
+SECONDS=0
+pid="$(REFRESH=1 tok looper-manager LOOPER_MANAGER_WORKFLOWS=write STUB_UNGRANTED=tacplus-manager:workflows -- start manager "$d" "$job" 2>"$TMP/err")" ||
+  fail "start failed"
+kids+=("$pid")
+(( SECONDS < 10 )) || fail "start took ${SECONDS}s"
+t1="$(GH_CONFIG_DIR="$d" gh auth token)"; [[ "$t1" == ghs_manager_* ]] || fail "gh reads $t1"
+for _ in $(seq 40); do t2="$(GH_CONFIG_DIR="$d" gh auth token)"; [[ "$t2" != "$t1" ]] && break; sleep 0.25; done
+[[ "$t2" != "$t1" && "$t2" == ghs_manager_* ]] || fail "the token was not refreshed"
+(( $(grep -c '^ungranted tacplus-manager workflows$' "$TMP/api.log") >= 2 )) &&
+  ! grep -q '^token tacplus-manager .*"workflows"' "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+[[ -s "$TMP/curl-limits" ]] && ! grep -qvx 'limits: --connect-timeout 30 --max-time 300' "$TMP/curl-limits" || fail "a call to GitHub with no end: $(cat "$TMP/curl-limits")"
+kill "$job"
 pass
 
 # An id_token that is not the project's protected main, or for another
@@ -201,7 +130,7 @@ NAME=id-token
 for bad in '.ref = "feature"' '.ref_protected = "false"' '.aud = "https://iam.googleapis.com/other"' \
            '.project_path = "tacplus-dev/other"' '.iss = "https://evil.example"'; do
   : > "$TMP/gcloud.log"
-  ! env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" TMPDIR="$TMP" CI_PROJECT_PATH=tacplus-dev/looper GCP_WIF_PROVIDER="$PROVIDER" \
+  ! env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" APP_STUB="$TMP" TMPDIR="$TMP" CI_PROJECT_PATH=tacplus-dev/looper GCP_WIF_PROVIDER="$PROVIDER" \
       LOOPER_KMS_KEYRING="$RING" LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 GCP_ID_TOKEN="$(id_token looper-report "$bad")" \
       "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "minted with $bad"
   [[ ! -s "$TMP/gcloud.log" ]] || fail "GCP saw the id_token with $bad"
@@ -232,7 +161,7 @@ grep -qF "Workload Identity Federation refused this job ($PROVIDER): the token e
   grep -qF 'the id_token: project_id=900 ref=main ref_protected=true environment=looper-report' "$TMP/err" ||
   fail "login: $(cat "$TMP/err")"
 # An environment the id_token lacks is named as such.
-! env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" TMPDIR="$TMP" STUB_RING="$RING" GCP_WIF_PROVIDER="$PROVIDER" LOOPER_KMS_KEYRING="$RING" \
+! env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" APP_STUB="$TMP" TMPDIR="$TMP" STUB_RING="$RING" GCP_WIF_PROVIDER="$PROVIDER" LOOPER_KMS_KEYRING="$RING" \
     LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 GCP_ID_TOKEN="$(id_token "" 'del(.environment)')" \
     "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "minted with no environment"
 grep -qF 'environment=(none) attribute.role=(none: no environment claim)' "$TMP/err" || fail "no environment: $(cat "$TMP/err")"

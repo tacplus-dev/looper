@@ -10,6 +10,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"   # the test's own environment, not the job's (looper#97, looper#103)
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tests/github-app-stub.sh"   # the apps' tokens, minted by the real looper-token (looper#112)
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
@@ -38,7 +39,9 @@ case "$cmd" in
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
   # A commit's statuses (looper#71), newest first: $FIX/statuses/<sha>.json, which the stub build writes.
-  api\ repos/*/commits/*/statuses*) c="${cmd#api repos/*/commits/}"; c="${c%%/*}"; cat "$FIX/statuses/$c.json" 2>/dev/null || echo '[]'; exit 0 ;;
+  # $FIX/gh-hang: GitHub does not answer (looper#112).
+  api\ repos/*/commits/*/statuses*) [[ ! -e "$FIX/gh-hang" ]] || sleep 60
+    c="${cmd#api repos/*/commits/}"; c="${c%%/*}"; cat "$FIX/statuses/$c.json" 2>/dev/null || echo '[]'; exit 0 ;;
 esac
 n=""; repo=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; title=""
 while [[ $# -gt 0 ]]; do
@@ -151,6 +154,8 @@ case "$url" in
     sha="$(v 'inputs%5Bsha%5D')"; gates="$(v 'inputs%5Bgates%5D')"; base="$(v 'inputs%5Bbase%5D')"
     echo "$(v token) $(v 'inputs%5Brepo%5D') $sha $gates $base" >> "$FIX/builds"
     id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}"
+    # $FIX/build-stalled: the pipeline is created, and its job never runs (looper#112).
+    [[ ! -e "$FIX/build-stalled" ]] || { rm -rf "$d"; reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"; exit 0; }
     if ! git clone -q "$FIX/origin.git" "$d/src" 2>/dev/null || ! git -C "$d/src" -c advice.detachedHead=false checkout -q "$sha" 2>/dev/null; then
       state=failure; desc="tacplus-dev/alpha has no commit $sha"
     elif [[ -f "$d/src/gates.yaml" ]]; then
@@ -2389,6 +2394,44 @@ has "$(cat "$FIX/land-4")" "rc 0"; [[ ! -e "$FIX/builds" ]] || fail "built: $(ca
 [[ "$(cat "$FIX/gates-ran")" == "docs here $(origin rev-parse main~1)" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
 has "$OUT$(cat "$FIX/manager.log")" "this job holds no BUILD_TRIGGER_TOKEN"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Verify with the full gates"
+pass
+
+# A manager whose token request GitHub refuses with 422 (its app does not hold
+# workflows: write, looper#112) still gets its token, from the real
+# looper-token against GitHub's and GCP's stubs, and merges. Six managers held
+# their jobs for hours after `merging #N`, waiting on build pipelines that
+# never started: a pipeline that sets no status, not even pending, within
+# LOOPER_BUILD_START_WAIT is no verdict, said then, while GitHub does not
+# answer either (each gh call has an end); the manager's log says what it
+# waits for while it waits, and the land is not merged, saying why.
+scenario manager-token-422
+pin_seed; app_stub "$FIX/app"
+printf '#!/usr/bin/env bash\nPATH=%q:%q:"$PATH" exec %q "$@"\n' "$FIX/app/bin" "$(dirname "$(command -v openssl)")" "$ROOT/looper-token" > "$FIX/looper-token-app"
+chmod +x "$FIX/looper-token-app"
+A422=(LOOPER_TOKEN="$FIX/looper-token-app" APP_STUB="$FIX/app" STUB_RING="$RING" STUB_UNGRANTED=tacplus-manager:workflows LOOPER_MANAGER_WORKFLOWS=write
+      GCP_ID_TOKEN="$(id_token looper-manager)" GCP_WIF_PROVIDER="$PROVIDER" LOOPER_KMS_KEYRING="$RING" CI_PROJECT_PATH=tacplus-dev/looper
+      LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 LOOPER_MANAGER_APP_ID=401 LOOPER_MANAGER_INSTALLATION_ID=41 GH_TOKEN= GITHUB_TOKEN=
+      "${BUILDS[@]}" LOOPER_BUILD_START_WAIT=3 LOOPER_BUILD_SAY=1 LOOPER_NET_TIMEOUT=2)
+queue 4 2026-11-03T10:00:00Z notes.md "the docs"
+touch "$FIX/build-stalled" "$FIX/gh-hang"
+SECONDS=0; manage "${A422[@]}"
+(( SECONDS < 40 )) || fail "the manager took ${SECONDS}s"
+has "$OUT" "tacplus-manager: GitHub refused a token with workflows: write; minted one without it"
+grep -q '^ungranted tacplus-manager workflows$' "$FIX/app/api.log" && grep -q '^token tacplus-manager ' "$FIX/app/api.log" || fail "$(cat "$FIX/app/api.log")"
+has "$OUT" "merging #4"
+has "$OUT" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of $(origin rev-parse --short looper/alpha-4~1): waiting for its verdict"
+has "$OUT" "waiting for the verdict of the build pipeline 901 on "
+main_unchanged; branch || fail "the branch is gone"
+c="$(cat "$FIX/comments")"
+has "$c" "The manager could not merge"; has "$c" "the build job gave no verdict"
+has "$c" "the build pipeline 901 set no status on "; has "$c" "it has not started"
+lacks "$(labels alpha 4)" "looper:landing"
+# Once builds run, the same manager's token merges.
+rm "$FIX/build-stalled" "$FIX/gh-hang"
+issue alpha 5 OPEN approved,bug "Fix that."; queue 5 2026-11-03T11:00:00Z notes.md "the docs, again"
+manage "${A422[@]}"
+has "$(grep '^alpha#5 ' "$FIX/comments")" "The manager merged"
+[[ "$(landed notes.md)" == "the docs, again" ]] || fail "main: $(origin log --oneline main)"
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------

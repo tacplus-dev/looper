@@ -107,6 +107,23 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "FATAL $*" >&2; exit 2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
+# Every call to the network ends (looper#112): a manager that waited on one
+# without a bound held its job for hours, saying nothing. Each gh call is
+# stopped after LOOPER_NET_TIMEOUT seconds (default 300), and so is each of
+# curl's attempts (30 to connect); git gives up on a transfer that moves
+# nothing for as long, with its own error ("RPC failed; curl 28 Operation too
+# slow"), and never asks for a credential on a terminal: it fails, and says so.
+LOOPER_NET_TIMEOUT="${LOOPER_NET_TIMEOUT:-300}"
+export GIT_HTTP_LOW_SPEED_LIMIT="${GIT_HTTP_LOW_SPEED_LIMIT:-1}" GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-$LOOPER_NET_TIMEOUT}" \
+  GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
+gh() {
+  local rc=0
+  timeout -k 10 "$LOOPER_NET_TIMEOUT" gh "$@" || rc=$?
+  (( rc != 124 && rc != 137 )) || echo "gh $1${2:+ $2}: no answer within ${LOOPER_NET_TIMEOUT}s; stopped (looper#112)" >&2
+  return "$rc"
+}
+curl() { command curl --connect-timeout 30 --max-time "$LOOPER_NET_TIMEOUT" "$@"; }
+
 # --- the forge (looper#29) ----------------------------------------------------
 #
 # What the looper asks of a forge, as gh answers it: issues as JSON objects
