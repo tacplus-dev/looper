@@ -17,7 +17,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; SRVPID=""
 trap '[[ -z "$SRVPID" ]] || kill "$SRVPID" 2>/dev/null; rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-TOKEN=glpat-forgetesttoken0123456789
+# A fake token, built at run time so that no literal in the tree looks like one
+# to the build's secret scan (looper#117).
+TOKEN="glpat-$(printf forgetest%s token0123456789)"
 
 # The store: $FIX/issues/<repo, / as __>-<n>.json, gh's shape plus `repo` (the
 # path under the org), `author` and `comments` ([{author, body, system}]).

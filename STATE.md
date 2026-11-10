@@ -81,7 +81,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
   an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
-  and run by hand (`looper-scan local`) on tacplus and kernel; formal verification out of the gates (#74,
+  and run by hand (`looper-scan local`) on tacplus and kernel; this repository's own tree passes its gitleaks, a gate
+  (`tests/looper-secrets.test.sh`: a test's fake token is built at run time, #117); formal verification out of the gates (#74,
   tacplus-dev/tacplus#275, README: Formal verification): every release runs `just verify` beside the gates, and a
   verify run (input `verify: true`, main's head, no commit status) runs it only when `just verify-changed <the last
   verified commit>` says run or there is no record; its record (the job's artifact and the package `verify-<repo>`)

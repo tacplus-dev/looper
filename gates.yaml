@@ -4,7 +4,7 @@
 # full. Each set's run is a shell command at the root of the checkout, with
 # LOOPER_GATES_BASE the main the land is rebased on.
 full:
-  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh && tests/looper-token.test.sh && tests/looper-ruleset.test.sh && tests/looper-ci-lint.test.sh && tests/looper-verify.test.sh
+  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/looper-identity.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh && tests/looper-token.test.sh && tests/looper-ruleset.test.sh && tests/looper-ci-lint.test.sh && tests/looper-verify.test.sh && tests/looper-secrets.test.sh
   minutes: 30
   paths: [/repo-looper, /looper-lib.sh, /looper-dispatch, /looper-docker, /looper-docker-broker, /looper-pkill, tests/looper-pkill.test.sh, /Dockerfile, tests/git-server.py, tests/forge.test.sh, tests/repo-looper.test.sh, tests/looper-dispatch.test.sh]
 # The planning files and the docs: what CI checks of them.
@@ -68,3 +68,9 @@ verify:
   run: tests/looper-verify.test.sh
   minutes: 1
   paths: [/looper-verify, tests/looper-verify.test.sh]
+# The tree under the build's secret scan (looper#117): no fixture shaped like a token. Full runs it too; a
+# change only a smaller set maps (a set's own test file) reaches the build's security job alone (PROPOSALS.md).
+secrets:
+  run: tests/looper-secrets.test.sh
+  minutes: 1
+  paths: [tests/looper-secrets.test.sh, /.gitleaks.toml, /.gitleaksignore]

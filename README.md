@@ -935,6 +935,7 @@ CRITICAL as a `bug` (the unchanged issue flow), and the other new ones as one is
 ```sh
 looper-scan run | report | local DIR | sbom SOURCE DIR   # the jobs; local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them)
 tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM
+tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)
 ```
 
 Left to the hub: a pipeline schedule per repository on tacplus-dev/build (inputs `repo`, `nightly: true`), and the
