@@ -321,9 +321,18 @@ pin issue (filed by the hub) commits one.
   build with the gate set its diff calls for (input `gates`, from the commit's own `gates.yaml`, and `base`, the main
   it is rebased on: the build runs exactly what [Gates scaled to the diff](#gates-scaled-to-the-diff) would) and
   merges on its pass alone. Its verdict comment carries the build's link and verdict line.
+- **A queued build is no red land** (looper#128): builds run on tacplus-dev/build's spot pool, a few at a time, so
+  `LOOPER_BUILD_WAIT` (3 hours) counts from the build's start (its first commit status, the `pending` its first
+  job sets), never its trigger: one past it since its start is red. A build with no verdict when the manager's job
+  is `LOOPER_LAND_MARGIN` from its end leaves the land queued (no verdict, not sent back) and its pipeline recorded
+  on top of the commit on its build branch, which stays; the next manager whose rebase gives the same tree on the
+  same main and gate set takes that pipeline's verdict up instead of triggering another. The manager's log names
+  each build's queue time apart from its run time (`#N: its build <url>: queued <s> s, ran <s> s`), which the
+  recap reports per manager.
 - **A report requests a build** with `repo-looper --repo R --issue N --build`: it checkpoints (the commit is then on
   GitHub, under the issue's branch), asks for the gate set its diff since main calls for, prints the build's link
-  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours). The
+  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours from the
+  build's start), 3 with none by its job's end. The
   model never holds the trigger: its request is a file in its run directory, which its report's looper, holding
   `BUILD_TRIGGER_TOKEN`, checks (a full hash, a gate set, a base; at most `LOOPER_BUILD_MAX`, 30, a run) and starts.
 - **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the

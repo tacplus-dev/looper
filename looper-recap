@@ -293,6 +293,8 @@ M_LANDED = re.compile(r"\] #(\d+): landed on main: ([0-9a-f]+)\.\.([0-9a-f]+), o
 M_NOT = re.compile(r"\] #(\d+): not merged \(exit (\d+)\)")
 M_RESOLVED = re.compile(r"\] #(\d+): resolved its conflicts by regenerating: (.*)$")
 M_DEFERRED = re.compile(r"\] #(\d+): left queued for the next manager")
+# A land's build (looper#128): its queue time apart from its run time.
+M_BUILD = re.compile(r"\] #(\d+): its build (\S+): queued (\d+) s, (?:(?:ran|running) (\d+) s|not started)")
 CAPACITY = re.compile(r"\] capacity: (.*)$")
 CAP_REPO = re.compile(r"(\S+) reports=(\d+)(?: running=(\d+))?(?: cap=\d+)? waiting=([\d,]*) landing=(\d+|\?)")
 
@@ -421,9 +423,10 @@ def lines_at(text):
 def read_manager(text):
     """A manager's log (looper#70): each land it judged, from `merging #N
     (..., queued T)` to its verdict (merged, sent back on exit 3, red on 4,
-    else failed), with the conflicts it resolved by regenerating; and the
-    lands it left queued for the next manager."""
-    out = {"lands": [], "deferred": []}
+    else failed), with the conflicts it resolved by regenerating; the lands
+    it left queued for the next manager; and each land's build, its queue
+    time (trigger to start) apart from its run time (looper#128)."""
+    out = {"lands": [], "deferred": [], "builds": []}
     cur, resolved = {}, {}
     for now, line in lines_at(text):
         m = MERGING.search(line)
@@ -450,6 +453,11 @@ def read_manager(text):
         m = M_DEFERRED.search(line)
         if m:
             out["deferred"].append(int(m.group(1)))
+            continue
+        m = M_BUILD.search(line)
+        if m:
+            out["builds"].append({"issue": int(m.group(1)), "url": m.group(2), "queue_s": int(m.group(3)),
+                                  "run_s": None if m.group(4) is None else int(m.group(4))})
     return out
 
 
@@ -586,10 +594,11 @@ def collect(until):
                                                   "scans": [], "scan_runs": [], "queued": [], "pools": {}})
             lp["jobs"] += 1
             if kind == "manager":
-                mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "urls": []})
+                mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "builds": [], "urls": []})
                 mg["jobs"] += 1
                 mg["lands"] += [dict(x, url=url) for x in lg["manager"]["lands"]]
                 mg["deferred"] += lg["manager"]["deferred"]
+                mg["builds"] += lg["manager"]["builds"]
                 mg["urls"].append(url)
             if kind == "scan" and rn is not None:
                 lp["scans"].append(rn)
@@ -749,7 +758,9 @@ def managers_of(managers, start, until, sources, items):
     (a land queued to merged), the hours lands waited for it, the conflicts it
     resolved by regenerating against those it sent back, red gates, the lands
     it left for the next manager, the work redone (a land of an issue again
-    after it was sent back or red), and from GitHub its merges' build status
+    after it was sent back or red), its builds' queue time apart from their
+    run time (looper#128: a build is the latest line of its pipeline, a later
+    manager's taking it up), and from GitHub its merges' build status
     (LOOPER_RECAP_BUILD_CONTEXT, tacplus-dev/build: a red main after its merge)
     and the reverts on its main."""
     org = ENV.get("LOOPER_ORG", "tacplus-dev")
@@ -786,13 +797,18 @@ def managers_of(managers, start, until, sources, items):
             bad.append(f"{repo} commits ({e})")
         red_main = [m for m in merges if m["status"] in ("failure", "error")]
         d = dist(r2m)
+        builds = list({b["url"]: b for b in mg["builds"]}.values())
+        bq, br = dist([b["queue_s"] for b in builds]), dist([b["run_s"] for b in builds])
         sc = out[repo] = {
             "jobs": mg["jobs"], "lands": len(lands), "merged": len(merged), "sent_back": len(by("sent_back")),
             "resolved": sum(1 for x in lands if x["resolved"]), "red_gates": len(by("red")), "failed": len(by("failed")),
             "deferred": len(mg["deferred"]), "redone": sorted(redone),
             "report_to_merge_minutes": d and {k: minutes(v) if k != "n" else v for k, v in d.items()},
             "waited_hours": hours(waited), "merges": merges, "red_main": [m["after"] for m in red_main],
-            "reverts": reverts}
+            "reverts": reverts, "builds": len(builds),
+            "build_queue_minutes": bq and {k: minutes(v) if k != "n" else v for k, v in bq.items()},
+            "build_run_minutes": br and {k: minutes(v) if k != "n" else v for k, v in br.items()},
+            "builds_not_started": sum(1 for b in builds if b["run_s"] is None)}
         ev = sorted(set(mg["urls"]))[:5]
         if red_main:
             items.append({"key": f"manager/{repo}/red-main", "count": len(red_main), "over": True, "recovered": False,
@@ -819,6 +835,16 @@ def managers_of(managers, start, until, sources, items):
     if managers:
         sources["github-main"] = "ok" if not bad else "partial: " + "; ".join(bad)[:500]
     return out
+
+
+def build_times(m):
+    """A manager's builds, their queue time apart from their run time (looper#128)."""
+    bq, br = m.get("build_queue_minutes"), m.get("build_run_minutes")
+    if not bq:
+        return ""
+    return (f", {m['builds']} build{'s' * (m['builds'] != 1)} queued p50 {bq['p50']}, p90 {bq['p90']} min"
+            + (f", ran p50 {br['p50']}, p90 {br['p90']} min" if br else "")
+            + (f", {m['builds_not_started']} not started" if m["builds_not_started"] else ""))
 
 
 def concurrency_of(passes, managers, items, pools):
@@ -1119,7 +1145,8 @@ def report(night, classes, sdir, cov):
                    + f", main red after {len(m['red_main'])}" + (f" ({', '.join(m['red_main'])})" if m["red_main"] else "")
                    + f", reverts {'?' if m['reverts'] is None else len(m['reverts'])}"
                    + f", redone {len(m['redone'])}" + (f" ({', '.join('#%d' % i for i in m['redone'])})" if m["redone"] else "")
-                   + (f", {m['deferred']} left for the next" if m["deferred"] else ""))
+                   + (f", {m['deferred']} left for the next" if m["deferred"] else "")
+                   + build_times(m))
     L.append("Managers: " + ("; ".join(mgs) or "none") + ".")
     cc = night.get("concurrency")
     if cc and cc["passes"]:

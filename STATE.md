@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by looper (#97).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-11 by looper (#128).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -71,7 +71,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
   #71): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
   tacplus project: the looper's pins the looper image by digest, #71), no agent, read-only
-  source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status, and on a release
+  source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status (a manager waits
+  `LOOPER_BUILD_WAIT` from the build's start, never its trigger; a build with no verdict by its job's end leaves the
+  land queued and its pipeline, on the build's branch, for the next manager to take up; the recap has each manager's
+  build queue time apart from its run time, #128), and on a release
   a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
   and with a real buildx (same commit, same digest); its deterministic security checks (#49, `looper-scan`, README:
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
