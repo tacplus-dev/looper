@@ -18,6 +18,32 @@ the looper then marks it `promoted` or `declined` here with the date.
   build's record; if the land is then sent back or its main moves, no manager reuses it, and the branch stays until
   the issue's next land builds (the manager force-pushes it afresh and deletes it after the verdict). A manager could
   delete a build branch whose issue has no land queued.
+- **The CI files' looper digest bumped by a tool** (2026-11-10, #115): `ci/`'s files name the looper image by digest,
+  bumped by hand (a reviewed commit, then the hub's copy into each GitLab project), so a change to `looper-dispatch` or
+  the kicker takes effect only after both. A `looper-dispatch pin` that writes main's newest attested digest into them
+  (verified as the plan verifies it), run by the hub before its copy, would keep them current without trusting a tag.
+  The first bump is due once `image.yml` attests (#115's second land): the pinned build (eea43fc's) predates #115, so
+  its plan still gives its jobs `:main`; a bump before an attested build exists would fail every plan.
+- **The image's release tags guarded as main is** (2026-11-10, #115): `image.yml` builds a `vX.Y.Z` tag only at a
+  commit of main, but a report's token (contents: write) may push a tag, and main's ruleset names no tag; a tag
+  ruleset (only the manager creates `v*`) would close it, and `gh attestation verify` of a release could then require
+  `--source-ref refs/tags/v…` as the plan requires main.
+- **An abandoned build's security checks skipped too** (2026-11-11, #130): a gates job past its requester's wait
+  writes `abandoned` and runs no gates, but the child pipeline's `security-<repo>` job (`needs: gates`, `when:
+  always`) still runs the scanners on the commit nobody waits for; `looper-scan run` could read the gates' artifact
+  `build-verdict` and end at once on `fail: abandoned:`, saving the runner the scan as well.
+- **The child pipeline's verdict as the commit status' description** (2026-11-11, #130): `report-fail` runs in the
+  parent pipeline, whose artifacts hold only the plan's `build-verdict`, so a failure in the child (a red gate, an
+  abandoned build) is described as "the build failed", not as the gates job wrote it; reading the child's
+  `build-verdict` (the bridge's downstream pipeline, with the job token) would put "abandoned: no verdict wanted
+  after 3h" or the failed gate set on the commit.
+- **clippy on a service whose generated crates the scan does not have** (2026-11-11, #126): cargo-deny now falls back
+  to the gates' `generated/` at the tacplus.yaml `output-dir`, then to the `Cargo.lock`'s crates alone; clippy, which
+  compiles, still fails the run (`no matching package named grpcserver`, gateway at cfe4600 by `looper-scan local`)
+  when the gates kept no `built/` (red gates) or generate out of tree. The same `generated/` overlay would cover the
+  second; the first is red anyway (gateway's passing gates keep `target/generated-sources/model/**` in `built/`, so
+  its `20261111T093923Z` scan's `cargo-deny: exited 1` most likely followed red gates: the security job runs
+  `when: always`; the build project's logs, which a report cannot read, would say).
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from

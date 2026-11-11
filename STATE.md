@@ -79,7 +79,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-11 by lo
   and with a real buildx (same commit, same digest); its deterministic security checks (#49, `looper-scan`, README:
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
   clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it and on the
-  code a `generated` recipe writes, a nightly (input `nightly: true`, main's head, no commit status) and a release add
+  code a `generated` recipe writes (cargo-deny on a service that path-depends on crates its gates generate: with
+  them, laid over the checkout or the gates' `generated/` at its tacplus.yaml `output-dir`, else on its Cargo.lock's
+  crates alone, which the summary says, #126), a nightly (input `nightly: true`, main's head, no commit status) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a

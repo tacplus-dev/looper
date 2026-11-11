@@ -149,6 +149,62 @@ spec:
       image: nginx
       securityContext:
         privileged: true'
+# A Rust service as tacplus's are (gateway, looper#126): its Cargo.toml
+# path-depends on the crates its tacplus.yaml output-dir holds, which only a
+# build generates; its Cargo.lock locks what they depend on (rustix 1.1.4,
+# RUSTSEC-2026-0486).
+RUST_SVC=(tacplus.yaml 'language: rust
+output-dir: target/generated-sources/model  # the crates the gates generate'
+  Cargo.toml '[package]
+name = "demo"
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+demo-model = { path = "target/generated-sources/model" }
+demo-grpcserver = { package = "grpcserver", path = "target/generated-sources/model/chassis/grpcserver" }'
+  Cargo.lock 'version = 4
+
+[[package]]
+name = "demo"
+version = "1.0.0"
+dependencies = [
+ "demo-model",
+ "grpcserver",
+]
+
+[[package]]
+name = "demo-model"
+version = "1.0.0"
+
+[[package]]
+name = "grpcserver"
+version = "1.0.0"
+dependencies = [
+ "rustix",
+ "tacplus-chassis",
+]
+
+[[package]]
+name = "rustix"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[package]]
+name = "tacplus-chassis"
+version = "0.3.0"
+source = "git+https://github.com/tacplus-dev/chassis?tag=v0.3.0#0123456789abcdef0123456789abcdef01234567"'
+  src/main.rs 'fn main() {}')
+scan_commit scanrust "${RUST_SVC[@]}"
+# What the gates generate for it: the output-dir's crates.
+rust_generated() { # dir
+  mkdir -p "$1/chassis/grpcserver/src" "$1/src"
+  printf '[package]\nname = "demo-model"\nversion = "1.0.0"\nedition = "2021"\n' > "$1/Cargo.toml"
+  printf '[package]\nname = "grpcserver"\nversion = "1.0.0"\nedition = "2021"\n\n[dependencies]\nrustix = "1"\n' > "$1/chassis/grpcserver/Cargo.toml"
+  : > "$1/src/lib.rs"; : > "$1/chassis/grpcserver/src/lib.rs"
+}
 # Formal verification (looper#74; tacplus-dev/tacplus#275): `just verify` is
 # red when the commit has a file red (printed as tacplus verify's report);
 # `just verify-changed SHA` prints skip only when it has SHA (fetched) and
@@ -362,6 +418,38 @@ esac
 EOF
 cp "$TMP/bin/syft" "$SB/syft"
 chmod +x "$SB/"*
+# cargo-deny and cargo, stubs with the real scanners too (a build's clean
+# environment has no rustup toolchain): cargo-deny starts with cargo
+# metadata, which fails as cargo's does when a path dependency's manifest is
+# not there, then reports what the real one does for the rustix 1.1.4 the
+# manifest's Cargo.lock locks. CARGO_DENY_FAIL=1: it fails on any manifest.
+RB="$TMP/scanbin-rust"; mkdir -p "$RB"
+cat > "$RB/cargo-deny" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == --version ]] && { echo "cargo-deny 0.20.2"; exit; }
+$(opt --manifest-path)
+m="\$out"; d="\$(dirname "\$m")"; echo "\$m" >> "$TMP/cargo-deny.log"; cp "\$m" "$TMP/cargo-deny-\$(wc -l < "$TMP/cargo-deny.log").toml"
+missing() { echo "{\"fields\":{\"level\":\"ERROR\",\"message\":\"\\\`cargo metadata\\\` exited with an error:     Updating crates.io index\\nerror: no matching package named \\\`\$1\\\` found\\nlocation searched: \$2\\nrequired by package \\\`demo v1.0.0 (\$d)\\\`\\n\"},\"type\":\"log\"}" >&2; exit 1; }
+[[ -z "\${CARGO_DENY_FAIL:-}" ]] || missing grpcserver "\$d/target/generated-sources/model/chassis/grpcserver"
+while read -r p; do
+  [[ -f "\$d/\$p/Cargo.toml" ]] || missing "\$(basename "\$p")" "\$d/\$p"
+done < <(sed -nE 's/.*\{.*path = "([^"]+)".*/\1/p' "\$m")
+if grep -A1 '^name = "rustix"' "\$d/Cargo.lock" | grep -q '^version = "1.1.4"'; then
+  echo '{"fields":{"advisory":{"aliases":["GHSA-jh2m-fhpj-3vr7"],"cvss":null,"id":"RUSTSEC-2026-0486","title":"xattr functions mark unwritten bytes as initialized when given a zero-length buffer"},"code":"unsound","graphs":[{"Krate":{"name":"rustix","version":"1.1.4"}}],"message":"xattr functions mark unwritten bytes as initialized when given a zero-length buffer","notes":["ID: RUSTSEC-2026-0486","Solution: Upgrade to >=1.1.6 (try \`cargo update -p rustix\`)"],"severity":"error"},"type":"diagnostic"}' >&2
+fi
+# The license check of a crate without one (the lock-only manifest's own).
+crate="\$(sed -n 's/^name = "\\(.*\\)"\$/\\1/p' "\$m" | head -1)"
+grep -q '^license' "\$m" || echo "{\"fields\":{\"code\":\"unlicensed\",\"graphs\":[{\"Krate\":{\"name\":\"\$crate\",\"version\":\"1.0.0\"}}],\"message\":\"unlicensed\",\"severity\":\"error\"},\"type\":\"diagnostic\"}" >&2
+echo '{"fields":{"advisories":{"errors":1,"helps":0,"notes":0,"warnings":0}},"type":"summary"}' >&2
+exit 1
+EOF
+cat > "$RB/cargo" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "clippy --version" ]] && { echo "clippy 0.1.99"; exit; }
+[[ "$1" == clippy ]] && exit 0
+echo "cargo stub: $*" >&2; exit 1
+EOF
+chmod +x "$RB/"*
 
 NAME=""
 fail() { echo "FAIL $NAME: $*" >&2; for f in "$TMP/err" "$TMP/api.log" "$TMP/docker.log"; do [[ -f "$f" ]] && cat "$f" >&2; done; exit 1; }
@@ -900,6 +988,56 @@ blocking | grep -q '^gitleaks gen/keys.txt:aws-access-token:1 gen/keys.txt:1$' |
 mkdir -p "$TMP/out-$((n + 1))/built"; printf 'changed\n' > "$TMP/out-$((n + 1))/built/main.go"
 if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi
 scan_verdict_is "fail: the gates' built files change tracked files"
+pass
+
+# cargo-deny on a service whose Cargo.toml path-depends on the crates its
+# gates generate (looper#126): the stub cargo-deny and cargo, the other
+# scanners as above.
+RUST_PATH=(PATH="$RB:$TMP/bin:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+deny_finding() { # the RUSTSEC finding cargo-deny reported, on the source Cargo.lock
+  jq -e 'map(select(.tool == "cargo-deny")) | map(.id) == ["RUSTSEC-2026-0486"] and .[0].where == "rustix@1.1.4 (Cargo.lock)" and .[0].fix' \
+    "$OUT/security/findings.json" >/dev/null ||
+    fail "cargo-deny's findings: $(jq -c '[.[] | select(.tool == "cargo-deny")]' "$OUT/security/findings.json"); $(cat "$OUT/security/summary.md")"
+  ! sed -n '/^### Problems/,/^$/p' "$OUT/security/summary.md" | grep -q '^- cargo-deny:' || fail "a cargo-deny problem: $(cat "$OUT/security/summary.md")"
+  ls "$OUT/security/raw" | grep -q '^cargo-deny-source-1.json$' || fail "no raw report: $(ls "$OUT/security/raw")"
+}
+
+NAME="security: cargo-deny reads a service that path-depends on its output-dir, with what the gates built laid over it"
+rust_generated "$TMP/out-$((n + 1))/built/target/generated-sources/model"
+: > "$TMP/cargo-deny.log"
+scan "${RUST_PATH[@]}" BUILD_SHA="${SHA[scanrust]}" -- run 2>"$TMP/err" || true
+deny_finding
+[[ "$(wc -l < "$TMP/cargo-deny.log")" == 1 ]] || fail "cargo-deny ran on: $(cat "$TMP/cargo-deny.log")"
+! grep -q "crates alone" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: cargo-deny reads a service that path-depends on its output-dir, with the gates' generated/ laid at it"
+rust_generated "$TMP/out-$((n + 1))/generated"
+: > "$TMP/cargo-deny.log"
+scan "${RUST_PATH[@]}" BUILD_SHA="${SHA[scanrust]}" -- run 2>"$TMP/err" || true
+deny_finding
+[[ "$(wc -l < "$TMP/cargo-deny.log")" == 2 ]] || fail "cargo-deny ran on: $(cat "$TMP/cargo-deny.log")"
+grep -qF 'path = "target/generated-sources/model/chassis/grpcserver"' "$TMP/cargo-deny-2.toml" || fail "not the service's manifest: $(cat "$TMP/cargo-deny-2.toml")"
+! grep -q "crates alone" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: without the generated crates, cargo-deny checks the Cargo.lock's crates alone, and the summary says so"
+: > "$TMP/cargo-deny.log"
+scan "${RUST_PATH[@]}" BUILD_SHA="${SHA[scanrust]}" -- run 2>"$TMP/err" || true
+deny_finding
+m="$TMP/cargo-deny-$(wc -l < "$TMP/cargo-deny.log").toml"
+grep -qxF 'lock-1 = { package = "rustix", version = "=1.1.4", default-features = false }' "$m" &&
+  grep -qxF 'lock-2 = { package = "tacplus-chassis", git = "https://github.com/tacplus-dev/chassis", rev = "0123456789abcdef0123456789abcdef01234567", default-features = false }' "$m" &&
+  ! grep -q 'demo\|grpcserver' <(sed -n '/^\[dependencies\]/,$p' "$m") || fail "the lock's manifest: $(cat "$m")"
+grep -qF "cargo-deny: Cargo.lock: its crates alone, not the build's graph (Cargo.toml does not load: error: no matching package named \`" \
+  "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: cargo-deny that cannot run fails the run with its reason"
+if scan "${RUST_PATH[@]}" CARGO_DENY_FAIL=1 BUILD_SHA="${SHA[scanrust]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: "
+grep -qF -- "- cargo-deny: exited 1: error: no matching package named \`grpcserver\` found; location searched: " \
+  "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
 pass
 
 NAME="security: an unexpired exception passes; an expired one, or one that does not say who decided, fails"
