@@ -323,12 +323,19 @@ pin issue (filed by the hub) commits one.
   merges on its pass alone. Its verdict comment carries the build's link and verdict line.
 - **A report requests a build** with `repo-looper --repo R --issue N --build`: it checkpoints (the commit is then on
   GitHub, under the issue's branch), asks for the gate set its diff since main calls for, prints the build's link
-  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours). The
+  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours), 3 when no
+  runner took the build (below). The
   model never holds the trigger: its request is a file in its run directory, which its report's looper, holding
   `BUILD_TRIGGER_TOKEN`, checks (a full hash, a gate set, a base; at most `LOOPER_BUILD_MAX`, 30, a run) and starts.
 - **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the
   build's `tacplus-reader` app set (creator `tacplus-reader[bot]`: the looper's own `GH_TOKEN` could set one too)
   linking the pipeline that was started, once it is no longer pending.
+- **No runner** (looper#113): a build's first job sets its `pending` status at once, so a build with no status at all
+  from that app within `LOOPER_BUILD_START` (15 minutes) has not started: no runner took its jobs (none matches, or
+  the pool is full). That is no verdict, and no red: `--build` says so and exits 3; the manager merges nothing,
+  gives no verdict, leaves the land queued and stops (the kicker's next manager builds it again), and says so once
+  on the issue, which the report's `--land`, still waiting for the verdict, prints. A build that started is waited
+  for until `LOOPER_BUILD_WAIT`, as before.
 - **No container runtime in the report**: its model's `docker` refuses, saying to use `--build` (so `tacplus`,
   which runs through docker, is the build job's alone); no `looper-docker`, no broker, no `DOCKER_HOST`. Its prompt's
   rule 4 says so. Since looper#68 the model runs as a user outside the socket's group, so it cannot reach the host's
@@ -347,7 +354,7 @@ pin issue (filed by the hub) commits one.
   BuildKit, without the host's Docker.
 
 ```sh
-tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on a build job's verdict of the rebased commit; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on a build job's verdict of the rebased commit; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 3, the land stays queued with no verdict, its issue told once; build-job-slow: a started build is waited for; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
 tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin
 ```
 

@@ -4,6 +4,17 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A started build whose gates never get a slot** (2026-11-10, #113): `--build` and the manager tell "no runner"
+  only from a build with no status at all (its `pending` job never ran). A build whose `pending` job ran but whose
+  plan or child gates job then waits for a slot (operator#26's pipeline 3048020460, llmproxy#25's 3047711242:
+  pending at once, then nothing for 3h) is still waited for until `LOOPER_BUILD_WAIT`. A status the gates job's
+  pipeline sets when its gates start (from a job in the looper image beside them, never from the gates job, which
+  runs the repository's code and must hold no `statuses: write` token) would let the looper tell that too.
+- **A no-runner build cancelled** (2026-11-10, #113): a build no runner took is left pending in tacplus-dev/build
+  when `--build` or the manager gives up on it (the trigger token cannot cancel a pipeline, and the looper has no
+  other access to that project), and the next manager starts another; once a runner comes, the stale ones run too
+  and set statuses no one reads. A token that may cancel the build project's pipelines (the reader app's side, or a
+  project token with `api` on it alone) would let the looper cancel the one it stops waiting for.
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from

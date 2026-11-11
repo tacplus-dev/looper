@@ -862,7 +862,8 @@ onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging
 # again. Lands nothing, and says why, when the change is not committed, the
 # rebase conflicts in files it does not regenerate (exit 3, the files in the
 # record's `conflicts`: sent back), the gates fail or change a tracked file
-# (exit 4: red). The gates are the set the
+# (exit 4: red), or its build job never started (LAND_NO_RUNNER: no verdict,
+# it stays queued, looper#113). The gates are the set the
 # commits' diff calls for (choose_gates, looper#48). Each landing is recorded
 # in the run's `landed` file, "<main before> <main after>", with the gate set
 # when a gate map chose it, and the set and why in its `gate-sets`.
@@ -896,6 +897,10 @@ land_work() {
         # A pinned repository's gates are a build job's verdict (looper#71).
         log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
         build_gates "$before" > "$out/gates.log" 2>&1 || grc=$?
+        if (( grc == BUILD_NO_RUNNER )); then
+          { log "nothing landed, and no verdict: $(grep '^no runner: ' "$out/gates.log" | tail -n 1)"; } >&2
+          exit "$LAND_NO_RUNNER"
+        fi
       elif [[ -n "$MANAGER_TOKEN" ]]; then
         # Its gates would run beside the manager's token (looper#90).
         log "nothing landed: this manager holds the manager's token and runs no repository code; the gates $GATES_SET would run in its job, not as a build job ($REPO pins no build image, or the job holds no BUILD_TRIGGER_TOKEN). The next batch's verdict job runs them (looper#90)." >&2
@@ -983,7 +988,15 @@ land_request() {
     forge_issue_edit "$REPO" "$n" --add-label "$LABEL_LANDING" >/dev/null || true
     log "queued: the manager of $REPO merges $BRANCH after the lands queued before it, one at a time, and says on the issue what came of it; waiting for its verdict. If your time runs out first, it still lands it after you."
   fi
-  until v="$(land_verdict "$n" "$id")"; do sleep "$LAND_POLL"; done
+  local said=""
+  until v="$(land_verdict "$n" "$id")"; do
+    # No runner for the manager's build (looper#113): said, and still waited for.
+    if [[ -z "$said" ]] && forge_issue_comments "$REPO" "$n" 2>/dev/null | jq -rs --arg m "$(no_runner_marker "$id")" 'any(.[]; contains($m))' | grep -qx true; then
+      log "no runner has taken the manager's build job of $BRANCH yet: no verdict, the land stays queued and the next manager builds it again; waiting for its verdict"
+      said=1
+    fi
+    sleep "$LAND_POLL"
+  done
   m="$(grep -oE '<!-- looper-land id=[^ ]+ rc=[0-9]+[^>]*-->' <<<"$v" | tail -n 1)"
   rc="$(sed -nE 's/.* rc=([0-9]+).*/\1/p' <<<"$m")"; rc="${rc:-1}"
   landed="$(sed -nE 's/.* landed=([0-9a-f]+)\.\.([0-9a-f]+).*/\1 \2/p' <<<"$m")"
@@ -1029,12 +1042,19 @@ queue_history() { # issue line...
 # tacplus-reader[bot]: the looper's own GH_TOKEN could set one too), linking
 # the pipeline started. LOOPER_BUILD_WAIT (seconds, default 10800) is how long
 # a verdict is waited for, LOOPER_BUILD_POLL (default 30) between its reads.
+# A build has started once that app set any status linking it: its first job
+# sets pending (ci/build.gitlab-ci.yml). One with none within
+# LOOPER_BUILD_START (default 900) has no runner taking its jobs (looper#113):
+# no verdict, and no red, but "no runner", told at once.
 BUILD_API="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}"
 BUILD_PROJECT="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}"
 BUILD_CONTEXT="${LOOPER_BUILD_CONTEXT:-tacplus-dev/build}"
 BUILD_CREATOR="${LOOPER_BUILD_CREATOR:-tacplus-reader[bot]}"
 BUILD_WAIT="${LOOPER_BUILD_WAIT:-10800}"
 BUILD_POLL="${LOOPER_BUILD_POLL:-30}"
+BUILD_START="${LOOPER_BUILD_START:-900}"
+BUILD_NO_RUNNER=3   # build_verdict's exit when the build has not started
+LAND_NO_RUNNER=76   # a land whose build no runner took (looper#113): it stays queued
 BUILD_MAX="${LOOPER_BUILD_MAX:-30}"   # a report run's builds, at most
 PIN_FILES=(tacplus.lock build.lock)
 
@@ -1065,15 +1085,22 @@ start_build() { # sha gates base
 # The verdict of the build pipeline id on sha: the commit status the build's
 # reader app set, linking that pipeline, once it is no longer pending. Prints
 # it ("success: <description>", "failure: <why>"); 0 on success, 1 on a
-# failure, 2 when none came within LOOPER_BUILD_WAIT.
-build_verdict() { # sha pipeline-id
-  local end=$(( $(date +%s) + BUILD_WAIT )) v
+# failure, 2 when none came within LOOPER_BUILD_WAIT, BUILD_NO_RUNNER when no
+# status at all came within LOOPER_BUILD_START (the build never started).
+build_verdict() { # sha pipeline-id url
+  local now start end v started=""; now="$(date +%s)"; start=$(( now + BUILD_START )); end=$(( now + BUILD_WAIT ))
   while :; do
     v="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$1/statuses?per_page=100" 2>/dev/null |
          jq -r --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg p "/pipelines/$2" \
-           '[.[] | select(.context == $c and .creator.login == $who and (.target_url // "" | endswith($p)) and .state != "pending")]
-            | first // empty | "\(.state): \(.description // "")"' 2>/dev/null)" || v=""
+           '[.[] | select(.context == $c and .creator.login == $who and (.target_url // "" | endswith($p)))]
+            | (map(select(.state != "pending")) | first // empty | "\(.state): \(.description // "")"), (if length > 0 then "started" else empty end)' 2>/dev/null)" || v=""
+    [[ "$v" != *started ]] || started=1
+    v="$(sed '/^started$/d' <<<"$v" | head -n 1)"
     if [[ -n "$v" ]]; then echo "verdict: $v"; [[ "$v" == success:* ]]; return; fi
+    if [[ -z "$started" ]] && (( $(date +%s) >= start )); then
+      echo "no runner: the build job ${3:-of pipeline $2} has not started within $(hours "$BUILD_START") (no $BUILD_CONTEXT status on ${1:0:7}, not even pending): no runner has taken its jobs"
+      return "$BUILD_NO_RUNNER"
+    fi
     (( $(date +%s) < end )) || { echo "no verdict within $(hours "$BUILD_WAIT")"; return 2; }
     sleep "$BUILD_POLL"
   done
@@ -1090,7 +1117,7 @@ build_gates() { # base
   git push -q -f origin "$sha:refs/heads/$b" || { echo "nothing built: the rebased commit could not be pushed to $b"; return 1; }
   if p="$(start_build "$sha" "$gates" "$1")"; then
     echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}"
-    build_verdict "$sha" "${p%% *}" || rc=$?
+    build_verdict "$sha" "${p%% *}" "${p#* }" || rc=$?
   else echo "nothing built: $p"; rc=1; fi
   git push -q origin --delete "$b" >/dev/null 2>&1 || true
   return "$rc"
@@ -1102,7 +1129,7 @@ build_gates() { # base
 # looper does, and starts the build (the run's builds/ directory: a request,
 # then the pipeline or why not) once the checkpoint has put the commit on the
 # issue's branch. Prints the verdict; exits 0 on a pass, 1 on a failure, 2
-# with no verdict.
+# with no verdict, 3 when no runner took the build (looper#113).
 build_request() {
   local run="${LOOPER_RUN:-}" d sha base gates="" id i
   d="$run/builds"
@@ -1121,7 +1148,7 @@ build_request() {
   [[ ! -s "$d/$id.refused" ]] || die "the looper did not start the build: $(cat "$d/$id.refused")"
   [[ -s "$d/$id.started" ]] || die "the looper did not start the build within 5 minutes"
   echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}"
-  build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")"
+  build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")"
 }
 
 # The report's looper serves its model's build requests (looper#71), every
@@ -1273,11 +1300,31 @@ $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 
 # Merges one queued land (looper#70): judge_land, then post_land. Fails when
 # it could not judge it; LAND_DEFERRED, untouched, when the land would not
-# finish before the manager's job ends.
+# finish before the manager's job ends; LAND_NO_RUNNER, with no verdict and
+# still queued, when no runner took its build job (looper#113), said once on
+# its issue.
 merge_report() { # issue id sha
   local rec="$MANAGER_RUN/$1-$2"
   judge_land "$1" "$2" "$3" "$rec" || return
+  if (( JUDGE_RC == LAND_NO_RUNNER )); then
+    log "#$1: left queued: no runner took its build job; $(grep -o 'no runner: .*' "$rec/gates.log" | tail -n 1)"
+    no_runner_comment "$1" "$2" "$rec"
+    return "$LAND_NO_RUNNER"
+  fi
   post_land "$1" "$2" "$3" "$JUDGE_RC" "$rec"
+}
+
+# A land whose build no runner took (looper#113): its issue is told, once a
+# land, that it stays queued with no verdict yet. The report's --land, still
+# waiting, prints it.
+no_runner_marker() { echo "<!-- looper-norunner id=$1 -->"; } # land id
+no_runner_comment() { # issue id rec-dir
+  local why
+  forge_issue_comments "$REPO" "$1" 2>/dev/null | jq -rs --arg m "$(no_runner_marker "$2")" 'any(.[]; contains($m))' | grep -qx true && return 0
+  why="$(grep -o 'no runner: .*' "$3/gates.log" 2>/dev/null | tail -n 1 | sed 's/^no runner: //')"
+  forge_issue_comment "$REPO" "$1" "No runner has taken the build job of [\`$(wip_branch "$1")\`]($(wip_url "$1")) yet${why:+: $why}. This is no verdict: nothing is merged, and the land stays queued; the next manager builds it again.${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}
+
+$(no_runner_marker "$2")" >/dev/null || log "#$1: could not say that no runner took its build"
 }
 
 # Judges one queued land, in a scratch worktree of the manager's checkout at
@@ -1377,6 +1424,7 @@ manage() {
       [[ -n "$n" ]] || continue
       rc=0; merge_report "$n" "$id" "$sha" || rc=$?
       (( rc != LAND_DEFERRED )) || { log "the manager stops: its job's time is short; the next manager merges what is queued"; return 0; }
+      (( rc != LAND_NO_RUNNER )) || { log "the manager stops: no runner takes build jobs; the lands stay queued for the next manager"; return 0; }
     done <<<"$q"
     clear_stale_landing "$labelled" "$q"
     new=()
@@ -1451,6 +1499,7 @@ verdict_batch() {
     rc=0; judge_land "$n" "$id" "$sha" "$VERDICT_DIR/$n-$id" || rc=$?
     (( rc != LAND_DEFERRED )) || { log "the verdict job stops: its time is short; the next batch judges what is left"; break; }
     (( rc == 0 )) || continue
+    (( JUDGE_RC != LAND_NO_RUNNER )) || { log "#$n: left queued: no runner took its build job; the verdict job stops, the next batch judges what is left"; break; }
     echo "$n $id $sha $JUDGE_RC" >> "$VERDICT_DIR/lands"
     if (( JUDGE_RC == 0 )); then log "#$n: green"; else log "#$n: not merged (exit $JUDGE_RC)"; fi
   done <<<"$q"
@@ -2299,10 +2348,11 @@ memory_rule() {
 # (looper#71), with a build job: the model has no container runtime.
 verify_rule() { # issue
   if [[ -z "${BUILD_JOBS:-}" ]]; then echo "Verify with $(gates_hint)."; return 0; fi
-  printf '%s\n   %s\n   %s\n   %s\n   %s' \
+  printf '%s\n   %s\n   %s\n   %s\n   %s\n   %s' \
     "Verify with a build job: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds" \
     "your committed HEAD in the build image this repository pins, on the gate set your diff since main calls for, as the" \
-    "manager's merge will (tacplus-dev/build: no agent), and prints its verdict (exit 0 on a pass, 1 on a failure). You" \
+    "manager's merge will (tacplus-dev/build: no agent), and prints its verdict (exit 0 on a pass, 1 on a failure, 3 when no" \
+    "runner took it: no verdict, build again later). You" \
     "have no container runtime (no \`docker\`, so no \`tacplus\` here either): agents never build (looper#71). What needs" \
     "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
 }

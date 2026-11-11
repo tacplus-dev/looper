@@ -145,12 +145,23 @@ case "$url" in
   # once: the commit's gate set from origin, as looper-build runs it
   # (BUILD_STUB=build in its environment), and its commit status by the reader
   # app, linking the pipeline. $FIX/forge-status adds a success linking it too,
-  # newer, by another creator: no verdict.
+  # newer, by another creator: no verdict. $FIX/no-runner: no runner takes its
+  # jobs, so it sets no status at all; $FIX/build-slow: it started (pending)
+  # and has no verdict yet (looper#113).
   */projects/tacplus-dev%2Fbuild/trigger/pipeline)
     form="$(cat)"; v() { tr '&' '\n' <<<"$form" | sed -n "s/^$1=//p"; }
     sha="$(v 'inputs%5Bsha%5D')"; gates="$(v 'inputs%5Bgates%5D')"; base="$(v 'inputs%5Bbase%5D')"
     echo "$(v token) $(v 'inputs%5Brepo%5D') $sha $gates $base" >> "$FIX/builds"
     id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}"
+    if [[ -e "$FIX/no-runner" || -e "$FIX/build-slow" ]]; then
+      mkdir -p "$FIX/statuses"; f="$FIX/statuses/$sha.json"; [[ -f "$f" ]] || echo '[]' > "$f"
+      if [[ -e "$FIX/build-slow" ]]; then
+        jq -c --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" \
+          '[{state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: "tacplus-reader[bot]"}}] + .' "$f" > "$f.new" && mv "$f.new" "$f"
+      fi
+      reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"
+      exit 0
+    fi
     if ! git clone -q "$FIX/origin.git" "$d/src" 2>/dev/null || ! git -C "$d/src" -c advice.detachedHead=false checkout -q "$sha" 2>/dev/null; then
       state=failure; desc="tacplus-dev/alpha has no commit $sha"
     elif [[ -f "$d/src/gates.yaml" ]]; then
@@ -2360,6 +2371,10 @@ has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, notes.md, m
 pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$pr" "Verify with a build job: "; has "$pr" "have no container runtime (no \`docker\`, so no \`tacplus\` here either)"; has "$pr" "\`tacplus\` runs in the build job only"
 lacks "$pr" "limited to 2048m of memory"
+# Rule 4's lines, each once and in order, into "Long builds" (looper#113).
+[[ "$pr" == *"1 on a failure, 3 when no
+   runner took it: no verdict, build again later). You
+   have no container runtime"*"you may run yourself. The full gates are "*". Long builds: "* ]] || fail "rule 4: $(grep -A7 '^4\. ' <<<"$pr")"
 pass
 
 # A red build: --build says why and exits 1, and the manager merges nothing.
@@ -2389,6 +2404,52 @@ has "$(cat "$FIX/land-4")" "rc 0"; [[ ! -e "$FIX/builds" ]] || fail "built: $(ca
 [[ "$(cat "$FIX/gates-ran")" == "docs here $(origin rev-parse main~1)" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
 has "$OUT$(cat "$FIX/manager.log")" "this job holds no BUILD_TRIGGER_TOKEN"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Verify with the full gates"
+pass
+
+# A build no runner takes (looper#113) sets no commit status, not even its
+# pending: within LOOPER_BUILD_START it is "no runner", not red. --build says
+# so and exits 3; the manager merges nothing, gives no verdict and stops, the
+# land still queued for the next manager, and says so on the issue once, which
+# the report's --land, still waiting, prints.
+scenario build-job-no-runner
+pin_seed; touch "$FIX/no-runner"
+cat >> "$FIX/claude.sh" <<'EOS'
+echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+timeout 20 "$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run "${BUILDS[@]}" LOOPER_BUILD_START=2
+b="$(cat "$FIX/build-4")"
+has "$b" "no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 has not started within 1m"; has "$b" "rc 3"
+lacks "$b" "verdict:"
+m="$(cat "$FIX/manager.log")"
+has "$m" "#4: left queued: no runner took its build job"; has "$m" "the manager stops: no runner takes build jobs"
+lacks "$m" "not merged"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued: $(origin show looper/alpha-4:.looper/land)"
+c="$(cat "$FIX/comments")"
+has "$c" "No runner has taken the build job"; lacks "$c" "looper-land id="
+has "$(cat "$FIX/land-4")" "no runner has taken the manager's build job"
+has "$OUT" "#4: land-pending"; has "$(labels alpha 4)" "looper:landing"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+# The next manager builds it again, and says nothing new on the issue.
+manager_start "${BUILDS[@]}" LOOPER_BUILD_START=2; manager_wait
+[[ "$(wc -l < "$FIX/builds")" == 3 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(grep -c 'No runner has taken' "$FIX/comments")" == 1 ]] || fail "said more than once: $(cat "$FIX/comments")"
+grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued"
+pass
+
+# A build that started (its pending status) is never "no runner": it is waited
+# for until LOOPER_BUILD_WAIT, as before.
+scenario build-job-slow
+pin_seed; touch "$FIX/build-slow"
+cat >> "$FIX/claude.sh" <<'EOS'
+echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+EOS
+run "${BUILDS[@]}" LOOPER_BUILD_START=1 LOOPER_BUILD_WAIT=4
+b="$(cat "$FIX/build-4")"
+has "$b" "no verdict within 1m"; has "$b" "rc 2"; lacks "$b" "no runner"
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------
