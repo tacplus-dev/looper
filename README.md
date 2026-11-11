@@ -50,7 +50,8 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   kept 30 days, also when the job fails): the runner VM is gone after the job, so the issue comments
   link the job, not a path on it. See [After a run](#after-a-run).
 - **The nightly scan** changes no code: it files a `bug` per finding (dependency vulnerabilities,
-  gates failing on main, pins off the latest MAJOR.MINOR line). Mechanical fixes are filed `approved`,
+  gates failing on main, pins off the latest MAJOR.MINOR line, a STATE.md `Blocked on` that names a closed
+  issue). Mechanical fixes are filed `approved`,
   the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
   The platform roadmap's own nightly scan is instead the suggestion pass for the whole platform: up to 5 evidenced
   suggestions a night in tacplus-dev/roadmap `suggestions/`, for Jody's daily review. See [Suggestions](#suggestions).
@@ -166,6 +167,10 @@ looper creates both labels in a repository that lacks them.
   to PROPOSALS.md. The model leaves that file in the checkout and pushes nothing. The looper then commits that file's
   change alone on main (looper#83), and its model runs as `looper-scan`, a user of its own. After the scan, an issue it
   filed with no kind gets `bug`, and a feature it filed loses `approved`.
+- **STATE.md's `Blocked on`** (looper#132) is prose no report rewrites when another repository's issue closes, so the
+  nightly scan reads it against the forge: the looper reads the state of each issue the item names (`#N`, the
+  repository's; `owner/repo#N`; on its line and the lines that continue it) into the run's `blocked-on.txt`, and the
+  scan's prompt lists the closed ones: one `bug`, `approved`, to rewrite the line (drop each, or name what blocks now).
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`, on GitLab `.../-/issues/N`) in
@@ -228,6 +233,7 @@ helper of the handler's is not seen: the model reads those.
 looper-trace check .           # at a service's root
 tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal and one unrelated call, a background loop, a propagation test): passes when right; flags a dropped trace_id on the causal call and never the unrelated one, a marker without a reason, a handler with no propagation test; a seam taking a row by value and its trace_id as a parameter (carried, the row's trace_id dropped, covered through the handler's test); the trace_id through a variable, a builder, a forwarded tonic request, a client in a variable or behind an accessor; generated code, other libraries' clients and functions taking only references not read as handlers; Java named, not read
 tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work and think prompts, the scan's check on main and its item 5
+tests/repo-looper.test.sh      # scan-blocked-on: STATE.md's Blocked on read against the issues' states, the closed ones the scan's item 6 (#132)
 ```
 
 ### Managers and direct reports

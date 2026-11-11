@@ -29,6 +29,9 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # `gh api .../collaborators/<login>/permission` from $FIX/permissions/<login>,
 # each lookup recorded in $FIX/permission-lookups (the login); one that holds
 # `fail` fails as GitHub's 5xx does, after printing what it holds.
+# `gh api graphql` answers forge_issue_states' aliased query from the issues'
+# files (null, and exit 1, for one there is none of), each query appended to
+# $FIX/graphql; $FIX/graphql-fail refuses it as GitHub does when it is down.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -40,6 +43,15 @@ case "$cmd" in
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
   # A commit's statuses (looper#71), newest first: $FIX/statuses/<sha>.json, which the stub build writes.
+  "api graphql")
+    echo "$2" >> "$FIX/graphql"; [[ ! -e "$FIX/graphql-fail" ]] || { echo "stub gh: HTTP 502" >&2; exit 1; }
+    q="${2#query=}"; data='{}'; rc=0
+    while read -r a o r n; do
+      if [[ "$o" == tacplus-dev && -f "$FIX/issues/$r-$n.json" ]]; then data="$(jq --arg a "$a" --slurpfile i "$FIX/issues/$r-$n.json" '.[$a] = {issue: {state: $i[0].state}}' <<<"$data")"
+      else data="$(jq --arg a "$a" '.[$a] = null' <<<"$data")"; rc=1; fi
+    done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issue\(number: [0-9]+\)' <<<"$q" \
+               | sed -E 's/^([a-z0-9_]+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3 \4/')
+    jq -c '{data: .}' <<<"$data"; exit "$rc" ;;
   api\ repos/*/commits/*/statuses*) c="${cmd#api repos/*/commits/}"; c="${c%%/*}"; cat "$FIX/statuses/$c.json" 2>/dev/null || echo '[]'; exit 0 ;;
 esac
 n=""; repo=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; title=""
@@ -1221,6 +1233,52 @@ has "$pp" "5. Trace propagation (tacplus-dev/looper#51"
 has "$pp" "is $d/trace.txt (verdict: fail (2 findings))."
 has "$(cat "$d/trace.txt")" "FINDING dropped-trace internal/handler.go:4: Place's call Reserve"
 has "$(cat "$d/trace.txt")" "FINDING untested internal/handler.go:3: Place"
+pass
+
+# A STATE.md's Blocked on that names a closed issue is stale, and no report
+# rewrites it (looper#132): the nightly scan reads the state of each issue the
+# line names (#N, this repository's; owner/repo#N; its continuation lines,
+# not the next item's) into the run's blocked-on.txt, and its prompt lists
+# the closed ones, one approved bug to file; none closed, nothing to file;
+# the states unread, the model reads them; no Blocked on, nothing to read.
+scenario scan-blocked-on
+templates
+: > "$FIX/scan.sh"
+issue alpha 2 CLOSED "" "x"; issue beta 3 OPEN "" "y"; issue alpha 5 CLOSED "" "z"; issue alpha 6 CLOSED "" "w"
+cat > "$FIX/seed/STATE.md" <<'MD'
+# State: alpha
+
+- **Blocked on:** #2 (pipeline setup), tacplus-dev/beta#3 (a compiler floor), other/repo#9,
+  tacplus-dev/alpha#5 (the next line's) and #2 again
+- **Gaps:** #6 is a gap, not a blocker
+MD
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm state && git -C "$FIX/seed" push -q origin main
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ "$(cat "$d/blocked-on.txt")" == "tacplus-dev/alpha#2 CLOSED
+tacplus-dev/beta#3 OPEN
+other/repo#9 MISSING
+tacplus-dev/alpha#5 CLOSED" ]] || fail "blocked-on.txt: $(cat "$d/blocked-on.txt" 2>&1)"
+pp="$(cat "$d/prompt.md")"
+has "$pp" "6. STATE.md's Blocked on (tacplus-dev/looper#132): the state of each issue it names is $d/blocked-on.txt"
+has "$pp" "closed: tacplus-dev/alpha#2 tacplus-dev/alpha#5."
+has "$pp" "file one issue for them, labelled \`bug\` and \`approved\`"
+rm -rf "$d"
+jq '.state = "OPEN"' "$FIX/issues/alpha-2.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-2.json"
+jq '.state = "OPEN"' "$FIX/issues/alpha-5.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-5.json"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"; pp="$(cat "$d/prompt.md")"
+has "$pp" "none is closed: nothing to file."; lacks "$pp" "file one issue for them"
+rm -rf "$d"; touch "$FIX/graphql-fail"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"; pp="$(cat "$d/prompt.md")"
+has "$pp" "the states of the issues it names could not be read"; [[ ! -e "$d/blocked-on.txt" ]] || fail "blocked-on.txt without states"
+rm -rf "$d" "$FIX/graphql-fail" "$FIX/graphql"
+git -C "$FIX/seed" rm -q STATE.md && git -C "$FIX/seed" commit -qm nostate && git -C "$FIX/seed" push -q origin main
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+has "$(cat "$d/prompt.md")" "6. STATE.md names no issue it is blocked on: nothing to check."
+[[ ! -e "$FIX/graphql" ]] || fail "states read with no Blocked on: $(cat "$FIX/graphql")"
 pass
 
 # The roadmap's nightly scan is the platform's suggestion pass (looper#50): the

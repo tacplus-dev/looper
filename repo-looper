@@ -3235,6 +3235,45 @@ IT
   fi
 }
 
+# The scan's STATE.md item (looper#132): STATE.md's Blocked on, a line no
+# report rewrites when another repository's issue closes (a report updates its
+# own repository's alone), read against the forge: each issue the item names
+# (#N, this repository's; owner/repo#N; repo#N, the org's), on its line and
+# the lines that continue it, its state read by the looper into the run's
+# blocked-on.txt as "<owner>/<repo>#<n> <OPEN|CLOSED|MISSING>" lines (MISSING:
+# no issue of LOOPER_ORG); a closed one, the model's to file as a mechanical bug.
+blocked_on_refs() { # STATE.md: "<repo> <n>" lines, each once, in their order
+  awk 'on && (/^[[:space:]]*$/ || /^[^[:space:]]/) { on = 0 }
+       /^[-*[:space:]]*(\*\*)?Blocked on/ { on = 1 }
+       on' "$1" 2>/dev/null \
+    | grep -oE '(([A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+)?#[0-9]+' \
+    | while IFS='#' read -r slug n; do
+        if [[ -z "$slug" ]]; then echo "$REPO $n"
+        else echo "${slug#"$LOOPER_ORG/"} $n"; fi
+      done | awk '!seen[$0]++'
+}
+blocked_on_item() { # run-dir
+  local refs states closed
+  refs="$(blocked_on_refs "$CHECKOUT/STATE.md")"
+  [[ -n "$refs" ]] || { echo "6. STATE.md names no issue it is blocked on: nothing to check."; return 0; }
+  if ! states="$(forge_issue_states <<<"$refs")"; then
+    echo "6. STATE.md's Blocked on (tacplus-dev/looper#132): the states of the issues it names could not be read: read each (\`$(forge_cmd view "$REPO" N)\`), and treat a closed one as below."
+    return 0
+  fi
+  awk -v org="$LOOPER_ORG" '{ print ($1 ~ /\// ? $1 : org "/" $1) "#" $2, $3 }' <<<"$states" > "$1/blocked-on.txt"
+  closed="$(awk '$2 == "CLOSED" { print $1 }' "$1/blocked-on.txt" | paste -sd' ')"
+  cat <<IT
+6. STATE.md's Blocked on (tacplus-dev/looper#132): the state of each issue it names is $1/blocked-on.txt,
+   as the looper read it; ${closed:+closed: $closed.}${closed:-none is closed: nothing to file.}
+IT
+  [[ -z "$closed" ]] || cat <<IT
+   A closed one makes the line stale (agents and Jody read it for what holds this up): file one issue for them, labelled \`$LABEL_BUG\` and \`$LABEL_APPROVED\`
+   (the fix is mechanical: rewrite the line, dropping each closed issue or naming what blocks now), quoting the line
+   and each closed issue. One MISSING (another org's, or no issue the looper could read): read it yourself.
+IT
+  return 0
+}
+
 scan() {
   local run before report base; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
@@ -3256,6 +3295,7 @@ $(security_item "$report")
 4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
    MAJOR.MINOR line it should follow.
 $(trace_item "$run")
+$(blocked_on_item "$run")
 For each finding, first check the open issues (\`$(forge_cmd list "$REPO")\`) and skip one already
 filed. Each finding is a bug ($ISSUE_FLOW): file each new one as one issue labelled \`$LABEL_BUG\`, with a title, the
 evidence (command and output), the fix you recommend and acceptance criteria. Label it \`$LABEL_APPROVED\` too when the
