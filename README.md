@@ -103,7 +103,7 @@ ones their repository lacks before they set one, and a label edit that fails is 
 
 The repositories are public, so anyone can comment on an approved issue, and a run reads its body and every
 comment: a stranger's comment is a prompt-injection path into an agent that can push code (looper#40). So
-`repo-looper` puts the issue's text in the prompt itself (the work, think, classify, propose and plan prompts), each
+`repo-looper` puts the issue's text in the prompt itself (the work, classify, propose and plan prompts), each
 piece (the title and body, then each comment) in a block keyed by a nonce drawn for that prompt with
 `openssl rand`, never by the model:
 
@@ -122,8 +122,7 @@ piece (the title and body, then each comment) in a block keyed by a nonce drawn 
   the model reads itself: newer comments, pull requests and their comments, linked issues.
 - **Text that holds the nonce is refused** (it could forge a block's end): the block says the looper refused it,
   and the job's log names its author. The nonce is redacted from the run's checkpoints (`.looper/prompt.md` on the
-  issue's branch, the log tail), the looper's comments and the think job's `comment.md`, and the model is told
-  never to write it.
+  issue's branch, the log tail) and the looper's comments, and the model is told never to write it.
 - **Quoted source text is data, whoever filed the issue.** A tool that quotes text from outside tacplus-dev into an
   issue puts it between `<!-- looper:source-text from=<source> -->` and `<!-- /looper:source-text -->` (with `<` and
   `>` escaped, so the text cannot end the section), and `repo-looper` gives that section to the model in its own
@@ -179,18 +178,17 @@ itself, checkpointed, before GitLab kills the job.
 
 ### Standing rules
 
-Every work prompt states the same rules, whatever the issue (`work_issue` in `repo-looper`; the think job's prompt
-has them too, without pushing): do what the issue asks or ask (`needs-decision`); tests first; sub-agents; the
-gates; commit and land; the planning files; bug or feature; the outcome comment and closing; `Blocked-by:`; the
-time limit and checkpoints; reading the roadmaps before opening an issue; who directs the run (looper#40); and
-**trace propagation** (looper#51, below).
+Every work prompt states the same rules, whatever the issue (`work_issue` in `repo-looper`): do what the issue asks or
+ask (`needs-decision`); tests first; sub-agents; the gates; commit and land; the planning files; bug or feature; the
+outcome comment and closing; `Blocked-by:`; the time limit and checkpoints; reading the roadmaps before opening an
+issue; who directs the run (looper#40); and **trace propagation** (looper#51, below).
 
 ### Trace propagation
 
 tacplus's `trace_id` (field 200 of every message) is propagated by handler code, not by the generated wrappers: they
 cannot know which outgoing calls a request causes (tacplus#265; tacplus `docs/USER.md`, Distributed Tracing). Jody,
 2026-11-01: "this is a test that the user should write and a looper/agent should verify exist". So it is a standing
-rule of every run that touches a service's handlers (work prompt rule 13, think prompt rule 12):
+rule of every run that touches a service's handlers (work prompt rule 13):
 
 - **Implemented:** every outgoing call a handler makes because of its inbound request carries the inbound
   `trace_id`. A call the request does not cause (background work, unrelated fan-out, batching across requests)
@@ -199,8 +197,7 @@ rule of every run that touches a service's handlers (work prompt rule 13, think 
   handler it changes or adds.
 - **Tested:** each handler that makes causal calls has a test, in the service's own tests, asserting that the
   `trace_id` it received arrives on each of them (USER.md's pattern). The looper writes a missing one as part of
-  its change, or files a `bug` in the repository when it does not touch that handler (the think job names it in
-  its comment).
+  its change, or files a `bug` in the repository when it does not touch that handler.
 - **Verified, not assumed:** the run's outcome comment names the handlers it checked and the tests that cover them.
   A handler dropping the `trace_id` on a causal call is a bug like any other: fix, test, patch.
 - **The nightly scan** (`repo-looper --scan`) runs the check on main before the model, into the run's `trace.txt`,
@@ -225,7 +222,7 @@ helper of the handler's is not seen: the model reads those.
 ```sh
 looper-trace check .           # at a service's root
 tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal and one unrelated call, a background loop, a propagation test): passes when right; flags a dropped trace_id on the causal call and never the unrelated one, a marker without a reason, a handler with no propagation test; a seam taking a row by value and its trace_id as a parameter (carried, the row's trace_id dropped, covered through the handler's test); the trace_id through a variable, a builder, a forwarded tonic request, a client in a variable or behind an accessor; generated code, other libraries' clients and functions taking only references not read as handlers; Java named, not read
-tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work and think prompts, the scan's check on main and its item 5
+tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work prompt, the scan's check on main and its item 5
 ```
 
 ### Managers and direct reports
@@ -334,11 +331,12 @@ pin issue (filed by the hub) commits one.
   rule 4 says so. Since looper#68 the model runs as a user outside the socket's group, so it cannot reach the host's
   socket either way. Taking the socket's mount out of the job's container is the runner's configuration
   (tacplus-dev/cloud).
-- **The trigger** is `BUILD_TRIGGER_TOKEN`, a pipeline trigger token of tacplus-dev/build owned by its bot user (as
-  the [looper identity](#looper-identity)'s), a protected, masked CI variable of tacplus-dev/looper that the report and
-  manager jobs read ([Credentials](#credentials)). A job without it builds as before, even in a pinned repository,
-  and its log says so: the cutover waits for the token as well as the pin, so no repository's merges stop on a
-  missing one.
+- **The trigger** is `BUILD_TRIGGER_TOKEN`, a pipeline trigger token of tacplus-dev/build owned by its bot user (a
+  free gitlab.com account, never Jody, a Maintainer of tacplus-dev/build alone: GitLab runs a triggered pipeline as its
+  owner, who on a protected main must be allowed to merge to it), a protected, masked CI variable of tacplus-dev/looper
+  that the report and manager jobs read ([Credentials](#credentials)). A job without it builds as before, even in a
+  pinned repository, and its log says so: the cutover waits for the token as well as the pin, so no repository's merges
+  stop on a missing one.
 - **The looper repository's build image is the looper image, by digest** (`build.lock`; Jody on looper#71): it is no
   tacplus project, and its gates are the bash tests of `gates.yaml`, which run in that image. A new digest is a
   change like any other.
@@ -940,161 +938,6 @@ tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or
 Left to the hub: a pipeline schedule per repository on tacplus-dev/build (inputs `repo`, `nightly: true`), and the
 package registry left on (the default). `ci/build.gitlab-ci.yml` is copied there as is.
 
-## Looper identity
-
-A looper writes as its own repository's bot, not as Jody (tacplus-dev/roadmap `items/looper-identity-2026-10-29.md`, and
-`decisions/looper-identity-panel-2026-10-29/SYNTHESIS.md`, which takes precedence; looper#28). **The pilot is kernel**: its
-commits, pull requests, comments and labels are `kernel-looper[bot]`'s, and nothing falls back to Jody's `GH_TOKEN` or
-`GITLAB_TOKEN`. Every other repository stays on the pipeline above until a follow-up moves it.
-
-- **The GitLab project `gitlab.com/tacplus-dev/kernel`** holds no code (the code is on GitHub, which hosts everything open
-  source), only its `.gitlab-ci.yml`: `ci/looper.gitlab-ci.yml` here, copied as is (its `LOOPER_REPO` is the project's
-  name). Its main is protected and changed only by Jody or the hub; pipeline variables are forbidden (`no_one_allowed`); its
-  schedule starts it. There is no GitLab write token at all.
-- **One run at a time:** the schedule's (or the web's) pipeline has one job, `run`, which runs the three jobs below as a child
-  pipeline of the same file and holds the resource group `looper` until the child ends. No issue is claimed: runs never
-  overlap, and an issue whose pull request (`looper/kernel-<n>`) is open is in review, not ready.
-- **`prepare`** (`looper-identity prepare`, LLM-free): exchanges the job's GitLab `id_token` through Workload Identity
-  Federation, has Cloud KMS sign the `tacplus-reader` app's JWT and mints a one-hour installation token with
-  `contents`, `issues` and `metadata` **read**. It takes the input `issue` if it is ready, else the next ready issue ([priority](#priority), then oldest), and
-  hands both to `think` as a dotenv report (`access: none`, expiring in an hour).
-- **`think`** (`repo-looper --think`): the model and the gates. **No identity:** no `id_tokens`, no variable but the model's
-  `CLAUDE_CODE_OAUTH_TOKEN`, scoped to the environment `looper-think`. It refuses to run beside a write credential, an
-  `id_token` or anything shaped like a personal token; GitLab's job token is dropped; the reader token must **fail** to push
-  (`git push --dry-run`). The model leaves its change in the checkout and writes its comment and outcome (`pr` with a title,
-  `question`, `blocked` with its `Blocked-by:` lines). On a pull request the looper appends the issue's `HISTORY.md` line and
-  runs the gates on the change; they must pass, and must not change the tree. It writes `think/patch` (from `think/base`,
-  origin/main) and `think/tree`, **the tested tree**. A run that hits its limit or ends without an outcome is `timeout` or
-  `stuck`, its change kept. A `blocked` outcome drops the issues closed by now; one naming only those is `resume` (looper#46).
-- **`commit`** (`looper-identity commit`, LLM-free, compiles nothing, on protected main): applies the patch to its base with
-  no hooks and **refuses it unless the tree is the tested one** (or if it touches `ROADMAP.md`). It exchanges its own
-  `id_token` at its start, then unsets it; the token's issuer, audience, age (at most 5 minutes) and GitLab's own word for the
-  project, ref and source must match the job, so a variable overriding GitLab's own is refused. KMS signs the
-  `kernel-looper` app's JWT, and each step mints its own installation token for `repositories: [kernel]` alone, with that
-  step's permissions (`contents` to push, `pull_requests` for the pull request, `issues` for the comment). By the outcome:
-  - `pr`: pushes `looper/kernel-<n>` (authored by `kernel-looper[bot]`), opens the pull request (`Closes #<n>`), enables
-    squash auto-merge, and starts `tacplus-dev/build` on its head with the build trigger token. GitHub squash-merges once
-    the required check passes; that commit is GitHub's, so it is **Verified**, and the merge closes the issue.
-  - `question`: the comment, and `needs-decision`. `blocked`: the `Blocked-by:` lines the body lacks, and the comment.
-  - `timeout` and `resume`: the change kept on `looper/kernel-<n>` (the next run resumes from it), and a comment. `stuck` (and a think
-    job that failed): the same, and `looper:stuck`.
-  The outcome is data: its type picks one of these fixed actions, and its text is only ever posted as a comment.
-- **Refused:** a job that holds Jody's tokens or the model's credential (in `prepare` or `commit`); a pipeline that is not
-  the project's own child pipeline on protected main (`CI_PIPELINE_SOURCE` and the `id_token`'s `pipeline_source` must be
-  `parent_pipeline`): a pipeline from the API, a trigger or a push is how variables come in.
-
-```sh
-looper-identity prepare | commit                                 # what the jobs run (README: the environment)
-repo-looper --repo kernel --issue N --think DIR                  # the think job
-tests/looper-identity.test.sh   # prepare and commit against a local origin, a stub GitHub (each app's JWT verified, kernel-looper installed on kernel alone) and a stub WIF and KMS (a key signs only for the project bound to it): a tree mismatch, a ROADMAP.md change, a token for another repository, a pipeline from elsewhere or a variable overriding GitLab's, an old or foreign id_token, Jody's tokens all refused; the pull request, auto-merge, build, question, blocked, timeout and stuck
-tests/repo-looper.test.sh       # also the think job: no identity (Jody's tokens, an id_token, a token that can push all refused), nothing written to GitHub, the outcome, the patch that gives the tested tree, gates that fail or change the tree
-```
-
-### Setting it up (the hub, with Jody's approval as recorded on looper#28)
-
-`P=jody1-328023`, `PN=$(gcloud projects describe $P --format='value(projectNumber)')`, `NS` the tacplus-dev group's id
-(`curl -s https://gitlab.com/api/v4/groups/tacplus-dev | jq .id`), `KP` the kernel project's id once created, and
-`PROVIDER=projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/providers/gitlab-com`.
-
-**Workload Identity Federation**: a pool of its own, with one provider, for gitlab.com. The condition pins tacplus-dev's
-namespace and protected refs; the composite attribute `looper` is what each key's binding matches (SYNTHESIS 3, 4, 18, 20):
-
-```sh
-gcloud iam workload-identity-pools create gitlab-loopers --project=$P --location=global --display-name="gitlab.com loopers"
-gcloud iam workload-identity-pools providers create-oidc gitlab-com --project=$P --location=global \
-  --workload-identity-pool=gitlab-loopers --issuer-uri=https://gitlab.com \
-  --attribute-mapping='google.subject=assertion.project_id + ":" + assertion.job_id,attribute.namespace_id=assertion.namespace_id,attribute.looper=assertion.project_id + ":" + assertion.ref + ":" + assertion.ref_protected + ":" + assertion.pipeline_source' \
-  --attribute-condition="assertion.namespace_id == \"$NS\" && assertion.ref_protected == \"true\""
-```
-
-The jobs' `id_tokens` audience is the provider's default, `https://iam.googleapis.com/$PROVIDER`; `GCP_WIF_PROVIDER` is
-`$PROVIDER`. Only Jody holds admin on the pool and `setIamPolicy` on the key ring.
-
-**The apps' keys in Cloud KMS.** Jody creates the GitHub App `kernel-looper` (private; installed only on kernel;
-permissions contents, issues and pull requests **write**, metadata read; no webhook) and downloads its private key. The
-hub imports it once, as a non-exportable key, and deletes the file; it never exists outside Google again (SYNTHESIS 10). The
-`tacplus-reader` app's key is imported the same way, as `tacplus-reader`:
-
-```sh
-gcloud kms keyrings create looper --location=us --project=$P
-gcloud kms keys create kernel-looper --keyring=looper --location=us --project=$P --purpose=asymmetric-signing \
-  --default-algorithm=rsa-sign-pkcs1-2048-sha256 --protection-level=software --import-only --skip-initial-version-creation
-gcloud kms import-jobs create kernel-looper-import --keyring=looper --location=us --project=$P \
-  --import-method=rsa-oaep-3072-sha256-aes-256 --protection-level=software
-openssl pkcs8 -topk8 -nocrypt -inform PEM -outform DER -in kernel-looper.private-key.pem -out kernel-looper.der
-gcloud kms keys versions import --import-job=kernel-looper-import --keyring=looper --location=us --project=$P \
-  --key=kernel-looper --algorithm=rsa-sign-pkcs1-2048-sha256 --target-key-file=kernel-looper.der   # version 1
-shred -u kernel-looper.private-key.pem kernel-looper.der
-# Each key's own binding, never at the key ring or project: kernel's protected main, in its own child pipeline, alone.
-gcloud kms keys add-iam-policy-binding kernel-looper --keyring=looper --location=us --project=$P --role=roles/cloudkms.signer \
-  --member="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/attribute.looper/$KP:main:true:parent_pipeline"
-# The reader: every project of the namespace, on protected refs (the pool's condition).
-gcloud kms keys add-iam-policy-binding tacplus-reader --keyring=looper --location=us --project=$P --role=roles/cloudkms.signer \
-  --member="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/gitlab-loopers/attribute.namespace_id/$NS"
-```
-
-Data Access audit logs on, for KMS and the token exchange (`gcloud projects get-iam-policy $P --format=yaml > policy.yaml`, add
-this, then `gcloud projects set-iam-policy $P policy.yaml`):
-
-```yaml
-auditConfigs:
-- service: cloudkms.googleapis.com
-  auditLogConfigs: [{logType: DATA_READ}, {logType: DATA_WRITE}, {logType: ADMIN_READ}]
-- service: sts.googleapis.com
-  auditLogConfigs: [{logType: DATA_READ}, {logType: DATA_WRITE}, {logType: ADMIN_READ}]
-```
-
-**The GitLab project** (`G=https://gitlab.com/api/v4`, `H="PRIVATE-TOKEN: <Jody's or the hub's token>"`):
-
-```sh
-curl -sH "$H" -X POST $G/projects -d name=kernel -d path=kernel -d namespace_id=$NS -d visibility=private \
-  -d shared_runners_enabled=false -d group_runners_enabled=false     # its id is $KP
-curl -sH "$H" -X PUT $G/projects/$KP -d ci_pipeline_variables_minimum_override_role=no_one_allowed \
-  -d restrict_user_defined_variables=true
-curl -sH "$H" -X POST $G/projects/$KP/repository/files/.gitlab-ci.yml -d branch=main -d commit_message="looper (looper#28)" \
-  --data-urlencode content@ci/looper.gitlab-ci.yml
-curl -sH "$H" -X POST $G/projects/$KP/protected_branches -d name=main -d push_access_level=40 -d merge_access_level=40
-for v in "GCP_WIF_PROVIDER=$PROVIDER" "LOOPER_KMS_KEYRING=projects/$P/locations/us/keyRings/looper" \
-         LOOPER_APP_ID=<kernel-looper's app id> LOOPER_INSTALLATION_ID=<its installation on kernel> \
-         TACPLUS_READER_APP_ID=<the reader's app id> TACPLUS_READER_INSTALLATION_ID=<its installation>; do
-  curl -sH "$H" -X POST $G/projects/$KP/variables -d key="${v%%=*}" --data-urlencode value="${v#*=}" -d protected=false
-done   # names, not secrets: no protected variable reaches the think job
-curl -sH "$H" -X POST $G/projects/$KP/variables -d key=CLAUDE_CODE_OAUTH_TOKEN --data-urlencode value=<the model's token> \
-  -d protected=true -d masked=true -d environment_scope=looper-think
-curl -sH "$H" -X POST $G/projects/$KP/variables -d key=BUILD_TRIGGER_TOKEN --data-urlencode value=<the build trigger token> \
-  -d protected=true -d masked=true -d environment_scope=looper-commit
-curl -sH "$H" -X POST $G/projects/$KP/pipeline_schedules -d description=looper -d ref=main -d cron="7 * * * *" \
-  -d cron_timezone=UTC -d active=true
-curl -sH "$H" -X POST $G/projects/$KP/runners -d runner_id=<the build runner's id>     # below
-```
-
-**The build trigger token** (SYNTHESIS 11, 12): a pipeline trigger of `tacplus-dev/build`, owned by a bot user of its own
-(a free gitlab.com account, a member of `tacplus-dev/build` alone, never Jody), created with that user's token, which is then
-revoked: `curl -H "PRIVATE-TOKEN: <the bot's>" -X POST $G/projects/tacplus-dev%2Fbuild/triggers -d description=kernel-looper`.
-The commit job starts the build with it and inputs (`inputs[repo]`, `inputs[sha]`; the trigger API takes inputs). GitLab
-runs a triggered pipeline as the token's owner, and on a protected main that owner must be allowed to merge to it, which
-GitLab Free grants by role: **the bot needs Maintainer on `tacplus-dev/build`**, not Developer (looper#28; PROPOSALS.md).
-
-**The runner:** one ephemeral VM per job, unprivileged. The build runner (above: `max_use_count = 1`, a VM with no service
-account and no scopes, deleted after its job) is enabled on kernel's project too; every job of the pipeline carries
-`tags: [arm64, build]`.
-
-**GitHub, on kernel** (public, so GitHub Free allows all of it; the hub, once Jody says the pilot is ready). The required
-check is the build's status, from the `tacplus-reader` app alone; main requires signed commits; squash only:
-
-```sh
-gh api -X PUT repos/tacplus-dev/kernel/branches/main/protection --input - <<JSON
-{"required_status_checks": {"strict": false, "checks": [{"context": "tacplus-dev/build", "app_id": <the reader's app id>}]},
- "enforce_admins": false, "required_pull_request_reviews": null, "restrictions": null}
-JSON
-gh api -X POST repos/tacplus-dev/kernel/branches/main/protection/required_signatures
-gh api -X PATCH repos/tacplus-dev/kernel -F allow_squash_merge=true -F allow_merge_commit=false -F allow_rebase_merge=false \
-  -F allow_auto_merge=true -F delete_branch_on_merge=true
-```
-
-Then one real kernel issue end to end (a pull request by `kernel-looper[bot]`, squash-merged once the build passed, its
-commit Verified on main), and a follow-up issue for every other repository; Jody's group tokens are deleted after that.
-
 ## Running it
 
 ```sh
@@ -1161,7 +1004,7 @@ else's, with only the scopes its job uses: the land's gates run a child's commit
 | `looper-<issue>`, the report's | that report's models (classify, propose, work), and what they start | its clone (`LOOPER_WORK/<repo>/issues/<issue>`), its home (`LOOPER_WORK/<repo>/homes/looper-<issue>`: git's credential helper, `TMPDIR`, `CARGO_HOME`, the tacplus cache) and its run directory, each `0700`/`0750` and its own; its own environment (`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, not the withheld ones); the checkpoint lock. Not another user's processes (no signal, no `/proc/<pid>/environ`), files or containers, nor the Docker socket |
 | `looper-docker` | `looper-docker-broker`, one per model run, in the socket's group and that model's | the Docker socket, for that model's uid alone (`SO_PEERCRED`): `docker run`/`create` with its memory limit, no `--privileged`, capabilities, devices, host or other containers' namespaces, and no mount outside its worktree and home (symlinks resolved) nor of a named volume; `start`, `stop`, `exec`, `logs`, `rm`, `cp` and the like on its own containers (label `io.tacplus.looper.owner`); `ps` of its own; `build` of a context in its worktree; `pull`, `images`, `inspect`. `compose`, `buildx`, `volume`, `network`, `system`, `login` and the rest are refused |
 
-The scan and the think job run their one model as the job's user, with no report beside it. GitLab's file variables
+The scan runs its one model as the job's user, with no report beside it. GitLab's file variables
 (`$CI_PROJECT_DIR.tmp`, world-readable as the runner writes them) are made the job's alone before a report's model starts, and
 the job's home (`/root`, where the image keeps tools on the PATH such as tacplus's openjml) the models' to pass
 through, not to list, its private parts (`.claude`, `.config`, `.cache/gh`, `.docker`, ...) the job's alone.
@@ -1173,18 +1016,16 @@ of their own").
 |---|---|---|
 | `GITLAB_TOKEN` | a personal access token of the bot user `tacplus-looper-bot`, scope `read_api` only, the bot a **Reporter** of tacplus-dev/looper alone | the plan (`looper-dispatch plan`) and each report's job poll read the project's jobs; the kicker reads them too |
 | `LOOPER_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/looper (`glptt-`), environment scope `kicker` | the kicker starts the pipeline with it (`POST /projects/:id/trigger/pipeline`; the token is on no command line) |
-| `BUILD_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/build (`glptt-`), owned by the build project's bot user ([Looper identity](#looper-identity)), protected and masked | the reports and managers start build jobs with it ([Build jobs](#build-jobs), looper#71; on no command line); no model holds it. Unset, every repository builds as before |
+| `BUILD_TRIGGER_TOKEN` | a pipeline trigger token of tacplus-dev/build (`glptt-`), owned by the build project's bot user, protected and masked | the reports and managers start build jobs with it ([Build jobs](#build-jobs), looper#71; on no command line); no model holds it. Unset, every repository builds as before |
 | `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` | as before; `GH_TOKEN` gone once the project has the apps ([Only the manager writes main](#only-the-manager-writes-main), looper#83) | GitHub, the model |
 
 A Reporter with `read_api` reads the project's code, pipelines and jobs. It cannot read CI variables (Maintainer),
 play a manual job, start a pipeline or change a setting, and it reaches no other project: not fleet-seatrials' protected
 variables nor its `apply` jobs. The trigger token can do one thing, start this project's pipeline. A triggered pipeline
 runs as the trigger's owner, and on protected main only one allowed to merge to it may run one, so it is Jody's, as the
-schedules are: the pipelines run as Jody as they do today (their bot identity is the looper-identity follow-up,
-looper#28). Without `LOOPER_TRIGGER_TOKEN` the kicker starts the pipeline with `GITLAB_TOKEN`: it works with today's
-token until the switch below.
-gitlab.com's Free tier has no project or group access tokens, hence the bot users (free gitlab.com accounts, never
-Jody, each a member of its one project).
+schedules are: the pipelines run as Jody as they do today. Without `LOOPER_TRIGGER_TOKEN` the kicker starts the pipeline
+with `GITLAB_TOKEN`: it works with today's token until the switch below. gitlab.com's Free tier has no project or group
+access tokens, hence the bot users (free gitlab.com accounts, never Jody, each a member of its one project).
 
 **Setting them up** (Jody; the values go from GitLab straight into the variables, no agent handles them).
 `G=https://gitlab.com/api/v4`, `H="PRIVATE-TOKEN: <Jody's token>"`, `L=tacplus-dev%2Flooper`:
@@ -1251,7 +1092,7 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
   repository is added; `looper-ruleset check` lists any that lack it or differ). It restricts updates, and blocks
   force-pushes and deletion. Its only bypass actors are the `tacplus-manager` app and Jody's account; a repository's
   admins are not among them.
-- **Two GitHub Apps**, whose private keys are Cloud KMS signing keys, held like `tacplus-reader`'s ([Looper identity](#looper-identity)):
+- **Two GitHub Apps**, whose private keys are Cloud KMS signing keys, imported once as non-exportable keys (step 2 below):
   - `tacplus-manager` (contents, issues and workflows write) is the ruleset's bypass actor. It is held only by the managers'
     jobs, and by the scans for their commits to main, after their model is done: a scan's `PROPOSALS.md`, the planning
     files, `HISTORY.md` and the roadmap's suggestions (`looper-suggest`'s commit through the roadmap scan).
@@ -1351,8 +1192,8 @@ steps 2 and 3 below are what it applies, for reference, all but the keys' import
      shred -u $k.private-key.pem $k.der
    done
    ```
-3. **The looper project's provider**, its own, beside kernel's in the pool: GitLab's word for the job's environment is
-   the attribute each key's binding matches. Then each key's own bindings, never at the key ring:
+3. **The looper project's provider**, its own in the pool: GitLab's word for the job's environment is the attribute
+   each key's binding matches. Then each key's own bindings, never at the key ring:
 
    ```sh
    gcloud iam workload-identity-pools providers create-oidc gitlab-looper --project=$P --location=global \
@@ -1548,10 +1389,10 @@ retired, as looper#84 moves every looper job onto the in-cluster Kubernetes runn
 `runner-image measure` tables. The steps below are the procedure for jody1-328023's Ubuntu workers, kept as a record.
 
 1. **The bake's identity.** It gets a service account that can only manage the bake's own VMs, disks and images, and
-   that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER`
-   is the pool `gitlab-loopers` of [Looper identity](#setting-it-up-the-hub-with-jodys-approval-as-recorded-on-looper28),
-   whose attribute `looper` is `<project id>:<ref>:<protected>:<pipeline source>`. If the build's provider is another
-   pool, use the same attribute in that pool.
+   that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER` is
+   a provider of the pool `gitlab-loopers` (tacplus-dev/cloud's) whose attribute `looper` is
+   `<project id>:<ref>:<protected>:<pipeline source>`. If the build's provider is another pool, use the same attribute
+   in that pool.
 
    ```sh
    gcloud iam service-accounts create runner-image --project=$P --display-name="runner VM image bake (looper#43)"
@@ -1649,7 +1490,6 @@ roadmap (`LOOPER_ROADMAP_REPO`, default `roadmap`); clone, and git's credentials
 - **The pipeline** is GitLab's on both: the kicker, the plan and the jobs read the pipeline project's jobs with
   `GITLAB_TOKEN` as before. `looper-dispatch plan` writes the child jobs, so an instance's pipeline file
   ([`ci/instance.gitlab-ci.yml`](ci/instance.gitlab-ci.yml)) calls no `gh`.
-- **The think job** of the identity pilot ([Looper identity](#looper-identity)) is GitHub's only.
 
 ```sh
 tests/forge.test.sh   # both forges against a gh stub and a GitLab API stub: ready issues (one repository, the org, priority), Blocked-by within and across repositories, GitLab subgroups and another org (held, never read), labels, comments and body edits, the texts' authors, clone and push over HTTPS (stub git server), looper-dispatch's ready, plan and orphan release, and a SeaBeam issue worked end to end by repo-looper

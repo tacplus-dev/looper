@@ -21,9 +21,6 @@
 # The build pipeline's security checks run looper-scan in this image too, with
 # its scanners (looper#49).
 #
-# A looper with its own identity (looper#28, kernel first) runs looper-identity
-# (its LLM-free prepare and commit jobs) and repo-looper --think from it too.
-#
 # The build environment follows the newest released tacplus line (the project's
 # rule: a MAJOR.MINOR, never a patch pin).
 ARG TACPLUS_LINE=2.5
@@ -154,6 +151,6 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
 COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
-COPY repo-looper looper-dispatch looper-build looper-scan looper-identity looper-token looper-ruleset looper-suggest looper-recap looper-trace looper-verify tacplus looper-smoke looper-docker looper-docker-broker looper-pkill runner-image /usr/local/bin/
+COPY repo-looper looper-dispatch looper-build looper-scan looper-token looper-ruleset looper-suggest looper-recap looper-trace looper-verify tacplus looper-smoke looper-docker looper-docker-broker looper-pkill runner-image /usr/local/bin/
 ENV LOOPER_IMAGE=1 LOOPER_TACPLUS_LINE=${TACPLUS_LINE} LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work

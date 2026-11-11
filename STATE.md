@@ -106,16 +106,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
   would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
   suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the
   looper commits `suggestions/recap/<night>.md` and `.json` with them, for Jody's daily report. Trace propagation
-  (#51, README: Trace propagation) is a standing rule of every work and think prompt: causal downstream calls carry the
+  (#51, README: Trace propagation) is a standing rule of every work prompt: causal downstream calls carry the
   inbound `trace_id`, unrelated ones say so (`// trace: unrelated: <why>`), each such handler has a propagation test,
   and the outcome comment names the handlers checked and their tests; `looper-trace check` (in the image) reads Go
   and Rust handlers and flags a dropped `trace_id` and a missing test (a seam handed the `trace_id` as its own parameter, a row by value beside it, is credited through its callers' tests, #66); the nightly scan runs it on main for the model
   to verify and file as bugs (run by hand on tacplus-dev's services, 2026-11-02: gateway, oauth and mailbox flagged). Its manual macOS smoke (#36): a web run on `main` with the input `smoke: true`
-  holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The looper identity pilot (#28), built and tested, not yet
-  deployed: kernel's GitLab project (`ci/looper.gitlab-ci.yml`) runs `looper-identity prepare` (read-only
-  `tacplus-reader` token, KMS-signed JWT through WIF), `repo-looper --think` (the model and the gates, no identity:
-  outcome, patch, tested tree) and `looper-identity commit` (tree check, then `kernel-looper[bot]`: branch, pull
-  request with squash auto-merge, build trigger, comment, labels); one run at a time, in a child pipeline. The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
+  holds only `macos-smoke`, on the Mac runner (tag `macos`, Tart VM): arm64, `sw_vers`, Xcode 27.x, Swift. The per-repository identity pilot (#28) is removed,
+  never deployed, superseded by the apps (#83, #111). The loopers' `GH_TOKEN`, `GITLAB_TOKEN` and
   `CLAUDE_CODE_OAUTH_TOKEN` are project variables of gitlab.com/tacplus-dev/looper, no longer group variables; the
   model's environment holds no GitLab credential (`MODEL_WITHHELD`), the kicker starts the pipeline with
   `LOOPER_TRIGGER_TOKEN` when it is set (#25); only the manager writes main, built and tested, not yet set up (#83;
@@ -199,11 +196,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
   of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
   job (with the apps, its verdict job: #90) and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
   repository is pinned, and an image build in the build job without host Docker waits on rootless BuildKit
-  (tacplus-dev/tacplus#315), both the follow-up's (PROPOSALS.md); the identity pilot's
-  think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
+  (tacplus-dev/tacplus#315), both the follow-up's (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); tacplus has no `gates.yaml`
-  yet, so its lands still run the full gates (#48 waits on it), and the think job (#28) and the build pipeline always
+  yet, so its lands still run the full gates (#48 waits on it), and the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
   tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
   `nightly` input; a schedule per repository), and on the day they start tacplus's build fails them (gosec's HIGH
@@ -218,9 +214,6 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
 - **Blocked on:** "only the manager writes main" (#83) is enforced once Jody creates and installs the two apps,
   imports their keys to KMS with their bindings, applies the ruleset and swaps `GH_TOKEN` for the apps' variables
   (README, Only the manager writes main, Setting it up); until then every job uses `GH_TOKEN` as before, and the
-  plan does not split the manager (#90): it splits only with the apps; the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
-  identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
-  tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`
-  app; #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build
+  plan does not split the manager (#90): it splits only with the apps; #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build
   runner (README, Build pipeline) and publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF); every
   build fails "no pin" until a repository commits a `tacplus.lock`

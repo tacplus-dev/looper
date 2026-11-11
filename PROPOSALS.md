@@ -64,8 +64,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   issue carrying its land's id (`<!-- looper-land id=... -->`) as the manager's verdict, and the id is on its branch
   (`.looper/land`) for anyone to read. Every model holds the same `GH_TOKEN` as the manager, so another issue's model
   could post a verdict for it. The merge itself is the manager's alone (nothing reaches main without its gates), so
-  the worst is a model told "merged" or "sent back" falsely. A manager identity of its own (a GitHub App, as the
-  looper identity pilot has), checked by author, or a ref only that identity may push, would close it. Since #83
+  the worst is a model told "merged" or "sent back" falsely. A manager identity of its own (a GitHub App), checked
+  by author, or a ref only that identity may push, would close it. Since #83
   the manager comments as `tacplus-manager[bot]` once the project has the apps: `--land` can take only that
   author's verdict (the comment's `user.login` and `performed_via_github_app`), the rest left as before.
 - **Lock files every repository has, without a generated.yaml** (2026-11-03, #70): the manager regenerates only
@@ -91,33 +91,22 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The nightly scan's PROPOSALS.md push** (2026-11-03, #70; **done** 2026-11-04, #83: the model leaves the file
   in the checkout and the looper commits its change, as the manager's identity): the scan still commits PROPOSALS.md
   on main itself (`git pull --rebase` and push), the one push to main that is not the manager's.
-- **The kernel pilot's merges under main's ruleset** (2026-11-04, #83): `looper-ruleset` restricts updates of main on
-  every public repository, kernel's too, so a pull request GitHub squash-merges for `kernel-looper[bot]` (looper#28's
-  auto-merge) is refused unless that app is a bypass actor on kernel. Before the pilot goes live, either
-  `looper-ruleset` takes a repository's own extra bypass actor (kernel-looper on kernel), or kernel's ruleset swaps
-  "restrict updates" for "require a pull request" plus its required check.
 - **The id_token for a job's life** (2026-11-04, #83): an app's token lasts an hour, a job up to eleven, so
-  `looper-token` keeps the job's GitLab id_token, root's alone, to exchange it again at each refresh; kernel's
-  commit job, which mints once, drops its own at once (SYNTHESIS 21). GitLab's id_token lives for the job's timeout,
-  so a refresh after it fails (the job ends first). A shorter-lived chain (a GCP service account's own credentials,
+  `looper-token` keeps the job's GitLab id_token, root's alone, to exchange it again at each refresh. GitLab's
+  id_token lives for the job's timeout, so a refresh after it fails (the job ends first). A shorter-lived chain (a GCP service account's own credentials,
   impersonated once) would not need it kept.
 - **gcloud's own parsing in the tests** (2026-11-05, #95): the first App cutover failed on `gcloud kms
   asymmetric-sign --key=<whole path> --version=1`, which gcloud refuses before any call (`argument --location: Must be
-  specified`), and both stubs (looper-token's, looper-identity's) had accepted it. They now parse `--version` as gcloud
-  does, but only for that flag. A gate that runs the image's real gcloud on each command looper-token and
-  looper-identity give it, with a credential that cannot authenticate, and requires the failure to be the call's (an
-  auth or permission error), not gcloud's usage, would catch the next such slip.
+  specified`), and looper-token's stub had accepted it. It now parses `--version` as gcloud
+  does, but only for that flag. A gate that runs the image's real gcloud on each command looper-token gives it,
+  with a credential that cannot authenticate, and requires the failure to be the call's (an auth or permission error), not gcloud's usage, would catch the next such slip.
 - **repo-looper's `land-closes-mid-run` is timing-dependent** (2026-11-05, #95): it failed #95's first land (manager job
   https://gitlab.com/tacplus-dev/looper/-/jobs/17788357051: the stub model ran twice, its closing report never posted)
   and passed on the same commit rebased, here. It leans on one-second watch intervals and sleeps; under a verdict job's
   load the done-grace or the watch can fire before the stub's report. Waiting on the stub's own markers instead of
   `sleep` would make it deterministic.
-- **The kernel pilot's setup still names jody1-328023's `us` key ring** (2026-11-05, #95): README, Setting it up (the
-  hub, looper#28) creates `kernel-looper` and `tacplus-reader` in jody1-328023, `us`; tacplus-dev/cloud#19 moved the
-  reader to tacplus-ci's `us-central1` key ring (its signers' move is cloud's follow-up). That section, and kernel's
-  `LOOPER_KMS_KEYRING`, follow once cloud's move is applied.
 - **Require the build's status on main** (2026-11-04, #83): main's ruleset restricts who updates it; a required
-  status check (`tacplus-dev/build` from `tacplus-reader`, as kernel's protection has) would also refuse a manager's
+  status check (`tacplus-dev/build` from `tacplus-reader`) would also refuse a manager's
   push whose build did not pass, once every repository builds in tacplus-dev/build (only looper is pinned today).
 - **Other jobs' suggestions under main's ruleset** (2026-11-04, #83): `looper-suggest file` without `--dir` (another
   job's suggestion, tacplus-dev/chaos#1's watch, say) pushes to the roadmap's main itself, which main's ruleset refuses
@@ -416,33 +405,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   permission (commit statuses). Scoping `TACPLUS_READER_APP_KEY` to environments that only plan, status and publish
   declare would keep it from the gates job altogether; the gates would then need their token from elsewhere (a
   short-lived token passed in a masked, expiring way).
-- **The build trigger's owner needs Maintainer** (2026-10-29, #28): D5 has the commit job start `tacplus-dev/build`
-  with a trigger token owned by a bot that is a Developer there. GitLab runs a triggered pipeline as the token's owner,
-  and on a protected main only a user allowed to merge to it may run one; GitLab Free grants that by role, so the bot
+- **The build trigger's owner needs Maintainer** (2026-10-29, #28): the reports and managers start
+  `tacplus-dev/build` with a trigger token (#71) owned by a bot that #28's D5 made a Developer there. GitLab runs a
+  triggered pipeline as the token's owner, and on a protected main only a user allowed to merge to it may run one; GitLab Free grants that by role, so the bot
   must be a Maintainer of `tacplus-dev/build` (its token is revoked once the trigger exists, so only the trigger token
   is stored). Alternatives: let Developers merge to build's main (they could then merge changes to its CI), or have the
   build project watch pull requests itself.
-- **The pilot's think job and releases** (2026-10-29, #28): a bug fixed through `repo-looper --think` lands by GitHub's
-  squash merge; nothing tags the patch release or opens backport pull requests yet (the old prompt's rule 7 had the
-  model do both with Jody's token). The commit job could tag after the merge, or a release step of the build pipeline.
-- **The think job's classify and propose** (2026-10-29, #28): an unlabelled issue, or a feature no ROADMAP.md links,
-  is answered `question` with a fixed text; the old flow had the model classify it, or write a design proposal into
-  PROPOSALS.md. Both fit the think/commit split (the model writes, the commit job labels or opens the pull request).
-- **HISTORY.md's line by pull request** (2026-10-29, #28): the think job appends the issue's line before the gates, so
-  it names the pull request, not the commit (GitHub's squash commit does not exist yet). A step after the merge could
-  rewrite nothing (append-only) but append the commit; or the line format could accept a pull request link.
-- **A think job killed outright loses its work** (2026-10-29, #28): it cannot push, so its checkpoints only record the
-  step; the commit job keeps what a run that ended left (`looper/<repo>-<n>`), but a VM lost mid-run leaves nothing.
-  Its work could ride in the job's artifacts at each checkpoint (`artifacts:when: always` only covers a job that ends).
-- **Keep ci/looper.gitlab-ci.yml in step with each looper's project** (2026-10-29, #28): copied by hand, as the build
-  project's is (above); one file for every repository's project, so the follow-up's rollout could generate the
-  projects, keys and bindings from one repository list (SYNTHESIS 4).
 
-- **Parallel children in the think/commit flow** (2026-10-30, #32): the parent and its children run in the pipeline
-  job of `tacplus-dev/looper`; kernel's identity pilot (#28) still runs one `prepare`/`think`/`commit` child pipeline
-  per run under its `looper` resource group. Its parent would plan as here and start one child pipeline per issue,
-  each with its own think and commit jobs; landing there is GitHub's squash merge of each pull request, so the lock
-  becomes the merge itself (or a merge queue), with the gates re-run by the build on the rebased head.
 - **Size the job for what fills a slot later** (2026-10-30, #33): `--job-timeout` now sizes the job for the
   longest limit among the issues ready at planning time, so they can all start together; an issue that becomes ready
   later, or one that waits for a free slot and then needs the whole limit, starts only if it still fits the job's
@@ -481,15 +450,11 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The smoke's tacplus line** (2026-10-30, #27): `looper-smoke` generates Go at the image's own line
   (`LOOPER_TACPLUS_LINE`, the Dockerfile's `TACPLUS_LINE`); a repository on an older supported floor (2.4) is
   covered only by the wrapper's test. It could loop over every supported line.
-- **Cap the think job's limit at its job too** (2026-10-30, #35): a parent's children now cap an issue's `Timeout:`
-  at the job's deadline; the identity pilot's think job (`--think`, `timeout: 5h` in `ci/looper.gitlab-ci.yml`)
-  still takes the issue's limit as is, so a `Timeout: 6h` there is killed by GitLab. It could use the same cap
-  (`job_deadline`), with a margin sized for its gates rather than the parent's hour.
 - **Size the job when it starts, not when it is planned** (2026-10-30, #35): `--job-timeout` reads the issues when
   the plan job runs; a `Timeout:` line added while the job waits for a runner now only shortens that run (capped), and
   the next job resumes it. The kicker could re-plan a pending job whose issues' limits grew.
-- **Check the CI files' rules in a test** (2026-10-31, #36): no test reads `ci/build.gitlab-ci.yml` or
-  `ci/looper.gitlab-ci.yml`, so which pipeline shapes their workflow and job rules admit (a push: none; `(repo, sha)`:
+- **Check the CI files' rules in a test** (2026-10-31, #36): no test reads `ci/build.gitlab-ci.yml`, so
+  which pipeline shapes its workflow and job rules admit (a push: none; `(repo, sha)`:
   the build; `smoke: true`: only `macos-smoke`) is reviewed by hand. GitLab's CI lint (`POST /projects/:id/ci/lint`,
   `dry_run`) with a read token in the image's CI, or a small rules evaluator in a test, would catch a rule that lets a
   smoke run report a status or a push create a pipeline.
@@ -515,10 +480,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   file it refreshes rather than by its pid, count `N.taken` as a running land in the watchdog, and have a land
   the model's process ran report on the issue like an orphaned one.
 
-- **Gate sets beyond the land** (2026-11-01, #48): only the lander scales the gates to the diff. The think job
-  (`repo-looper --think`, #28) runs `LOOPER_GATES` or `just gates` whatever it changed, and the build pipeline's
+- **Gate sets beyond the land** (2026-11-01, #48): only the lander scales the gates to the diff. The build pipeline's
   `gates` job (`looper-build`) always runs `just gates`: it gets a commit, no base. A `base` input (the PR's base)
-  and the same `gates.yaml` reading in `looper-build` would let a kernel docs PR merge in minutes; a release build
+  and the same `gates.yaml` reading in `looper-build` would let a kernel docs change build in minutes; a release build
   (`tag`) would stay full. `looper-build` is self-contained (no looper-lib.sh), so the map's reader would be
   embedded there too, or moved to a file both carry.
 - **A link check and a secrets scan in this repository's docs set** (2026-11-01, #48): its `gates.yaml` `docs` set
