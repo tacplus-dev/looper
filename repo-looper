@@ -41,9 +41,10 @@
 # looper:landing, which holds it from the plan) and waits for the manager's
 # verdict, a comment on the issue that carries the land's id. The manager
 # (--manage, one at a time per repository: resource_group looper-NAME-main)
-# takes the queued branches oldest first, each under the landing lock: rebases
-# it on main, runs the gates its diff calls for (looper#48), pushes only on
-# green, and deletes the branch. A rebase that conflicts only in files the
+# takes the queued branches by their issue's priority, then oldest first
+# (looper#121), each under the landing lock: rebases it on main, runs the
+# gates its diff calls for (looper#48), pushes only on green, and deletes the
+# branch. A rebase that conflicts only in files the
 # repository's generated.yaml maps it resolves by regenerating them (main's
 # side, then the set's command: never a hand merge); any other conflict it
 # sends back to the report, the files named. Every merge, resolution and
@@ -1222,11 +1223,14 @@ CLOSED_GRACE=$(( IDLE + DONE_GRACE + 300 ))
 declare -A CLOSED_SEEN=()   # when the manager first saw each such issue
 declare -A JUDGED=()   # the lands the manager has given its verdict on, by id
 
-# The queued lands, oldest first, as "<queued> <issue> <id> <sha>" lines: the
-# branches looper/NAME-N whose last checkpoint carries a land in state queued
-# that has no verdict yet.
+# The queued lands in the order the manager takes them, as "<rank> <queued>
+# <issue> <id> <sha>" lines: the branches looper/NAME-N whose last checkpoint
+# carries a land in state queued that has no verdict yet, by their issue's
+# priority (looper#121: 0 priority:high, 1 unlabelled, 2 priority:low, the
+# order the plan takes ready issues in, looper#31), then oldest first. The
+# priority labels unreadable, every land ranks 1: oldest first.
 queued_lands() {
-  local refs sha ref n m id q list=""
+  local refs sha ref n m id q list="" high="" low=""
   refs="$(git -C "$CHECKOUT" ls-remote origin "refs/heads/looper/$REPO-*")" || return 1
   while read -r sha ref; do
     n="${ref#refs/heads/looper/"$REPO"-}"; [[ -n "$sha" && "$n" =~ ^[0-9]+$ ]] || continue
@@ -1239,7 +1243,15 @@ queued_lands() {
     if land_verdict "$n" "$id" >/dev/null; then JUDGED[$id]=1; continue; fi
     list+="${q:-0} $n $id $sha"$'\n'
   done <<<"$refs"
-  printf '%s' "$list" | sort -k1,1 -k2,2n
+  if [[ -n "$list" ]] && ! { high="$(forge_issue_list "$REPO" all 200 number '.[].number' "$LABEL_PRIORITY_HIGH")" &&
+                             low="$(forge_issue_list "$REPO" all 200 number '.[].number' "$LABEL_PRIORITY_LOW")"; }; then
+    log "could not read the priority labels of $REPO's issues: its lands are taken oldest first" >&2; high=""; low=""
+  fi
+  while read -r q n id sha; do
+    [[ -n "$n" ]] || continue
+    if grep -qx "$n" <<<"$high"; then m=0; elif grep -qx "$n" <<<"$low"; then m=2; else m=1; fi
+    echo "$m $q $n $id $sha"
+  done <<<"$list" | sort -k1,1n -k2,2 -k3,3n
 }
 
 # The issues labelled looper:landing, open or closed (a closed one's
@@ -1255,7 +1267,7 @@ landing_issues() { forge_issue_list "$REPO" all 100 number '.[].number' "$LABEL_
 clear_stale_landing() { # labelled-issues queued-lands
   local n
   for n in $1; do
-    awk -v n="$n" '$2 == n { f = 1 } END { exit !f }' <<<"$2" && continue
+    awk -v n="$n" '$3 == n { f = 1 } END { exit !f }' <<<"$2" && continue
     if forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null; then
       log "#$n: $LABEL_LANDING with no land queued (no $(wip_branch "$n") carrying one without a verdict); the label is removed, and holds the manager no more"
     else log "#$n: $LABEL_LANDING with no land queued, but the label could not be removed"; fi
@@ -1438,7 +1450,7 @@ manage() {
   while :; do
     labelled="$(landing_issues)" || labelled=""
     if ! q="$(queued_lands)"; then log "could not read $REPO's branches"; q=""; labelled=""; fi
-    while read -r _ n id sha; do
+    while read -r _ _ n id sha; do
       [[ -n "$n" ]] || continue
       rc=0; merge_report "$n" "$id" "$sha" || rc=$?
       (( rc != LAND_DEFERRED )) || { log "the manager stops: its job's time is short; the next manager merges what is queued"; return 0; }
@@ -1466,9 +1478,9 @@ manage() {
 # main): a report's test runs as the job's user, beside the id_token that
 # mints it. So the plan (looper-dispatch, with the apps) splits the manager:
 # the verdict job (--verdict DIR, environment looper-report, the report app's
-# token) judges the queued lands oldest first, each rebased on looper/staging
-# (main, then each green land before it; generated files regenerated) and on
-# its own gates, pushes staging and writes the verdict to DIR, its artifacts:
+# token) judges the queued lands by priority, then oldest (looper#121), each
+# rebased on looper/staging (main, then each green land before it; generated
+# files regenerated) and on its own gates, pushes staging and writes the verdict to DIR, its artifacts:
 # `verdict` (main=, staging=, job=), `lands` ("<issue> <id> <sha> <rc>" a line,
 # in order) and each land's record. It comments on no issue and never touches
 # main. The manager job (--merge DIR, looper-manager, the only job with the
@@ -1513,7 +1525,7 @@ verdict_batch() {
   ONTO="$STAGING_REF"
   log "the verdict job of $REPO: its queued lands onto $STAGING, on main ${main:0:7}"
   q="$(queued_lands)" || die "could not read $REPO's branches"
-  while read -r _ n id sha; do
+  while read -r _ _ n id sha; do
     [[ -n "$n" ]] || continue
     rc=0; judge_land "$n" "$id" "$sha" "$VERDICT_DIR/$n-$id" || rc=$?
     (( rc != LAND_DEFERRED )) || { log "the verdict job stops: its time is short; the next batch judges what is left"; break; }

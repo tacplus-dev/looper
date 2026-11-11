@@ -76,6 +76,8 @@ case "$cmd" in
     ! grep -qxF -- "$n" "$FIX/labels/$repo" 2>/dev/null || { echo "label with name \"$n\" already exists; use \`--force\` to update its color and description" >&2; exit 1; }
     mkdir -p "$FIX/labels"; echo "$n" >> "$FIX/labels/$repo"; echo "$repo $n" >> "$FIX/labels-created" ;;
   "issue list")
+    # The priority labels unreadable, for the manager's order (looper#121).
+    [[ ! -e "$FIX/gh-priority-fails" || " ${labels[*]-} " != *" priority:"* ]] || { echo "stub gh: HTTP 502" >&2; exit 1; }
     jq -s --arg s "$state" '[.[] | select(($s == "all" or .state == ($s | ascii_upcase)) and ([.labels[].name] | contains($ARGS.positional)))] | sort_by(-.number)' \
       "$FIX/issues/$repo"-*.json --args "${labels[@]+"${labels[@]}"}" | jq -r "$q" ;;
   "issue create")
@@ -1777,6 +1779,35 @@ lacks "$(origin show main --stat)" ".looper/"
 [[ "$(labels alpha 4)" == approved,bug && "$(labels alpha 5)" == approved,bug ]] || fail "labels $(labels alpha 4) / $(labels alpha 5)"
 pass
 
+# Priority before age (looper#121): the manager takes the queued lands by
+# their issue's priority label, priority:high, then unlabelled, then
+# priority:low, oldest first within each, as the plan takes ready issues
+# (looper#31). A closed issue's land keeps its issue's priority.
+scenario manager-priority-order
+issue alpha 5 OPEN approved,bug,priority:high "High, newest."
+issue alpha 6 OPEN approved,bug "Unlabelled, newer."
+issue alpha 7 CLOSED approved,bug,priority:low "Low, oldest."
+issue alpha 8 OPEN approved,bug,priority:high "High, older."
+queue 7 2026-11-03T08:00:00Z seven.txt 7
+queue 4 2026-11-03T09:00:00Z four.txt 4
+queue 6 2026-11-03T10:00:00Z six.txt 6
+queue 8 2026-11-03T11:00:00Z eight.txt 8
+queue 5 2026-11-03T12:00:00Z five.txt 5
+manage
+[[ "$(origin log --format=%s main | head -n 5 | tac | paste -sd'|')" == "fix 8|fix 5|fix 4|fix 6|fix 7" ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# The priority labels unreadable: the lands are still taken, oldest first.
+scenario manager-priority-unreadable
+issue alpha 5 OPEN approved,bug,priority:high "High, newer."
+queue 4 2026-11-03T10:00:00Z four.txt 4
+queue 5 2026-11-03T11:00:00Z five.txt 5
+touch "$FIX/gh-priority-fails"
+manage
+[[ "$(origin log --format=%s main | head -n 2 | tac | paste -sd'|')" == "fix 4|fix 5" ]] || fail "main: $(origin log --oneline main)"
+has "$OUT" "could not read the priority labels"
+pass
+
 # A repository that lacks looper:landing (looper#80: none had it): the report
 # creates the looper's labels before it sets one, so its land holds the issue,
 # and the manager merges it and clears the hold; no label edit fails.
@@ -2098,6 +2129,19 @@ for n in 4 5 6; do lacks "$(labels alpha "$n")" "looper:landing"; done
 : > "$FIX/comments"; m="$(origin rev-parse main)"
 ! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a verdict twice: $OUT"
 [[ "$(origin rev-parse main)" == "$m" && ! -s "$FIX/comments" ]] || fail "the second merge: $OUT"
+pass
+
+# The verdict job takes the queued lands by priority, then oldest (looper#121):
+# a newer priority:high land is on staging before an older unlabelled one.
+scenario split-priority-order
+issue alpha 5 OPEN approved,bug,priority:high "High, newer."
+queue 4 2026-11-03T10:00:00Z four.txt 4
+queue 5 2026-11-03T11:00:00Z five.txt 5
+verdict
+[[ "$(origin log --format=%s looper/staging | head -n 2 | tac | paste -sd'|')" == "fix 5|fix 4" ]] || fail "staging: $(origin log --oneline looper/staging)"
+[[ "$(cut -d' ' -f1 "$FIX/verdict/lands" | paste -sd' ')" == "5 4" ]] || fail "lands: $(cat "$FIX/verdict/lands")"
+merge
+[[ "$(origin log --format=%s main | head -n 2 | tac | paste -sd'|')" == "fix 5|fix 4" ]] || fail "main: $(origin log --oneline main)"
 pass
 
 # The verdict dir is the job's project dir's, which a VM's next job reuses
