@@ -1,0 +1,78 @@
+= init
+> Bash git status --short && git log --oneline -3 && git diff --stat && gh issue view 101 --repo tacplus-dev/looper --comments | tail -30
+<  M Dockerfile  M PROPOSALS.md  M README.md 5301129 ROADMAP: #121 (Jody, 2026-11-10) eea43fc looper-token: a report's token no longer names workflows: write (#115) 3feb94c HISTORY.md: #106 (looper)  Dockerfile   | 46 +++++++++++++++++++++++++++++++++-------------  PROPOSALS.md |  5 +++++  README.md  ...
+= thinking_tokens
+= thinking_tokens
+> Bash git diff; which glab; glab api projects/tacplus-dev%2Fbuild/pipelines/3054366892 2>&1 | head -40; glab api projects/tacplus-dev%2Fbuild/pipelines/3054366892/jobs 2>&1 | head -60
+< diff --git a/Dockerfile b/Dockerfile index fcc2a95..872d578 100644 --- a/Dockerfile +++ b/Dockerfile @@ -52,8 +52,8 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a      tar -xzf "$d/$f" -C "$d" bin/glab; install -m 0755 "$d/bin/glab" /usr/local/bin/glab; rm -rf "$...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh search issues --repo tacplus-dev/looper "no verdict within" --json number,title,state,updatedAt 2>&1 | head; gh api 'repos/tacplus-dev/looper/issues/comments?sort=updated&direction=desc&per_page=40' --jq '.[] | select(.user.login=="tacplus-manager[bot]") | "\(.created_at) \(.issue_url|split("/")|...
+< [{"number":109,"state":"open","title":"govulncheck in the image is built with go1.26 and cannot scan a go 1.27 module: every such build's security run fails","updatedAt":"2026-11-10T13:19:23Z"},{"number":114,"state":"open","title":"Manager discards a green verdict when main moved only by planning fi...
+= thinking_tokens
+= thinking_tokens
+> Bash for n in 113 127; do gh issue view $n --repo tacplus-dev/looper --json state,labels,body,comments --jq '"STATE \(.state) \([.labels[].name])\n\(.body[0:2500])\n--- last comments:\n\([.comments[-3:][]|"\(.author.login): \(.body[0:600])"]|join("\n---\n"))"'; echo =========; done
+< STATE OPEN ["bug","approved","priority:high","looper:landing"] ## Actual (2026-11-09) `repo-looper --repo website --issue 2 --build` triggered tacplus-dev/build pipeline 3043233750 for website 325305c (pinned by `build.lock`) at 03:36:35Z. Three hours later, at 06:36Z, it gave up with `no verdict wi...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash git fetch -q origin looper/looper-101 && git log --format='%h %s%n%b' origin/looper/looper-101 -3 | head -40; git diff origin/main --stat; git fetch -q origin main && git log --oneline HEAD..origin/main
+< 0ad2e4a looper: work in progress on #101 (the run's end) Land of 0b2cde7 (rebased on main 5301129) queued 01:46Z, no verdict by 04:57Z (GitHub API rate limit ran out 03:49-03:58Z). Local full gates green (GATES EXIT 0). Left: read land verdict; if merged comment (hashes, gates, set full; image build...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash git add Dockerfile PROPOSALS.md README.md && git commit -q -F - <<'EOF' Scanner binaries: require fixed klauspost/compress and brotli (#101)  osv-scanner, trivy and gitleaks carry klauspost/compress before v1.20.2 (GO-2026-6865), gitleaks and syft andybalholm/brotli before v1.2.7 (GO-2026-6888), and...
+< 2fc8da8 Scanner binaries: require fixed klauspost/compress and brotli (#101) [2026-11-11T16:01:49Z] checkpoint of #101 (a step) pushed to looper/looper-101:  5 files changed, 403 insertions(+), 17 deletions(-)
+= thinking_tokens
+= thinking_tokens
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 101 --land > /tmp/land-101.log 2>&1 & echo $!
+< 1100
+> Bash for i in $(seq 1 20); do grep -qi queued /tmp/land-101.log && break; sleep 5; done; cat /tmp/land-101.log
+= task_started
+= task_notification
+< [2026-11-11T16:01:55Z] checkpoint of #101 (land queued) pushed to looper/looper-101:  6 files changed, 412 insertions(+), 17 deletions(-) [2026-11-11T16:01:57Z] queued: the manager of looper merges looper/looper-101 after the lands queued before it, one at a time, and says on the issue what came of ...
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue comment 101 --repo tacplus-dev/looper --body-file - <<'EOF' Status from this run. Not closing: the fix is queued to land, and it can't get a verdict until build jobs run again.  **What's queued:** 2fc8da8 on `looper/looper-101`, rebased on main 5301129, queued with the manager at 16:01Z. It...
+< https://github.com/tacplus-dev/looper/issues/101#issuecomment-6800694239 Blocked-by: #113
+The fix for #101 is ready and queued to land again, but it hasn't merged yet. #101 stays open and is now marked `Blocked-by: #113`.
+
+- **Why the last land failed:** the gates didn't fail. The build job (pipeline 3054366892) never reported, and the manager gave up with "no verdict within 3h". That is the stall in #113, where triggered builds never start; #113 is itself waiting on tacplus-dev/cluster#18. #127's build stalled the same way today.
+- **What's queued:** commit 2fc8da8, queued with the manager at 16:01Z on main 5301129. It is the same change the previous run tried to land as 0b2cde7.
+  - Trivy and OSV-Scanner are now built the way gitleaks and Syft already are, requiring `github.com/klauspost/compress` v1.20.2.
+  - gitleaks also requires compress v1.20.2 and `github.com/andybalholm/brotli` v1.2.7; Syft also requires brotli v1.2.7.
+  - The image build checks that each fixed version is the one actually built in.
+  - The README's security table names each override and when it can be dropped.
+  - PROPOSALS.md has a follow-up: run govulncheck on the scanners during the image build.
+- **What's verified:** the full gates passed locally on the previous run. An earlier run's image build of this same Dockerfile change passed the scanner checks, and govulncheck found neither advisory. No build job has run on this exact commit, because of #113.
+
+I posted this status as a comment on #101. If this land also comes back red only because the build job never ran, the next run will land it again once #113 is closed.
+= success: The fix for #101 is ready and queued to land again, but it hasn't merged yet. #101 stays open and is now marked `Blocked-by: #113`.
+
+- **Why the last land failed:** the gates didn't fail. The build job (pipeline 3054366892) never reported, and the manager gave up with "no verdict within 3h". That is the stall in #113, where triggered builds never start; #113 is itself waiting on tacplus-dev/cluster#18. #127's build stalled the same way today.
+- **What's queued:** commit 2fc8da8, queued with the manager at 16:01Z on main 5301129. It is the same change the previous run tried to land as 0b2cde7.
+  - Trivy and OSV-Scanner are now built the way gitleaks and Syft already are, requiring `github.com/klauspost/compress` v1.20.2.
+  - gitleaks also requires compress v1.20.2 and `github.com/andybalholm/brotli` v1.2.7; Syft also requires brotli v1.2.7.
+  - The image build checks that each fixed version is the one actually built in.
+  - The README's security table names each override and when it can be dropped.
+  - PROPOSALS.md has a follow-up: run govulncheck on the scanners during the image build.
+- **What's verified:** the full gates passed locally on the previous run. An earlier run's image build of this same Dockerfile change passed the scanner checks, and govulncheck found neither advisory. No build job has run on this exact commit, because of #113.
+
+I posted this status as a comment on #101. If this land also comes back red only because the build job never ran, the next run will land it again once #113 is closed.
