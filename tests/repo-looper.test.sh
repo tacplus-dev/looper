@@ -2108,8 +2108,41 @@ has "$OUT" "main moved since the verdict"
 [[ -z "$(landed four.txt)" && "$(landed other.txt)" == other ]] || fail "main: $(origin log --oneline main)"
 [[ ! -s "$FIX/comments" ]] || fail "a verdict on a moved main: $(cat "$FIX/comments")"
 has "$(labels alpha 4)" "looper:landing"
+lacks "$OUT" "by planning files alone"; has "$OUT" "other.txt"
 verdict; merge
 [[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# Main moved since the verdict by planning files alone (looper#114: ROADMAP.md
+# commits threw away 10h of tacplus's gates), which no gate reads: the manager
+# job rebases the verdict's staging onto it and, clean, fast-forwards main to
+# that. A rebase that conflicts merges nothing, as a code move does.
+scenario split-main-moved-planning
+queue 4 2026-11-03T10:00:00Z four.txt 4
+verdict
+s="$(staging)"
+on_main ROADMAP.md "# Roadmap, edited"; mkdir -p "$FIX/seed/roadmap"; on_main roadmap/item.md item; m="$(origin rev-parse main)"
+merge CI_JOB_URL=https://gl.test/jobs/91
+has "$OUT" "main moved since the verdict by planning files alone (ROADMAP.md, roadmap/item.md)"
+has "$OUT" "rebased onto main ${m:0:7}"
+[[ "$(landed four.txt)" == 4 && "$(landed ROADMAP.md)" == "# Roadmap, edited" && "$(landed roadmap/item.md)" == item ]] || fail "main: $(origin log --oneline main)"
+origin merge-base --is-ancestor "$m" main || fail "main is not on the planning commits: $(origin log --oneline main)"
+[[ "$(origin log --format=%s "$m..main")" == "$(origin log --format=%s "$(origin rev-parse "$s^")..$s")" ]] || fail "main is not the verdict's lands on the planning commits: $(origin log --oneline main)"
+# Its verdict names the commits on main, not the verdict's staging's.
+has "$(cat "$FIX/comments")" "alpha#4 The manager merged"; has "$(cat "$FIX/comments")" "landed=$m..$(origin rev-parse main)"
+! branch || fail "the merged branch is left"
+! staging >/dev/null || fail "staging is left"
+lacks "$(labels alpha 4)" "looper:landing"
+# A planning-only move that the lands conflict with: nothing merged.
+issue alpha 5 OPEN approved,bug "Fix that."; queue 5 2026-11-03T11:00:00Z STATE.md "# State, the land's"
+: > "$FIX/comments"; verdict
+git -C "$FIX/seed" pull -q --ff-only origin main; on_main STATE.md "# State, main's"; m="$(origin rev-parse main)"
+! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a staging that conflicts with main: $OUT"
+has "$OUT" "main moved since the verdict by planning files alone (STATE.md)"
+has "$OUT" "conflicts in: STATE.md"
+[[ "$(origin rev-parse main)" == "$m" ]] || fail "main moved: $(origin log --oneline main)"
+[[ ! -s "$FIX/comments" ]] || fail "a verdict on a conflicting staging: $(cat "$FIX/comments")"
+has "$(labels alpha 5)" "looper:landing"
 pass
 
 # The tokens (looper#83): the verdict job holds the report app's alone, and a
