@@ -1,0 +1,187 @@
+= init
+> Bash cd /builds/looper/looper/issues/128; git log --oneline -3; git diff --stat; gh issue view 128 --repo tacplus-dev/looper --comments | tail -20
+< 5301129 ROADMAP: #121 (Jody, 2026-11-10) eea43fc looper-token: a report's token no longer names workflows: write (#115) 3feb94c HISTORY.md: #106 (looper)  PROPOSALS.md                                       |  10 ++  README.md                                          |  11 ++-  STATE.md              ...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/128; git fetch -q origin; git show --stat 640430d 2>/dev/null | tail -20 || echo missing; git status --short
+<       the built commit. The next manager whose rebase gives the same tree on the       same base and gate set checks that commit out and waits on the same       pipeline instead of triggering a new one.     - The manager logs each build's queue time apart from its run time; the       recap reports t...
+Matches the earlier commit. Let me review the diff before committing.
+> Bash cd /builds/looper/looper/issues/128; git diff -- repo-looper looper-recap tests/repo-looper.test.sh
+< diff --git a/looper-recap b/looper-recap index 53348ce..ff328d5 100755 --- a/looper-recap +++ b/looper-recap @@ -293,6 +293,8 @@ M_LANDED = re.compile(r"\] #(\d+): landed on main: ([0-9a-f]+)\.\.([0-9a-f]+), o  M_NOT = re.compile(r"\] #(\d+): not merged \(exit (\d+)\)")  M_RESOLVED = re.compile(r"\]...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/128; git log --oneline -1 640430d^; mkdir -p /tmp/t128; (tests/repo-looper.test.sh > /tmp/t128/rl.log 2>&1; echo "rc=$?" >> /tmp/t128/rl.log) & echo $!; tests/looper-recap.test.sh 2>&1 | tail -3
+= task_started
+= task_notification
+< 5301129 ROADMAP: #121 (Jody, 2026-11-10) 728 ok collect-without-credentials ok collect-build-token looper-recap: all scenarios pass
+> Bash cd /builds/looper/looper/issues/128; gh api repos/tacplus-dev/looper/commits/640430d/statuses --jq '.[] | [.state,.created_at,.description,.target_url] | @tsv' 2>&1 | head
+< (Bash completed with no output)
+> Bash cd /builds/looper/looper/issues/128; s=$(git rev-parse 640430d); gh api repos/tacplus-dev/looper/commits/$s/statuses --jq '.[] | [.state,.created_at,.description,.target_url] | @tsv' 2>&1 | head; echo s=$s
+< s=640430db99b552e057defce69e72d431a58c7a79
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/128; while kill -0 728 2>/dev/null; do sleep 10; done; tail -3 /tmp/t128/rl.log; grep -c '^ok' /tmp/t128/rl.log; grep -i fail /tmp/t128/rl.log | head
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: brj0rfhdk). Output is being written to: /builds/looper/looper/homes/looper-128/tmp/claude-61000/-builds-looper-looper-issues-128/5481ed14-82c6-4aa0-9b18-fe8cdcb44faf/tasks/brj0rfhdk.output. You will be notified whe...
+> Bash sleep 240; tail -2 /tmp/t128/rl.log; grep -c '^ok' /tmp/t128/rl.log
+< <tool_use_error>Blocked: sleep 240 followed by: tail -2 /tmp/t128/rl.log grep -c '^ok' /tmp/t128/rl.log. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to wo...
+I'm waiting for the local `repo-looper` test suite to finish so I can commit and land.
+> Bash until grep -q '^rc=' /tmp/t128/rl.log; do sleep 10; done; tail -3 /tmp/t128/rl.log; grep -c '^ok' /tmp/t128/rl.log
+= task_started
+= task_notification
+< ok think-no-outcome repo-looper: all scenarios pass rc=0 144
+All 144 pass. Committing (same message as the checkpointed 640430d) and landing.
+= task_updated
+= task_notification
+= background_tasks_changed
+> Bash cd /builds/looper/looper/issues/128; git add -A && git commit -q -C 640430d && git log --oneline -1 && git diff 640430d HEAD --stat | tail -1; /usr/local/bin/repo-looper --repo looper --issue 128 --checkpoint "fix committed and verified locally (repo-looper 144/144, looper-recap pass); the build of ...
+< 0a2572c manager: a queued build is no red land; the next manager takes its verdict up (#128) [2026-11-11T15:01:11Z] checkpoint of #128 (a step) pushed to looper/looper-128:  12 files changed, 458 insertions(+), 40 deletions(-)
+= thinking_tokens
+= thinking_tokens
+The tree is identical to 640430d. Landing:
+> Bash cd /builds/looper/looper/issues/128; nohup /usr/local/bin/repo-looper --repo looper --issue 128 --land > /tmp/t128/land.log 2>&1 & echo $! > /tmp/t128/land.pid; cat /tmp/t128/land.pid
+< 127919
+> Bash until ! kill -0 127919 2>/dev/null; do sleep 30; done; tail -15 /tmp/t128/land.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bs21ghx4j. Output is being written to: /builds/looper/looper/homes/looper-128/tmp/claude-61000/-builds-looper-looper-issues-128/5481ed14-82c6-4aa0-9b18-fe8cdcb44faf/tasks/bs21ghx4j.output. You will be notified when it completes. To check interim output, use Rea...
+= thinking_tokens
+= thinking_tokens
+> Bash timeout 580 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log; gh issue view 128 --repo tacplus-dev/looper --comments | tail -8
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+The land is still queued with the manager (no verdict yet); I'm continuing to poll.
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log; gh issue view 128 --repo tacplus-dev/looper --json labels --jq '.labels[].name'
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash kill -0 127919 && echo alive; timeout 580 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -5 /tmp/t128/land.log
+= task_started
+= task_notification
+< alive [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what c...
+Still queued with the manager (one transient API error in its poll; the process is alive). I'm continuing to wait for the verdict.
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -4 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -4 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -4 /tmp/t128/land.log; gh issue view 128 --repo tacplus-dev/looper --comments | tail -6
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+= thinking_tokens
+= thinking_tokens
+> Bash date -u +%T; timeout 580 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< 17:09:20 [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue wha...
+= thinking_tokens
+= thinking_tokens
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of...
+Still waiting on the manager's verdict for the queued land (about 2h20m in the queue so far); polling continues.
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; date -u +%T; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< 17:48:42 [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue wha...
+> Bash cd /builds/looper/looper/issues/128; /usr/local/bin/repo-looper --repo looper --issue 128 --checkpoint "0a2572c committed (same tree as 640430d), local gates pass (repo-looper 144/144, looper-recap); land queued with the manager since 15:01Z, no verdict yet; left: the land's verdict, outcome comment...
+= task_started
+= task_notification
+< [2026-11-11T17:48:47Z] checkpoint of #128 (a step) pushed to looper/looper-128:  13 files changed, 553 insertions(+), 40 deletions(-) [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queu...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; date -u +%T; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< 18:07:03 [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue wha...
+> Bash timeout 590 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; date -u +%T; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< 18:16:58 [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue wha...
+> Bash timeout 540 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 20; done'; date -u +%T; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< 18:26:02 [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue wha...
+> Bash cd /builds/looper/looper/issues/128; /usr/local/bin/repo-looper --repo looper --issue 128 --checkpoint "0a2572c committed (same tree as 640430d); local gates pass (tests/repo-looper.test.sh 144/144, tests/looper-recap.test.sh all pass; looper-trace check: 0 handlers); land queued with the manager si...
+< [2026-11-11T18:26:08Z] checkpoint of #128 (a step) pushed to looper/looper-128:  13 files changed, 569 insertions(+), 40 deletions(-)
+> Bash timeout 300 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 15; done'; date -u +%T; tail -3 /tmp/t128/land.log
+= task_started
+= task_notification
+< 18:31:11 [2026-11-11T15:01:16Z] checkpoint of #128 (land queued) pushed to looper/looper-128:  13 files changed, 468 insertions(+), 40 deletions(-) [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue wha...
+> Bash timeout 150 bash -c 'until ! kill -0 127919 2>/dev/null; do sleep 15; done'; tail -2 /tmp/t128/land.log
+= task_started
+= task_notification
+< [2026-11-11T15:01:19Z] queued: the manager of looper merges looper/looper-128 after the lands queued before it, one at a time, and says on the issue what came of it; waiting for its verdict. If your time runs out first, it still lands it after you. jq: error (at <stdin>:1): object ({"message":...) a...
+I committed the fix for #128 and queued it to land, but it hasn't landed: after 3.5 hours in the manager's queue there is still no verdict, and my time is up. So I haven't posted the outcome comment and haven't closed the issue. The manager lands the branch after this run ends, and the next run reads its verdict on the issue, comments and closes it.
+
+**What's queued:** commit `0a2572c` on `looper/looper-128`. Its content is identical to the earlier checkpoint `640430d`.
+- **Build wait from start:** a build's 3h limit now counts from when it starts, not from when it was triggered. A build still waiting for a runner is never a red land.
+- **Deferral to the next manager:** if a build has no verdict when the manager's job nears its end, the land stays queued (not red, not sent back). The pipeline is recorded on the build's branch, and the next manager takes up that pipeline's verdict instead of starting a new build.
+- **Recap:** the manager logs each build's queue time separately from its run time, and `looper-recap` reports both per manager, plus how many builds never started.
+- **Tests:** two new `repo-looper` scenarios cover the issue's three cases. `build-queued` checks that a queued build leaves the land queued and that the next manager reuses its pipeline; `build-running-past-bound` checks that a build running past its limit is red.
+
+**Gates:**
+- I ran two of the gates locally: `tests/repo-looper.test.sh` ended "repo-looper: all scenarios pass" (144 ok), and `tests/looper-recap.test.sh` ended "looper-recap: all scenarios pass".
+- `looper-trace check` passed with 0 handlers and 0 findings; the change touches no service handlers.
+- The build job for `640430d` never started (no status at all on that commit), so I didn't run another one. Per Jody's comment I landed on the local gates; the full gate set runs in the manager's build job.
+
+**Not verified:** the build-image run of the full gates, which is the manager's verdict still pending. While waiting, `repo-looper --land` logged one jq error from a GitHub API response it couldn't parse, but kept waiting. No release exists yet, so there's no patch to cut.
+
+The last checkpoint (18:26Z) records all of this for the next run.
+= success: I committed the fix for #128 and queued it to land, but it hasn't landed: after 3.5 hours in the manager's queue there is still no verdict, and my time is up. So I haven't posted the outcome comment and haven't closed the issue. The manager lands the branch after this run ends, and the next run reads its verdict on the issue, comments and closes it.
+
+**What's queued:** commit `0a2572c` on `looper/looper-128`. Its content is identical to the earlier checkpoint `640430d`.
+- **Build wait from start:** a build's 3h limit now counts from when it starts, not from when it was triggered. A build still waiting for a runner is never a red land.
+- **Deferral to the next manager:** if a build has no verdict when the manager's job nears its end, the land stays queued (not red, not sent back). The pipeline is recorded on the build's branch, and the next manager takes up that pipeline's verdict instead of starting a new build.
+- **Recap:** the manager logs each build's queue time separately from its run time, and `looper-recap` reports both per manager, plus how many builds never started.
+- **Tests:** two new `repo-looper` scenarios cover the issue's three cases. `build-queued` checks that a queued build leaves the land queued and that the next manager reuses its pipeline; `build-running-past-bound` checks that a build running past its limit is red.
+
+**Gates:**
+- I ran two of the gates locally: `tests/repo-looper.test.sh` ended "repo-looper: all scenarios pass" (144 ok), and `tests/looper-recap.test.sh` ended "looper-recap: all scenarios pass".
+- `looper-trace check` passed with 0 handlers and 0 findings; the change touches no service handlers.
+- The build job for `640430d` never started (no status at all on that commit), so I didn't run another one. Per Jody's comment I landed on the local gates; the full gate set runs in the manager's build job.
+
+**Not verified:** the build-image run of the full gates, which is the manager's verdict still pending. While waiting, `repo-looper --land` logged one jq error from a GitHub API response it couldn't parse, but kept waiting. No release exists yet, so there's no patch to cut.
+
+The last checkpoint (18:26Z) records all of this for the next run.
