@@ -1,0 +1,129 @@
+= init
+> Bash cd /builds/looper/looper/issues/102; git status --short; git diff; git log --oneline -3; gh issue view 102 --repo tacplus-dev/looper --comments | tail -30
+<  M Dockerfile  M STATE.md diff --git a/Dockerfile b/Dockerfile index fcc2a95..494798b 100644 --- a/Dockerfile +++ b/Dockerfile @@ -26,7 +26,7 @@  #  # The build environment follows the newest released tacplus line (the project's  # rule: a MAJOR.MINOR, never a patch pin). -ARG TACPLUS_LINE=2.5 +ARG ...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/102; which glab; ls; grep -n 'no verdict' -r /usr/local/bin/repo-looper bin/ 2>/dev/null | head; cat gates.yaml | head -40
+< /usr/local/bin/glab Dockerfile HISTORY.md LICENSE PROPOSALS.md README.md ROADMAP.md STATE.md build.lock ci gates.yaml image-failed looper-build looper-ci-lint looper-dispatch looper-docker looper-docker-broker looper-identity looper-lib.sh looper-pkill looper-recap looper-ruleset looper-scan looper-...
+Let me look at the stalled build pipelines.
+> Bash cd /tmp; for p in 3045464985 3046496633; do glab api "projects/tacplus-dev%2Fbuild/pipelines/$p" 2>&1 | head -c 600; echo; glab api "projects/tacplus-dev%2Fbuild/pipelines/$p/jobs" 2>&1 | python3 -c 'import json,sys for j in json.load(sys.stdin): print(j["id"],j["name"],j["status"],j["started_at"],j...
+< Exit code 1 {"message":"404 Project Not Found"}glab: 404 Project Not Found (HTTP 404)  Traceback (most recent call last):   File "<string>", line 2, in <module>     for j in json.load(sys.stdin): print(j["id"],j["name"],j["status"],j["started_at"],j["finished_at"],(j.get("runner") or {}).get("descri...
+> Bash sed -n 1000,1110p /usr/local/bin/repo-looper
+<   return "$rc" }  # A closed issue's HISTORY.md line, for the manager (looper#70): its branch, # made afresh at main, carries it as .looper/history beside a land with # nothing to land; the issue is looper:landing until the manager appends it. queue_history() { # issue line...   local n="$1" b; shif...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/102; for s in 554737e a4fed6f eea43fc; do f=$(git rev-parse $s 2>/dev/null || echo $s); echo "== $s"; gh api "repos/tacplus-dev/looper/commits/$s/statuses" 2>&1 | jq -r '.[] | "\(.created_at) \(.state) \(.creator.login) \(.target_url) \(.description)"' 2>&1 | head; do...
+< == 554737e == a4fed6f == eea43fc
+> Bash cd /builds/looper/looper/issues/102; git fetch -q origin; git log --oneline -3 origin/looper/looper-102; for s in 554737e a4fed6f eea43fc; do echo "== $s"; gh api "repos/tacplus-dev/looper/commits/$s" --jq .sha 2>&1; gh api "repos/tacplus-dev/looper/commits/$s/status" 2>&1 | jq -c '{state, statuses:...
+= task_started
+= task_notification
+< 05ec7f6 looper: work in progress on #102 (the run's end) a4fed6f Dockerfile: follow tacplus line 2.6 (#102) 3feb94c HISTORY.md: #106 (looper) == 554737e 554737e0566e2c4741aff0ea72cf52ccf6488628 {"state":"pending","statuses":[]} == a4fed6f a4fed6f1e114bcc65c12390dff5610354462a14c {"state":"pending","...
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue view 115 --repo tacplus-dev/looper --comments | grep -n -A6 'landing looper/\|landed\|build job' | head -40; gh search issues --repo tacplus-dev/looper "no verdict within" --json number,title,state 2>&1 | head
+< 98:**Verified.** These pass here: `tests/looper-token.test.sh`, `tests/looper-dispatch.test.sh`, `tests/repo-looper.test.sh`, `tests/forge.test.sh`, `tests/looper-recap.test.sh`, `tests/looper-ci-lint.test.sh`, `tests/looper-build.test.sh`, `tests/looper-identity.test.sh`, `tests/planning-files.test...
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue view 113 --repo tacplus-dev/looper --json state,labels,title,body --jq '.state, ([.labels[].name]|join(",")), .body' | head -40; gh issue view 113 --repo tacplus-dev/looper --comments | tail -25
+< OPEN bug,approved,priority:high,looper:landing ## Actual (2026-11-09) `repo-looper --repo website --issue 2 --build` triggered tacplus-dev/build pipeline 3043233750 for website 325305c (pinned by `build.lock`) at 03:36:35Z. Three hours later, at 06:36Z, it gave up with `no verdict within 3h`. Throug...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Builds of looper's full gates have been stalling for lack of build runners (#113, still open). I'll commit the ready change, probe whether a build job starts now, and decide from there.
+> Bash cd /builds/looper/looper/issues/102; git add Dockerfile STATE.md && git commit -q -F - <<'EOF' Dockerfile: follow tacplus line 2.6 (#102)  The build environment follows the newest released tacplus line, and 2.6 is released (v2.6.1) with ghcr.io/tacplus-dev/tacplus/build:2.6 published: TACPLUS_LINE=2...
+= task_started
+= task_notification
+< 2012c6a Dockerfile: follow tacplus line 2.6 (#102) 5301129 ROADMAP: #121 (Jody, 2026-11-10) [2026-11-11T03:20:42Z] checkpoint of #102 (a step) pushed to looper/looper-102:  4 files changed, 344 insertions(+), 3 deletions(-)
+> Bash cd /builds/looper/looper/issues/102; nohup /usr/local/bin/repo-looper --repo looper --issue 102 --build > /tmp/build102.log 2>&1 & echo build $!; nohup bash -c "$(grep -A0 '^  run:' gates.yaml | head -1 | sed 's/^  run: //')" > /tmp/gates102.log 2>&1 & echo gates $!
+< build 1227 gates 1228
+> Bash cat /tmp/build102.log; tail -3 /tmp/gates102.log
+< ok more-refused ok image-args ok passed-through
+> ToolSearch {"query":"select:Monitor","max_results":1}
+< 
+> Bash until ! kill -0 1228 2>/dev/null; do sleep 5; done; tail -4 /tmp/gates102.log; grep -c '^FAIL' /tmp/gates102.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bn2gr5iop. Output is being written to: /builds/looper/looper/homes/looper-102/tmp/claude-61000/-builds-looper-looper-issues-102/aa6c5162-51f4-46b1-8254-5679b27a9bf4/tasks/bn2gr5iop.output. You will be notified when it completes. To check interim output, use Rea...
+> Bash for i in $(seq 1 40); do s=$(gh api repos/tacplus-dev/looper/commits/2012c6a/status --jq '[.statuses[]|"\(.context) \(.state)"]|join(";")' 2>/dev/null); [[ -n "$s" ]] && { echo "status: $s"; break; }; sleep 30; done; echo "after probe: ${s:-none}"; tail -3 /tmp/build102.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: byscxx5lu. Output is being written to: /builds/looper/looper/homes/looper-102/tmp/claude-61000/-builds-looper-looper-issues-102/aa6c5162-51f4-46b1-8254-5679b27a9bf4/tasks/byscxx5lu.output. You will be notified when it completes. To check interim output, use Rea...
+Both are running: the full gates locally, and a 20-minute probe for whether the build job posts any status at all. Waiting for them.
+> Bash until ! kill -0 1228 2>/dev/null; do sleep 10; done; tail -4 /tmp/gates102.log; grep '^FAIL' /tmp/gates102.log
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: bon2amnpx). Output is being written to: /builds/looper/looper/homes/looper-102/tmp/claude-61000/-builds-looper-looper-issues-102/aa6c5162-51f4-46b1-8254-5679b27a9bf4/tasks/bon2amnpx.output. You will be notified whe...
+> Bash tail -2 /tmp/gates102.log; grep '^FAIL' /tmp/gates102.log; ps -o pid,etime,args --ppid 1228 | head
+< ok report-beside-manager-running ok report-beside-manager-waiting     PID     ELAPSED COMMAND    8676       09:18 bash tests/repo-looper.test.sh
+Gates are progressing (in repo-looper.test.sh, no failures so far). Waiting for the notifications.
+> Bash until ! kill -0 1228 2>/dev/null; do sleep 10; done; tail -3 /tmp/gates102.log; grep '^FAIL' /tmp/gates102.log; echo done
+= task_started
+= task_notification
+< ok a green, skipped or missing record files nothing ok a red run with no harness report files one bug with the log's tail, once looper-verify: all passed done
+= task_updated
+= task_notification
+= background_tasks_changed
+= thinking_tokens
+= thinking_tokens
+Local full gates: all passed (last line `looper-verify: all passed`). Now the build probe:
+> Bash cat /builds/looper/looper/homes/looper-102/tmp/claude-61000/-builds-looper-looper-issues-102/aa6c5162-51f4-46b1-8254-5679b27a9bf4/tasks/byscxx5lu.output; date -u
+< Wed Nov 11 03:40:54 UTC 2026
+= task_updated
+= task_notification
+= background_tasks_changed
+> Bash f=/builds/looper/looper/homes/looper-102/tmp/claude-61000/-builds-looper-looper-issues-102/aa6c5162-51f4-46b1-8254-5679b27a9bf4/tasks/byscxx5lu.output; until [[ -s $f ]] && grep -q 'after probe' $f; do sleep 5; done; cat $f
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< after probe: none [2026-11-11T03:20:48Z] checkpoint of #102 (a build) pushed to looper/looper-102:  4 files changed, 349 insertions(+), 3 deletions(-) [2026-11-11T03:20:48Z] build requested: looper 2012c6a, the gates full (Dockerfile is mapped to full (/Dockerfile)) the build job https://gitlab.com/...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash kill 1227; cd /builds/looper/looper/issues/102; /usr/local/bin/repo-looper --repo looper --issue 102 --checkpoint "2012c6a (TACPLUS_LINE=2.6, STATE.md) on main 5301129; local full gates pass; build 3052657805 no status in 20 min (#113). Left: land queued; on green, outcome comment and close" 2>&1 | ...
+= task_started
+= task_notification
+< [2026-11-11T03:41:21Z] checkpoint of #102 (a step) pushed to looper/looper-102:  4 files changed, 409 insertions(+), 3 deletions(-) 185291 [2026-11-11T03:41:22Z] checkpoint of #102 (land queued) pushed to looper/looper-102:  5 files changed, 413 insertions(+), 3 deletions(-) [2026-11-11T03:41:24Z] q...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash kill 185291; gh issue comment 102 --repo tacplus-dev/looper --body-file - <<'EOF' Status (this run): the fix is ready and queued. It waits on build runners (#113).  - **Commit:** 2012c6a on `looper/looper-102`, on main 5301129. It sets `ARG TACPLUS_LINE=2.6` in `Dockerfile` (which sets `BUILD_IMAGE`...
+< https://github.com/tacplus-dev/looper/issues/102#issuecomment-6786352016 Blocked-by: #113
+Issue #102 isn't landed yet. The fix is committed and passes the full gates here, but the build job never started, so I've marked the issue `Blocked-by: #113` and left it open.
+
+- **The change:** commit 2012c6a on `looper/looper-102` (on main 5301129) sets `ARG TACPLUS_LINE=2.6` in `Dockerfile` and changes STATE.md to say `build:2.6`. PROPOSALS.md keeps main's version, as Jody's comment asked.
+- **Gates run here:** the full gates (gates.yaml's `full`) all passed. Last line: `looper-verify: all passed`.
+- **Build job:** pipeline 3052657805 posted no commit status in 20 minutes, not even `pending`. The land's two earlier red verdicts were also "no verdict within 3h", not a failing test. No build runner is taking jobs, which is what #113 tracks.
+- **Not verified on this commit:** the image build, its smoke checks and `LOOPER_TACPLUS_LINE=2.6` only run in a build job. An earlier run checked them on f587b09, which made the same Dockerfile change.
+- **Land:** queued with the manager at 03:41Z. If a runner picks it up, the manager merges it. If not, this issue gets worked again once #113 is closed.
+- **Not done here:** moving `build.lock`'s digest to the new image is a separate change, made once that image is published.
+- **Rule 13 (trace propagation):** doesn't apply, because no service handlers are touched.
+
+I posted this status on the issue and wrote `Blocked-by: #113` to the run's outcome file.
+= success: Issue #102 isn't landed yet. The fix is committed and passes the full gates here, but the build job never started, so I've marked the issue `Blocked-by: #113` and left it open.
+
+- **The change:** commit 2012c6a on `looper/looper-102` (on main 5301129) sets `ARG TACPLUS_LINE=2.6` in `Dockerfile` and changes STATE.md to say `build:2.6`. PROPOSALS.md keeps main's version, as Jody's comment asked.
+- **Gates run here:** the full gates (gates.yaml's `full`) all passed. Last line: `looper-verify: all passed`.
+- **Build job:** pipeline 3052657805 posted no commit status in 20 minutes, not even `pending`. The land's two earlier red verdicts were also "no verdict within 3h", not a failing test. No build runner is taking jobs, which is what #113 tracks.
+- **Not verified on this commit:** the image build, its smoke checks and `LOOPER_TACPLUS_LINE=2.6` only run in a build job. An earlier run checked them on f587b09, which made the same Dockerfile change.
+- **Land:** queued with the manager at 03:41Z. If a runner picks it up, the manager merges it. If not, this issue gets worked again once #113 is closed.
+- **Not done here:** moving `build.lock`'s digest to the new image is a separate change, made once that image is published.
+- **Rule 13 (trace propagation):** doesn't apply, because no service handlers are touched.
+
+I posted this status on the issue and wrote `Blocked-by: #113` to the run's outcome file.
