@@ -225,7 +225,9 @@ looper() { # [VAR=value...] -- repo-looper args
 }
 run() { # [VAR=value...]: work alpha#4, the manager beside its report (looper#70)
   manager_start "$@"
+  local t=$SECONDS
   OUT="$(looper "$@" -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+  REPORT_SECONDS=$(( SECONDS - t )) REPORT_END="$(date -u +%s)"
   manager_wait
 }
 # The report alone, for a scenario whose issue no report works (held by a run
@@ -714,13 +716,24 @@ scenario done-closed
 push_fix; report "Fixed."
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
-start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 20 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < 15 )) || fail "the finished run was not ended"
 [[ "$(others)" == "alpha#4 Fixed." ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$OUT" "done"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "ends your run"
+pass
+
+# Once repo-looper exits, nothing it started holds its output (looper#125):
+# a caller reading it returns with its last log line, even when the model left
+# a process holding the model's own output for a while.
+scenario output-released
+push_fix; report "Fixed."
+echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
+echo 'sleep 2 &' >> "$FIX/claude.sh"
+run
+last="$(grep -oE '^\[[0-9TZ:-]+\]' <<<"$OUT" | tail -1 | tr -d '[]')"
+(( REPORT_END - $(date -u -d "$last" +%s) <= 3 )) || fail "the output was held $(( REPORT_END - $(date -u -d "$last" +%s) ))s after its last line ($last)"
 pass
 
 # A land can close the issue while the model still works (looper#54: a
@@ -738,9 +751,8 @@ closing_land
 echo 'for i in 1 2 3 4 5 6; do echo still verifying; sleep 1; done' >> "$FIX/claude.sh"
 report "Landed, the gates pass."
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
-start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 30 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < 25 )) || fail "the finished run was not ended"
 [[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == CLOSED ]] || fail "not closed"
 [[ "$(others)" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
 has "$OUT" "its run was done"
