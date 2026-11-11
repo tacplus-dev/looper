@@ -43,6 +43,10 @@ Done (moved from Next on 2026-11-05):
 
 - Remove the per-repository identity pilot's code (#111). Agent, at Jody's request, 2026-11-08.
 - The manager takes queued lands by priority, then oldest (#121). Agent, at Jody's request, 2026-11-10.
+- The nightly scan files one issue per cause, blocked from the start when the fix is upstream (#129). Agent, at Jody's request, 2026-11-11.
+- A build nobody waits for any more does not run its gates (#130). Agent, at Jody's request, 2026-11-11.
+- A land whose only conflict is STATE.md lands its code and sends back only its STATE.md commit (#131). Agent, at Jody's request, 2026-11-11.
+- Each repository's nightly scan checks STATE.md's Blocked on against the issues' states (#132). Agent, at Jody's request, 2026-11-11.
 ## Later
 - A protected release line with review, instead of pushing to main (README)
 - Doppelganger decides resource requests (more loopers, new repositories) instead of fixed rules (README)
