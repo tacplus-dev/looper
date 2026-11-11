@@ -52,8 +52,8 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
     tar -xzf "$d/$f" -C "$d" bin/glab; install -m 0755 "$d/bin/glab" /usr/local/bin/glab; rm -rf "$d"; glab --version
 # The build pipeline's security checks (looper-scan, looper#49): every scanner
 # pinned, each release archive checked against its sha256 here (linux/arm64,
-# as the image), govulncheck, OSV-Scanner and Trivy by their module checksums (go
-# install, sum.golang.org). OSV-Scanner's and Trivy's release binaries carry
+# as the image), govulncheck, OSV-Scanner and Trivy by their module checksums
+# (sum.golang.org). OSV-Scanner's and Trivy's release binaries carry
 # reachable vulnerabilities (looper#63: its Go's stdlib; looper#64: x/net
 # GO-2026-6860/6866, x/crypto's openpgp GO-2026-5932): they are built here with
 # GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum.
@@ -66,6 +66,12 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # and its go.mod still requires it): its module requires x/net SYFT_XNET_VERSION, its
 # version set as the release sets it (.goreleaser.yaml), its symbol table kept as
 # Trivy's. Drop SYFT_XNET_VERSION when a Syft release requires x/net >= v0.62.0.
+# Trivy and OSV-Scanner are built in such a module too (looper#101): every release
+# of each requires a github.com/klauspost/compress before v1.20.2 (GO-2026-6865),
+# gitleaks' (v1.17.11) too, and gitleaks' and Syft's github.com/andybalholm/brotli is
+# before v1.2.7 (GO-2026-6888). Each module requires the fixed version, its
+# <TOOL>_COMPRESS_VERSION or <TOOL>_BROTLI_VERSION, and the build checks it is the one
+# built in. Drop each when that tool's release requires the fixed version or later.
 # Trivy built so reports GO-2026-4919 alone, not applicable: the compromised
 # v0.69.4 release (CVE-2026-33634), whose range has no fix event and so matches
 # every later version. Trivy is a long build: its own layer, before the others,
@@ -76,15 +82,19 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
-ARG GO_TOOLCHAIN=go1.27.3 TRIVY_VERSION=0.76.1
-RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
-      -ldflags "-w -X github.com/aquasecurity/trivy/pkg/version/app.ver=$TRIVY_VERSION" \
-      "github.com/aquasecurity/trivy/cmd/trivy@v$TRIVY_VERSION"; \
-    go clean -cache -modcache; trivy --version | grep -qx "Version: $TRIVY_VERSION"
-ARG OSV_SCANNER_VERSION=2.7.0
+ARG GO_TOOLCHAIN=go1.27.3 TRIVY_VERSION=0.76.1 TRIVY_COMPRESS_VERSION=1.20.2
+RUN set -eu; d="$(mktemp -d)"; \
+    (cd "$d"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; tr=github.com/aquasecurity/trivy; \
+      go mod init looper.local/trivy 2>/dev/null; \
+      go mod edit -require "$tr@v$TRIVY_VERSION" -require "github.com/klauspost/compress@v$TRIVY_COMPRESS_VERSION" -tool "$tr/cmd/trivy"; \
+      go mod tidy; go build -ldflags "-w -X $tr/pkg/version/app.ver=$TRIVY_VERSION" -o /usr/local/bin/trivy "$tr/cmd/trivy"); \
+    trivy --version | grep -qx "Version: $TRIVY_VERSION"; \
+    go version -m /usr/local/bin/trivy | grep -q "github.com/klauspost/compress[[:space:]]*v$TRIVY_COMPRESS_VERSION[[:space:]]"; \
+    go clean -cache -modcache; rm -rf "$d"
+ARG OSV_SCANNER_VERSION=2.7.0 OSV_SCANNER_COMPRESS_VERSION=1.20.2
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
-ARG SYFT_VERSION=1.56.0 SYFT_XNET_VERSION=0.62.0
-ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15
+ARG SYFT_VERSION=1.56.0 SYFT_XNET_VERSION=0.62.0 SYFT_BROTLI_VERSION=1.2.7
+ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15 GITLEAKS_COMPRESS_VERSION=1.20.2 GITLEAKS_BROTLI_VERSION=1.2.7
 ARG GOSEC_VERSION=2.30.0 GOSEC_SHA256=0867994920453070a5d6a713e35921a3058473e5c3bf777fdd5a2d6f95313fda
 ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc47824faf662f4fad005343d96007e
 ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8
@@ -100,18 +110,28 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     get findsecbugs-plugin.jar "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/$FINDSECBUGS_VERSION/findsecbugs-plugin-$FINDSECBUGS_VERSION.jar" "$FINDSECBUGS_SHA256"; \
     install -m 0644 "$d/findsecbugs-plugin.jar" /opt/scanners/findsecbugs-plugin.jar; \
     GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
-    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
+    mkdir "$d/osv-scanner"; (cd "$d/osv-scanner"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; os=github.com/google/osv-scanner/v2; \
+      go mod init looper.local/osv-scanner 2>/dev/null; \
+      go mod edit -require "$os@v$OSV_SCANNER_VERSION" -require "github.com/klauspost/compress@v$OSV_SCANNER_COMPRESS_VERSION" -tool "$os/cmd/osv-scanner"; \
+      go mod tidy; go build -o /usr/local/bin/osv-scanner "$os/cmd/osv-scanner"); \
+    osv-scanner --version | grep -qx "osv-scanner version: $OSV_SCANNER_VERSION"; \
+    go version -m /usr/local/bin/osv-scanner | grep -q "github.com/klauspost/compress[[:space:]]*v$OSV_SCANNER_COMPRESS_VERSION[[:space:]]"; \
     mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
       go mod init looper.local/gitleaks 2>/dev/null; \
-      go mod edit -require "$gl@v$GITLEAKS_VERSION" -tool "$gl" -replace "github.com/ulikunitz/xz=github.com/ulikunitz/xz@v$GITLEAKS_XZ_VERSION"; \
+      go mod edit -require "$gl@v$GITLEAKS_VERSION" -tool "$gl" -replace "github.com/ulikunitz/xz=github.com/ulikunitz/xz@v$GITLEAKS_XZ_VERSION" \
+        -require "github.com/klauspost/compress@v$GITLEAKS_COMPRESS_VERSION" -require "github.com/andybalholm/brotli@v$GITLEAKS_BROTLI_VERSION"; \
       go mod tidy; go build -ldflags "-w -X $gl/version.Version=$GITLEAKS_VERSION" -o /usr/local/bin/gitleaks "$gl"); \
     gitleaks version | grep -qx "$GITLEAKS_VERSION"; \
+    go version -m /usr/local/bin/gitleaks | grep -q "github.com/klauspost/compress[[:space:]]*v$GITLEAKS_COMPRESS_VERSION[[:space:]]"; \
+    go version -m /usr/local/bin/gitleaks | grep -q "github.com/andybalholm/brotli[[:space:]]*v$GITLEAKS_BROTLI_VERSION[[:space:]]"; \
     mkdir "$d/syft"; (cd "$d/syft"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod CGO_ENABLED=0; sy=github.com/anchore/syft/cmd/syft; \
       go mod init looper.local/syft 2>/dev/null; \
-      go mod edit -require "github.com/anchore/syft@v$SYFT_VERSION" -require "golang.org/x/net@v$SYFT_XNET_VERSION" -tool "$sy"; \
+      go mod edit -require "github.com/anchore/syft@v$SYFT_VERSION" -require "golang.org/x/net@v$SYFT_XNET_VERSION" \
+        -require "github.com/andybalholm/brotli@v$SYFT_BROTLI_VERSION" -tool "$sy"; \
       go mod tidy; go build -ldflags "-w -X main.version=$SYFT_VERSION" -o /usr/local/bin/syft "$sy"); \
     syft --version | grep -qx "syft $SYFT_VERSION"; \
     go version -m /usr/local/bin/syft | grep -q "golang.org/x/net[[:space:]]*v$SYFT_XNET_VERSION[[:space:]]"; \
+    go version -m /usr/local/bin/syft | grep -q "github.com/andybalholm/brotli[[:space:]]*v$SYFT_BROTLI_VERSION[[:space:]]"; \
     go clean -cache -modcache; \
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.
