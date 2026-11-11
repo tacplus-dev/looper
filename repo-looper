@@ -1757,8 +1757,9 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
   [[ -z "$server" ]] || { kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true; }
   [[ -z "$BROKER_PID" ]] || { kill "$BROKER_PID" 2>/dev/null; wait "$BROKER_PID" 2>/dev/null || true; }
   # The log is complete when the model's output closes; a process the model
-  # left holding that output does not hold the run.
-  ( sleep 10; kill "$fmt" 2>/dev/null ) & k=$!
+  # left holding that output does not hold the run. Nor does the fallback
+  # killer, nor its sleep, hold repo-looper's own output (looper#125).
+  ( sleep 10 & s=$!; trap 'kill "$s" 2>/dev/null; exit' TERM; wait "$s"; kill "$fmt" 2>/dev/null ) >/dev/null 2>&1 </dev/null & k=$!
   wait "$fmt" 2>/dev/null || true
   kill "$k" 2>/dev/null; wait "$k" 2>/dev/null || true
   rm -rf "$dir"
