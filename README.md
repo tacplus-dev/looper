@@ -1294,12 +1294,14 @@ repository code, and the plan gives a repository two jobs for a batch, both on m
   manager's key. DIR records the job's id (`job-id`): a verdict another job left there, on a VM that ran one before
   (the project dir is reused, uncleaned), is stale and cleared; one this job wrote is refused (looper#98).
 - **`looper-<repo>-manager`** (environment `looper-manager`, `needs:` the verdict's artifacts; `repo-looper --merge DIR`)
-  runs no repository code: no rebase, no generator, no gate. A call to one there is a bug and fatal. It checks that
-  `looper/staging` is the commit the verdict named and that main is still the one the verdict was built on. Then it
-  fast-forwards main to staging and deletes staging. It posts each verdict on its issue, deletes the merged branches,
-  and adds the `HISTORY.md` lines: the closed issues', and a release's for each tag that came after the verdict job
-  started. If anything moved, it merges nothing and gives no verdict. The lands stay queued, and the kicker's next
-  batch judges them again.
+  runs no repository code: no rebase that regenerates, no generator, no gate. A call to one there is a bug and fatal.
+  It checks that `looper/staging` is the commit the verdict named and that main is still the one the verdict was built
+  on. If main moved since by planning files alone (`ROADMAP.md`, `PROPOSALS.md`, `HISTORY.md`, `STATE.md`,
+  `roadmap/**`), which no gate reads, it rebases staging onto the new main, no hook run and nothing regenerated, and
+  logs it (looper#114). Then it fast-forwards main to staging and deletes staging. It posts each verdict on its issue,
+  deletes the merged branches, and adds the `HISTORY.md` lines: the closed issues', and a release's for each tag that
+  came after the verdict job started. If anything else moved, or that rebase conflicts, it merges nothing and gives no
+  verdict. The lands stay queued, and the kicker's next batch judges them again.
 - A batch under way (its verdict or manager job active) gets no second pair; the kicker starts the next once it is done.
   A report that starts while its verdict job waits for a runner yields to it (looper#75).
 - **A pinned repository keeps its one manager**, whose gates are build jobs (looper#71). The plan splits every other

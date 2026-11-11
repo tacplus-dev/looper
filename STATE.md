@@ -138,7 +138,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-06 by lo
   stale one another job left in the reused project dir cleared, #98) and
   `looper-<repo>-manager` (`looper-manager`, `needs:` the verdict: no repository code, staging checked to be the
   commit the verdict named on the main it was built on, main fast-forwarded, the verdicts and HISTORY.md lines
-  posted; anything moved, nothing merged and the lands left queued); a pinned repository with the build trigger keeps
+  posted; a main moved by planning files alone, staging rebased onto it, #114; anything else moved or a conflict,
+  nothing merged and the lands left queued); a pinned repository with the build trigger keeps
   the one manager, which with the manager's token runs no gates in its job and regenerates nothing; private repositories' issues get no report
   (`--visibility public`, `LOOPER_PRIVATE_REPORTS=1` to undo); the runner
   VMs' image and readiness (#43): `runner/startup.sh`, the templates' startup-script, marks a VM ready
