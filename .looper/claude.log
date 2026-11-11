@@ -1,0 +1,243 @@
+= init
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short && git log --oneline -3 && git diff --stat && gh issue view 113 --repo tacplus-dev/looper --comments | tail -30
+<  M PROPOSALS.md  M README.md  M STATE.md  M repo-looper  M tests/repo-looper.test.sh 5301129 ROADMAP: #121 (Jody, 2026-11-10) eea43fc looper-token: a report's token no longer names workflows: write (#115) 3feb94c HISTORY.md: #106 (looper)  PROPOSALS.md              | 11 +++++++  README.md           ...
+> Bash gh api repos/tacplus-dev/looper/commits/0b727ad/statuses --jq '.[] | "\(.state) \(.created_at) \(.creator.login) \(.target_url)"'; git diff repo-looper
+< diff --git a/repo-looper b/repo-looper index 5351e9b..a3891e0 100755 --- a/repo-looper +++ b/repo-looper @@ -862,7 +862,8 @@ onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging  # again. Lands nothing, and says why, when the change is not committed, the  # rebase conflic...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash ls; ls ci 2>/dev/null; grep -n 'verify_rule' repo-looper | head; git diff PROPOSALS.md STATE.md README.md
+< Dockerfile HISTORY.md LICENSE PROPOSALS.md README.md ROADMAP.md STATE.md build.lock ci gates.yaml image-failed looper-build looper-ci-lint looper-dispatch looper-docker looper-docker-broker looper-identity looper-lib.sh looper-pkill looper-recap looper-ruleset looper-scan looper-smoke looper-suggest...
+> Bash sed -n 2349,2360p repo-looper; sed -n 2436,2442p repo-looper
+< verify_rule() { # issue   if [[ -z "${BUILD_JOBS:-}" ]]; then echo "Verify with $(gates_hint)."; return 0; fi   printf '%s\n   %s\n   %s\n   %s\n   %s' \     "Verify with a build job: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds" \     "your committed HEAD in the build ima...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash printf '%s\n   %s\n   %s' a b c d | od -c | tail -3; grep -n 'exit 0 on a pass' tests/*.sh | head
+< 0000000   a  \n               b  \n               c   d  \n             0000020  \n             0000024
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n 'Verify with a build job\|agents never build' tests/repo-looper.test.sh | head
+< 2372:has "$pr" "Verify with a build job: "; has "$pr" "have no container runtime (no \`docker\`, so no \`tacplus\` here either)"; has "$pr" "\`tacplus\` runs in the build job only"
+> Bash sed -n 2360,2380p tests/repo-looper.test.sh; grep -n '^has()\|^hasnt()\|^lacks()' tests/repo-looper.test.sh
+< has "$b" "verdict: success: pass: gates docs"; has "$b" "rc 0" [[ "$(head -n 1 "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0" ]] || fail "the build asked for: $(cat "$FIX/builds")" has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0" [[ "$(landed ...
+Adding a failing assertion first: rule 4's six lines, in order, then rule 4 flowing into "Long builds".
+> Edit /builds/looper/looper/issues/113/tests/repo-looper.test.sh
+< The file /builds/looper/looper/issues/113/tests/repo-looper.test.sh has been updated successfully.
+> Bash grep -n 'you may run yourself. The full gates are' repo-looper tests/repo-looper.test.sh | head -3; grep -n '^scenario \|ONLY\|SCENARIO' tests/repo-looper.test.sh | head -5
+< repo-looper:2357:    "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')." tests/repo-looper.test.sh:2374:   have no container runtime"; has "$pr" "you may run yourself. The full gates are "; has "$pr" "have no container run...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+`grep -F` reads a multi-line pattern as several alternatives, so that assertion would be too weak. I'll use a bash substring match instead.
+> Edit /builds/looper/looper/issues/113/tests/repo-looper.test.sh
+< The file /builds/looper/looper/issues/113/tests/repo-looper.test.sh has been updated successfully.
+> Edit /builds/looper/looper/issues/113/tests/repo-looper.test.sh
+< The file /builds/looper/looper/issues/113/tests/repo-looper.test.sh has been updated successfully.
+> Bash sed -n 1,40p tests/repo-looper.test.sh | grep -n 'ONLY\|\$1\|filter' ; grep -n '^scenario()' -A8 tests/repo-looper.test.sh
+< 34:cmd="$1 $2"; shift 2 214:scenario() { # name: a fresh origin with one commit and an approved issue alpha#4 215-  NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues"; : > "$FIX/comments"; : > "$FIX/claude.sh"; : > "$FIX/prompts" 216-  git init -q --bare -b main "$FIX/origin.git" 217-  git clone -q "$...
+No scenario filter, so I'll run the whole suite to confirm the new assertion fails (it takes a while; started detached).
+> Bash nohup timeout 1500 tests/repo-looper.test.sh > /tmp/rl113a.log 2>&1 & echo $!
+< 1002
+= thinking_tokens
+= thinking_tokens
+While it runs, I'm checking whether build jobs get runners today: that decides whether the land can come back green.
+> Bash for r in looper cloud operator website gateway opa; do for s in $(gh api "repos/tacplus-dev/$r/commits?per_page=3" --jq '.[].sha'); do gh api "repos/tacplus-dev/$r/commits/$s/statuses" --jq --arg r "$r" '.[] | select(.context=="tacplus-dev/build") | "\($r) \(.sha[0:7]) \(.state) \(.created_at) \(.ta...
+= task_started
+= task_notification
+< looper/build-looper-99 looper/build-looper-101 looper/build-looper-108 looper/build-looper-117
+> Bash for b in looper/build-looper-117 looper/build-looper-108; do s=$(gh api repos/tacplus-dev/looper/branches/$b --jq .commit.sha); echo "$b $s"; gh api repos/tacplus-dev/looper/commits/$s/statuses --jq '.[] | "\(.state) \(.created_at) \(.creator.login) \(.target_url)"'; done; date -u
+< looper/build-looper-117 0d32f5c580f4f289c42052a46cf25b7702b1d58a looper/build-looper-108 3c06df139ff705263fcd9f9c2063ee6fa45a8916 pending 2026-11-10T03:37:40Z tacplus-reader[bot] https://gitlab.com/tacplus-dev/build/-/pipelines/3047970740 pending 2026-11-10T01:02:29Z tacplus-reader[bot] https://gitl...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Build jobs still aren't being taken (build-looper-117 has no status at all), so this land could starve again. I'm checking whether the runner issues it would wait on are open.
+> Bash gh issue view 18 --repo tacplus-dev/cluster --json state,title,updatedAt; gh issue view 84 --repo tacplus-dev/looper --json state,title; gh issue view 35 --repo tacplus-dev/cloud --json state,title
+< {"state":"OPEN","title":"Hub: register and apply the in-cluster runners and cluster's own pipeline (README, What the hub does 1–7)","updatedAt":"2026-11-10T10:40:27Z"} {"state":"OPEN","title":"Looper jobs on the in-cluster runner: normal-pool tags, build jobs on spot with retry:, requests per job ty...
+Those are all open. Now polling the test run (bounded).
+> Bash for i in $(seq 1 55); do kill -0 1002 2>/dev/null || break; sleep 10; done; tail -5 /tmp/rl113a.log; kill -0 1002 2>/dev/null && echo still-running
+= task_started
+= task_notification
+< Exit code 1 ok land-closes-mid-run ok land-closes-no-report ok done-blocked FAIL done-blocked-nothing-pushed: the finished run was not ended alpha#4 Nothing was pushed: the run found this issue waits on another, so this issue is now `Blocked-by: #3` and stays approved: it is worked again once that i...
+= thinking_tokens
+= thinking_tokens
+An unrelated scenario failed (`done-blocked-nothing-pushed`), and the suite stops at the first failure. Checking whether it's flaky and whether my scenario ran first.
+> Bash grep -c '^ok' /tmp/rl113a.log; grep -n 'build-job' /tmp/rl113a.log; grep -n 'scenario done-blocked-nothing-pushed' -A25 tests/repo-looper.test.sh | head -40
+< 33 791:scenario done-blocked-nothing-pushed 792-echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh" 793-issue alpha 3 OPEN "" "First." 794-echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh" 795-start=$SECONDS 796-run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1 797-(( SEC...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash s=$(grep -n '^scenario build-job-report' tests/repo-looper.test.sh | cut -d: -f1); e=$(grep -n '^scenario build-job-red' tests/repo-looper.test.sh | cut -d: -f1); first=$(grep -n '^scenario ' tests/repo-looper.test.sh | head -1 | cut -d: -f1); echo $first $s $e; tail -5 tests/repo-looper.test.sh; gr...
+< 269 2350 2383 has "$(cat "$FIX/think/patch")" "+half" patch_gives_tree pass  echo "repo-looper: all scenarios pass" 2326:pin_seed() { # alpha's main: pinned, with a gate map whose gates say where they ran 2340:build_model() { # file content
+> Bash mkdir -p /tmp/t113 && { sed -n 1,268p tests/repo-looper.test.sh; sed -n 2300,2382p tests/repo-looper.test.sh | sed -n '/^pin_seed()/,$p'; } > /tmp/t113/one.sh && sed -n 2300,2326p tests/repo-looper.test.sh | grep -n '()' ; grep -n 'ROOT=' /tmp/t113/one.sh | head -3
+< 27:pin_seed() { # alpha's main: pinned, with a gate map whose gates say where they ran 12:ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 233:      PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
+= thinking_tokens
+= thinking_tokens
+> Bash sed -i '12s|.*|ROOT=/builds/looper/looper/issues/113|' /tmp/t113/one.sh && timeout 300 bash /tmp/t113/one.sh 2>&1 | tail -8
+< /tmp/t113/one.sh: line 11: /tmp/t113/hermetic.sh: No such file or directory
+> Bash sed -n 9,12p tests/repo-looper.test.sh; sed -i '11s|"\$(dirname "\${BASH_SOURCE\[0\]}")"|/builds/looper/looper/issues/113/tests|' /tmp/t113/one.sh; sed -n 11p /tmp/t113/one.sh
+< # Run: tests/repo-looper.test.sh set -euo pipefail source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"   # the test's own environment, not the job's (looper#97, looper#103) ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"   # the test's own ...
+> Bash sed -i '11s|.*|source /builds/looper/looper/issues/113/tests/hermetic.sh|' /tmp/t113/one.sh && timeout 300 bash /tmp/t113/one.sh 2>&1 | tail -12
+= task_started
+= task_notification
+< /tmp/t113/one.sh: line 306: landed: command not found FAIL build-job-report: main: 4884afc change notes.md fa4141c pinned dcecccc init alpha#4 The manager merged [`looper/alpha-4`](https://github.com/tacplus-dev/alpha/tree/looper/alpha-4) on main: fa4141c..4884afc, on the gates docs (its one changed...
+> Bash grep -n '^landed()' tests/repo-looper.test.sh
+< 1668:landed() { origin show "main:$1" 2>/dev/null; } # a file on main
+My trimmed copy was missing a helper. Adding it and re-running the single scenario before applying the fix.
+> Bash sed -i '268a landed() { origin show "main:$1" 2>/dev/null; }' /tmp/t113/one.sh && timeout 300 bash /tmp/t113/one.sh 2>&1 | tail -12 | cut -c1-400
+= task_started
+= task_notification
+<    have no container runtime (no `docker`, so no `tacplus` here either): agents never build (looper#71). What needsno container (a script's tests, a linter) you may run yourself. The full gates are `echo "full ${BUILD_STUB:-here}" >> "$FIX/gates-ran"` (gates.yaml's full).             alpha#4 The man...
+The new assertion fails as expected ("What needsno container", then blank lines). Now the fix:
+> Edit /builds/looper/looper/issues/113/repo-looper
+< The file /builds/looper/looper/issues/113/repo-looper has been updated successfully.
+> Bash timeout 300 bash /tmp/t113/one.sh 2>&1 | tail -3 | cut -c1-300 && nohup timeout 3000 tests/repo-looper.test.sh > /tmp/rl113b.log 2>&1 & echo $!
+< 40555
+= thinking_tokens
+= thinking_tokens
+I accidentally sent the single-scenario run to the background along with the suite; they run one after the other, so I'll just wait for the full suite (bounded).
+> Bash for i in $(seq 1 57); do kill -0 40555 2>/dev/null || break; sleep 10; done; grep -c '^ok' /tmp/rl113b.log; grep FAIL /tmp/rl113b.log | head -3
+= task_started
+= task_notification
+< 93
+> Bash for i in $(seq 1 57); do kill -0 40555 2>/dev/null || break; sleep 10; done; grep -c '^ok' /tmp/rl113b.log; grep FAIL /tmp/rl113b.log | head -3; tail -1 /tmp/rl113b.log | cut -c1-200
+= task_started
+= task_notification
+< 144 repo-looper: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+All 144 scenarios pass. Checking whether any other test asserts the rule 4 text, then committing.
+> Bash grep -ln 'on a pass, 1 on a failure' tests/ *.sh 2>/dev/null; grep -rln 'on a pass, 1 on a failure' tests; command -v shellcheck && shellcheck -S error repo-looper | head
+< Exit code 1
+> Bash git add -A PROPOSALS.md README.md STATE.md repo-looper tests/repo-looper.test.sh && git status --short && git commit -q -F - <<'EOF' repo-looper: a build no runner takes is "no runner", not 3h then red (#113)  A triggered tacplus-dev/build pipeline whose first job never runs sets no commit status at...
+< M  PROPOSALS.md M  README.md M  STATE.md M  repo-looper M  tests/repo-looper.test.sh c4360aa repo-looper: a build no runner takes is "no runner", not 3h then red (#113) [2026-11-11T11:26:35Z] checkpoint of #113 (a step) pushed to looper/looper-113:  7 files changed, 560 insertions(+), 18 deletions(-...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 113 --land > /tmp/land113.log 2>&1 & echo $!; sleep 45; cat /tmp/land113.log
+= task_started
+= task_notification
+< 169702 [2026-11-11T11:26:43Z] checkpoint of #113 (land queued) pushed to looper/looper-113:  8 files changed, 583 insertions(+), 18 deletions(-) [2026-11-11T11:26:45Z] queued: the manager of looper merges looper/looper-113 after the lands queued before it, one at a time, and says on the issue what c...
+= thinking_tokens
+= thinking_tokens
+Queued at 11:26Z. Polling in bounded steps, and watching the manager's build branch for a status.
+> Bash for i in $(seq 1 57); do kill -0 169702 2>/dev/null || break; sleep 10; done; tail -3 /tmp/land113.log | cut -c1-300; s=$(gh api repos/tacplus-dev/looper/branches/looper/build-looper-113 --jq .commit.sha 2>/dev/null) && { echo "build sha $s"; gh api repos/tacplus-dev/looper/commits/$s/statuses --jq ...
+= task_started
+= task_notification
+< [2026-11-11T11:26:43Z] checkpoint of #113 (land queued) pushed to looper/looper-113:  8 files changed, 583 insertions(+), 18 deletions(-) [2026-11-11T11:26:45Z] queued: the manager of looper merges looper/looper-113 after the lands queued before it, one at a time, and says on the issue what came of ...
+> Bash for i in $(seq 1 57); do kill -0 169702 2>/dev/null || break; sleep 10; done; tail -2 /tmp/land113.log | cut -c1-300; s=$(gh api repos/tacplus-dev/looper/branches/looper/build-looper-113 --jq .commit.sha 2>/dev/null) && { echo "build sha $s"; gh api repos/tacplus-dev/looper/commits/$s/statuses --jq ...
+= task_started
+= task_notification
+< [2026-11-11T11:26:43Z] checkpoint of #113 (land queued) pushed to looper/looper-113:  8 files changed, 583 insertions(+), 18 deletions(-) [2026-11-11T11:26:45Z] queued: the manager of looper merges looper/looper-113 after the lands queued before it, one at a time, and says on the issue what came of ...
+No manager has picked it up yet (no build-looper-113 branch). Still polling.
+> Bash for i in $(seq 1 57); do kill -0 169702 2>/dev/null || break; sleep 10; done; tail -1 /tmp/land113.log | cut -c1-300; s=$(gh api repos/tacplus-dev/looper/branches/looper/build-looper-113 --jq .commit.sha 2>/dev/null) && { echo "build sha $s"; gh api repos/tacplus-dev/looper/commits/$s/statuses --jq ...
+= task_started
+= task_notification
+< [2026-11-11T11:26:45Z] queued: the manager of looper merges looper/looper-113 after the lands queued before it, one at a time, and says on the issue what came of it; waiting for its verdict. If your time runs out first, it still lands it after you. 11:56:12
+> Bash for i in $(seq 1 57); do kill -0 169702 2>/dev/null || break; sleep 10; done; tail -1 /tmp/land113.log | cut -c1-300; s=$(gh api repos/tacplus-dev/looper/branches/looper/build-looper-113 --jq .commit.sha 2>/dev/null) && { echo "build sha $s"; gh api repos/tacplus-dev/looper/commits/$s/statuses --jq ...
+= task_started
+= task_notification
+< [2026-11-11T11:26:45Z] queued: the manager of looper merges looper/looper-113 after the lands queued before it, one at a time, and says on the issue what came of it; waiting for its verdict. If your time runs out first, it still lands it after you. [126,125,124,123,122,121,120,119,118,117,116,115,11...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+21 issues are ahead in the land queue (#99 through #126), and starved builds can each take 3h. Checking whether the manager is getting through the queue at all.
+> Bash gh api "repos/tacplus-dev/looper/issues/comments?sort=created&direction=desc&per_page=40" --jq '.[] | select(.user.login=="tacplus-manager[bot]") | "\(.created_at) \(.issue_url|split("/")|last) \(.body[0:140]|gsub("\n";" "))"' | head -12
+< 2026-11-11T11:01:29Z 113 The manager did not merge [`looper/looper-113`](https://github.com/tacplus-dev/looper/tree/looper/looper-113): red, nothing merges without g 2026-11-11T08:01:01Z 112 The manager did not merge [`looper/looper-112`](https://github.com/tacplus-dev/looper/tree/looper/looper-112)...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue comment 113 --repo tacplus-dev/looper --body-file - <<'EOF' Status at 12:10Z, 2026-11-11. This run ends; the land stays queued, and the issue now waits on tacplus-dev/cluster#18.  - **Committed:** c4360aa on `looper/looper-113` (rebased on main 5301129). This is the previous run's 0b727ad (...
+< https://github.com/tacplus-dev/looper/issues/113#issuecomment-6795345235 Blocked-by: tacplus-dev/cluster#18
+#113 isn't landed or closed. The fix is committed and queued with the manager, and the issue now waits on tacplus-dev/cluster#18 (build jobs getting a runner).
+
+- **Commit:** c4360aa on `looper/looper-113`. It contains the previous run's change: a build with no `tacplus-dev/build` status within 15 minutes counts as **no runner**, not red. `--build` exits 3, and the manager merges nothing, gives no verdict, leaves the land queued and says so once on the issue.
+- **Bug fixed this run:** that earlier change added a sixth line to rule 4's prompt text, but its `printf` format had room for only five. Every report's prompt would have shown a garbled rule 4. I fixed the format and added a test for the lines' order; the test failed before the fix and passes after.
+- **Tests:** `tests/repo-looper.test.sh` passes (144 scenarios). One earlier run failed in `done-blocked-nothing-pushed`, which has a 20-second time limit; the machine was loaded and my change doesn't touch that code. The rerun passed. I didn't run the other gates locally; the land runs them as a build job.
+- **Why it isn't landed:** the land was queued again at 11:26Z, after the 11:01Z attempt came back red with "no verdict within 3h". That red was build starvation, not a test failure. The manager settles about one land every 3h and all of today's came back red the same way, with 20 lands ahead of this one. It also runs main's code, which still has the old 3h wait, so this fix can't help its own land. A build job has to actually get a runner first.
+- **Ending the run:** I posted a status comment on the issue, stopped my own land waiter (the land stays queued with the manager) and wrote `Blocked-by: tacplus-dev/cluster#18` to the run's outcome. If the queued land goes green first, the next run writes the outcome comment and closes the issue.
+- **Still not covered:**
+  - A build whose `pending` job ran but whose gates never got a slot is still waited on for the full 3h (the operator, llmproxy, opa and gateway reports). This is recorded in PROPOSALS.md.
+  - The hub asked for a test against a real pending build with no runner. I couldn't run one, because this run can't read tacplus-dev/build. Only the simulated scenario covers it, until this fix's own build runs.
+= success: #113 isn't landed or closed. The fix is committed and queued with the manager, and the issue now waits on tacplus-dev/cluster#18 (build jobs getting a runner).
+
+- **Commit:** c4360aa on `looper/looper-113`. It contains the previous run's change: a build with no `tacplus-dev/build` status within 15 minutes counts as **no runner**, not red. `--build` exits 3, and the manager merges nothing, gives no verdict, leaves the land queued and says so once on the issue.
+- **Bug fixed this run:** that earlier change added a sixth line to rule 4's prompt text, but its `printf` format had room for only five. Every report's prompt would have shown a garbled rule 4. I fixed the format and added a test for the lines' order; the test failed before the fix and passes after.
+- **Tests:** `tests/repo-looper.test.sh` passes (144 scenarios). One earlier run failed in `done-blocked-nothing-pushed`, which has a 20-second time limit; the machine was loaded and my change doesn't touch that code. The rerun passed. I didn't run the other gates locally; the land runs them as a build job.
+- **Why it isn't landed:** the land was queued again at 11:26Z, after the 11:01Z attempt came back red with "no verdict within 3h". That red was build starvation, not a test failure. The manager settles about one land every 3h and all of today's came back red the same way, with 20 lands ahead of this one. It also runs main's code, which still has the old 3h wait, so this fix can't help its own land. A build job has to actually get a runner first.
+- **Ending the run:** I posted a status comment on the issue, stopped my own land waiter (the land stays queued with the manager) and wrote `Blocked-by: tacplus-dev/cluster#18` to the run's outcome. If the queued land goes green first, the next run writes the outcome comment and closes the issue.
+- **Still not covered:**
+  - A build whose `pending` job ran but whose gates never got a slot is still waited on for the full 3h (the operator, llmproxy, opa and gateway reports). This is recorded in PROPOSALS.md.
+  - The hub asked for a test against a real pending build with no runner. I couldn't run one, because this run can't read tacplus-dev/build. Only the simulated scenario covers it, until this fix's own build runs.
