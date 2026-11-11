@@ -8,6 +8,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   set, so a token-shaped literal added in a file only a smaller set maps (`tests/looper-recap.test.sh`, the recap set)
   is caught by the build's `security-looper` job, not the gates. A set that every land runs beside the ones its paths
   call for (gates.yaml has none) would close it, as would gitleaks in a pre-commit check the agents run.
+- **A build that never starts, told** (2026-11-11, #128): a build with no verdict by the manager's job end now
+  leaves its land queued for the next manager, however long it stays queued, so a pipeline that never starts (#113:
+  no runner, no commit status) holds its repository's queue, oldest first, across managers with no red verdict and
+  nothing on the issue. A comment on the issue once a build has been queued past a bound (`LOOPER_BUILD_QUEUE_WAIT`,
+  say, a day), or the recap's `builds_not_started` as an item over a threshold, would surface it; reading the
+  pipeline's own status from tacplus-dev/build (a token the manager lacks today) would tell queued from lost.
+- **A stale build branch cleared** (2026-11-11, #128): a land left queued keeps `looper/build-<repo>-<n>` with its
+  build's record; if the land is then sent back or its main moves, no manager reuses it, and the branch stays until
+  the issue's next land builds (the manager force-pushes it afresh and deletes it after the verdict). A manager could
+  delete a build branch whose issue has no land queued.
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from

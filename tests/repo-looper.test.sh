@@ -148,7 +148,9 @@ case "$url" in
   # once: the commit's gate set from origin, as looper-build runs it
   # (BUILD_STUB=build in its environment), and its commit status by the reader
   # app, linking the pipeline. $FIX/forge-status adds a success linking it too,
-  # newer, by another creator: no verdict.
+  # newer, by another creator: no verdict. $FIX/build-hold holds the build
+  # (looper#128): `queued`, no runner has started it (no status); `running
+  # <ISO time>`, its first job started then (its pending status alone).
   */projects/tacplus-dev%2Fbuild/trigger/pipeline)
     form="$(cat)"; v() { tr '&' '\n' <<<"$form" | sed -n "s/^$1=//p"; }
     sha="$(v 'inputs%5Bsha%5D')"; gates="$(v 'inputs%5Bgates%5D')"; base="$(v 'inputs%5Bbase%5D')"
@@ -162,10 +164,15 @@ case "$url" in
         { state=failure; desc="the gates ${gates:-full} (gates.yaml) exited 1 (gates.log)"; }
     fi
     rm -rf "$d"; mkdir -p "$FIX/statuses"; f="$FIX/statuses/$sha.json"; [[ -f "$f" ]] || echo '[]' > "$f"
-    st() { jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" \
-             '[{state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: $w}}] + . | [{state: $s, context: "tacplus-dev/build", description: $d, target_url: $u, creator: {login: $w}}] + .' "$f" > "$f.new" && mv "$f.new" "$f"; }
-    st "$state" "$desc" "tacplus-reader[bot]"
-    [[ ! -e "$FIX/forge-status" ]] || st success pass "tacplus-looper[bot]"
+    now="$(date -u +%FT%TZ)"; hold="$(cat "$FIX/build-hold" 2>/dev/null || true)"
+    st() { jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" --arg t "${4:-$now}" \
+             '[{state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: $w}, created_at: $t}] + . | if $s == "pending" then . else [{state: $s, context: "tacplus-dev/build", description: $d, target_url: $u, creator: {login: $w}, created_at: $t}] + . end' "$f" > "$f.new" && mv "$f.new" "$f"; }
+    case "$hold" in
+      queued) ;;
+      running\ *) st pending building "tacplus-reader[bot]" "${hold#running }" ;;
+      *) st "$state" "$desc" "tacplus-reader[bot]"
+         [[ ! -e "$FIX/forge-status" ]] || st success pass "tacplus-looper[bot]" ;;
+    esac
     reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"
     exit 0 ;;
   */packages/generic/security-*/latest/*)
@@ -2444,6 +2451,46 @@ has "$(cat "$FIX/land-4")" "rc 0"; [[ ! -e "$FIX/builds" ]] || fail "built: $(ca
 [[ "$(cat "$FIX/gates-ran")" == "docs here $(origin rev-parse main~1)" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
 has "$OUT$(cat "$FIX/manager.log")" "this job holds no BUILD_TRIGGER_TOKEN"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Verify with the full gates"
+pass
+
+# Builds run on spot, a few at a time (looper#128): a build still queued for a
+# runner is no red land, however long it waits. LOOPER_BUILD_WAIT counts from
+# the build's start (its first status), and a build with no verdict when the
+# manager's job nears its end leaves the land queued, untouched, its pipeline
+# recorded on the build's branch; the next manager takes that pipeline's
+# verdict up, triggering none.
+scenario build-queued
+pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo queued > "$FIX/build-hold"
+manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=1 LOOPER_LAND_MINUTES=0 LOOPER_LAND_MARGIN=15 CI_JOB_TIMEOUT=40 CI_JOB_STARTED_AT="$(date -u +%FT%TZ)"
+has "$OUT" "#4: left queued for the next manager: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901 has no verdict yet"
+has "$OUT" "#4: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$OUT" " s, not started"
+lacks "$(cat "$FIX/comments")" "alpha#4 "; has "$(labels alpha 4)" "looper:landing"
+branch || fail "the land's branch is gone"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+s="$(cut -d' ' -f3 "$FIX/builds")"
+rec="$(origin log -1 --format=%B looper/build-alpha-4)"
+has "$rec" "pipeline=901"; [[ "$(origin rev-parse looper/build-alpha-4^)" == "$s" ]] || fail "the build's branch: $(origin log --oneline -2 looper/build-alpha-4)"
+# The build ran since; the next manager has its verdict.
+rm "$FIX/build-hold"
+jq -n --arg t0 "$(date -u -d '1 minute ago' +%FT%TZ)" --arg t1 "$(date -u +%FT%TZ)" --arg u https://gitlab.com/tacplus-dev/build/-/pipelines/901 \
+  '[{state: "success", context: "tacplus-dev/build", description: "pass: gates docs", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t1},
+    {state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t0}]' > "$FIX/statuses/$s.json"
+manage "${BUILDS[@]}"
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "the next manager built again: $(cat "$FIX/builds")"
+[[ "$(landed notes.md)" == "the docs" && "$(origin rev-parse main)" == "$s" ]] || fail "main: $(origin log --oneline main)"
+has "$(cat "$FIX/comments")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901): green"
+has "$OUT" "#4: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$OUT" " s, ran 60 s"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+pass
+
+# A build that has run past LOOPER_BUILD_WAIT since its start is red.
+scenario build-running-past-bound
+pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo "running $(date -u -d '2 hours ago' +%FT%TZ)" > "$FIX/build-hold"
+manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=3600
+has "$(cat "$FIX/comments")" "alpha#4 The manager did not merge"; has "$(cat "$FIX/comments")" "no verdict within 1h of its start"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+has "$OUT" "#4: not merged (exit 4)"; has "$OUT" " s, running 720"
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------

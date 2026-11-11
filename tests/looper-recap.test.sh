@@ -158,12 +158,17 @@ pass
 # The managers, the concurrency and the capacity (looper#72, looper#107), from the managers' logs (looper#70), the
 # kicker's capacity lines and GitHub: tacplus's manager merged #20, #22 (its Cargo.lock conflict
 # regenerated) and #21 (sent back once: redone), red gates on #23, #24 left for the next manager;
-# main red after #22's merge, and reverted.
+# main red after #22's merge, and reverted. Its builds' queue time apart from their run time
+# (looper#128): queued 10, 120 and 5 minutes, ran 30, 50 and 25; alpha's one build left
+# queued, not started, 20 minutes.
 NAME=collect-managers-concurrency-capacity
 [[ "$(q '.managers.tacplus | "\(.lands) \(.merged) \(.resolved) \(.sent_back) \(.red_gates) \(.deferred) \(.redone) \(.red_main)"')" == '5 3 1 1 1 1 [21] ["3333333"]' ]] ||
   fail "tacplus's manager: $(q .managers.tacplus)"
 # Report to merge: queued to merged, 75, 240 and 80 minutes; the lands waited 155 minutes for it.
 [[ "$(q '.managers.tacplus | "\(.report_to_merge_minutes.p50) \(.report_to_merge_minutes.p90) \(.waited_hours)"')" == "80 240 2.58" ]] || fail "merge time: $(q .managers.tacplus)"
+[[ "$(q '.managers.tacplus | "\(.builds) \(.build_queue_minutes.p50) \(.build_queue_minutes.p90) \(.build_run_minutes.p50) \(.build_run_minutes.p90) \(.builds_not_started)"')" == "3 10 120 30 50 0" ]] ||
+  fail "tacplus's builds: $(q .managers.tacplus)"
+[[ "$(q '.managers.alpha | "\(.builds) \(.build_queue_minutes.p90) \(.build_run_minutes) \(.builds_not_started) \(.deferred)"')" == "1 20 null 1 1" ]] || fail "alpha's builds: $(q .managers.alpha)"
 [[ "$(q '[.managers.tacplus.merges[] | "#\(.issue) \(.after) \(.set) \(.status)"] | join(", ")')" == "#20 2222222 docs success, #22 3333333 full failure, #21 4444444 full success" ]] ||
   fail "merges: $(q .managers.tacplus.merges)"
 # A revert is a commit that says so; a message only mentioning one is not.
@@ -257,7 +262,7 @@ has "$R" "Image: ghcr.io/tacplus-dev/looper:main is 2 commits behind main (aaaaa
 has "$R" "Longest lands: [tacplus #12 full](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 150 min."
 has "$R" "Not read: gitlab:tacplus-dev/cluster"
 # The managers' scores, the concurrency and the capacity numbers (looper#72, looper#107).
-has "$R" "Managers: alpha 1 merged (report to merge p50 7, p90 7 min), conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0; tacplus 3 merged (report to merge p50 80, p90 240 min), conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next."
+has "$R" "Managers: alpha 1 merged (report to merge p50 7, p90 7 min), conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; tacplus 3 merged (report to merge p50 80, p90 240 min), conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
 has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
 lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 has "$R" "Capacity: queue p90 20 min over 24 jobs; 3 issues waited 2.78 h for a VM ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min, [tacplus#12](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 20 min); one more t2a-standard-8 is about \$7.39 a day (\$0.308 an hour)."

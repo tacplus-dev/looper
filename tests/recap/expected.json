@@ -678,7 +678,16 @@
  },
  "managers": {
   "alpha": {
-   "deferred": 0,
+   "build_queue_minutes": {
+    "max": 20,
+    "n": 1,
+    "p50": 20,
+    "p90": 20
+   },
+   "build_run_minutes": null,
+   "builds": 1,
+   "builds_not_started": 1,
+   "deferred": 1,
    "failed": 0,
    "jobs": 1,
    "lands": 1,
@@ -707,6 +716,20 @@
    "waited_hours": 0.03
   },
   "tacplus": {
+   "build_queue_minutes": {
+    "max": 120,
+    "n": 3,
+    "p50": 10,
+    "p90": 120
+   },
+   "build_run_minutes": {
+    "max": 50,
+    "n": 3,
+    "p50": 30,
+    "p90": 50
+   },
+   "builds": 3,
+   "builds_not_started": 0,
    "deferred": 1,
    "failed": 0,
    "jobs": 1,
