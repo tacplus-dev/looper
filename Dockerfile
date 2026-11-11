@@ -56,7 +56,8 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # install, sum.golang.org). OSV-Scanner's and Trivy's release binaries carry
 # reachable vulnerabilities (looper#63: its Go's stdlib; looper#64: x/net
 # GO-2026-6860/6866, x/crypto's openpgp GO-2026-5932): they are built here with
-# GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum.
+# GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum,
+# and each so built must report it (looper#124: go1.27.4 for net/http's GO-2026-6859).
 # gitleaks too (looper#65: its 8.30.1 release binary, go1.24.11, has 70 reachable
 # vulnerabilities, and upstream has not released since): built in a module made
 # here, its go.sum from sum.golang.org, which replaces github.com/ulikunitz/xz
@@ -76,11 +77,12 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
-ARG GO_TOOLCHAIN=go1.27.3 TRIVY_VERSION=0.76.1
+ARG GO_TOOLCHAIN=go1.27.4 TRIVY_VERSION=0.76.1
 RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
       -ldflags "-w -X github.com/aquasecurity/trivy/pkg/version/app.ver=$TRIVY_VERSION" \
       "github.com/aquasecurity/trivy/cmd/trivy@v$TRIVY_VERSION"; \
-    go clean -cache -modcache; trivy --version | grep -qx "Version: $TRIVY_VERSION"
+    go clean -cache -modcache; trivy --version | grep -qx "Version: $TRIVY_VERSION"; \
+    go version /usr/local/bin/trivy | grep -qx "/usr/local/bin/trivy: $GO_TOOLCHAIN"
 ARG OSV_SCANNER_VERSION=2.7.0
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
 ARG SYFT_VERSION=1.56.0 SYFT_XNET_VERSION=0.62.0
@@ -112,6 +114,7 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
       go mod tidy; go build -ldflags "-w -X main.version=$SYFT_VERSION" -o /usr/local/bin/syft "$sy"); \
     syft --version | grep -qx "syft $SYFT_VERSION"; \
     go version -m /usr/local/bin/syft | grep -q "golang.org/x/net[[:space:]]*v$SYFT_XNET_VERSION[[:space:]]"; \
+    for b in osv-scanner gitleaks syft; do go version "/usr/local/bin/$b" | grep -qx "/usr/local/bin/$b: $GO_TOOLCHAIN"; done; \
     go clean -cache -modcache; \
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.
