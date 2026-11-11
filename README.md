@@ -139,7 +139,9 @@ looper creates both labels with `bug` and `feature`. Across repositories, the ki
 whose next ready issue is `priority:high` before the others, so it gets a runner first when they are short
 (`looper-dispatch ready`). Priority only decides what starts next: a running issue is never pre-empted, and a blocked
 issue waits whatever its priority. To put new work ahead, label it `priority:high`; a `Blocked-by:` line is for a
-real dependency, not for ordering.
+real dependency, not for ordering. The manager takes the queued lands in the same order (looper#121): a land whose
+issue is `priority:high` merges before older unlabelled ones, a `priority:low` one after them, oldest first within each
+(`queued_lands` in `repo-looper`; its priority labels unreadable, oldest first); a land being judged is never pre-empted.
 
 ### Bug or feature
 
@@ -274,7 +276,7 @@ lander are gone. One job per issue needs none of them.
   its manager waits for a runner (created or pending, not waiting for main's resource behind a manager that merges)
   **yields** at once: it takes nothing and leaves its issue ready, its slot goes to the manager, and the kicker
   plans the issue again, after it. It takes the
-  queued branches oldest first, one at a time under the landing lock: it rebases each on main, runs the gates its
+  queued branches by [priority](#priority), then oldest first (looper#121), one at a time under the landing lock: it rebases each on main, runs the gates its
   diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)), pushes **only on green**, and **deletes
   the merged branch**. In a repository that pins its build image the gates are a **build job's verdict** on the
   rebased commit ([Build jobs](#build-jobs), looper#71); in any other, they run in the manager's job.
@@ -467,7 +469,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 ```sh
 tests/looper-docker.test.sh                # a child's docker: the limit added, a lower one kept, a higher one or none refused, the image's own arguments left alone, other commands passed through; with a docker daemon, a container over its limit OOM-killed alone while the one beside it carries on (#41)
 tests/looper-pkill.test.sh                 # a model's pkill: its run's own processes signalled, another run's and the lander's spared and named, pkill's signal and -e options, the real pkill outside a run (#61)
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged oldest first; a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68) (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle; an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68) (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -1287,7 +1289,7 @@ commits, its tests among them, as the job's user. In the manager's job that user
 repository code, and the plan gives a repository two jobs for a batch, both on main's resource group:
 
 - **`looper-<repo>-verdict`** (environment `looper-report`, the report app's token; `repo-looper --verdict DIR`) takes
-  the queued lands oldest first. It merges each onto `looper/staging` (main, then the green lands before it), regenerates
+  the queued lands by [priority](#priority), then oldest first. It merges each onto `looper/staging` (main, then the green lands before it), regenerates
   the files `generated.yaml` maps, and runs its gate set, with none of the job's credentials in the gates' environment.
   It pushes staging and writes the verdict (main, staging, each land's exit and record) as its artifacts. It comments on
   no issue and never touches main. A gate that asks for the manager's token gets none: KMS refuses `looper-report` the
