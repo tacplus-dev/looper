@@ -4,6 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **clippy on a service whose generated crates the scan does not have** (2026-11-11, #126): cargo-deny now falls back
+  to the gates' `generated/` at the tacplus.yaml `output-dir`, then to the `Cargo.lock`'s crates alone; clippy, which
+  compiles, still fails the run (`no matching package named grpcserver`, gateway at cfe4600 by `looper-scan local`)
+  when the gates kept no `built/` (red gates) or generate out of tree. The same `generated/` overlay would cover the
+  second; the first is red anyway (gateway's passing gates keep `target/generated-sources/model/**` in `built/`, so
+  its `20261111T093923Z` scan's `cargo-deny: exited 1` most likely followed red gates: the security job runs
+  `when: always`; the build project's logs, which a report cannot read, would say).
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from

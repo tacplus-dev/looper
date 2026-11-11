@@ -202,23 +202,97 @@ unknown-git = "deny"
 EOF
 }
 
+# cargo-deny reads the build's graph with cargo metadata, which needs the
+# manifest of every path dependency. A service that path-depends on the
+# crates its gates generate (its tacplus.yaml output-dir: gateway's
+# target/generated-sources/model) has them when the gates built them (built/,
+# laid over the checkout); else from the gates' generated/, laid at the
+# output-dir in a copy of the tree; else cargo-deny checks the Cargo.lock's
+# crates alone, and the summary says so (looper#126).
+deny_run() { # manifest config raw: 0 when cargo-deny reported; else DENY_ERROR says why
+  local rc=0 e
+  cargo-deny --format json --manifest-path "$1" --config "$2" check advisories licenses sources bans \
+    2> "$3" >/dev/null || rc=$?
+  jq -e 'select(.type == "summary")' "$3" >/dev/null 2>&1 && return 0
+  # Its last error (its log is JSON) from cargo's own "error:" line on, else its last line.
+  e="$(jq -Rrn '[inputs | fromjson? | select(.type == "log" and .fields.level == "ERROR") | .fields.message]
+                | last // "" | split("\n") | map(select(test("\\S"))) as $l
+                | ([$l | to_entries[] | select(.value | test("^error: "))][0].key // 0) as $i | $l[$i:$i + 2] | join("; ")' \
+          "$3" 2>/dev/null)" || e=""
+  [[ -n "$e" ]] || e="$(grep -v '^{' "$3" | tail -1)"
+  DENY_ERROR="exited $rc: $e"; return 1
+}
+
+# The tree with the gates' generated/ at its tacplus.yaml output-dir, a copy
+# made once a tree; fails when there is no such output-dir or generated/.
+deny_overlay() { # tree label
+  local copy="$SCAN_WORK/cargo-overlay-$2" out
+  [[ -f "$1/tacplus.yaml" && -n "$(ls -A "$BUILD_OUT/generated" 2>/dev/null)" ]] || return 1
+  out="$(sed -n 's/^output-dir:[[:space:]]*//p' "$1/tacplus.yaml" | head -1 | sed "s/[[:space:]]*#.*//; s/^[\"']//; s/[\"']$//; s:/*$::")"
+  [[ -n "$out" && "$out" != /* && "/$out/" != */../* ]] || return 1
+  if [[ ! -d "$copy" ]]; then
+    mkdir -p "$copy/$out"
+    (cd "$1" && tar --exclude=./.git -cf - .) | tar -xf - -C "$copy" && cp -a "$BUILD_OUT/generated/." "$copy/$out/" || return 1
+  fi
+  echo "$copy"
+}
+
+# The name of the lock-only manifest's own crate, whose findings are not ours.
+DENY_LOCK_CRATE=looper-scan-cargo-lock
+# A manifest that depends on exactly the crates a Cargo.lock locks from
+# crates.io or git (pinned: =version, the commit), beside a copy of the lock;
+# a crate of another registry it cannot name is printed.
+deny_lock_manifest() { # project-dir dir
+  mkdir -p "$2"; cp "$1/Cargo.lock" "$2/Cargo.lock"; : > "$2/lib.rs"
+  printf '[package]\nname = "%s"\nversion = "1.0.0"\nedition = "2021"\npublish = false\n\n[lib]\npath = "lib.rs"\n\n[dependencies]\n' \
+    "$DENY_LOCK_CRATE" > "$2/Cargo.toml"
+  awk -v manifest="$2/Cargo.toml" '
+    function val(s) { sub(/^[a-z]+ = "/, "", s); sub(/"[ \t]*$/, "", s); return s }
+    function flush(  url, rev) {
+      if (name == "") return
+      if (source ~ /^(registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index|sparse\+https:\/\/index\.crates\.io\/)$/)
+        printf "lock-%d = { package = \"%s\", version = \"=%s\", default-features = false }\n", ++n, name, version >> manifest
+      else if (source ~ /^git\+/) {
+        url = substr(source, 5); rev = url; sub(/#.*/, "", url); sub(/\?.*/, "", url); sub(/^[^#]*#/, "", rev)
+        printf "lock-%d = { package = \"%s\", git = \"%s\", rev = \"%s\", default-features = false }\n", ++n, name, url, rev >> manifest
+      } else if (source != "") print name "@" version " (" source ")"
+      name = version = source = ""
+    }
+    /^\[\[package\]\]/ { flush(); next }
+    /^\[/ { flush(); next }
+    /^name = "/ { name = val($0) } /^version = "/ { version = val($0) } /^source = "/ { source = val($0) }
+    END { flush() }' "$1/Cargo.lock"
+}
+
 tool_cargo_deny() { # tree label prefix
-  local d i=0 raw cfg rc
+  local d i=0 raw cfg first overlay lock skipped
   [[ -n "$(projects "$1" Cargo.lock)" ]] || return 0
   need cargo-deny || return 0
   default_deny_toml > "$SCAN_WORK/deny.toml"
   while read -r d; do
     [[ -f "$d/Cargo.toml" ]] || continue
-    i=$((i + 1)); raw="$SCAN_OUT/raw/cargo-deny-$2-$i.json"; rc=0
+    i=$((i + 1)); raw="$SCAN_OUT/raw/cargo-deny-$2-$i.json"
     cfg="$SCAN_WORK/deny.toml"; [[ -f "$1/deny.toml" ]] && cfg="$1/deny.toml"; [[ -f "$d/deny.toml" ]] && cfg="$d/deny.toml"
-    cargo-deny --format json --manifest-path "$d/Cargo.toml" --config "$cfg" check advisories licenses sources bans \
-      2> "$raw" >/dev/null || rc=$?
-    if ! jq -e 'select(.type == "summary")' "$raw" >/dev/null 2>&1; then
-      tool_error cargo-deny "$1" "$d" "exited $rc: $(grep -v '^{' "$raw" | tail -1)"; continue
+    if ! deny_run "$d/Cargo.toml" "$cfg" "$raw"; then
+      first="$DENY_ERROR"; mv "$raw" "${raw%.json}-checkout.json"
+      if overlay="$(deny_overlay "$1" "$2")" && [[ -f "$overlay${d#"$1"}/Cargo.toml" ]] &&
+         deny_run "$overlay${d#"$1"}/Cargo.toml" "$cfg" "$raw"; then
+        log "cargo-deny: $d: with the gates' generated/ at its output-dir"
+      else
+        [[ ! -f "$raw" ]] || mv "$raw" "${raw%.json}-generated.json"
+        lock="$SCAN_WORK/cargo-lock-$2-$i"
+        skipped="$(deny_lock_manifest "$d" "$lock" | paste -sd ' ' -)"
+        if ! deny_run "$lock/Cargo.toml" "$cfg" "$raw"; then
+          tool_error cargo-deny "$1" "$d" "$first (Cargo.lock alone: $DENY_ERROR)"; continue
+        fi
+        notes+=("cargo-deny: $(rel_dir "$1" "$d" "$3")Cargo.lock: its crates alone, not the build's graph (Cargo.toml does not load: ${first#*: })${skipped:+; not checked, of another registry: $skipped}")
+        log "cargo-deny: $d: Cargo.lock's crates alone ($first)"
+      fi
     fi
     norm "$SCAN_OUT/norm/cargo-deny-$2-$i.json" '
       [.[] | select(.type == "diagnostic" and .fields.severity == "error") | .fields
        | ((.graphs[0].Krate // {}) | (.name // "") + "@" + (.version // "")) as $krate
+       | select($krate | startswith($lockcrate + "@") | not)
        | if .advisory then
            finding("cargo-deny"; "sca"; .advisory.id; .advisory.aliases; (.advisory.cvss | cvss3 | bucket);
                    ([.notes[]? | select(startswith("Solution: Upgrade"))] | length > 0);
@@ -227,7 +301,7 @@ tool_cargo_deny() { # tree label prefix
            finding("cargo-deny"; "policy"; ("cargo-deny:" + .code + ":" + $krate); []; "HIGH"; true;
                    ($krate + " (" + $where + ")"); .message)
          end]' \
-      "$raw" --arg where "$(rel_dir "$1" "$d" "$3")Cargo.lock"
+      "$raw" --arg where "$(rel_dir "$1" "$d" "$3")Cargo.lock" --arg lockcrate "$DENY_LOCK_CRATE"
   done < <(projects "$1" Cargo.lock)
 }
 
@@ -628,7 +702,7 @@ write_summary() { # blocking
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
-  if ((${#notes[@]})); then echo; echo "### Not analyzed"; for p in "${notes[@]}"; do echo "- $p"; done; fi
+  if ((${#notes[@]})); then echo; echo "### Not analyzed, or in part"; for p in "${notes[@]}"; do echo "- $p"; done; fi
   echo; echo "### Checked against"; jq -r 'to_entries[] | "- \(.key): \(.value | to_entries | map("\(.key) \(.value)") | join(", "))"' "$SCAN_OUT/databases.json"
   echo; echo "### Tools"; jq -r 'to_entries[] | "- \(.key) \(.value)"' "$SCAN_OUT/tools.json"
 }

@@ -886,6 +886,12 @@ built laid over it: the gates job keeps as its artifact `built/` the untracked f
 that are source (code generated in place: tacplus's Go does not build without its `go generate`) or bytecode
 (`target/classes`, which SpotBugs reads; the security job compiles nothing, as a build may run tacplus), never
 dependencies (`node_modules/`, `vendor/`) or other output. A laid-over file that would change a tracked one fails the run.
+cargo-deny reads the build's graph with `cargo metadata`, which needs every path dependency's manifest: a service
+whose `Cargo.toml` path-depends on the crates its gates generate (its tacplus.yaml `output-dir`, gateway's
+`target/generated-sources/model`) has them from `built/`; without them, cargo-deny runs on a copy of the tree with the
+gates' `generated/` laid at the `output-dir`, and failing that on the `Cargo.lock`'s crates alone (each pinned, from
+crates.io or git), which the summary lists under "Not analyzed, or in part" with why (looper#126). A tool that
+cannot run says why in the verdict (cargo-deny: cargo's own error).
 
 **Generated code is scanned too.** What tacplus emits is what consumers ship. A repository that commits its generated
 code (the service repositories: kernel's `codegen/`, ...) has it scanned with the checkout. One whose gates generate
@@ -921,7 +927,7 @@ Every entry needs all four keys and no other. An accepted finding is still repor
 **Reports**, the security job's artifact `security/` (90 days): `findings.json` (every finding, normalized: tool,
 kind, id, aliases, severity, fix, where, title, `excepted`, `blocking`, `new`), `findings.sarif` (one SARIF 2.1.0 log,
 a run per tool), `summary.md` (the counts, what fails, what is **new since the previous run**, what is accepted, what
-was not analyzed, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
+was not analyzed or only in part, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
 `sbom.spdx.json`, and `raw/`, each tool's own report (JSON or SARIF) and log.
 
 **A release's SBOM**: `publish` runs Syft on the image it built (the OCI archive whose digest it pushed): the job's
