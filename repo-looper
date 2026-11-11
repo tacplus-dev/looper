@@ -1476,8 +1476,10 @@ manage() {
 # the commit the verdict named and that main is still the one it was built on,
 # fast-forwards main to it, and posts each verdict, the HISTORY.md lines and
 # the releases' lines (each tag that came since the verdict job started).
-# Anything else moved, it merges nothing and gives no verdict: the lands stay
-# queued for the next batch.
+# A main moved since by planning files alone, which no gate reads, it rebases
+# staging onto first (restage_on_planning, looper#114). Anything else moved,
+# or that rebase conflicts, it merges nothing and gives no verdict: the lands
+# stay queued for the next batch.
 STAGING=looper/staging
 STAGING_REF=refs/looper/staging
 
@@ -1525,8 +1527,56 @@ verdict_batch() {
   log "the verdict: $STAGING at ${staging:0:7}, $(grep -c ' 0$' "$VERDICT_DIR/lands" || true) of $(wc -l < "$VERDICT_DIR/lands") lands green; the manager job fast-forwards main to it"
 }
 
+# The planning files no gate reads (looper#114): a main moved since the verdict
+# by these alone leaves its gates' results as they were.
+PLANNING_ONLY_RE='^(ROADMAP\.md|PROPOSALS\.md|HISTORY\.md|STATE\.md|roadmap/.+)$'
+
+# Main moved since the verdict (looper#114). By planning files alone, the
+# verdict's staging is rebased onto the new main, in a scratch worktree, no
+# hook and no repository code run, nothing regenerated: RESTAGED is the
+# result. Anything else moved, or a rebase that conflicts, fails, saying why.
+restage_on_planning() { # verdict-main staging
+  local main="$1" staging="$2" now files other wt rc=0
+  now="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  git -C "$CHECKOUT" merge-base --is-ancestor "$main" "$now" ||
+    { log "main moved since the verdict, not on top of it (it is ${now:0:7}, the verdict was on ${main:0:7}): not rebased"; return 1; }
+  files="$(git -C "$CHECKOUT" diff --name-only --no-renames "$main" "$now")"
+  other="$(grep -Ev "$PLANNING_ONLY_RE" <<<"$files" | sed '/^$/d' || true)"
+  if [[ -n "$other" ]]; then
+    log "main moved since the verdict by files a gate may read ($(paste -sd, - <<<"$other" | sed 's/,/, /g')): not rebased"; return 1
+  fi
+  log "main moved since the verdict by planning files alone ($(paste -sd, - <<<"$files" | sed 's/,/, /g')): rebasing $STAGING onto it"
+  wt="$(scratch_dir)"
+  git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$staging" &&
+    git -C "$wt" -c core.hooksPath=/dev/null rebase -q --onto "$now" "$main" >/dev/null 2>&1 || rc=$?
+  if (( rc == 0 )); then
+    RESTAGED="$(git -C "$wt" rev-parse HEAD)"
+    log "$STAGING ${staging:0:7} rebased onto main ${now:0:7}: ${RESTAGED:0:7}"
+    restaged_records "$main" "$staging" "$now" "$RESTAGED"
+  else
+    log "the rebase conflicts in: $(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
+    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+  fi
+  git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"
+  git -C "$CHECKOUT" worktree prune
+  return "$rc"
+}
+
+# The lands' records name the commits they landed on staging: once it is
+# rebased, the rebased ones, each in its place (the verdict's main is the new
+# main), so that each verdict names what is on main.
+restaged_records() { # verdict-main staging new-main restaged
+  local old new f i sed=()
+  mapfile -t old < <(echo "$1"; git -C "$CHECKOUT" rev-list --reverse --first-parent "$1..$2")
+  mapfile -t new < <(echo "$3"; git -C "$CHECKOUT" rev-list --reverse --first-parent "$3..$4")
+  (( ${#old[@]} == ${#new[@]} )) ||
+    { log "the rebase dropped commits of $STAGING: the lands' verdicts name its commits before it"; return 0; }
+  for i in "${!old[@]}"; do sed+=(-e "s/\\b${old[i]}\\b/${new[i]}/g"); done
+  for f in "$VERDICT_DIR"/*/landed; do [[ ! -f "$f" ]] || sed -i "${sed[@]}" "$f"; done
+}
+
 merge_batch() {
-  local v main staging job remote n id sha rc tags t new=() lines
+  local v main staging job remote n id sha rc tags t new=() lines verdict_staging
   v="$VERDICT_DIR/verdict"
   [[ -f "$v" ]] || die "no verdict in $VERDICT_DIR: the verdict job wrote none"
   main="$(sed -n 's/^main=//p' "$v")"; staging="$(sed -n 's/^staging=//p' "$v")"; job="$(sed -n 's/^job=//p' "$v")"
@@ -1540,9 +1590,13 @@ merge_batch() {
   [[ "$remote" == "$staging" ]] ||
     die "nothing merged: $STAGING moved since the verdict (it is ${remote:-gone}, the verdict named $staging); the lands stay queued for the next batch"
   fetch "$CHECKOUT" "+refs/heads/$STAGING:refs/remotes/origin/$STAGING" main || die "could not fetch $STAGING"
-  [[ "$(git -C "$CHECKOUT" rev-parse origin/main)" == "$main" ]] ||
-    die "nothing merged: main moved since the verdict (it is $(git -C "$CHECKOUT" rev-parse --short origin/main), the verdict was on ${main:0:7}); the lands stay queued for the next batch"
   git -C "$CHECKOUT" merge-base --is-ancestor "$main" "$staging" || die "nothing merged: $STAGING is not on main ${main:0:7}"
+  verdict_staging="$staging"
+  if [[ "$(git -C "$CHECKOUT" rev-parse origin/main)" != "$main" ]]; then
+    restage_on_planning "$main" "$staging" ||
+      die "nothing merged: main moved since the verdict (it is $(git -C "$CHECKOUT" rev-parse --short origin/main), the verdict was on ${main:0:7}); the lands stay queued for the next batch"
+    main="$(git -C "$CHECKOUT" rev-parse origin/main)"; staging="$RESTAGED"
+  fi
   if [[ "$staging" != "$main" ]]; then
     ( flock 8; LOOPER_LANDING=1 git -C "$CHECKOUT" push -q origin "$staging:refs/heads/main" ) 8>"$LAND_LOCK" ||
       die "nothing merged: main did not fast-forward to $STAGING ${staging:0:7} (it moved); the lands stay queued for the next batch"
@@ -1560,7 +1614,7 @@ merge_batch() {
       { log "#$n: the verdict names land $id at ${sha:0:7}, which its branch did not queue; no verdict given"; continue; }
     post_land "$n" "$id" "$sha" "$rc" "$VERDICT_DIR/$n-$id"
   done < "$VERDICT_DIR/lands"
-  git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$STAGING:$staging" origin --delete "$STAGING" 2>/dev/null || true
+  git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$STAGING:$verdict_staging" origin --delete "$STAGING" 2>/dev/null || true
   tags="$(cat "$VERDICT_DIR/tags" 2>/dev/null || true)"
   for t in $(release_tags | grep -vxF -f <(sed '/^$/d' <<<"$tags") || true); do
     new+=("- $(date -u +%F) looper release $t ($(forge_web "$REPO" release "$t"))")
