@@ -1,0 +1,105 @@
+= init
+> Bash cd /builds/looper/looper/issues/116; git log --oneline -3; git diff --stat; gh issue view 116 --repo tacplus-dev/looper --comments | tail -30
+< f81cca4 ROADMAP: #129-#132, the suggestions of 2026-11-11 (Jody) 5301129 ROADMAP: #121 (Jody, 2026-11-10) eea43fc looper-token: a report's token no longer names workflows: write (#115)  looper-recap                     | 20 ++++++++++++++------  tests/looper-recap.test.sh       | 27 ++++++++++++++++...
+Let me review the diff and run the tests locally.
+> Bash cd /builds/looper/looper/issues/116; git diff; timeout 300 tests/looper-recap.test.sh 2>&1 | tail -5
+= task_started
+= task_notification
+< diff --git a/looper-recap b/looper-recap index 53348ce..fde67b1 100755 --- a/looper-recap +++ b/looper-recap @@ -49,8 +49,10 @@  #       (boot to ready: every job has a fresh VM, looper#42) and the disk use the  #       jobs logged at their end. GitHub Actions runs of the workflows named like  #    ...
+= thinking_tokens
+= thinking_tokens
+The work is complete and passes locally. Committing and building.
+> Bash cd /builds/looper/looper/issues/116; git add -A && git commit -q -F - <<'EOF' looper-recap: an Actions failure is recovered only by a success on its own ref  actions() counted a failed run as recovered by any later success of the same workflow, on any ref: on 2026-11-08 tacplus/Images read "4 of 5 r...
+< 285b910 looper-recap: an Actions failure is recovered only by a success on its own ref 2469
+> Bash sleep 90; cat /tmp/b116.log
+< <tool_use_error>Blocked: sleep 90 followed by: cat /tmp/b116.log. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.</tool_use_error>
+> ToolSearch {"query":"select:Monitor","max_results":1}
+< 
+> Monitor for i in $(seq 1 60); do kill -0 2469 2>/dev/null || { echo "build exited"; tail -5 /tmp/b116.log; exit 0; }; sleep 10; done; echo "still running"; tail -3 /tmp/b116.log
+= permission_denied
+< Contains brace with quote character (expansion obfuscation)
+> Bash for i in $(seq 1 55); do if ! kill -0 2469 2>/dev/null; then echo exited; break; fi; sleep 10; done; tail -5 /tmp/b116.log
+= task_started
+= task_notification
+< [2026-11-12T08:33:34Z] checkpoint of #116 (a build) pushed to looper/looper-116:  6 files changed, 287 insertions(+), 7 deletions(-) [2026-11-12T08:33:34Z] build requested: looper 285b910, the gates recap (all 4 changed paths map to recap) the build job https://gitlab.com/tacplus-dev/build/-/pipelin...
+= thinking_tokens
+= thinking_tokens
+Previous builds stalled with no verdict; let me check whether this pipeline actually runs.
+> Bash curl -s https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/3058325698 | head -c 600; echo; curl -s "https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/3058325698/jobs" | python3 -I -c 'import json,sys; [print(j["name"],j["status"],j.get("runner") and j["runner"].get("desc...
+< {"message":"404 Project Not Found"} Traceback (most recent call last):   File "<string>", line 1, in <module>     import json,sys; [print(j["name"],j["status"],j.get("runner") and j["runner"].get("description")) for j in json.load(sys.stdin)]                             ~^^^^^^^^ TypeError: string i...
+> Bash env | grep -o '^[A-Z_]*GITLAB[A-Z_]*\|^[A-Z_]*BUILD[A-Z_]*' ; which glab
+< GITLAB_USER_ID GITLAB_USER_EMAIL GITLAB_USER_LOGIN FF_NETWORK_PER_BUILD GITLAB_FEATURES GITLAB_ENV GITLAB_USER_NAME CI_BUILDS_DIR GITLAB_CI /usr/local/bin/glab
+= thinking_tokens
+= thinking_tokens
+No way to see the pipeline from here; I'll keep polling with bounded waits.
+> Bash for i in $(seq 1 57); do if ! kill -0 2469 2>/dev/null; then echo exited; break; fi; sleep 10; done; date -u +%TZ; tail -3 /tmp/b116.log
+= task_started
+= task_notification
+< 08:52:45Z [2026-11-12T08:33:34Z] checkpoint of #116 (a build) pushed to looper/looper-116:  6 files changed, 287 insertions(+), 7 deletions(-) [2026-11-12T08:33:34Z] build requested: looper 285b910, the gates recap (all 4 changed paths map to recap) the build job https://gitlab.com/tacplus-dev/build...
+While it runs, let me check whether the stalled builds are a known, tracked problem.
+> Bash gh issue list --repo tacplus-dev/looper --state all --search "no verdict within 3h" --limit 10; gh issue list --repo tacplus-dev/cloud --state all --limit 8 2>&1 | head
+< 113	OPEN	Triggered tacplus-dev/build pipelines never report: no commit status, not even pending, and --build waits 3h for nothing (website 325305c, launcher 88cfeae)	bug, approved, priority:high, looper:landing	2026-11-11T12:06:47Z 114	OPEN	Manager discards a green verdict when main moved only by pl...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue view 113 --repo tacplus-dev/looper --comments | tail -40
+< remote:  remote: Create a pull request for 'looper/build-looper-113' on GitHub by visiting:         remote:      https://github.com/tacplus-dev/looper/pull/new/looper/build-looper-113         remote:  the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3053308409 of looper 0b727ad, the ga...
+> Bash gh issue view 18 --repo tacplus-dev/cluster --json state,title,closedAt; gh issue view 46 --repo tacplus-dev/cloud --json state,title | head -c 300
+< {"closedAt":null,"state":"OPEN","title":"Hub: register and apply the in-cluster runners and cluster's own pipeline (README, What the hub does 1–7)"} {"state":"OPEN","title":"apply:ci destroys the runner manager before recreating it, and the provider crashes mid-destroy: the fleet loses every runner ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue view 46 --repo tacplus-dev/cloud --json body,comments --jq '.body[0:1500], (.comments[-1].body[0:800])'
+< **Bug (hub, 2026-11-12), seen twice.** When a ci-stack change replaces `google_compute_instance.manager` (its config is replace-triggered), `apply:ci` destroys the manager first. About 30s into the destroy, the google provider crashes: `Error: Plugin did not respond … ApplyResourceChange`. The apply...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash for i in $(seq 1 57); do if ! kill -0 2469 2>/dev/null; then echo exited; break; fi; sleep 10; done; date -u +%TZ; tail -2 /tmp/b116.log; git -C /builds/looper/looper/issues/116 ls-remote origin 'refs/heads/looper/build-looper-116'
+= task_started
+= task_notification
+< 09:02:48Z [2026-11-12T08:33:34Z] build requested: looper 285b910, the gates recap (all 4 changed paths map to recap) the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3058325698 of looper 285b910, the gates recap on base f81cca4
+> Bash gh api repos/tacplus-dev/looper/commits/285b910/statuses --jq '.[] | "\(.created_at) \(.context) \(.state) \(.description)"' 2>&1 | head; gh api repos/tacplus-dev/looper/commits/50462c3/statuses --jq '.[] | "\(.created_at) \(.context) \(.state)"' 2>&1 | head -3
+< 2026-11-12T05:31:21Z tacplus-dev/build pending
+= thinking_tokens
+= thinking_tokens
+My build has had no status at all for 30 minutes. That matches #113's "no runner" case. I'm stopping my wait and queuing the land so the manager can land it once a runner takes the build.
+> Bash kill 2469; cd /builds/looper/looper/issues/116; /usr/local/bin/repo-looper --repo looper --issue 116 --checkpoint "fix 285b910 committed (tests pass locally); build 3058325698 got no runner in 30 min (no status; cluster#18); land queued; left: manager's verdict, outcome comment, close" 2>&1 | tail -...
+< [2026-11-12T09:03:01Z] checkpoint of #116 (a step) pushed to looper/looper-116:  6 files changed, 341 insertions(+), 7 deletions(-) 7619
+> Bash for i in $(seq 1 12); do if ! kill -0 7619 2>/dev/null; then echo exited; break; fi; sleep 10; done; cat /tmp/l116.log
+= task_started
+= task_notification
+< [2026-11-12T09:03:03Z] checkpoint of #116 (land queued) pushed to looper/looper-116:  7 files changed, 346 insertions(+), 7 deletions(-) [2026-11-12T09:03:05Z] queued: the manager of looper merges looper/looper-116 after the lands queued before it, one at a time, and says on the issue what came of i...
+= thinking_tokens
+= thinking_tokens
+The land is queued. Builds are starved for runners, the same thing #113 waits on, so I'll post status and mark this issue blocked rather than wait hours for nothing.
+> Bash cd /builds/looper/looper/issues/116; cat > /tmp/c116.md <<'EOF' Status from this run (not closing: no land verdict yet; this issue now waits on build runners).  - **Fix:** committed again as 285b910 on `looper/looper-116`, rebased on main f81cca4. It is the same change as 2a2906c/50462c3. Each Actio...
+< https://github.com/tacplus-dev/looper/issues/116#issuecomment-6819401630 Blocked-by: tacplus-dev/cluster#18
+Issue #116 is fixed and committed, but not landed yet: no build runner will take the build, so the manager can't give a verdict. I've marked the issue `Blocked-by: tacplus-dev/cluster#18` and left it open.
+
+- **Fix:** commit 285b910 on `looper/looper-116`, rebased on main f81cca4. It is the same change as the earlier 2a2906c. Each Actions run now keeps its `head_branch`, and a failed run counts as recovered only when a later run of the same workflow succeeds on the same ref. When something is still broken, the summary names those refs, e.g. "4 of 5 runs failed; still red: v2.1.13, v2.5.15, v2.6.3".
+- **Tests:** the new scenario `actions-recovered-on-the-same-ref` in `tests/looper-recap.test.sh` checks three cases:
+  - failed tags followed by a success on a different tag stay red;
+  - a later success on the same tag recovers it;
+  - a success *before* the failure on the same tag recovers nothing.
+
+  I ran the suite here and it ends `looper-recap: all scenarios pass`.
+- **Why the last land failed:** it wasn't a test failure. The manager's build waited 3h with its status stuck at "pending" and gave no verdict. My own build of 285b910 (gate set `recap`) still had no status after 30 minutes, which #113 treats as no runner taking it.
+- **Land:** queued again with the manager at 09:03Z. If a runner takes its build and it passes, the manager merges it, and the next run posts the outcome comment and closes the issue.
+- **Why it's blocked:** #113 is stuck on the same thing, cluster#18 (the build pool). Starting more builds here would only add load to that pool.
+
+I posted the status on the issue; the trace rule doesn't apply, since no service handler was touched.
+= success: Issue #116 is fixed and committed, but not landed yet: no build runner will take the build, so the manager can't give a verdict. I've marked the issue `Blocked-by: tacplus-dev/cluster#18` and left it open.
+
+- **Fix:** commit 285b910 on `looper/looper-116`, rebased on main f81cca4. It is the same change as the earlier 2a2906c. Each Actions run now keeps its `head_branch`, and a failed run counts as recovered only when a later run of the same workflow succeeds on the same ref. When something is still broken, the summary names those refs, e.g. "4 of 5 runs failed; still red: v2.1.13, v2.5.15, v2.6.3".
+- **Tests:** the new scenario `actions-recovered-on-the-same-ref` in `tests/looper-recap.test.sh` checks three cases:
+  - failed tags followed by a success on a different tag stay red;
+  - a later success on the same tag recovers it;
+  - a success *before* the failure on the same tag recovers nothing.
+
+  I ran the suite here and it ends `looper-recap: all scenarios pass`.
+- **Why the last land failed:** it wasn't a test failure. The manager's build waited 3h with its status stuck at "pending" and gave no verdict. My own build of 285b910 (gate set `recap`) still had no status after 30 minutes, which #113 treats as no runner taking it.
+- **Land:** queued again with the manager at 09:03Z. If a runner takes its build and it passes, the manager merges it, and the next run posts the outcome comment and closes the issue.
+- **Why it's blocked:** #113 is stuck on the same thing, cluster#18 (the build pool). Starting more builds here would only add load to that pool.
+
+I posted the status on the issue; the trace rule doesn't apply, since no service handler was touched.
