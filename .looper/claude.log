@@ -1,0 +1,113 @@
+= init
+> Bash cd /builds/looper/looper/issues/99; git status --short; git log --oneline -3; git diff --stat; gh issue view 99 --repo tacplus-dev/looper --comments | tail -30
+<  M PROPOSALS.md  M README.md  M repo-looper  M tests/repo-looper.test.sh 0c154bd PROPOSALS.md: the nightly scan's proposals (looper) f81cca4 ROADMAP: #129-#132, the suggestions of 2026-11-11 (Jody) 5301129 ROADMAP: #121 (Jody, 2026-11-10)  PROPOSALS.md              |  6 ++++++  README.md            ...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/99; gh issue list --repo tacplus-dev/looper --state all --search "verdict build job" --limit 15; gh issue list --repo tacplus-dev/looper --state open --limit 40
+< 113	OPEN	Triggered tacplus-dev/build pipelines never report: no commit status, not even pending, and --build waits 3h for nothing (website 325305c, launcher 88cfeae)	bug, approved, priority:high, looper:landing	2026-11-11T12:06:47Z 128	OPEN	A manager turns a land red after 3h waiting for a build tha...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/99; for n in 113 128 125 122; do echo "== $n"; gh issue view $n --repo tacplus-dev/looper --comments | tail -12 | cut -c1-400; done
+= task_started
+= task_notification
+< == 113 - **Still open, in PROPOSALS.md:** a build whose `pending` job ran but whose gates never got a slot (operator#26, llmproxy#25, opa#9, gateway#29) is still waited for until `LOOPER_BUILD_WAIT`. Telling that case apart needs a status set when the gates start, from a job beside the gates. - **No...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/99; git diff
+< diff --git a/PROPOSALS.md b/PROPOSALS.md index 95663d2..980301c 100644 --- a/PROPOSALS.md +++ b/PROPOSALS.md @@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones  the looper then marks it `promoted` or `declined` here with the date.    ## Open +- **The pr...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/99; bash -n repo-looper && nohup tests/repo-looper.test.sh > /tmp/rl99.log 2>&1 & echo $!
+< 959
+I'm running tests/repo-looper.test.sh locally against the resumed fix. Once it passes I'll commit and queue the land.
+> ToolSearch {"query":"select:Monitor","max_results":1}
+< 
+> Bash until ! kill -0 959 2>/dev/null; do sleep 5; done; grep -c '^ok' /tmp/rl99.log; grep -E 'FAIL|checkpoint-rejected' /tmp/rl99.log; tail -3 /tmp/rl99.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bwns7k7mu. Output is being written to: /builds/looper/looper/homes/looper-99/tmp/claude-61000/-builds-looper-looper-issues-99/f8095c68-10e8-4f06-ac4a-52df6ce9d866/tasks/bwns7k7mu.output. You will be notified when it completes. To check interim output, use Read ...
+Meanwhile, I'll commit the work.
+> Bash cd /builds/looper/looper/issues/99; git add -A && git commit -q -F - <<'EOF' repo-looper: a checkpoint origin rejects fails loudly (#99)  checkpoint() pushed inside ( ... ) || log, where set -e does not hold, so a push GitHub rejected (a .github/workflows change without the App's workflows permissio...
+< 27d6371 repo-looper: a checkpoint origin rejects fails loudly (#99)
+Waiting for the test run to finish.
+> Bash until ! kill -0 959 2>/dev/null; do sleep 10; done 2>/dev/null; true
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: bm5l82etq). Output is being written to: /builds/looper/looper/homes/looper-99/tmp/claude-61000/-builds-looper-looper-issues-99/f8095c68-10e8-4f06-ac4a-52df6ce9d866/tasks/bm5l82etq.output. You will be notified when ...
+> Bash grep -c '^ok' /tmp/rl99.log; grep -E 'FAIL|checkpoint-rejected' /tmp/rl99.log; tail -2 /tmp/rl99.log
+< 85 ok checkpoint-rejected ok report-yields-to-manager-pending ok report-yields-to-verdict-pending
+= thinking_tokens
+= thinking_tokens
+`checkpoint-rejected` passes and the rest of the suite is still running. While it runs, I'll checkpoint and queue the land.
+> Bash cd /builds/looper/looper/issues/99; /usr/local/bin/repo-looper --repo looper --issue 99 --checkpoint "fix committed (27d6371, on main 0c154bd); checkpoint-rejected ok locally, rest of tests/repo-looper.test.sh running; left: land (queued next), its verdict, outcome comment, close" 2>&1 | tail -3; no...
+< [2026-11-12T14:45:49Z] checkpoint of #99 (a step) pushed to looper/looper-99:  6 files changed, 480 insertions(+), 16 deletions(-) 75087
+> Bash cd /builds/looper/looper/issues/99; git fetch -q origin; git log --oneline HEAD..origin/main | head; git diff --stat origin/main HEAD | tail -8; sleep 20; cat /tmp/land99.log
+= task_started
+= task_notification
+<  PROPOSALS.md              |  6 ++++++  README.md                 |  7 +++++--  repo-looper               | 50 ++++++++++++++++++++++++++++++++++-------------  tests/repo-looper.test.sh | 34 ++++++++++++++++++++++++++++++++  4 files changed, 81 insertions(+), 16 deletions(-) [2026-11-12T14:45:51Z] c...
+The land is queued. The extra files in the checkpoint's stat are the run's own record. Now I'm waiting on the local tests.
+> Bash until ! kill -0 959 2>/dev/null; do sleep 10; done 2>/dev/null; grep -c '^ok' /tmp/rl99.log; grep -E 'FAIL' /tmp/rl99.log; tail -3 /tmp/rl99.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< 143 ok think-time-limit ok think-no-outcome repo-looper: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+All 143 scenarios pass. Next I'll run the trace check (rule 13) and checkpoint.
+> Bash cd /builds/looper/looper/issues/99; /usr/local/bin/looper-trace check 2>&1 | tail -3; /usr/local/bin/repo-looper --repo looper --issue 99 --checkpoint "fix committed (27d6371, on main 0c154bd); tests/repo-looper.test.sh green locally (143 ok, all scenarios pass, checkpoint-rejected ok); land queued ...
+< looper-trace: /builds/looper/looper/issues/99 verdict: pass (0 handlers, 0 findings) [2026-11-12T14:53:32Z] checkpoint of #99 (a step) pushed to looper/looper-99:  7 files changed, 505 insertions(+), 16 deletions(-)
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/99; cat /tmp/land99.log | tail -2; gh issue comment 99 --repo tacplus-dev/looper --body-file - <<'EOF' The fix is committed on [`looper/looper-99`](https://github.com/tacplus-dev/looper/tree/looper/looper-99) as `27d6371` (rebased on main `0c154bd`), and its land is q...
+< [2026-11-12T14:45:51Z] checkpoint of #99 (land queued) pushed to looper/looper-99:  7 files changed, 485 insertions(+), 16 deletions(-) [2026-11-12T14:45:54Z] queued: the manager of looper merges looper/looper-99 after the lands queued before it, one at a time, and says on the issue what came of it;...
+> Bash kill 75087 2>/dev/null; printf 'Blocked-by: #113\nBlocked-by: #128\n' > /builds/tacplus-dev/looper/looper-runs/20261112T143452Z-issue-99/outcome; cat /builds/tacplus-dev/looper/looper-runs/20261112T143452Z-issue-99/outcome
+< Blocked-by: #113 Blocked-by: #128
+= thinking_tokens
+= thinking_tokens
+The fix for #99 is committed (`27d6371`) and queued to land, but it is not on main yet, so the issue stays open and is now marked blocked.
+
+- **The fix:** a checkpoint whose push GitHub rejects now fails loudly. It prints git's reason, exits non-zero, and when the cause is the missing `workflows` permission it names the files under `.github/workflows/`. The new `checkpoint-rejected` scenario tests it.
+- **Tests run here:** `tests/repo-looper.test.sh` passes all 143 scenarios, including `checkpoint-rejected`. `looper-trace check` found 0 handlers and 0 findings. The other gates were not run here; only the manager's build job runs them.
+- **Why it hasn't landed:** this change triggers the full gate set. The last four lands of this fix each ended with "no verdict within 3h" from the build pipeline, so waiting out this run would most likely end the same way. That is two open issues: #113 (triggered builds never report) and #128 (a build still queued counts against the 3h).
+- **What happens next:** the land queued at 14:45Z stays with the manager, which merges it if the gates pass. I posted a status comment on the issue and wrote `Blocked-by: #113` and `Blocked-by: #128` to the outcome file. The issue is worked again once both close.
+
+None of the bot comments on the issue asked for anything beyond the issue itself.
+= success: The fix for #99 is committed (`27d6371`) and queued to land, but it is not on main yet, so the issue stays open and is now marked blocked.
+
+- **The fix:** a checkpoint whose push GitHub rejects now fails loudly. It prints git's reason, exits non-zero, and when the cause is the missing `workflows` permission it names the files under `.github/workflows/`. The new `checkpoint-rejected` scenario tests it.
+- **Tests run here:** `tests/repo-looper.test.sh` passes all 143 scenarios, including `checkpoint-rejected`. `looper-trace check` found 0 handlers and 0 findings. The other gates were not run here; only the manager's build job runs them.
+- **Why it hasn't landed:** this change triggers the full gate set. The last four lands of this fix each ended with "no verdict within 3h" from the build pipeline, so waiting out this run would most likely end the same way. That is two open issues: #113 (triggered builds never report) and #128 (a build still queued counts against the 3h).
+- **What happens next:** the land queued at 14:45Z stays with the manager, which merges it if the gates pass. I posted a status comment on the issue and wrote `Blocked-by: #113` and `Blocked-by: #128` to the outcome file. The issue is worked again once both close.
+
+None of the bot comments on the issue asked for anything beyond the issue itself.
