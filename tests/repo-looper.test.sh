@@ -1066,7 +1066,8 @@ printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' \
 chmod +x "$TMP/bin/looper-token-stub"
 APPS=(LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GH_TOKEN= GITHUB_TOKEN=)
 scenario apps-identity
-for v in GH_TOKEN=ghp_0123456789abcdef0123 GITHUB_TOKEN=x OTHER=github_pat_0123456789abcdef; do
+# The personal token is made at run time, so no literal reads as one to gitleaks (looper#120).
+for v in GH_TOKEN="ghp_$(printf '0%.0s' {1..20})" GITHUB_TOKEN=x OTHER=github_pat_0123456789abcdef; do
   ! OUT="$(looper "${APPS[@]}" "$v" -- --repo alpha --issue 4 2>&1)" || fail "ran holding ${v%%=*}"
   has "$OUT" "this job holds ${v%%=*}"
 done
@@ -2250,7 +2251,10 @@ jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv
 EOS
   git -C "$FIX/origin.git" config core.sharedRepository 0777; chmod -R a+rwX "$FIX"
   T="$ROOT"; ROOT="$R"
-  U=(LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock")
+  # The withheld credential, made at run time so that no literal reads as one to
+  # gitleaks (looper#120): the probe looks for this value.
+  W="s3cret-$(echo withheld)"
+  U=(LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN="$W" PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock")
   manager_start "${U[@]}"; echo "$MANAGER" > "$FIX/manager-pid"; chmod 644 "$FIX/manager-pid"
   for n in 4 5; do looper "${U[@]}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & eval "RP$n=\$!"; done
   wait "$RP4" && wait "$RP5" || { cat "$FIX"/report-*.log; fail "a report exited non-zero"; }
