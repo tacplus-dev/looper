@@ -315,6 +315,33 @@ lacks "$(v '.items[].key')" "scan_holds_repo"
 [[ "$(v '.capacity.waiting_for_vm.jobs[] | select(.issue == 16) | "\(.minutes) \(.pool)"')" == "97 tacplus-dev arm64 autoscale-16" ]] || fail "VM waits: $(v .capacity.waiting_for_vm)"
 pass
 
+# An Actions failure is recovered only by a later success of the same workflow on the same ref
+# (looper#116): failed release tags followed by a success on another tag stay red, and the summary
+# names them; a later run that succeeds on the same tag recovers it.
+NAME=actions-recovered-on-the-same-ref
+release() { # [id ref conclusion]...
+  rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"
+  local runs=() a
+  while (($#)); do runs+=("{\"id\": $1, \"name\": \"release\", \"head_branch\": \"$2\", \"status\": \"completed\", \"conclusion\": \"$3\",
+    \"run_started_at\": \"2026-11-01T0$(($1 % 10)):00:00Z\", \"updated_at\": \"2026-11-01T0$(($1 % 10)):05:00Z\",
+    \"html_url\": \"https://github.com/tacplus-dev/tacplus/actions/runs/$1\"}"); shift 3; done
+  a="$(IFS=,; echo "${runs[*]}")"
+  echo "{\"workflow_runs\": [$a]}" > "$TMP/fx/gh/runs-tacplus.json"
+  FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+}
+release 41 v2.1.13 failure 42 v2.5.15 failure 43 v2.6.3 failure 44 v2.6.3 failure 45 v2.6.4 success
+[[ "$(v '.actions.runs | map(.head_branch) | join(",")')" == "v2.1.13,v2.5.15,v2.6.3,v2.6.3,v2.6.4" ]] || fail "runs: $(v .actions.runs)"
+[[ "$(v '.items[] | select(.key == "actions/tacplus/release") | "\(.count) \(.recovered) \(.summary)"')" == \
+   "4 false GitHub Actions tacplus/release: 4 of 5 runs failed; still red: v2.1.13, v2.5.15, v2.6.3" ]] || fail "$(v .items)"
+release 43 v2.6.3 failure 44 v2.6.4 success 46 v2.6.3 success
+[[ "$(v '.items[] | select(.key == "actions/tacplus/release") | "\(.count) \(.recovered) \(.summary)"')" == \
+   "1 true GitHub Actions tacplus/release: 1 of 3 runs failed, a later run on the same ref succeeded" ]] || fail "$(v .items)"
+# A success before the failure, on the same tag, recovers nothing.
+release 43 v2.6.3 success 44 v2.6.3 failure
+[[ "$(v '.items[] | select(.key == "actions/tacplus/release") | "\(.recovered) \(.summary)"')" == \
+   "false GitHub Actions tacplus/release: 1 of 2 runs failed; still red: v2.6.3" ]] || fail "$(v .items)"
+pass
+
 NAME=collect-without-credentials
 env -u GITLAB_TOKEN -u LOOPER_RECAP_BUILD_TOKEN_SECRET LOOPER_BUILD_API=https://gitlab.test/api/v4 PATH="$TMP/bin:$PATH" \
   "$ROOT/looper-recap" collect --until "$UNTIL" > "$TMP/none.json" 2>/dev/null || fail "collect without a token failed"

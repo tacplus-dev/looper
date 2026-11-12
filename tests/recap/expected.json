@@ -15,6 +15,7 @@
   "runs": [
    {
     "conclusion": "failure",
+    "head_branch": "main",
     "id": 21,
     "minutes": 12,
     "repo": "tacplus",
@@ -23,6 +24,7 @@
    },
    {
     "conclusion": "success",
+    "head_branch": "main",
     "id": 22,
     "minutes": 42,
     "repo": "tacplus",
@@ -266,7 +268,7 @@
    "key": "actions/tacplus/nightly",
    "over": false,
    "recovered": true,
-   "summary": "GitHub Actions tacplus/nightly: 1 of 2 runs failed, a later run succeeded"
+   "summary": "GitHub Actions tacplus/nightly: 1 of 2 runs failed, a later run on the same ref succeeded"
   },
   {
    "count": 3,

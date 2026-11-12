@@ -49,8 +49,10 @@
 #       (boot to ready: every job has a fresh VM, looper#42) and the disk use the
 #       jobs logged at their end. GitHub Actions runs of the workflows named like
 #       LOOPER_RECAP_WORKFLOWS (default nightly|release|image) in every
-#       repository of LOOPER_ORG. Cloud Build is not read: nothing builds
-#       there (looper#85). A source it
+#       repository of LOOPER_ORG, each run with its ref (head_branch): a failed
+#       run is recovered only by a later success of its workflow on the same
+#       ref, and the item names the refs still red (looper#116). Cloud Build
+#       is not read: nothing builds there (looper#85). A source it
 #       cannot read is named in `sources`, never guessed. Then its `items`: what
 #       went wrong or crossed a threshold, each with a key the nights share.
 #   looper-recap classify NIGHT.json [--history DIR]
@@ -925,7 +927,8 @@ def actions(start, until, sources, items):
         for w in got.get("workflow_runs") or []:
             if not pat.search(w.get("name") or ""):
                 continue
-            runs.append({"repo": r, "workflow": w.get("name"), "id": w.get("id"), "conclusion": w.get("conclusion") or w.get("status"),
+            runs.append({"repo": r, "workflow": w.get("name"), "head_branch": w.get("head_branch"), "id": w.get("id"),
+                         "conclusion": w.get("conclusion") or w.get("status"),
                          "minutes": None if secs(when(w.get("run_started_at")), when(w.get("updated_at"))) is None
                          else minutes(secs(when(w.get("run_started_at")), when(w.get("updated_at")))),
                          "url": w.get("html_url")})
@@ -940,10 +943,15 @@ def actions(start, until, sources, items):
     for k, b in sorted(by.items()):
         fl = [x for x in runs if f"{x['repo']}/{x['workflow']}" == k and x["conclusion"] in ("failure", "timed_out", "startup_failure")]
         if fl:
-            last_fail = max(x["id"] for x in fl)
-            rec = any(x["conclusion"] == "success" and x["id"] > last_fail for x in runs if f"{x['repo']}/{x['workflow']}" == k)
+            # A failure is recovered only by a later success on its own ref (looper#116): a release tag's
+            # failed image is not mended by the next tag's.
+            red = sorted({x["head_branch"] or "" for x in fl if not any(
+                y["conclusion"] == "success" and y["head_branch"] == x["head_branch"] and y["id"] > x["id"]
+                for y in runs if f"{y['repo']}/{y['workflow']}" == k)})
+            rec = not red
             items.append({"key": f"actions/{k}", "count": len(fl), "over": len(fl) >= T["count"], "recovered": rec,
-                          "summary": f"GitHub Actions {k}: {len(fl)} of {b['runs']} runs failed" + (", a later run succeeded" if rec else ""),
+                          "summary": f"GitHub Actions {k}: {len(fl)} of {b['runs']} runs failed"
+                                     + (", a later run on the same ref succeeded" if rec else "; still red: " + ", ".join(red)),
                           "evidence": [x["url"] for x in fl][:5]})
         b["minutes"] = dist(b["minutes"])
     return {"by_workflow": by, "runs": runs}
