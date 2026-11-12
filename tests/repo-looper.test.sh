@@ -460,6 +460,40 @@ run LOOPER_CHECKPOINT_INTERVAL=1
   || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 pass
 
+# A checkpoint whose push origin rejects (looper#99) fails loudly: git's reason,
+# a non-zero exit, no "pushed". GitHub refuses an App without the workflows
+# permission any change under .github/workflows/, and the checkpoint names them.
+scenario checkpoint-rejected
+cat > "$FIX/origin.git/hooks/pre-receive" <<'EOF'
+#!/usr/bin/env bash
+while read -r old new ref; do
+  [[ "$ref" == refs/heads/looper/* ]] || continue
+  [[ "$old" =~ ^0+$ ]] && old=main
+  f="$(git diff --name-only "$old" "$new" -- .github/workflows/ | head -1)"
+  [[ -z "$f" ]] || { echo "refusing to allow a GitHub App to create or update workflow \`$f\` without \`workflows\` permission"; exit 1; }
+done
+EOF
+chmod +x "$FIX/origin.git/hooks/pre-receive"
+echo 'echo one > a.txt' >> "$FIX/claude.sh"
+step "a.txt written"
+echo 'mkdir -p .github/workflows && echo on: push > .github/workflows/images.yml && echo two > b.txt' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "images.yml written" > "$FIX/seen" 2>&1; echo "rc=$?" >> "$FIX/seen"' >> "$FIX/claude.sh"
+run
+seen="$(cat "$FIX/seen")"
+has "$seen" "rc=1"
+lacks "$seen" "(a step) pushed"
+has "$seen" "refusing to allow a GitHub App to create or update workflow"
+has "$seen" "without the workflows permission"
+has "$seen" ".github/workflows/images.yml"
+has "$seen" "checkpoint of #4 (a step) failed"
+# The branch keeps the checkpoint before the workflow change, and the issue
+# says the run's last checkpoint did not push, its last step the branch's.
+has "$(origin log -1 --format=%B looper/alpha-4)" "a.txt written"
+has "$(cat "$FIX/comments")" "Its last checkpoint did not push"
+lacks "$(cat "$FIX/comments")" "images.yml written"
+main_unchanged
+pass
+
 # The time limit: the model is stopped LOOPER_STOP_EARLY seconds before it, its
 # work is checkpointed, and the issue says what is done and what is left and
 # stays approved, not stuck, for the next run to resume.

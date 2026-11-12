@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The prompt warns of `.github/workflows/` before the model changes it** (2026-11-06, #99): the report's App
+  cannot push a change under `.github/workflows/` (no `workflows` permission), so a run that changes one checkpoints
+  nothing from then on; #99 makes that failure loud, but only after the work is done. A prompt rule naming the limit
+  (a person applies a workflow change, or the issue asks for one) would steer the run sooner. Whether the App gets
+  the permission is Jody's decision (tacplus#315 asks; `looper/tacplus-283` pushed an `images.yml` change on
+  2026-11-06 at 02:07Z, so the permission or the credential differed then).
 - **A ready issue's wait from when it became ready** (2026-11-08, #107): the recap's `concurrency` counts a ready
   issue's wait with no report job from the kicker's passes, which see an issue only while one runs (a gap between
   kicker jobs or a looper-plan under way logs no line), and a report's own queue for a VM from its job; the time from
