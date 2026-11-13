@@ -21,6 +21,8 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # labels are its repository's): an edit that names a label the repository
 # lacks fails, as gh's does (looper#80), and so does a label created twice.
 # `gh label create` is recorded in $FIX/labels-created as "<repo> <label>".
+# $FIX/slow-view makes the next `gh issue view` sleep $FIX/slow-view.s seconds
+# first (a report slow to start on a loaded machine, looper#122).
 # `gh api .../issues/<n>[/comments]` answers as GitHub's REST API, each text's
 # author and association from the issue's or comment's `author` and
 # `association` (default jody, MEMBER: the looper's own comments too), and
@@ -82,7 +84,8 @@ case "$cmd" in
       '{number: $n, title: $t, state: "OPEN", labels: ($ARGS.positional | map({name: .})), body: $b, comments: [], createdAt: "2026-10-28T00:00:00Z"}' \
       --args "${labels[@]+"${labels[@]}"}" > "$FIX/issues/$repo-$n.json"
     echo "https://github.com/tacplus-dev/$repo/issues/$n" ;;
-  "issue view") [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; jq -r "$q" "$f" ;;
+  "issue view") [[ ! -e "$FIX/slow-view" ]] || { rm -f "$FIX/slow-view"; sleep "$(cat "$FIX/slow-view.s")"; }
+    [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; jq -r "$q" "$f" ;;
   "issue edit")
     for l in "${add[@]+"${add[@]}"}" "${rm[@]+"${rm[@]}"}"; do
       grep -qxF -- "$l" "$FIX/labels/$repo" 2>/dev/null || { echo "failed to update https://github.com/tacplus-dev/$repo/issues/$n: '$l' not found" >&2; exit 1; }
@@ -213,9 +216,14 @@ push_fix() { # a claude.sh line: commit and land a fix
 }
 # A claude.sh line: the run's closing report on its issue, as rule 8 asks.
 report() { echo "gh issue comment 4 --repo tacplus-dev/alpha --body \"$1\"" >> "$FIX/claude.sh"; }
+# Every repo-looper the test runs is stopped after BOUND seconds, its whole
+# process group, and exits 124 (bound_hit says so): a scenario fails rather
+# than hang the gates (looper#122).
+BOUND=300
+bound_hit() { (( $1 != 124 )) || echo " (stopped after ${BOUND}s: a wait that never ended)"; } # rc
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
-  env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
+  timeout -k 10 "$BOUND" env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
       -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
@@ -224,23 +232,51 @@ looper() { # [VAR=value...] -- repo-looper args
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
 }
 run() { # [VAR=value...]: work alpha#4, the manager beside its report (looper#70)
+  local p rc=0
   manager_start "$@"
-  OUT="$(looper "$@" -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+  looper "$@" -- --repo alpha --issue 4 > "$FIX/report-4.log" 2>&1 & p=$!
+  at_work "$p" 4
+  wait "$p" || rc=$?
+  OUT="$(cat "$FIX/report-4.log")"
+  (( rc == 0 )) || { echo "$OUT"; manager_stop; fail "repo-looper exited $rc$(bound_hit "$rc")"; }
   manager_wait
 }
 # The report alone, for a scenario whose issue no report works (held by a run
 # that is gone, say): its stale looper:in-progress would keep a manager waiting.
 run_alone() { # [VAR=value...]
-  OUT="$(looper "$@" -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "repo-looper exited non-zero"; }
+  local rc=0
+  OUT="$(looper "$@" -- --repo alpha --issue 4 2>&1)" || rc=$?
+  (( rc == 0 )) || { echo "$OUT"; fail "repo-looper exited $rc$(bound_hit "$rc")"; }
 }
 # The manager of alpha in the background, until no report is at work and no
-# land queued; it has added the planning files when it returns.
+# land queued; it has added the planning files when it returns. It is held
+# until its reports are at work (at_work): one slower to start than its
+# linger would queue a land no manager takes (looper#122). The hold is
+# alpha#0, closed and looper:in-progress, as a run that may yet queue its
+# HISTORY.md line leaves an issue.
 manager_start() { # [VAR=value...]
+  # Not issue(): the repository's labels stay the scenario's (labels-missing).
+  jq -n '{number: 0, title: "Hold", state: "CLOSED", labels: [{name: "looper:in-progress"}], body: "The test'"'"'s hold on its manager (looper#122).", comments: [], createdAt: "2026-10-27T00:00:00Z"}' > "$FIX/issues/alpha-0.json"
   # Not the scenario's GitLab: its jobs there are the report's, which the manager would wait for.
   looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=5 "$@" CI_API_V4_URL= -- --repo alpha --manage > "$FIX/manager.log" 2>&1 & MANAGER=$!
   for _ in $(seq 100); do grep -q 'the manager of alpha: merging' "$FIX/manager.log" && return 0; kill -0 "$MANAGER" 2>/dev/null || return 0; sleep 0.1; done
 }
-manager_wait() { wait "$MANAGER" || { cat "$FIX/manager.log"; fail "the manager exited non-zero"; }; }
+# Releases the manager's hold once each report is at work (its issue
+# looper:in-progress) or has ended, within BOUND seconds.
+at_work() { # pid issue [pid issue...]
+  local end=$(( SECONDS + BOUND )) p n
+  while (( $# )); do
+    p="$1" n="$2"; shift 2
+    until grep -q looper:in-progress "$FIX/issues/alpha-$n.json" || ! kill -0 "$p" 2>/dev/null; do
+      (( SECONDS < end )) || { kill_tree "$p"; manager_stop; fail "the report of #$n not at work within ${BOUND}s"; }
+      sleep 0.1
+    done
+  done
+  jq '.labels = []' "$FIX/issues/alpha-0.json" > "$FIX/x-0" && mv "$FIX/x-0" "$FIX/issues/alpha-0.json"
+}
+manager_wait() { wait "$MANAGER" || { local rc=$?; cat "$FIX/manager.log"; fail "the manager exited $rc$(bound_hit "$rc")"; }; }
+manager_stop() { kill_tree "$MANAGER"; wait "$MANAGER" 2>/dev/null || true; }
+kill_tree() { local c; for c in $(pgrep -P "$1"); do kill_tree "$c"; done; kill -KILL "$1" 2>/dev/null || true; }
 # A claude.sh line: checkpoint the step, as the prompt tells the model to.
 step() { echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --checkpoint \"$1\"" >> "$FIX/claude.sh"; }
 origin() { git -C "$FIX/origin.git" "$@"; }
@@ -427,6 +463,16 @@ run
 [[ "$(labels alpha 4)" == "approved,bug,closed-by-test" ]] || fail "labels $(labels alpha 4)"
 # The one comment is the manager's verdict on the merge (looper#70).
 [[ "$(grep -c '^alpha#4 ' "$FIX/comments")" == 1 ]] && grep -q '^alpha#4 The manager merged' "$FIX/comments" || fail "unexpected comment"
+pass
+
+# A report slower to start than its manager's linger (a loaded machine,
+# looper#122): the manager is held until the report is at work, so the land
+# the report queues is merged, not waited on forever.
+scenario slow-start
+echo 8 > "$FIX/slow-view.s"; touch "$FIX/slow-view"
+push_fix
+run
+grep -q '^alpha#4 The manager merged' "$FIX/comments" || fail "not merged: $(cat "$FIX/manager.log")"
 pass
 
 # Checkpoint: the model's step pushes everything in the checkout, committed or
@@ -671,7 +717,6 @@ pass
 
 # A run killed outright (the job cancelled: no trap, no artifacts) still leaves
 # its log tail on the branch, from its last checkpoint.
-kill_tree() { local c; for c in $(pgrep -P "$1"); do kill_tree "$c"; done; kill -KILL "$1" 2>/dev/null || true; }
 scenario cancelled
 echo 'echo "the log so far"; echo x > a.txt; sleep 1' >> "$FIX/claude.sh"
 step "a.txt written"
@@ -1644,15 +1689,20 @@ pass
 # alone merges them, one at a time, in the order queued, on green gates only,
 # deletes the merged branch, and gives every verdict on the issue.
 reports() { # [VAR=value...] -- issue...: each issue's report at once, the manager beside them
-  local vars=() n p pids=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
+  local vars=() n i rc pids=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
   manager_start "${vars[@]+"${vars[@]}"}"
-  for n in "$@"; do looper "${vars[@]+"${vars[@]}"}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & pids+=($!); done
-  for p in "${pids[@]}"; do wait "$p" || { cat "$FIX"/report-*.log; fail "a report exited non-zero"; }; done
+  for n in "$@"; do looper "${vars[@]+"${vars[@]}"}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & pids+=($! "$n"); done
+  at_work "${pids[@]}"
+  for (( i = 0; i < ${#pids[@]}; i += 2 )); do
+    wait "${pids[i]}" || { rc=$?; cat "$FIX"/report-*.log; manager_stop; fail "a report exited $rc$(bound_hit "$rc")"; }
+  done
   manager_wait
   OUT="$(cat "$FIX"/report-*.log "$FIX/manager.log")"
 }
 manage() { # [VAR=value...]: the manager alone, until nothing is queued
-  OUT="$(looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 "$@" -- --repo alpha --manage 2>&1)" || { echo "$OUT"; fail "the manager exited non-zero"; }
+  local rc=0
+  OUT="$(looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 "$@" -- --repo alpha --manage 2>&1)" || rc=$?
+  (( rc == 0 )) || { echo "$OUT"; fail "the manager exited $rc$(bound_hit "$rc")"; }
 }
 landed() { origin show "main:$1" 2>/dev/null; } # a file on main
 closed() { [[ "$(jq -r .state "$FIX/issues/alpha-$1.json")" == CLOSED ]] || fail "#$1 not closed: $(labels alpha "$1")"; }
@@ -2253,7 +2303,9 @@ EOS
   U=(LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN=s3cret-withheld PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock")
   manager_start "${U[@]}"; echo "$MANAGER" > "$FIX/manager-pid"; chmod 644 "$FIX/manager-pid"
   for n in 4 5; do looper "${U[@]}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & eval "RP$n=\$!"; done
-  wait "$RP4" && wait "$RP5" || { cat "$FIX"/report-*.log; fail "a report exited non-zero"; }
+  at_work "$RP4" 4 "$RP5" 5
+  rc=0; wait "$RP4" && wait "$RP5" || rc=$?
+  (( rc == 0 )) || { cat "$FIX"/report-*.log; manager_stop; fail "a report exited $rc$(bound_hit "$rc")"; }
   manager_wait; OUT="$(cat "$FIX"/report-*.log "$FIX/manager.log")"
   ROOT="$T"; LOOPER_MEM="$(sed -n 's/.*limited to \([0-9]*m\) of memory.*/\1/p' "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
   for n in 4 5; do
