@@ -42,7 +42,8 @@ default:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]
 
-# The kicker: one at a time, the next hour's waiting for the last.
+# The kicker: one at a time, and only the newest (looper#104): a kick stops
+# once a newer one is queued, so the next hour's never runs behind a stale one.
 looper-kick:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/

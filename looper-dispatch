@@ -14,7 +14,8 @@
 #
 #   looper-dispatch run                one pass: start the pipeline if a repository needs it
 #   looper-dispatch run --for SECONDS  a pass every LOOPER_INTERVAL seconds (default 180) for
-#                                      SECONDS (the kicker job); fails at the end if a pass failed
+#                                      SECONDS (the kicker job); fails at the end if a pass failed;
+#                                      stops once a newer kick is queued (looper#104)
 #   looper-dispatch status             the looper jobs in GitLab, and what is ready
 #   looper-dispatch ready              each repository's next ready issue, "<repo> <issue>", in the
 #                                      order the plan takes them: priority:high first (looper#31)
@@ -92,6 +93,20 @@ active_jobs() {
 # The same, as "<name> <status>".
 active_job_statuses() {
   gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" | jq -r '.[] | "\(.name) \(.status)"'
+}
+
+# Only the newest kicker runs (looper#104): a kick that waited for a runner, or
+# for the kicker resource_group behind an older kick, used to run its hour
+# after the others, back to back, each pass finding the plan under way. A kick
+# stops (exit 0) once a newer one (a later job id of its name, CI_JOB_NAME) is
+# created, pending, waiting for the resource_group or running, before its
+# first pass or any later one, so the newest takes the group. Outside a job
+# (no CI_JOB_ID), or with GitLab unreadable, it goes on: the pass says so.
+newer_kick() {
+  [[ -n "${CI_JOB_ID:-}" ]] || return 1
+  gitlab "$API/jobs?$LOOPER_JOB_SCOPES&per_page=100" 2>/dev/null \
+    | jq -er --arg n "${CI_JOB_NAME:-looper-kick}" --argjson id "$CI_JOB_ID" \
+        '[.[] | select(.name == $n and .id > $id) | .id] | max // empty' 2>/dev/null
 }
 
 # A run killed outright (its runner gone, looper#20) never removes
@@ -323,6 +338,7 @@ case "${1:-}" in
       # The clock is `date +%s` and `sleep`, not $SECONDS, so a test can fake it (looper#78).
       end=$(( $(date +%s) + $3 )); failed=0
       while :; do
+        if k="$(newer_kick)"; then log "a newer kick (job $k) is queued; this one stops so it runs (looper#104)"; break; fi
         next=$(( $(date +%s) + INTERVAL ))   # from this pass's start: a slow pass does not stretch the interval
         # Its own process: errexit holds in the pass, so GitLab unreadable is never "no jobs".
         "${BASH_SOURCE[0]}" run || { failed=1; log "pass failed"; }

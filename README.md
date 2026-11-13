@@ -17,8 +17,10 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
   fails at the end if a pass failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
   `looper-lib.sh`: one search, one GraphQL query for the blockers' states), since the per-repository
-  reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`): the next
-  hour's waits for the last. Nothing else runs when there is no ready issue.
+  reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`), and
+  only the newest runs (looper#104): a kick stops before any pass once a newer one is created, pending, waiting or
+  running (`a newer kick (job N) is queued; this one stops`), so kicks that waited for a runner no longer run their
+  hours back to back. Nothing else runs when there is no ready issue.
 - **The pipeline** plans one job per ready issue (`looper-<repo>-<issue>`, its report), in
   [priority](#priority) order, every one of them (no per-repository cap, looper#107), and each such repository's manager
   (`looper-<repo>-manager`), the only job that merges to its main
@@ -663,6 +665,10 @@ login; a secret it cannot read is named in `sources` and the project is not read
   item over `LOOPER_RECAP_VM_WAIT_HOURS`, 1) and one more VM's cost a day (`LOOPER_RECAP_VM_MACHINE`, t2a-standard-8,
   at `LOOPER_RECAP_VM_USD_HOUR`, 0.308, its on-demand list price: set it from the billing). Capacity is manual: the
   advice is a scale-up for Jody to decide, never an autoscaling change.
+- **The control jobs' queues** (`control`, looper#104): `looper-plan`'s and `looper-kick`'s, created to started (to
+  canceled, for one canceled before it started), each its own line of the report (`Plan queue: ...`, `Kick queue:
+  ...`), and an item, `control-queue/<job>`, when the longest is `LOOPER_RECAP_CONTROL_QUEUE` (600 seconds) or more:
+  a control job waited for a runner behind reports, or the newest-kick rule did not hold.
 
 **Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
 `suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3

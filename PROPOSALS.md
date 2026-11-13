@@ -4,6 +4,10 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The kicker resource group's `newest_first`** (2026-11-07, #104): a kick now stops once a newer one is queued, but
+  GitLab's default `unordered` process mode may still hand the `kicker` group to a stale kick first, which takes a VM
+  to start and stop. `PUT /projects/:id/resource_groups/kicker` with `process_mode=newest_first` (a token with `api`
+  scope, the hub's one-time step) gives it to the newest at once; it is a setting of the project, not of the CI file.
 - **The secret scan on every gate set** (2026-11-10, #117): `tests/looper-secrets.test.sh` runs with full and its own
   set, so a token-shaped literal added in a file only a smaller set maps (`tests/looper-recap.test.sh`, the recap set)
   is caught by the build's `security-looper` job, not the gates. A set that every land runs beside the ones its paths

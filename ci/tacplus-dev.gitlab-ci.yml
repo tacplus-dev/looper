@@ -123,8 +123,9 @@ looper-run:
 # no model: GH_TOKEN for the issues (the report app's token with the apps,
 # looper#83), GITLAB_TOKEN (read_api) for the jobs and
 # LOOPER_TRIGGER_TOKEN (environment kicker; looper#25) to start the pipeline.
-# Never two at once (resource_group): a late
-# job's successor waits for it.
+# Never two at once (resource_group), and only the newest (looper#104): a
+# kick stops once a newer one is created, pending, waiting or running, so kicks
+# that waited for a runner do not run their hours back to back.
 looper-kick:
   stage: plan
   image: ghcr.io/tacplus-dev/looper:main

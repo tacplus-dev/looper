@@ -41,6 +41,9 @@
 #       no report job, and the merge backlog. The capacity: the
 #       queue p90 of every job, the issues whose report waited for a VM and
 #       one more VM's cost a day, the numbers for a manual scale-up. The
+#       control jobs' queues (looper#104): looper-plan's and looper-kick's,
+#       created to started (to canceled for one canceled before it started),
+#       each its own line of the report. The
 #       looper image (LOOPER_RECAP_IMAGE, ghcr.io/tacplus-dev/
 #       looper:main) against main's head (looper#58): its revision label, the
 #       commits of main not in it and the latest image workflow run; stale for
@@ -77,7 +80,8 @@
 # LOOPER_RECAP_WAIT_HOURS (1: ready issues waiting with no report job),
 # LOOPER_RECAP_BACKLOG (3: lands queued, p90 of the passes: the manager behind),
 # LOOPER_RECAP_VM_WAIT (300 s: a report's wait for a VM that counts),
-# LOOPER_RECAP_VM_WAIT_HOURS (1). One more VM: LOOPER_RECAP_VM_MACHINE
+# LOOPER_RECAP_VM_WAIT_HOURS (1), LOOPER_RECAP_CONTROL_QUEUE (600 s: a
+# control job's queue, its longest, looper#104). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing). LOOPER_RECAP_PASS (180 s, the kicker's
 # LOOPER_INTERVAL), LOOPER_RECAP_BUILD_CONTEXT (tacplus-dev/build).
@@ -123,7 +127,11 @@ T = {
     "backlog": int(num("LOOPER_RECAP_BACKLOG", 3)),
     "vm_wait_s": int(num("LOOPER_RECAP_VM_WAIT", 300)),
     "vm_wait_hours": num("LOOPER_RECAP_VM_WAIT_HOURS", 1),
+    "control_queue_s": int(num("LOOPER_RECAP_CONTROL_QUEUE", 600)),
 }
+# The control jobs whose queues the recap reports on their own (looper#104):
+# behind reports for a VM, no work is planned and no land merged meanwhile.
+CONTROL = ("looper-plan", "looper-kick")
 # The kicker's pass (looper-dispatch, LOOPER_INTERVAL): how long one capacity
 # line stands for when no later one of its job says otherwise; a gap longer
 # than PASS_GAP (a pass that logged none) counts as PASS_GAP.
@@ -529,6 +537,7 @@ def collect(until):
            "longest": {"queues": [], "lands": [], "scans": [], "holds": []}}
     queues, lands, scans, holdl = [], [], [], []
     passes, managers, vmwait, groups = [], {}, [], {}
+    control = {name: [] for name in CONTROL}
 
     for project in projects:
         try:
@@ -566,6 +575,11 @@ def collect(until):
             url = j.get("web_url") or ""
             if q is not None:
                 queues.append({"project": project, "job": j.get("name"), "s": q, "url": url})
+            if j.get("name") in control:
+                # One canceled before it started waited until then (the hub cancels a stale one).
+                cq = q if s is not None else secs(c, f) if st == "canceled" else None
+                if cq is not None:
+                    control[j["name"]].append({"s": cq, "url": url, "started": s is not None})
             # A job no runner took (canceled while pending) is in no pool.
             if j.get("runner"):
                 runner = j["runner"].get("description") or str(j["runner"].get("id"))
@@ -729,6 +743,7 @@ def collect(until):
     out["managers"] = managers_of(managers, start, until, sources, items)
     out["concurrency"] = concurrency_of(passes, out["managers"], items, pools)
     out["capacity"] = capacity_of(queues, vmwait, items)
+    out["control"] = control_of(control, items)
     out["actions"] = actions(start, until, sources, items)
     out["image"] = image_check(until, sources, items)
 
@@ -928,6 +943,28 @@ def capacity_of(queues, vmwait, items):
                                  f"queue p90 {minutes(q['p90']) if q else '-'} min; one more {vm['machine']} is about ${vm['usd_day']} a day "
                                  f"(threshold {whole(T['vm_wait_hours'])} h; the scale-up is Jody's call)",
                       "evidence": sorted(x["url"] for x in vmwait)[:5]})
+    return out
+
+
+def control_of(control, items):
+    """The control jobs' queues (looper#104): looper-plan's and looper-kick's,
+    each its own, created to started, or to canceled for one canceled before it
+    started; an item when the longest is LOOPER_RECAP_CONTROL_QUEUE or more.
+    A kick yields to a newer one, so a long queue is one behind reports for a VM."""
+    out = {}
+    for name in CONTROL:
+        xs = sorted(control[name], key=lambda x: (-x["s"], x["url"]))
+        q = dist([x["s"] for x in xs])
+        out[name] = {"jobs": len(xs), "unstarted": sum(1 for x in xs if not x["started"]),
+                     "queue_minutes": q and {k: minutes(v) if k != "n" else v for k, v in q.items()},
+                     "longest": xs and {"minutes": minutes(xs[0]["s"]), "url": xs[0]["url"]}}
+        if q and q["max"] >= T["control_queue_s"]:
+            items.append({"key": f"control-queue/{name}", "count": len(xs), "over": True, "recovered": False,
+                          "wait_hours": hours(sum(x["s"] for x in xs)),
+                          "summary": f"{name} queued up to {minutes(q['max'])} min (p90 {minutes(q['p90'])}, over {len(xs)} job{'s' * (len(xs) != 1)}; "
+                                     f"threshold {minutes(T['control_queue_s'])} min): a control job waited for a runner, "
+                                     f"behind reports or an older kick (looper#104)",
+                          "evidence": [x["url"] for x in xs][:5]})
     return out
 
 
@@ -1166,6 +1203,15 @@ def report(night, classes, sdir, cov):
                  f"{w['issues']} issue{'s' * (w['issues'] != 1)} waited {w['hours']} h for a VM"
                  + (" (" + ", ".join(f"[{x['repo']}#{x['issue']}]({x['url']}) {x['minutes']} min" for x in w["jobs"][:3]) + ")" if w["jobs"] else "")
                  + f"; one more {vm['machine']} is about ${vm['usd_day']} a day (${vm['usd_hour']} an hour).")
+    for name, what in (("looper-plan", "Plan"), ("looper-kick", "Kick")):
+        c = (night.get("control") or {}).get(name)
+        if c is None:
+            continue
+        q = c["queue_minutes"]
+        L.append(f"{what} queue: " + ("no job." if not q else
+                 f"p50 {q['p50']}, p90 {q['p90']}, max {q['max']} min over {q['n']} job{'s' * (q['n'] != 1)}"
+                 + (f" ({c['unstarted']} canceled before starting)" if c["unstarted"] else "")
+                 + f"; the longest [{c['longest']['minutes']} min]({c['longest']['url']})."))
     im = night.get("image")
     if im:
         L.append(f"Image: {im['ref']} " + ("is at main's head." if im["current"] else
