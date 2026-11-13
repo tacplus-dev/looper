@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A build's wait as long as tacplus's full gates** (2026-11-13, #140): the gates job now has its own 11h
+  timeout, but `repo-looper --build` and a manager's merge wait for a verdict `LOOPER_BUILD_WAIT` (default 3h),
+  and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"
+  while the pipeline still runs. Sizing the wait per repository (as `land_wait` sizes a land's, from gates.yaml's
+  `minutes` of the set) would keep it from giving up on a build that is still on time.
 - **The kicker resource group's `newest_first`** (2026-11-07, #104): a kick now stops once a newer one is queued, but
   GitLab's default `unordered` process mode may still hand the `kicker` group to a stale kick first, which takes a VM
   to start and stop. `PUT /projects/:id/resource_groups/kicker` with `process_mode=newest_first` (a token with `api`
