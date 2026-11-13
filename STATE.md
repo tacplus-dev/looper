@@ -50,7 +50,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-11 by lo
   changed paths call for, full for a path no set names or one of full's, a `gates.yaml` change, or no change, and lands
   nothing on a map it cannot read; the set and why are in the land's output, the looper's land comments and the issue's
   HISTORY.md line, the budget is the set's, and the prompts name the map's full for verifying, the nightly scan and
-  releases; this repository has its `gates.yaml`);
+  releases; this repository has its `gates.yaml`, and tacplus its own: docs for `*.md` and `docs/**`, images for
+  `images/`, full for the code, tacplus-dev/tacplus#266);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
   tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); prompt provenance (#40): every
   prompt carries the issue's text (title and body, each comment) in blocks keyed by a per-prompt nonce (`openssl rand`)
@@ -210,8 +211,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-11 by lo
   (tacplus-dev/tacplus#315), both the follow-up's (PROPOSALS.md); the identity pilot's
   think job (kernel, #28) still works one issue per pipeline (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
-  pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); tacplus has no `gates.yaml`
-  yet, so its lands still run the full gates (#48 waits on it), and the think job (#28) and the build pipeline always
+  pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); the think job (#28) and the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
   tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
   `nightly` input; a schedule per repository), and on the day they start tacplus's build fails them (gosec's HIGH
