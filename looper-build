@@ -532,17 +532,23 @@ gate_run() { # gates.yaml sets
 # job's artifact built/: the untracked files of the checkout that are source
 # or a manifest (code generated in place, which a Go module or a Cargo
 # workspace may not build without) or bytecode (target/classes, for
-# SpotBugs), never dependencies or other output.
+# SpotBugs) or a release jar (RELEASE_JAR: what trivy rootfs reads for the
+# dependencies it shades, looper#147), never dependencies or other output.
 # The security job lays it over its own checkout of the commit.
 built() { # src
   local out="$BUILD_OUT/built"
   rm -rf "$out"; mkdir -p "$out"
   git -C "$1" ls-files -z --others |
-    { grep -zE '(^|/)target/classes/|\.(go|rs|py|java|kt|scala|ts|tsx|js|mjs|cs|swift)$|(^|/)(go\.(mod|sum)|Cargo\.(toml|lock)|pom\.xml|package(-lock)?\.json|pyproject\.toml|requirements[^/]*\.txt)$' || true; } |
-    { grep -zvE '(^|/)(node_modules|vendor|\.venv|venv|\.git)/|(^|/)target/(.*/)?(debug|release|deps|build)/' || true; } |
+    { grep -zE "(^|/)target/classes/|\.(go|rs|py|java|kt|scala|ts|tsx|js|mjs|cs|swift)\$|(^|/)(go\.(mod|sum)|Cargo\.(toml|lock)|pom\.xml|package(-lock)?\.json|pyproject\.toml|requirements[^/]*\.txt)\$|$RELEASE_JAR" || true; } |
+    { grep -zvE "(^|/)(node_modules|vendor|\.venv|venv|\.git)/|(^|/)target/(.*/)?(debug|release|deps|build)/|$NOT_RELEASE_JAR" || true; } |
     (cd "$1" && tar --null -T - -cf -) | tar -xf - -C "$out" || verdict fail "the gates' built files could not be kept"
   [[ -n "$(ls -A "$out")" ]] || rmdir "$out"
 }
+# A release jar: a Maven module's target/*.jar or .war, a Gradle project's
+# build/libs/*; not its sources, javadoc or tests, nor the shade plugin's
+# original- (the jar before its dependencies were shaded in).
+RELEASE_JAR='(^|/)(target|build/libs)/[^/]+\.(jar|war)$'
+NOT_RELEASE_JAR='(^|/)original-[^/]+\.(jar|war)$|-(sources|javadoc|tests|test-sources)\.jar$'
 
 # The code the commit generates, for the security checks (looper#49): what
 # the repository's `generated` recipe, when it has one, writes into the

@@ -20,8 +20,9 @@
 #
 # The kinds (BUILD_SCAN_KIND): build (every build): OSV-Scanner, govulncheck,
 # cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
-# FindSecBugs, and a Syft SBOM; nightly and release add CodeQL and Trivy
-# (filesystem, Kubernetes manifests, the Dockerfiles' base images).
+# FindSecBugs, Trivy on the release jars the gates built (the dependencies
+# they shade, looper#147), and a Syft SBOM; nightly and release add CodeQL
+# and Trivy (filesystem, Kubernetes manifests, the Dockerfiles' base images).
 #
 # The policy: a secret fails, and so does a HIGH or CRITICAL finding with a
 # fix (a fixed version, or our own code: a SAST finding), unless an unexpired
@@ -456,12 +457,29 @@ tool_trivy() { # tree label prefix
     norm "$SCAN_OUT/norm/trivy-$2-image-$i.json" "$JQ_TRIVY" "$raw" --arg where "image $ref: "
   done < <(base_images "$1")
 }
+# A package in a jar is where the jar is (PkgPath), else where the result is.
 JQ_TRIVY='
 [.[0].Results[]? | .Target as $t
  | ((.Vulnerabilities // [])[] | finding("trivy"; "sca"; .VulnerabilityID; []; (.Severity // "UNKNOWN"); ((.FixedVersion // "") != "");
-     (.PkgName + "@" + (.InstalledVersion // "") + " (" + $where + $t + ")"); .Title)),
+     (.PkgName + "@" + (.InstalledVersion // "") + " (" + $where + (.PkgPath // $t) + ")"); .Title)),
    ((.Misconfigurations // [])[] | select(.Status != "PASS") | finding("trivy"; "config"; .ID; []; (.Severity // "UNKNOWN"); true;
      ($where + $t); .Title))]'
+
+# The release jars of a tree (looper-build's RELEASE_JAR: what the gates keep
+# in built/), in every kind: the dependencies a jar shades are in no manifest
+# the other tools read (tacplus-dev/kernel#59). trivy rootfs reads the jars
+# alone, copied at their paths: a jar's findings are where it is.
+tool_jars() { # tree label prefix
+  local jars=() j root="$SCAN_WORK/jars-$2" raw="$SCAN_OUT/raw/trivy-jars-$2.json" rc=0
+  mapfile -t jars < <(cd "$1" && find . \( -name .git -o -name node_modules -o -name vendor -o -name .venv \) -prune -o -type f -print |
+                        sed 's:^\./::' | { grep -E -e "$RELEASE_JAR" || true; } | { grep -vE -e "$NOT_RELEASE_JAR" || true; } | LC_ALL=C sort)
+  ((${#jars[@]})) || return 0
+  need trivy || return 0
+  for j in "${jars[@]}"; do mkdir -p "$root/$(dirname "$j")"; cp "$1/$j" "$root/$j"; done
+  trivy rootfs -q --scanners vuln --format json -o "$raw" "$root" 2>"$raw.log" || rc=$?
+  if ((rc != 0)); then tool_error trivy "$1" "$1" "the release jars: exited $rc: $(tail -1 "$raw.log")"; return 0; fi
+  norm "$SCAN_OUT/norm/trivy-jars-$2.json" "$JQ_TRIVY" "$raw" --arg where "$3"
+}
 
 # The images a tree's Dockerfiles build FROM: by name, not a stage, not scratch.
 base_images() { # tree
@@ -532,7 +550,8 @@ tool_versions() {
 databases() { # started
   local trivy="{}" deny="{}" gv="{}" d f=()
   if ls "$SCAN_OUT"/raw/trivy-* >/dev/null 2>&1; then
-    trivy="$(trivy version -f json 2>/dev/null | jq -c '{trivy: {updated_at: .VulnerabilityDB.UpdatedAt, downloaded_at: .VulnerabilityDB.DownloadedAt, checks: .CheckBundle.Digest}}' 2>/dev/null)" || trivy="{}"
+    trivy="$(trivy version -f json 2>/dev/null | jq -c '{trivy: ({updated_at: .VulnerabilityDB.UpdatedAt, downloaded_at: .VulnerabilityDB.DownloadedAt, checks: .CheckBundle.Digest}
+                   + if .JavaDB then {java_db_updated_at: .JavaDB.UpdatedAt} else {} end)}' 2>/dev/null)" || trivy="{}"
   fi
   if ls "$SCAN_OUT"/raw/cargo-deny-* >/dev/null 2>&1; then
     for d in "${CARGO_HOME:-$HOME/.cargo}"/advisory-dbs/*/; do
@@ -638,7 +657,7 @@ scan_tree() { # src previous-findings started
   # The trees: the commit, and the code its gates generated.
   local trees=("$src|source|") t tree label prefix tool
   [[ -n "$(ls -A "$BUILD_OUT/generated" 2>/dev/null)" ]] && trees+=("$BUILD_OUT/generated|generated|generated/")
-  local tools=(osv govulncheck cargo_deny semgrep gitleaks gosec clippy bandit spotbugs)
+  local tools=(osv govulncheck cargo_deny semgrep gitleaks gosec clippy bandit spotbugs jars)
   [[ "$SCAN_KIND" == build ]] || tools+=(codeql trivy)
   for t in "${trees[@]}"; do
     IFS='|' read -r tree label prefix <<<"$t"

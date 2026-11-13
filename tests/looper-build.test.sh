@@ -90,6 +90,8 @@ case_commit generated "$PASS_GATES
     mkdir -p gen target/classes/x target/debug node_modules && echo 'package gen' > gen/spec.go
     echo class > target/classes/x/A.class && echo 'fn x() {}' > target/debug/x.rs && echo x > node_modules/a.js
     mkdir -p target/generated-sources/m && echo '[package]' > target/generated-sources/m/Cargo.toml
+    mkdir -p target/lib svc/build/libs node_modules/x/target && echo jar > target/demo-1.0.jar && echo jar > svc/build/libs/svc-1.0.jar
+    echo jar > target/demo-1.0-sources.jar && echo jar > target/original-demo-1.0.jar && echo jar > target/lib/dep.jar && echo jar > node_modules/x/target/x.jar
 generated out:
     mkdir -p {{out}}/model && printf 'package model\n' > {{out}}/model/model.go" "$LOCK"
 # A tacplus project whose justfile runs tacplus through a wrapper that needs
@@ -150,6 +152,28 @@ scan_commit scansecret deploy/env.txt "aws_access_key_id = $AKIA"
 scan_commit scanexcepted "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31)"
 scan_commit scanexpired "${VULN[@]}" security-exceptions.yaml "$(exceptions 2020-01-31)"
 scan_commit scanbadexc "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 '""')"
+# A Java service whose release jar shades a vulnerable dependency (kernel#59:
+# Hazelcast's shaded Jackson, jackson-databind 2.9.8 here), and the exception
+# a repository may take for it.
+JAR_CVE=CVE-2020-36518
+scan_commit scanjarexc security-exceptions.yaml "exceptions:
+  - id: $JAR_CVE
+    reason: \"the shaded jackson-databind of the tests\"
+    decided_by: jodydadescott
+    expires: 2099-12-31"
+# A jar (stored, so its pom.properties reads as text) holding its own and a
+# shaded dependency's Maven metadata.
+shaded_jar() { # file group:artifact:version...
+  mkdir -p "$(dirname "$1")"
+  python3 -I - "$@" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_STORED) as z:
+    z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+    for gav in sys.argv[2:]:
+        g, a, v = gav.split(":")
+        z.writestr(f"META-INF/maven/{g}/{a}/pom.properties", f"groupId={g}\nartifactId={a}\nversion={v}\n")
+EOF
+}
 # A service's tacplus.yaml: its generated tree is the output-dir (looper#108).
 scan_commit scangen tacplus.yaml 'language: go
 output-dir: "tacplus"
@@ -433,6 +457,13 @@ case "\$1" in
   fs) if [[ -f "\$tree/k8s/pod.yaml" ]]; then
         echo '{"Results":[{"Target":"k8s/pod.yaml","Class":"config","Type":"kubernetes","Misconfigurations":[{"ID":"KSV-0017","Severity":"HIGH","Status":"FAIL","Title":"Privileged container"}]}]}' > "\$out"
       else echo '{"Results":[]}' > "\$out"; fi ;;
+  # The release jars (looper#147): jackson-databind 2.9.8, shaded in a jar, has its CVE at the jar's path.
+  rootfs) echo "trivy \$* (\$(cd "\$tree" && find . -type f | sed 's:^\./::' | LC_ALL=C sort | paste -sd ' ' -))" >> "$TMP/trivy.log"
+    for j in \$(cd "\$tree" && grep -rla --include='*.jar' 'artifactId=jackson-databind' . | sed 's:^\./::' | LC_ALL=C sort); do
+      grep -aq 'version=2.9.8' "\$tree/\$j" || continue
+      jq -cn --arg p "\$j" '{VulnerabilityID: "$JAR_CVE", PkgName: "com.fasterxml.jackson.core:jackson-databind", PkgPath: \$p, InstalledVersion: "2.9.8",
+        FixedVersion: "2.12.6.1, 2.13.2.1", Severity: "HIGH", Title: "jackson-databind: denial of service via a large depth of nested objects"}'
+    done | jq -s '{Results: (if length > 0 then [{Target: "Java", Class: "lang-pkgs", Type: "jar", Vulnerabilities: .}] else [] end)}' > "\$out" ;;
   *) echo "trivy stub: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -981,10 +1012,10 @@ if build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true BUILD_TAG=v1.2.3 -- plan 2>
 verdict_is "fail: a nightly build is not a release"
 pass
 
-NAME="gates: the code a generated recipe writes is the gates' artifact, for the security checks"
+NAME="gates: the code a generated recipe writes, and the release jars, are the gates' artifact, for the security checks"
 build BUILD_SHA="${SHA[generated]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
 [[ "$(cat "$OUT/generated/model/model.go")" == "package model" ]] || fail "no generated code: $(ls -R "$OUT")"
-[[ "$(cd "$OUT/built" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" == "./gen/spec.go ./target/classes/x/A.class ./target/generated-sources/m/Cargo.toml " ]] ||
+[[ "$(cd "$OUT/built" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" == "./gen/spec.go ./svc/build/libs/svc-1.0.jar ./target/classes/x/A.class ./target/demo-1.0.jar ./target/generated-sources/m/Cargo.toml " ]] ||
   fail "built: $(cd "$OUT/built" && find . -type f)"
 build BUILD_SHA="${SHA[pass]}" -- gates 2>"$TMP/err" || fail "gates failed"
 [[ ! -e "$OUT/generated" ]] || fail "generated code without a recipe"
@@ -1277,6 +1308,39 @@ else
   scan_verdict_is "fail: gosec: not in this image"
   pass
 fi
+
+# The release jars (looper#147), in every kind, with the stub trivy (the real
+# one's Java database is a download of its own) and CodeQL (the nightly's).
+JAR_PATH=(PATH="$TMP/bin:$TMP/scanbin-jars:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+mkdir -p "$TMP/scanbin-jars"; cp "$SB/trivy" "$SB/codeql" "$TMP/scanbin-jars/"
+NAME="security: every kind, a build too, scans the release jars the gates kept: a shaded dependency's fixed HIGH fails it"
+for kind in build nightly release; do
+  shaded_jar "$TMP/out-$((n + 1))/built/target/demo-1.0.jar" com.example:demo:1.0 com.fasterxml.jackson.core:jackson-databind:2.9.8
+  shaded_jar "$TMP/out-$((n + 1))/built/svc/build/libs/svc-1.0.jar" com.example:svc:1.0
+  : > "$TMP/trivy.log"
+  e=(); [[ "$kind" == release ]] && e=(BUILD_TAG=v1.2.3)
+  if scan "${JAR_PATH[@]}" "${e[@]}" BUILD_SHA="${SHA[scanclean]}" BUILD_SCAN_KIND="$kind" -- run 2>"$TMP/err"; then fail "$kind passed"; fi
+  scan_verdict_is "fail: 1 security finding(s) the policy fails: $JAR_CVE"
+  [[ "$(blocking)" == "trivy $JAR_CVE com.fasterxml.jackson.core:jackson-databind@2.9.8 (target/demo-1.0.jar)" ]] || fail "$kind: $(blocking)"
+  grep -q "^trivy rootfs .*--scanners vuln .*(svc/build/libs/svc-1.0.jar target/demo-1.0.jar)$" "$TMP/trivy.log" ||
+    fail "$kind: not the jars alone: $(cat "$TMP/trivy.log")"
+  jq -e '.trivy.updated_at' "$OUT/security/databases.json" >/dev/null || fail "$kind: no Trivy database time"
+done
+pass
+
+NAME="security: an exception in security-exceptions.yaml accepts a jar's finding"
+shaded_jar "$TMP/out-$((n + 1))/built/target/demo-1.0.jar" com.example:demo:1.0 com.fasterxml.jackson.core:jackson-databind:2.9.8
+scan "${JAR_PATH[@]}" BUILD_SHA="${SHA[scanjarexc]}" -- run 2>"$TMP/err" || fail "the excepted jar failed: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+[[ "$(jq -r '[.[] | select(.excepted) | .tool + ":" + .excepted] | join(" ")' "$OUT/security/findings.json")" == "trivy:$JAR_CVE" ]] ||
+  fail "$(cat "$OUT/security/findings.json")"
+pass
+
+NAME="security: no release jar, no jar scan"
+: > "$TMP/trivy.log"
+scan "${JAR_PATH[@]}" BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err" || fail "failed: $(cat "$OUT/security/verdict")"
+[[ ! -s "$TMP/trivy.log" ]] || fail "trivy ran: $(cat "$TMP/trivy.log")"
+pass
 
 NAME="security: a nightly adds CodeQL and Trivy (Kubernetes manifests): a privileged pod fails it, not a build"
 mkdir -p "$TMP/scanbin-nightly"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
