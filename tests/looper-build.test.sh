@@ -580,6 +580,15 @@ env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TA
    "failure|no pin: demo has no tacplus.lock at x" ]] || fail "$(cat "$TMP/api.log")"
 pass
 
+NAME="status: a failure with no verdict file (the gates' child pipeline failed) is still reported"
+OUT="$TMP/out-status-none"; mkdir -p "$OUT"; : > "$TMP/api.log"
+env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" \
+  TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" \
+  "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == \
+   "failure|the build failed" ]] || fail "$(cat "$TMP/api.log")"
+pass
+
 # --- publish --------------------------------------------------------------------
 echo "sha256:$(printf 'b%.0s' {1..64})" > "$TMP/digest"
 REL=(BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 CI_COMMIT_REF_NAME=demo/v1.2.3
