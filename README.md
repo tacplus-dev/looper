@@ -947,6 +947,16 @@ launcher's 768 MB, which kernel outgrew (looper#149); `BUILD_SPOTBUGS_MAXHEAP` (
 the run with the exception's first line (`Exception in thread "main" java.lang.OutOfMemoryError: ...`), not the last
 line of its stack.
 
+**A service's generated tree is tacplus's to scan** (looper#108). The code tacplus generates into a service (the
+`output-dir` of the `tacplus.yaml` at its root: `tacplus/`, `target/generated-sources`) is the same in every
+service, and only tacplus can fix it. So a service's SAST findings and secrets there (gosec, gitleaks, Semgrep,
+clippy, any SAST tool) are not counted: they are kept aside in `security/generated.json` and summed up in the summary
+("Not counted: the generated tree"), and no service writes exceptions for them. Everything else in that tree is still
+checked: its dependencies (SCA: OSV-Scanner, govulncheck, cargo-deny's advisories, licenses, sources and bans). tacplus
+scans its generated output once, at the source: its `generated` recipe's output (above) is counted in full, with
+tacplus's own `security-exceptions.yaml`. A repository with no `tacplus.yaml` at its root (tacplus itself), or one
+whose `output-dir` is not a directory inside the tree, has nothing skipped.
+
 **Policy.** A run fails on:
 
 - any **secret** (gitleaks);

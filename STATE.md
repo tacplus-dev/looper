@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by looper (#141).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by looper (#108).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -91,7 +91,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   crates alone, which the summary says, #126; the SAST findings and secrets in each tacplus.yaml's `output-dir`,
   through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149), a nightly (input `nightly: true`, main's head, no commit status) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
-  an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
+  an unexpired `security-exceptions.yaml` entry accepts it; a service's generated tree (its root `tacplus.yaml`'s
+  `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
+  counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
   and run by hand (`looper-scan local`) on tacplus and kernel; this repository's own tree passes its gitleaks, a gate

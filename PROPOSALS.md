@@ -252,6 +252,8 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **tacplus's `generated` recipe** (2026-11-01, #49): tacplus's cross-test models (what consumers ship) are generated
   out of the tree during its gates, so the security checks see them only once tacplus's justfile has
   `generated <dir>` writing them there (README, Security checks). A tacplus issue, as part of #49's roadmap entry.
+  Since #108 (2026-11-13) services no longer count their generated tree's SAST findings, so until the recipe exists
+  generated code is SAST-scanned nowhere: https://github.com/tacplus-dev/tacplus/issues/376 (feature, for approval).
 - **Pin Semgrep's rules** (2026-11-01, #49): `p/default` is fetched from the registry each run, so the same commit
   can get other SAST findings another day; the run records the fetch time only. A pinned semgrep-rules commit,
   fetched at run time (the license forbids redistributing the rules, not fetching them), would make Semgrep as
