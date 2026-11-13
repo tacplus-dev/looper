@@ -58,6 +58,10 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # GO-2026-6860/6866, x/crypto's openpgp GO-2026-5932): they are built here with
 # GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum,
 # and each so built must report it (looper#124: go1.27.4 for net/http's GO-2026-6859).
+# govulncheck too (looper#109): it type-checks a module with the Go it was built
+# with, and the base image's go1.26 cannot load a `go 1.27` module; the smoke
+# proves it scans one (vuln.go.dev: the network). GO_TOOLCHAIN is the newest Go
+# release: bump it when one lands.
 # gitleaks too (looper#65: its 8.30.1 release binary, go1.24.11, has 70 reachable
 # vulnerabilities, and upstream has not released since): built in a module made
 # here, its go.sum from sum.golang.org, which replaces github.com/ulikunitz/xz
@@ -101,7 +105,13 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     mkdir -p /opt/scanners; tar -xzf "$d/spotbugs.tgz" -C /opt/scanners; ln -s "/opt/scanners/spotbugs-$SPOTBUGS_VERSION/bin/spotbugs" /usr/local/bin/spotbugs; \
     get findsecbugs-plugin.jar "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/$FINDSECBUGS_VERSION/findsecbugs-plugin-$FINDSECBUGS_VERSION.jar" "$FINDSECBUGS_SHA256"; \
     install -m 0644 "$d/findsecbugs-plugin.jar" /opt/scanners/findsecbugs-plugin.jar; \
-    GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
+    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
+    go version /usr/local/bin/govulncheck | grep -qx "/usr/local/bin/govulncheck: $GO_TOOLCHAIN"; \
+    mkdir "$d/govulncheck"; printf 'module looper.local/smoke\n\ngo 1.27\n\ntoolchain %s\n' "$GO_TOOLCHAIN" > "$d/govulncheck/go.mod"; \
+    printf 'package main\n\nimport "math/rand/v2"\n\nfunc main() { println(rand.N(6)) }\n' > "$d/govulncheck/main.go"; \
+    (cd "$d/govulncheck" && govulncheck -format json ./... > "$d/govulncheck.json") || \
+      { echo "govulncheck: a go 1.27 module does not load" >&2; exit 1; }; \
+    jq -s -e --arg go "$GO_TOOLCHAIN" '[.[] | .config? // empty | .go_version] == [$go]' "$d/govulncheck.json" >/dev/null; \
     GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
     mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
       go mod init looper.local/gitleaks 2>/dev/null; \
