@@ -46,8 +46,11 @@
 # gates its diff calls for (looper#48), pushes only on green, and deletes the
 # branch. A rebase that conflicts only in files the
 # repository's generated.yaml maps it resolves by regenerating them (main's
-# side, then the set's command: never a hand merge); any other conflict it
-# sends back to the report, the files named. Every merge, resolution and
+# side, then the set's command: never a hand merge); a report's last commit,
+# touching STATE.md alone, whose only conflict is STATE.md, it drops, main's
+# STATE.md kept, and lands the rest, the branch kept for that commit's land
+# again (looper#131); any other conflict it sends back to the report, the
+# files named. Every merge, resolution and
 # send-back is a comment on the issue, with the gate verdict. A report that
 # ended while its land was queued is landed all the same; the verdict frees
 # the issue, and its next report finishes it from the branch. The manager adds
@@ -741,11 +744,18 @@ GEN_MAP=generated.yaml
 # resolve. ONTO is what it rebases on: origin/main, or a verdict job's
 # staging (looper#90). A job that holds the manager's token runs no
 # repository code (looper#90): it regenerates nothing.
+#
+# A commit that touches STATE.md alone and conflicts in it (looper#131: a
+# report's last commit, land_request) is dropped, main's STATE.md kept, and
+# the rebase goes on: DROPPED is its diff, for the verdict, and the report
+# lands it again on main's text. A branch with nothing left once it is
+# dropped (a land of STATE.md alone) is sent back all the same.
 ONTO=origin/main
 rebase_on_main() {
-  local map files f s p hit sets i
-  REGENERATED=""; CONFLICTS=""; REGEN_REFUSED=""
+  local map files f s p hit sets i orig done=""
+  REGENERATED=""; CONFLICTS=""; REGEN_REFUSED=""; DROPPED=""
   no_repo_code "a rebase"
+  orig="$(git rev-parse HEAD)"
   git rebase -q "$ONTO" >/dev/null 2>&1 && return 0
   map="$(mktemp)"
   git show "$ONTO:$GEN_MAP" > "$map" 2>/dev/null || : > "$map"
@@ -756,6 +766,12 @@ rebase_on_main() {
     files="$(git diff --name-only --diff-filter=U)"
     [[ -n "$files" ]] || break
     CONFLICTS="$(paste -sd' ' - <<<"$files")"
+    if [[ "$files" == STATE.md && "$(git diff-tree --no-commit-id --name-only -r REBASE_HEAD)" == STATE.md ]]; then
+      DROPPED+="$(git show --format='commit %h %s' REBASE_HEAD)"$'\n'
+      CONFLICTS=""
+      GIT_EDITOR=true git rebase --skip >/dev/null 2>&1 && { done=1; break; }
+      continue
+    fi
     { [[ -s "$map" ]] && read_sets "$map" 2>/dev/null; } || break
     sets=" "
     while IFS= read -r f; do
@@ -777,10 +793,17 @@ rebase_on_main() {
     done
     git add -u && git add -- $files 2>/dev/null || true
     CONFLICTS=""
-    if git diff --cached --quiet; then GIT_EDITOR=true git rebase --skip >/dev/null 2>&1 && { rm -f "$map"; return 0; }
-    else GIT_EDITOR=true git rebase --continue >/dev/null 2>&1 && { rm -f "$map"; return 0; }; fi
+    if git diff --cached --quiet; then GIT_EDITOR=true git rebase --skip >/dev/null 2>&1 && { done=1; break; }
+    else GIT_EDITOR=true git rebase --continue >/dev/null 2>&1 && { done=1; break; }; fi
   done
   rm -f "$map"
+  if [[ -n "$done" ]]; then
+    [[ -n "$DROPPED" && "$(git rev-list --count "$ONTO..HEAD")" == 0 ]] || return 0
+    CONFLICTS="STATE.md"; DROPPED=""
+    git reset -q --hard "$orig"
+    return 1
+  fi
+  DROPPED=""
   [[ -n "$CONFLICTS" ]] || CONFLICTS="$(git diff --name-only --diff-filter=U | paste -sd' ' -)"
   CONFLICTS+="${REGEN_REFUSED:-}"
   git rebase --abort >/dev/null 2>&1 || true
@@ -864,7 +887,8 @@ onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging
 # again. Lands nothing, and says why, when the change is not committed, the
 # rebase conflicts in files it does not regenerate (exit 3, the files in the
 # record's `conflicts`: sent back), the gates fail or change a tracked file
-# (exit 4: red). The gates are the set the
+# (exit 4: red). A STATE.md commit the rebase dropped is the record's
+# `dropped` (looper#131). The gates are the set the
 # commits' diff calls for (choose_gates, looper#48). Each landing is recorded
 # in the run's `landed` file, "<main before> <main after>", with the gate set
 # when a gate map chose it, and the set and why in its `gate-sets`.
@@ -884,6 +908,10 @@ land_work() {
         printf '%s\n' "$CONFLICTS" > "$out/conflicts"
         log "nothing landed: rebasing $BRANCH onto main conflicts in: $CONFLICTS. Rebase it yourself (git fetch origin && git rebase origin/main), resolve them, verify, and land again." >&2
         exit 3
+      fi
+      if [[ -n "$DROPPED" ]]; then
+        printf '%s' "$DROPPED" > "$out/dropped"
+        log "dropped its STATE.md commit, whose only conflict is STATE.md: main's STATE.md is kept, the rest lands (looper#131): $(sed -n 's/^commit //p' <<<"$DROPPED" | paste -sd, - | sed 's/,/, /g')"
       fi
       if [[ -n "$REGENERATED" ]]; then
         printf '%s' "$REGENERATED" > "$out/regenerated"
@@ -975,6 +1003,7 @@ land_request() {
     id="$(sed -n 's/^id=//p' "$run/land")"
     log "a land of $BRANCH is already queued ($id); waiting for its verdict"
   else
+    state_last "$n"
     id="$(date -u +%Y%m%dT%H%M%SZ)-$n-$RANDOM$RANDOM"
     # Before the land, whose merge can close the issue while the model still
     # works: what it wrote until now is no closing report (looper#54, #143).
@@ -1007,6 +1036,39 @@ land_request() {
   [[ -z "${LOOPER_RUN:-}" ]] || comments_mark "$n" "$run"
   [[ -z "${LOOPER_RUN:-}" ]] || checkpoint "$n" "land done" "$run"
   return "$rc"
+}
+
+# A land's STATE.md change is its last commit, touching STATE.md alone
+# (looper#131): the manager drops that commit when STATE.md is the rebase's
+# only conflict, and lands the rest. Commits since main that change STATE.md
+# and other files are made again without their STATE.md change (one left
+# empty goes), each with its author and message, and a last commit takes
+# HEAD's STATE.md: the tree, the index and the files stay as they are. A
+# branch with a merge since main, or no STATE.md change, is left as it is.
+STATE_FILE=STATE.md
+state_last() { # issue
+  local base c prev tree idx mode sha
+  base="$(git merge-base origin/main HEAD)" || return 0
+  ! git diff --quiet "$base" HEAD -- "$STATE_FILE" || return 0
+  [[ -z "$(git rev-list --merges "$base..HEAD")" ]] || return 0
+  if [[ "$(git diff-tree --no-commit-id --name-only -r HEAD)" == "$STATE_FILE" ]] &&
+     { [[ "$(git rev-parse HEAD^)" == "$base" ]] || git diff --quiet "$base" HEAD^ -- "$STATE_FILE"; }; then return 0; fi
+  idx="$(mktemp)"; prev="$base"
+  read -r mode _ sha _ < <(git ls-tree "$base" -- "$STATE_FILE") || mode=""
+  for c in $(git rev-list --reverse "$base..HEAD"); do
+    GIT_INDEX_FILE="$idx" git read-tree "$c"
+    if [[ -n "$mode" ]]; then GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "$mode,$sha,$STATE_FILE"
+    else GIT_INDEX_FILE="$idx" git update-index --force-remove "$STATE_FILE"; fi
+    tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
+    [[ "$tree" != "$(git rev-parse "$prev^{tree}")" ]] || continue
+    prev="$(GIT_AUTHOR_NAME="$(git show -s --format=%an "$c")" GIT_AUTHOR_EMAIL="$(git show -s --format=%ae "$c")" \
+            GIT_AUTHOR_DATE="$(git show -s --format=%ad --date=raw "$c")" git commit-tree "$tree" -p "$prev" -F <(git show -s --format=%B "$c"))"
+  done
+  rm -f "$idx"
+  prev="$(git commit-tree "HEAD^{tree}" -p "$prev" -m "$STATE_FILE: #$1, its own commit (looper#131)" \
+          -m "The manager drops this commit alone when $STATE_FILE is its rebase's only conflict, and lands the rest.")"
+  git update-ref -m "looper: $STATE_FILE in a last commit of its own (looper#131)" HEAD "$prev"
+  log "$STATE_FILE's change is now the last commit, of its own (looper#131): a land whose only conflict is $STATE_FILE lands the rest"
 }
 
 # A closed issue's HISTORY.md line, for the manager (looper#70): its branch,
@@ -1348,9 +1410,10 @@ reports_active() {
 # id: merged (green), sent back (a conflict it does not resolve), or not
 # merged (red, or why not).
 verdict_comment() { # issue id rc record-dir sha
-  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build
+  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build dropped
   b="$(wip_branch "$n")"; url="$(wip_url "$n")"
   regen="$(cat "$rec/regenerated" 2>/dev/null || true)"; conflicts="$(cat "$rec/conflicts" 2>/dev/null || true)"
+  dropped="$(cat "$rec/dropped" 2>/dev/null || true)"
   step="$(git -C "$CHECKOUT" log -1 --format=%b "$sha" 2>/dev/null | sed '/^$/d' || true)"
   if [[ "$rc" == 0 && -s "$rec/landed" ]]; then
     read -r before after set <<<"$(tail -n 1 "$rec/landed")"
@@ -1360,7 +1423,16 @@ verdict_comment() { # issue id rc record-dir sha
     [[ -z "$build" ]] || build=", a build job's verdict ($build)"
     what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green."
     [[ -z "$regen" ]] || what+=" It resolved the rebase's conflicts by regenerating them, never by hand: $(sed 's/.*/`&`/' <<<"$regen" | paste -sd, - | sed 's/,/, /g')."
-    what+=" The branch is deleted.${VERDICT_JOB:+ Its gates: job $VERDICT_JOB.}${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
+    # A STATE.md commit dropped (looper#131): its diff, to land again.
+    if [[ -n "$dropped" ]]; then
+      what+=" It dropped its STATE.md commit, whose only conflict was STATE.md (looper#131): main's STATE.md is kept, and the rest is merged. The branch stays, and this issue stays $LABEL_APPROVED for a docs-only land of that change on main's STATE.md: rebase on main (\`git fetch origin && git rebase origin/main\`), redo it on main's text in a commit that touches STATE.md alone, and land again; the issue closes after that."
+    else what+=" The branch is deleted."; fi
+    what+="${VERDICT_JOB:+ Its gates: job $VERDICT_JOB.}${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
+    [[ -z "$dropped" ]] || what+="
+
+The dropped commit:
+
+$(printf '~~~~~~diff\n%s\n~~~~~~' "$(head -n 200 <<<"$dropped")")"
     [[ -z "$step" ]] || what+="
 
 Its report's last checkpoint:
@@ -1443,10 +1515,14 @@ post_land() { # issue id sha rc rec-dir
   if (( rc == 0 )); then log "#$n: $(grep 'landed on main\|green on staging\|nothing to land' "$rec/out" | tail -n 1 | cut -c24- | sed 's/^green on staging:/landed on main:/')"; else log "#$n: not merged (exit $rc)"; fi
   # A history request has nothing to merge, and is no merge to report.
   [[ -n "$lines" && "$rc" == 0 && ! -s "$rec/landed" ]] || verdict_comment "$n" "$id" "$rc" "$rec" "$sha" || log "#$n: could not comment the verdict"
+  # A dropped STATE.md commit (looper#131) keeps the branch, for its land again.
+  [[ ! -s "$rec/dropped" ]] || log "#$n: dropped its STATE.md commit, whose only conflict is STATE.md: $(sed -n 's/^commit //p' "$rec/dropped" | paste -sd, - | sed 's/,/, /g'); $b stays for its land again"
   if (( rc == 0 )); then
     [[ -z "$lines" ]] || land "HISTORY.md: #$n (looper)" append_history_new "$lines"
-    git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$b:$sha" origin --delete "$b" 2>/dev/null \
-      && log "#$n: deleted $b" || log "#$n: $b is not deleted: its report pushed to it since"
+    if [[ ! -s "$rec/dropped" ]]; then
+      git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$b:$sha" origin --delete "$b" 2>/dev/null \
+        && log "#$n: deleted $b" || log "#$n: $b is not deleted: its report pushed to it since"
+    fi
   fi
   forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true
   return 0
@@ -2586,9 +2662,12 @@ Rules:
    A push to main any other way is refused. When it merges nothing it says why: the rebase conflicts in files
    it does not regenerate (it regenerates only the generated and lock files the repository's $GEN_MAP maps;
    rebase onto origin/main yourself, resolve, verify again, and land again), or the gates fail (fix them and
-   land again). Never force-push. Never commit secrets.
+   land again). When STATE.md is its only conflict, it lands the rest and drops your STATE.md commit
+   (looper#131): its verdict quotes it; rebase on origin/main, redo it on main's STATE.md in a commit of its
+   own, and land again before you close the issue. Never force-push. Never commit secrets.
 6. The planning files: update STATE.md when your change changes what it states (version, what works,
-   gaps, blockers). Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
+   gaps, blockers), in your last commit, of its own, touching STATE.md alone (\`--land\` makes it so: looper#131).
+   Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
    only in comments. Never edit ROADMAP.md: it is Jody's, changed only by an agent at his request, and a
    push of a commit that touches it is refused. HISTORY.md is append-only and not yours: the looper adds
    the line for this issue and for any release.

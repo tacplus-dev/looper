@@ -910,6 +910,7 @@ h="$(history)"
 [[ "$(grep -c '^- ' <<<"$h")" == 1 ]] || fail "HISTORY.md: $h"
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$p" "Never edit ROADMAP.md"; has "$p" "STATE.md"; has "$p" "PROPOSALS.md"
+has "$p" "in your last commit, of its own, touching STATE.md alone"; has "$p" "When STATE.md is its only conflict, it lands the rest"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
 
@@ -2006,6 +2007,77 @@ has "$(grep '^alpha#4 The manager merged' "$FIX/comments")" "app.lock (./gen.sh)
 has "$(cat "$FIX/manager.log")" "#4: deleted looper/alpha-4"
 # Its log says so too: the recap counts the conflicts it resolved (looper#72).
 has "$(cat "$FIX/manager.log")" "#4: resolved its conflicts by regenerating: app.lock (./gen.sh)"
+pass
+
+# Two lands that change different code and both STATE.md (looper#131): both
+# merge. #5's, queued first, merges whole; #4's --land puts its STATE.md
+# change in a last commit of its own, which conflicts with #5's: the manager
+# drops that commit alone, main's STATE.md kept, merges #4's code, comments
+# the dropped diff, keeps the branch and the issue approved; #4's report
+# redoes its STATE.md on main's text and lands it again, alone.
+scenario manager-drops-state-md
+issue alpha 5 OPEN approved,bug "Fix that."
+printf '# State\n\nbase\n' > "$FIX/seed/STATE.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm state; git -C "$FIX/seed" push -q origin main
+d="$FIX/q-5"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b looper/alpha-5
+echo 5 > "$d/five.txt"; printf '# State\n\nfive\n' > "$d/STATE.md"; git -C "$d" add -A; git -C "$d" commit -qm "fix 5"
+mkdir -p "$d/.looper"; printf 'id=q5\ngates=true\nstate=queued\nqueued=2026-11-03T10:00:00Z\n' > "$d/.looper/land"
+git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #5 (land queued)"
+cat > "$FIX/claude.sh" <<'EOS'
+git -C "$FIX/q-5" push -q origin looper/alpha-5
+for _ in $(seq 100); do git -C "$FIX/origin.git" show main:five.txt >/dev/null 2>&1 && break; sleep 0.1; done
+echo 4 > four.txt && printf '# State\n\nfour\n' > STATE.md && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+git -C "$FIX/origin.git" show main:STATE.md > "$FIX/state-1"; git -C "$FIX/origin.git" log --format=%s main > "$FIX/log-1"
+git ls-remote origin refs/heads/looper/alpha-4 > "$FIX/branch-1"
+git fetch -q origin && ! git rebase -q origin/main >/dev/null 2>&1 && printf '# State\n\nfive\nfour\n' > STATE.md && git add STATE.md && GIT_EDITOR=true git rebase --continue >/dev/null 2>&1
+git log --format=%s origin/main..HEAD > "$FIX/relanding"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4b" 2>&1; echo "rc $?" >> "$FIX/land-4b"
+EOS
+close_all
+run
+l="$(cat "$FIX/land-4")"; has "$l" "rc 0"; has "$l" "The manager merged [\`looper/alpha-4\`]"
+has "$l" "dropped its STATE.md commit"; has "$l" "+four"; has "$l" "stays approved"; lacks "$l" "The branch is deleted"
+[[ "$(cat "$FIX/state-1")" == $'# State\n\nfive' ]] || fail "main's STATE.md after #4's code: $(cat "$FIX/state-1")"
+[[ "$(head -n 2 "$FIX/log-1" | paste -sd'|')" == "fix 4|fix 5" ]] || fail "main after #4's code: $(cat "$FIX/log-1")"
+[[ -s "$FIX/branch-1" ]] || fail "the branch was deleted with its STATE.md commit dropped"
+[[ "$(cat "$FIX/relanding")" == "STATE.md: #4, its own commit (looper#131)" ]] || fail "the re-land: $(cat "$FIX/relanding")"
+has "$(cat "$FIX/land-4b")" "rc 0"; has "$(cat "$FIX/land-4b")" "The branch is deleted"
+[[ "$(landed four.txt)" == 4 && "$(landed five.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+[[ "$(landed STATE.md)" == $'# State\n\nfive\nfour' ]] || fail "main's STATE.md: $(landed STATE.md)"
+[[ "$(origin log --format=%s main | grep -v '^HISTORY.md' | head -n 3 | paste -sd'|')" == "STATE.md: #4, its own commit (looper#131)|fix 4|fix 5" ]] || fail "main: $(origin log --oneline main)"
+c="$(origin log --format=%H --grep='^fix 4$' main)"
+[[ "$(origin diff-tree --no-commit-id --name-only -r "$c")" == four.txt ]] || fail "#4's code commit: $(origin show --stat "$c")"
+has "$(cat "$FIX/manager.log")" "#4: dropped its STATE.md commit"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+branch && fail "the re-landed branch is left"
+pass
+
+# Only a commit that touches STATE.md alone is dropped: a conflict in
+# STATE.md and another file, or in STATE.md replaying a commit that changes
+# code too, or a land of STATE.md alone, sends the whole branch back.
+scenario manager-state-md-sent-back
+printf '# State\n\nbase\n' > "$FIX/seed/STATE.md"; echo base > "$FIX/seed/a.txt"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm state; git -C "$FIX/seed" push -q origin main
+issue alpha 5 OPEN approved,bug "Fix that."; issue alpha 6 OPEN approved,bug "And that."
+for n in 4 5 6; do
+  d="$FIX/q-$n"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b "looper/alpha-$n"
+  case "$n" in
+    4) echo mine > "$d/a.txt"; printf '# State\n\nmine\n' > "$d/STATE.md"; git -C "$d" commit -qam "code and state" ;;
+    5) echo 5 > "$d/five.txt"; printf '# State\n\nmine\n' > "$d/STATE.md"; git -C "$d" add -A; git -C "$d" commit -qm "code and state" ;;
+    6) printf '# State\n\nmine\n' > "$d/STATE.md"; git -C "$d" commit -qam state ;;
+  esac
+  mkdir -p "$d/.looper"; printf 'id=q%s\ngates=true\nstate=queued\nqueued=2026-11-03T1%s:00:00Z\n' "$n" "$n" > "$d/.looper/land"
+  git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #$n (land queued)"; git -C "$d" push -q origin "looper/alpha-$n"
+  jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-$n.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-$n.json"
+done
+printf '# State\n\ntheirs\n' > "$FIX/seed/STATE.md"; echo theirs > "$FIX/seed/a.txt"; git -C "$FIX/seed" commit -qam theirs; git -C "$FIX/seed" push -q origin main
+manage
+main_unchanged
+c="$(cat "$FIX/comments")"
+has "$c" "alpha#4 The manager sent [\`looper/alpha-4\`]"; has "$(grep '^alpha#4 ' <<<"$c")" "conflicts in \`STATE.md\`, \`a.txt\`"
+has "$c" "alpha#5 The manager sent [\`looper/alpha-5\`]"; has "$(grep '^alpha#5 ' <<<"$c")" "conflicts in \`STATE.md\`"
+has "$c" "alpha#6 The manager sent [\`looper/alpha-6\`]"; has "$(grep '^alpha#6 ' <<<"$c")" "conflicts in \`STATE.md\`"
+lacks "$c" "dropped"
+for n in 4 5 6; do origin rev-parse -q --verify "refs/heads/looper/alpha-$n" >/dev/null || fail "#$n's branch is gone"; done
 pass
 
 # Nothing merges on red: the gates fail, main stays, the branch stays, and

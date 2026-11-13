@@ -628,3 +628,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   runner before tacplus#195's `swift:` and darwin/arm64 `rust:` recipes rely on it. Approved, but no ROADMAP.md
   links it (tacplus's lists #195 only); the design and Jody's questions are on the issue.
   **Promoted** (2026-10-30, ROADMAP.md Next; built 2026-10-31, #36).
+- **The recap counts dropped STATE.md commits** (2026-11-11, #131): the manager logs `#N: dropped its STATE.md
+  commit` when STATE.md was a land's only conflict; `looper-recap` reads `resolved its conflicts by regenerating`
+  and `not merged (exit 3)` only, so a drop counts as a plain merge. Counting them beside the sent-backs would show
+  whether the docs-only lands again they cause are worth a union or a regeneration of STATE.md instead.

@@ -291,7 +291,12 @@ lander are gone. One job per issue needs none of them.
   - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
     (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
     resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
-    and the gates judge the result. Any other conflict it **sends back** to the report, the conflicting files
+    and the gates judge the result. A report's last commit, touching `STATE.md` alone (its `--land` makes the
+    branch so: commits since main that change `STATE.md` and other files made again without it, and a last commit
+    of the `STATE.md` change), whose only conflict is `STATE.md` it **drops** (looper#131): main's `STATE.md` is
+    kept, the rest lands on its gates, and the verdict quotes the dropped diff; the branch stays and the issue stays
+    `approved` for a docs-only land of that change again on main's text, after which it closes. A branch that is
+    only that commit is sent back. Any other conflict it **sends back** to the report, the conflicting files
     named: the report's `--land` says so, and if the report has ended, the issue (no longer `looper:landing`) gets
     a new report job, which resumes from the branch with the conflicts marked.
   - **Logged:** every merge (its main range, gate set and why: green; any files it regenerated), send-back and red
@@ -313,7 +318,7 @@ lander are gone. One job per issue needs none of them.
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-report-pending, manager-report-running
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-report-pending, manager-report-running
 ```
 
 ### Build jobs
