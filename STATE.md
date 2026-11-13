@@ -57,7 +57,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   releases; this repository has its `gates.yaml`, and tacplus its own: docs for `*.md` and `docs/**`, images for
   `images/`, full for the code, tacplus-dev/tacplus#266);
   it appends HISTORY.md's line for each closed issue and release, creates missing planning files from the
-  tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13); prompt provenance (#40): every
+  tacplus-dev/roadmap templates, and refuses a push that touches ROADMAP.md (#13) but a land at Jody's request (`approved` from a member, its text saying so; any other refused once, with `needs-decision`, #123); prompt provenance (#40): every
   prompt carries the issue's text (title and body, each comment) in blocks keyed by a per-prompt nonce (`openssl rand`)
   with author and association, only an OWNER's or MEMBER's text, or that of a COLLABORATOR, CONTRIBUTOR or NONE with write permission on the
   repository (an org owner with private membership shows as CONTRIBUTOR, #97; looked up once a prompt), directing the run and the

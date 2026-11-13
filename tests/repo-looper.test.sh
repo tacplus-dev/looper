@@ -29,6 +29,8 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # `gh api .../collaborators/<login>/permission` from $FIX/permissions/<login>,
 # each lookup recorded in $FIX/permission-lookups (the login); one that holds
 # `fail` fails as GitHub's 5xx does, after printing what it holds.
+# `gh api .../issues/<n>/events` answers the issue's `events` (GitHub's issue
+# events: {event, label: {name}, actor: {login}}), none by default.
 # `gh api graphql` answers forge_issue_states' aliased query from the issues'
 # files (null, and exit 1, for one there is none of), each query appended to
 # $FIX/graphql; $FIX/graphql-fail refuses it as GitHub does when it is down.
@@ -77,6 +79,7 @@ case "$cmd" in
     [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
     who='{user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}'
     if [[ "$p" == */comments ]]; then jq "[.comments[] | {body} + $who]" "$f"
+    elif [[ "$p" == */events ]]; then jq '.events // []' "$f"
     else jq "{number, title, body, comments: (.comments | length)} + $who" "$f"; fi | jq -r "$q" ;;
   api\ repos/*/collaborators/*/permission)
     l="${cmd%/permission}"; echo "${l##*/}" >> "$FIX/permission-lookups"; l="$FIX/permissions/${l##*/}"
@@ -2601,6 +2604,109 @@ echo 'sleep 30' > "$FIX/claude.sh"
 run CI_JOB_TIMEOUT=3620 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_STOP_EARLY=0
 has "$OUT" "limit 4h capped at "
 has "$(grep '^alpha#4 ' "$FIX/comments")" "capped at"
+pass
+
+# --- a ROADMAP.md change at Jody's request (looper#123) ----------------------------
+# ROADMAP.md is Jody's, changed only by an agent at his request: a land may
+# change it when its issue carries `approved` from a member and its own text, a
+# member's, says it is at Jody's request; any other is refused once, with a
+# verdict and needs-decision, and never tried again.
+at_request() { # issue [approver] [author association]: approved by the approver (jody), its text saying it is at Jody's request
+  local n="$1" by="${2:-jody}"
+  [[ -f "$FIX/issues/alpha-$n.json" ]] || issue alpha "$n" OPEN approved,bug x
+  jq --arg by "$by" --arg a "${3:-jody}" --arg s "${4:-MEMBER}" \
+    '.body = "Do the critical path as the suggestion says.\n\nAgent, at Jody'"'"'s request." | .author = $a | .association = $s
+     | .events = [{event: "labeled", label: {name: "bug"}, actor: {login: "jody"}}, {event: "labeled", label: {name: "approved"}, actor: {login: $by}}]' \
+    "$FIX/issues/alpha-$n.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-$n.json"
+  mkdir -p "$FIX/permissions"; echo '{"permission":"admin"}' > "$FIX/permissions/jody"; echo '{"permission":"read"}' > "$FIX/permissions/eve"
+}
+refused() { # issue why: its verdict refuses the land, needs-decision
+  local c; c="$(awk -v n="alpha#$1 " '/^[a-z-]+#[0-9]+ / { m = index($0, n) == 1 } m' "$FIX/comments")"
+  has "$c" "alpha#$1 The manager refused [\`looper/alpha-$1\`]"; has "$c" "changes ROADMAP.md"; has "$c" "$2"; has "$c" "<!-- looper-land id=q$1 rc=7 -->"
+  has "$(labels alpha "$1")" "needs-decision"; lacks "$(labels alpha "$1")" "looper:landing"
+  origin rev-parse -q --verify "refs/heads/looper/alpha-$1" >/dev/null || fail "#$1's branch is gone"
+}
+
+# Approved by a member, at Jody's request: it lands, split or not.
+scenario split-roadmap-at-jodys-request
+at_request 4
+queue 4 2026-11-03T10:00:00Z ROADMAP.md "the critical path"
+verdict
+[[ "$(origin show looper/staging:ROADMAP.md)" == "the critical path" ]] || fail "not on staging: $OUT"
+merge
+[[ "$(landed ROADMAP.md)" == "the critical path" ]] || fail "not merged: $OUT"
+has "$(cat "$FIX/comments")" "alpha#4 The manager merged [\`looper/alpha-4\`]"
+lacks "$(labels alpha 4)" "needs-decision"
+pass
+
+scenario manager-roadmap-at-jodys-request
+at_request 4
+queue 4 2026-11-03T10:00:00Z ROADMAP.md "the critical path"
+manage
+[[ "$(landed ROADMAP.md)" == "the critical path" ]] || fail "not merged: $OUT"
+has "$(cat "$FIX/comments")" "alpha#4 The manager merged [\`looper/alpha-4\`]"
+pass
+
+# Any other: not approved at Jody's request (#4), approved by someone without
+# write access (#5), its text not a member's (#6), approved by a bot (#7). Each
+# is refused before its gates, never on staging; the land beside them merges,
+# and no refused land is tried again.
+scenario split-roadmap-refused
+issue alpha 5 OPEN approved,bug x; issue alpha 6 OPEN approved,bug x; issue alpha 7 OPEN approved,bug x; issue alpha 8 OPEN approved,bug x
+at_request 4; jq '.body = "Fix it."' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+at_request 5 eve; at_request 6 jody eve NONE; at_request 7 'tacplus-looper[bot]'
+queue 4 2026-11-03T10:00:00Z ROADMAP.md "four" 'touch "$FIX/ran-gates"'
+queue 5 2026-11-03T10:01:00Z ROADMAP.md "five"
+queue 6 2026-11-03T10:02:00Z ROADMAP.md "six"
+queue 7 2026-11-03T10:03:00Z ROADMAP.md "seven"
+queue 8 2026-11-03T10:04:00Z eight.txt 8
+verdict
+[[ ! -e "$FIX/ran-gates" ]] || fail "a refused land's gates ran"
+! origin show looper/staging:ROADMAP.md >/dev/null 2>&1 || fail "a refused land on staging"
+[[ "$(origin show looper/staging:eight.txt)" == 8 ]] || fail "staging: $(origin log --oneline looper/staging)"
+merge
+! origin cat-file -e main:ROADMAP.md 2>/dev/null || fail "ROADMAP.md changed on main"
+[[ "$(landed eight.txt)" == 8 ]] || fail "main: $(origin log --oneline main)"
+refused 4 "#4's text does not say it is at Jody's request"; refused 5 "#5 was approved by eve, who has no write access"
+refused 6 "#6's text is eve's (NONE), not a member's"; refused 7 "#7 was approved by tacplus-looper[bot], a bot"
+has "$OUT" "#4: not merged (exit 7)"
+# No retry: the next batch has nothing to judge, and says nothing.
+: > "$FIX/comments"; m="$(origin rev-parse main)"
+verdict; [[ ! -s "$FIX/verdict/lands" ]] || fail "judged again: $(cat "$FIX/verdict/lands")"
+merge; [[ "$(origin rev-parse main)" == "$m" && ! -s "$FIX/comments" ]] || fail "tried again: $(cat "$FIX/comments")"
+pass
+
+# The one manager refuses it the same way, once.
+scenario manager-roadmap-refused
+queue 4 2026-11-03T10:00:00Z ROADMAP.md "four"
+manage
+! origin cat-file -e main:ROADMAP.md 2>/dev/null || fail "ROADMAP.md changed on main"
+refused 4 "the forge does not say who approved #4"
+: > "$FIX/comments"; manage
+[[ ! -s "$FIX/comments" ]] || fail "tried again: $(cat "$FIX/comments")"
+pass
+
+# Green on staging, but no longer at Jody's request when the manager job
+# merges (its approval removed): the manager job refuses the batch and says so
+# on the issue, needs-decision, instead of failing its push every batch; the
+# lands beside it stay queued for the next batch, which merges them alone.
+scenario split-roadmap-refused-at-merge
+issue alpha 5 OPEN approved,bug x
+at_request 4
+queue 4 2026-11-03T10:00:00Z ROADMAP.md "four"
+queue 5 2026-11-03T10:01:00Z five.txt 5
+verdict
+[[ "$(origin show looper/staging:ROADMAP.md)" == four ]] || fail "not on staging: $OUT"
+jq '.labels |= map(select(.name != "approved"))' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a refused ROADMAP.md change: $OUT"
+has "$OUT" "nothing merged"; main_unchanged
+refused 4 "#4 does not carry \`approved\`"
+lacks "$(cat "$FIX/comments")" "alpha#5"; has "$(labels alpha 5)" "looper:landing"
+: > "$FIX/comments"
+verdict; [[ "$(cut -d' ' -f1 "$FIX/verdict/lands")" == 5 ]] || fail "judged: $(cat "$FIX/verdict/lands")"
+merge
+[[ "$(landed five.txt)" == 5 ]] && ! origin cat-file -e main:ROADMAP.md 2>/dev/null || fail "main: $(origin log --oneline main)"
+lacks "$(cat "$FIX/comments")" "alpha#4"
 pass
 
 # --- build jobs (looper#71) ---------------------------------------------------------

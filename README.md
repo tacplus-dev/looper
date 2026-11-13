@@ -517,6 +517,12 @@ looper#13). The loopers keep them:
 - **ROADMAP.md is refused:** the checkout's pre-push hook refuses any push of a commit that touches it,
   to main or any other branch, except the issue's own `looper/<repo>-<issue>` branch, so a checkpoint
   still keeps all the work. Commits already on origin (an agent's, at Jody's request) are not the push's.
+  A land may change it only at Jody's request (looper#123): its issue carries `approved`, last added by a
+  member (write access, not a bot), and its own text, a member's, says it is at Jody's request, as the
+  hub's ROADMAP lines do. The manager checks it when it judges the land, before the gates (and the manager
+  job of a split batch again before it pushes), and lets through to main only those commits; any other
+  ROADMAP.md change gets its verdict once (`The manager refused`, exit 7) and `needs-decision`, and is not
+  tried again.
 - Hub and agent deploys and agent decisions are appended to `HISTORY.md` by the agent, not the looper.
 
 **The CI check** is the reusable workflow `.github/workflows/planning-files.yml`

@@ -144,7 +144,10 @@
 # tacplus-dev/roadmap (ROADMAP.md never), and a closed issue and each release
 # (a new vX.Y.Z tag) get their line at the end of HISTORY.md, by the manager
 # too (looper#70). A push of a commit that touches ROADMAP.md, Jody's, is
-# refused (a pre-push hook in the checkout); the issue's own branch is exempt.
+# refused (a pre-push hook in the checkout); the issue's own branch is exempt,
+# and so is the manager's land of an issue approved by a member that says it
+# is at Jody's request (looper#123); any other land of it is refused once, the
+# issue needs-decision, never tried again.
 #
 # Bug or feature (tacplus-dev/roadmap decisions/issue-flow-2026-10-27.md,
 # looper#14): an issue labelled neither is classified by the model first (a
@@ -580,7 +583,9 @@ template() { # file
 # Refuses, in the checkout's pre-push hook, any push of a commit that touches
 # ROADMAP.md: the model's pushes and this script's alike. The issue's own
 # branch (looper/*) is exempt, so a checkpoint still keeps all the work.
-# Commits already on origin (an agent's, at Jody's request) are not this push's.
+# Commits already on origin (an agent's, at Jody's request) are not this push's,
+# nor are, in a push to main, the commits LOOPER_ROADMAP_OK names: the manager's
+# land of an issue at Jody's request (roadmap_request, looper#123).
 # The hook is the checkout's and every worktree's (the common git dir), and
 # each report's clone's. From a worktree or a report's clone (looper.child) it
 # also refuses a push to main that is not the manager's (looper#32, looper#70):
@@ -598,11 +603,12 @@ while read -r _ lsha rref rsha; do
   [[ "$lsha" == "$z" || "$rref" == refs/heads/looper/* ]] && continue
   # Not the issues' branches (looper/*): a checkpoint carries a commit there before it lands (looper#38).
   not=(--exclude="$1/looper/*" --remotes="$1"); [[ "$rsha" != "$z" ]] && git cat-file -e "$rsha" 2>/dev/null && not+=("$rsha")
-  c="$(git rev-list -n 1 "$lsha" --not "${not[@]}" -- ROADMAP.md)"
-  if [[ -n "$c" ]]; then
+  # Only the manager's land of an issue at Jody's request, to main: the commits it names (looper#123).
+  for c in $(git rev-list "$lsha" --not "${not[@]}" -- ROADMAP.md); do
+    [[ "$rref" == refs/heads/main && " ${LOOPER_ROADMAP_OK:-} " == *" $c "* ]] && continue
     echo "repo-looper: refused to push $rref: commit $(git rev-parse --short "$c") touches ROADMAP.md, which only Jody changes (through an agent). Propose it in PROPOSALS.md instead." >&2
     exit 1
-  fi
+  done
   # Installed by repo-looper (looper#32, looper#70): only the manager pushes to main.
   if [[ -n "$worktree" && "$rref" == refs/heads/main && -z "${LOOPER_LANDING:-}" ]]; then
     echo "repo-looper: refused to push to main from this clone: land it with repo-looper --land, which queues it with the repository's manager; the manager alone merges to main, rebased on it with the gates re-run." >&2
@@ -612,6 +618,28 @@ done
 exit 0
 HOOK
   chmod +x "$hook"
+}
+
+# Whether a land of an issue may change ROADMAP.md (looper#123): Jody's,
+# changed only by an agent at his request, so only when the issue carries
+# `approved` from a member (the label last added by someone with write
+# access, not a bot) and its own text (its title and body, a member's: looper#40)
+# says it is at Jody's request, as the ROADMAP lines the hub adds do. Fails 1,
+# ROADMAP_WHY saying why, else 2 when the forge cannot be read.
+ROADMAP_RC=7   # a land refused: it changes ROADMAP.md, and its issue is not at Jody's request
+roadmap_request() { # issue
+  local n="$1" labels by t a s
+  ROADMAP_WHY=""
+  labels="$(forge_issue_view "$REPO" "$n" labels '.labels[].name')" || return 2
+  grep -qxF "$LABEL_APPROVED" <<<"$labels" || { ROADMAP_WHY="#$n does not carry \`$LABEL_APPROVED\`"; return 1; }
+  by="$(forge_label_adder "$REPO" "$n" "$LABEL_APPROVED")" || return 2
+  if [[ -z "$by" ]]; then ROADMAP_WHY="the forge does not say who approved #$n"; return 1
+  elif [[ "$by" == *"[bot]" ]]; then ROADMAP_WHY="#$n was approved by $by, a bot, not a member"; return 1
+  elif ! forge_writer "$REPO" "$by"; then ROADMAP_WHY="#$n was approved by $by, who has no write access"; return 1; fi
+  t="$(forge_issue_texts "$REPO" "$n" | head -n 1)" && [[ -n "$t" ]] || return 2
+  a="$(jq -r .a <<<"$t")"; s="$(jq -r .s <<<"$t")"
+  if [[ "$a" == *"[bot]" || "$(text_role "$a" "$s")" != direction ]]; then ROADMAP_WHY="#$n's text is $a's ($s), not a member's"; return 1; fi
+  jq -r .t <<<"$t" | grep -qiE "at Jody(['’]s|s) request" || { ROADMAP_WHY="#$n's text does not say it is at Jody's request"; return 1; }
 }
 
 # Everything that pushes to main holds the repository's landing lock
@@ -878,6 +906,12 @@ choose_gates() { # dir base fallback [head]
   else GATES_WHY="all $k changed paths map to $(sed 's/+/, /g' <<<"$GATES_SET")"; fi
 }
 
+# The commits of before..after that change ROADMAP.md, for the push guard's
+# LOOPER_ROADMAP_OK, when judge_land found them at Jody's request (ROADMAP_OK).
+roadmap_ok() { # before after
+  [[ -z "${ROADMAP_OK:-}" ]] || git rev-list "$1..$2" -- ROADMAP.md | paste -sd' ' -
+}
+
 onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging; fi; }
 
 # The manager's merge of a report's commits (looper#32, looper#70), in a
@@ -957,7 +991,7 @@ land_work() {
         printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
         log "green on staging: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD), on the gates $GATES_SET ($GATES_WHY)"
         exit 0
-      elif [[ "$ONTO" == origin/main ]] && LOOPER_LANDING=1 git push -q origin HEAD:refs/heads/main; then
+      elif [[ "$ONTO" == origin/main ]] && LOOPER_LANDING=1 LOOPER_ROADMAP_OK="$(roadmap_ok "$before" HEAD)" git push -q origin HEAD:refs/heads/main; then
         echo "$before $(git rev-parse HEAD)${GATES_MAPPED:+ $GATES_SET}" >> "$out/landed"
         printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
         log "landed on main: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD), on the gates $GATES_SET ($GATES_WHY)"
@@ -1442,6 +1476,8 @@ $(sed 's/^/> /' <<<"$step")"
     what="The manager had nothing to merge from [\`$b\`]($url): main has its commits already."
   elif [[ "$rc" == 3 ]]; then
     what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
+  elif [[ "$rc" == "$ROADMAP_RC" ]]; then
+    what="The manager refused [\`$b\`]($url): it changes ROADMAP.md, which is Jody's, changed only by an agent at his request, and $(cat "$rec/roadmap" 2>/dev/null || echo "this land is not"). A land may change ROADMAP.md only when its issue carries \`$LABEL_APPROVED\` from a member and its own text, a member's, says it is at Jody's request (looper#123). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. If Jody asked for it, say so in the issue's text, then remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise drop the ROADMAP.md change and propose it in PROPOSALS.md."
   elif [[ "$rc" == 4 ]]; then
     what="The manager did not merge [\`$b\`]($url): red, nothing merges without green gates. Nothing is merged; the branch stays. The end of its output:
 
@@ -1469,17 +1505,32 @@ merge_report() { # issue id sha
 # Judges one queued land, in a scratch worktree of the manager's checkout at
 # the commits it queued (the parent of the branch's checkpoint): land_work
 # rebases them on ONTO (main, or a verdict job's staging), runs the gates and,
-# on green, pushes main or moves staging. Its record in rec, its exit in
+# on green, pushes main or moves staging. A change to ROADMAP.md not at Jody's
+# request (roadmap_request) is refused first, ROADMAP_RC, its gates not run
+# (looper#123). Its record in rec, its exit in
 # JUDGE_RC. LAND_DEFERRED when the land would not finish before the job ends.
 judge_land() { # issue id sha rec-dir
-  local n="$1" id="$2" sha="$3" rec="$4" b gates wt ahead
+  local n="$1" id="$2" sha="$3" rec="$4" b gates wt ahead roadmap="" rr
   b="$(wip_branch "$n")"; JUDGE_RC=0
   gates="$(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^gates=//p')"
   mkdir -p "$rec"
   wt="$(scratch_dir)"; rm -rf "$wt"
   git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$sha^" || { log "#$n: cannot check out $b's commits"; return 1; }
-  land_set "$wt"
   ahead="$(git -C "$wt" rev-list --count "$ONTO..HEAD")"
+  # A change to ROADMAP.md lands only at Jody's request; any other is refused
+  # here, before its gates, with a verdict, never pushed to be refused again (looper#123).
+  if [[ "$ahead" != 0 && -n "$(git -C "$wt" rev-list -n 1 "$ONTO..HEAD" -- ROADMAP.md)" ]]; then
+    rr=0; roadmap_request "$n" || rr=$?
+    if (( rr != 0 )); then
+      git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
+      (( rr == 1 )) || { log "#$n: cannot read the issue, to tell whether its change to ROADMAP.md is at Jody's request"; return 1; }
+      echo "$ROADMAP_WHY" > "$rec/roadmap"
+      log "nothing landed: $b changes ROADMAP.md, and $ROADMAP_WHY" > "$rec/out"
+      JUDGE_RC=$ROADMAP_RC; return 0
+    fi
+    roadmap=1
+  fi
+  land_set "$wt"
   if [[ "$ahead" != 0 ]] && ! land_fits "$GATES_SET"; then
     log "#$n: left queued for the next manager: this job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")")"
     git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
@@ -1487,7 +1538,7 @@ judge_land() { # issue id sha rec-dir
   fi
   log "merging #$n ($b, queued $(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^queued=//p'))"
   if [[ "$ahead" == 0 ]]; then log "nothing to land: $b has no commit that main lacks" > "$rec/out"
-  else ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; land_work ) > "$rec/out" 2>&1 || JUDGE_RC=$?; fi
+  else ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; ROADMAP_OK="$roadmap"; land_work ) > "$rec/out" 2>&1 || JUDGE_RC=$?; fi
   git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
   # The build's queue time apart from its run time, for the recap (looper#128).
   sed -n 's/^build times: /#'"$n"': its build /p' "$rec/gates.log" 2>/dev/null | tail -n 1 | while IFS= read -r t; do log "$t"; done
@@ -1524,7 +1575,9 @@ post_land() { # issue id sha rc rec-dir
         && log "#$n: deleted $b" || log "#$n: $b is not deleted: its report pushed to it since"
     fi
   fi
-  forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true
+  # A refused ROADMAP.md change needs a person (looper#123).
+  if (( rc == ROADMAP_RC )); then forge_issue_edit "$REPO" "$n" --add-label "$LABEL_DECISION" --remove-label "$LABEL_LANDING" >/dev/null || true
+  else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true; fi
   return 0
 }
 
@@ -1728,8 +1781,9 @@ merge_batch() {
       die "nothing merged: main moved since the verdict (it is $(git -C "$CHECKOUT" rev-parse --short origin/main), the verdict was on ${main:0:7}); the lands stay queued for the next batch"
     main="$(git -C "$CHECKOUT" rev-parse origin/main)"; staging="$RESTAGED"
   fi
+  roadmap_batch "$main" "$staging"
   if [[ "$staging" != "$main" ]]; then
-    ( flock 8; LOOPER_LANDING=1 git -C "$CHECKOUT" push -q origin "$staging:refs/heads/main" ) 8>"$LAND_LOCK" ||
+    ( flock 8; LOOPER_LANDING=1 LOOPER_ROADMAP_OK="$ROADMAP_OK" git -C "$CHECKOUT" push -q origin "$staging:refs/heads/main" ) 8>"$LAND_LOCK" ||
       die "nothing merged: main did not fast-forward to $STAGING ${staging:0:7} (it moved); the lands stay queued for the next batch"
     log "main fast-forwarded: ${main:0:7}..${staging:0:7}"
   fi
@@ -1755,6 +1809,42 @@ merge_batch() {
   local labelled q
   if labelled="$(landing_issues)" && q="$(queued_lands)"; then clear_stale_landing "$labelled" "$q"; fi
   log "the manager job of $REPO is done"
+}
+
+# The manager job's own check of staging's changes to ROADMAP.md (looper#123):
+# each must be in the range of a green land of the verdict whose issue is at
+# Jody's request (roadmap_request), asked again now. Those are ROADMAP_OK, for
+# the push guard. A land that is not is refused: its verdict on the issue,
+# needs-decision, and nothing merged; the others stay queued for the next
+# batch, which no longer has it. A change that is no land's merges nothing.
+roadmap_batch() { # main staging
+  local c n id sha rc before after set found rr refused=""
+  ROADMAP_OK=""
+  declare -A seen=()
+  for c in $(git -C "$CHECKOUT" rev-list "$1..$2" -- ROADMAP.md); do
+    found=""
+    while read -r n id sha rc; do
+      [[ "$n" =~ ^[0-9]+$ && "$id" =~ ^[A-Za-z0-9_-]+$ && "$sha" =~ ^[0-9a-f]{40}$ && "$rc" == 0 ]] || continue
+      read -r before after set < <(tail -n 1 "$VERDICT_DIR/$n-$id/landed" 2>/dev/null) || continue
+      [[ "$c" != "$before" ]] && git -C "$CHECKOUT" merge-base --is-ancestor "$before" "$c" 2>/dev/null &&
+        git -C "$CHECKOUT" merge-base --is-ancestor "$c" "$after" 2>/dev/null || continue
+      found=1
+      [[ -z "${seen[$id]:-}" ]] || break
+      rr=0; roadmap_request "$n" || rr=$?
+      (( rr != 2 )) || die "nothing merged: #$n's change to ROADMAP.md cannot be told at Jody's request (the forge cannot be read); the lands stay queued for the next batch"
+      seen[$id]="$rr"
+      if (( rr == 1 )); then
+        echo "$ROADMAP_WHY" > "$VERDICT_DIR/$n-$id/roadmap"
+        log "#$n: refused: its change to ROADMAP.md is not at Jody's request: $ROADMAP_WHY"
+        land_verdict "$n" "$id" >/dev/null || post_land "$n" "$id" "$sha" "$ROADMAP_RC" "$VERDICT_DIR/$n-$id"
+        refused+=" #$n"
+      fi
+      break
+    done < "$VERDICT_DIR/lands"
+    [[ -n "$found" ]] || die "nothing merged: commit ${c:0:7} on $STAGING changes ROADMAP.md and is no green land's of the verdict"
+    ROADMAP_OK+="${ROADMAP_OK:+ }$c"
+  done
+  [[ -z "$refused" ]] || die "nothing merged: $STAGING changes ROADMAP.md for$refused, not at Jody's request (refused, $LABEL_DECISION); the other lands stay queued for the next batch"
 }
 
 # A run's last landing, as "<main before>..<main after>, on the gates <set>".
@@ -2669,7 +2759,8 @@ Rules:
    gaps, blockers), in your last commit, of its own, touching STATE.md alone (\`--land\` makes it so: looper#131).
    Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
    only in comments. Never edit ROADMAP.md: it is Jody's, changed only by an agent at his request, and a
-   push of a commit that touches it is refused. HISTORY.md is append-only and not yours: the looper adds
+   land that touches it is refused unless this issue carries $LABEL_APPROVED from a member and its own text, a
+   member's, says it is at Jody's request (then only do what it asks of ROADMAP.md). HISTORY.md is append-only and not yours: the looper adds
    the line for this issue and for any release.
 $(kind_rule "$kind")
 8. When it is landed, comment on the issue with what changed (commit hashes), the gates you ran and their

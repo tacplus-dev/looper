@@ -314,6 +314,26 @@ forge_permission() { # repo login
   gh api "repos/$LOOPER_ORG/$1/collaborators/$2/permission" --jq .permission
 }
 
+# Whether a login may push to the repository: GitHub's write permission and up,
+# GitLab's Developer role and up. A lookup that fails says no.
+forge_writer() { # repo login
+  case "$LOOPER_FORGE" in
+    github) case "$(forge_permission "$1" "$2" 2>/dev/null)" in admin|maintain|write) return 0 ;; *) return 1 ;; esac ;;
+    gitlab) local m; m="$(gl_api GET "$(gl_project "$1")/members/all?query=$(gl_enc "$2")")" || return 1
+            jq -e --arg u "$2" '[.[] | select(.username == $u) | .access_level] | max // 0 | . >= 30' <<<"$m" >/dev/null ;;
+  esac
+}
+
+# Who last added a label to an issue: their login, else nothing.
+forge_label_adder() { # repo n label
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/issues/$2/events" --paginate \
+              --jq ".[] | select(.event == \"labeled\" and .label.name == $(jq -n --arg l "$3" '$l')) | .actor.login" | tail -n 1 ;;
+    gitlab) local e; e="$(gl_all "$(gl_project "$1")/issues/$2/resource_label_events?sort=asc" 1000)" || return 1
+            jq -r --arg l "$3" '[.[] | select(.action == "add" and .label.name == $l) | .user.username] | last // empty' <<<"$e" ;;
+  esac
+}
+
 # The states of issues given as "<repo> <n>" lines (each once), as
 # "<repo> <n> <OPEN|CLOSED|MISSING>" lines in the same order: MISSING for a
 # reference the forge does not resolve to an issue of LOOPER_ORG. Fails when
