@@ -636,7 +636,8 @@ cmd_status() { # state [description]
   [[ -n "$text" ]] || case "$state" in
     pending) text="building${BUILD_GATES:+: gates $BUILD_GATES}" ;;
     success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}" ;;
-    *) text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null)"; text="${text:-the build failed}" ;;
+    # No build-verdict here when the gates' child pipeline failed (the plan passed): sed exits 2 on the missing file.
+    *) text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null || true)"; text="${text:-the build failed}" ;;
   esac
   local token body
   token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" || { log "no token for the commit status"; exit 1; }
