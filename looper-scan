@@ -610,6 +610,7 @@ scan_tree() { # src previous-findings started
     IFS='|' read -r tree label prefix <<<"$t"
     for tool in "${tools[@]}"; do log "$tool: $label"; "tool_$tool" "$tree" "$label" "$prefix"; done
   done
+  skip_generated_tree "$src"
   if need syft; then
     syft scan -q "dir:$src" -o "cyclonedx-json=$SCAN_OUT/sbom.cdx.json" -o "spdx-json=$SCAN_OUT/sbom.spdx.json" 2>"$SCAN_OUT/raw/syft.log" ||
       problems+=("syft: $(tail -1 "$SCAN_OUT/raw/syft.log")")
@@ -658,6 +659,45 @@ scan_tree() { # src previous-findings started
   scan_verdict pass
 }
 
+# A service's generated tree (looper#108): the output-dir of the tacplus.yaml
+# at its root, as a path prefix ("tacplus/") in SCAN_GEN; none without one,
+# or with one that is not a directory inside the tree.
+SCAN_GEN=""
+generated_tree() { # src
+  local d
+  SCAN_GEN=""
+  [[ -f "$1/tacplus.yaml" ]] || return 0
+  d="$(sed -nE 's/^output-dir:[[:space:]]*//p' "$1/tacplus.yaml" | head -1 | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//')"
+  [[ "$d" =~ ^\"(.*)\"$ || "$d" =~ ^\'(.*)\'$ ]] && d="${BASH_REMATCH[1]}"
+  d="${d#./}"; d="${d%/}"
+  if [[ -z "$d" || "$d" == . || "$d" == /* || "/$d/" == */../* ]]; then
+    notes+=("tacplus.yaml: output-dir '$d' is not a directory inside the tree: its generated code is counted"); return 0
+  fi
+  SCAN_GEN="$d/"
+}
+
+# The code tacplus generates is tacplus's (looper#108): a service's SAST
+# findings and secrets in its generated tree are kept aside
+# (security/generated.json), not counted, since tacplus scans its generated
+# output itself, at the source (its `generated` recipe). Its dependencies are
+# still checked (SCA), as is everything a `generated` recipe gives.
+skip_generated_tree() { # src
+  local f
+  generated_tree "$1"
+  [[ -n "$SCAN_GEN" ]] || return 0
+  local parts=()
+  for f in "$SCAN_OUT"/norm/*-source.json "$SCAN_OUT"/norm/*-source-*.json; do
+    [[ -f "$f" ]] || continue
+    jq --arg g "$SCAN_GEN" '[.[] | select((.kind == "sast" or .kind == "secret") and (.where | startswith($g)))]' "$f" > "$f.gen"
+    jq --arg g "$SCAN_GEN" '[.[] | select((.kind == "sast" or .kind == "secret") and (.where | startswith($g)) | not)]' "$f" > "$f.tmp"
+    mv "$f.tmp" "$f"; parts+=("$f.gen")
+  done
+  ((${#parts[@]})) || parts=(/dev/null)
+  jq -s '[.[][]] | unique_by([.tool, .id, .where]) | sort_by(.tool, .id, .where)' "${parts[@]}" > "$SCAN_OUT/generated.json"
+  rm -f "$SCAN_OUT"/norm/*.gen
+  log "the generated tree ($SCAN_GEN): $(jq length "$SCAN_OUT/generated.json") SAST finding(s) and secret(s) not counted (tacplus's to scan)"
+}
+
 # The same checks on a directory, as a build would run them on its commit:
 # no credential, no previous run (every finding is new), nothing published.
 cmd_local() { # dir
@@ -702,6 +742,11 @@ write_summary() { # blocking
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
+  if [[ -n "$SCAN_GEN" ]]; then
+    echo; echo "### Not counted: the generated tree ($SCAN_GEN)"
+    jq -r 'length as $n | "\($n) SAST finding(s) and secret(s) in the code tacplus generates (security/generated.json): tacplus scans its generated output at the source; its dependencies are checked here (looper#108)."
+           , (group_by(.tool + " " + .id)[] | "- \(.[0].tool) \(.[0].id): \(length)")' "$SCAN_OUT/generated.json"
+  fi
   if ((${#notes[@]})); then echo; echo "### Not analyzed, or in part"; for p in "${notes[@]}"; do echo "- $p"; done; fi
   echo; echo "### Checked against"; jq -r 'to_entries[] | "- \(.key): \(.value | to_entries | map("\(.key) \(.value)") | join(", "))"' "$SCAN_OUT/databases.json"
   echo; echo "### Tools"; jq -r 'to_entries[] | "- \(.key) \(.value)"' "$SCAN_OUT/tools.json"

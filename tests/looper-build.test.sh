@@ -150,6 +150,10 @@ scan_commit scansecret deploy/env.txt "aws_access_key_id = $AKIA"
 scan_commit scanexcepted "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31)"
 scan_commit scanexpired "${VULN[@]}" security-exceptions.yaml "$(exceptions 2020-01-31)"
 scan_commit scanbadexc "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 '""')"
+# A service's tacplus.yaml: its generated tree is the output-dir (looper#108).
+scan_commit scangen tacplus.yaml 'language: go
+output-dir: "tacplus"
+src: proto' .gitignore 'tacplus/'
 scan_commit scanpod k8s/pod.yaml 'apiVersion: v1
 kind: Pod
 metadata:
@@ -406,7 +410,9 @@ cat > "$SB/gosec" <<EOF
 #!/usr/bin/env bash
 $(opt -out)
 [[ "\$1" == -version ]] && { echo "Version: 2.30.0"; exit; }
-echo '{"Issues":[],"Stats":{"files":1}}' > "\$out"
+{ echo '{"Issues":['
+  grep -rl --include='*.go' 'InsecureSkipVerify: true' . | sed 's|^\./||' | awk -v d="\$PWD" '{ printf "%s{\"severity\":\"HIGH\",\"confidence\":\"HIGH\",\"cwe\":{\"id\":\"295\"},\"rule_id\":\"G402\",\"details\":\"TLS InsecureSkipVerify set true.\",\"file\":\"%s/%s\",\"line\":\"7\"}", (NR > 1 ? "," : ""), d, \$0 }'
+  echo '],"Stats":{"files":1}}'; } > "\$out"
 EOF
 cat > "$SB/trivy" <<EOF
 #!/usr/bin/env bash
@@ -1050,6 +1056,44 @@ blocking | grep -q '^gitleaks gen/keys.txt:aws-access-token:1 gen/keys.txt:1$' |
 mkdir -p "$TMP/out-$((n + 1))/built"; printf 'changed\n' > "$TMP/out-$((n + 1))/built/main.go"
 if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi
 scan_verdict_is "fail: the gates' built files change tracked files"
+pass
+
+NAME="security: a service's generated tree (tacplus.yaml's output-dir) is tacplus's to scan: its SAST findings and secrets do not fail the run, hand-written code's do"
+TLS_GO='package tlsconf
+
+import "crypto/tls"
+
+// Config is a planted finding (gosec G402).
+func Config() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true}
+}'
+plant() { # dir: a secret and a gosec finding in dir, among what the gates built
+  mkdir -p "$TMP/out-$((n + 1))/built/$1"
+  printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/built/$1/keys.txt"
+  printf '%s\n' "$TLS_GO" > "$TMP/out-$((n + 1))/built/$1/tls.go"
+}
+plant tacplus/chassis/tlsconf
+scan BUILD_SHA="${SHA[scangen]}" -- run 2>"$TMP/err" || fail "the generated tree's findings failed it: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+! jq -e '.[] | select(.where | startswith("tacplus/"))' "$OUT/security/findings.json" >/dev/null ||
+  fail "the generated tree's findings are counted: $(cat "$OUT/security/findings.json")"
+jq -e 'any(.tool == "gosec" and .id == "G402" and .where == "tacplus/chassis/tlsconf/tls.go:7") and
+       any(.tool == "gitleaks" and .where == "tacplus/chassis/tlsconf/keys.txt:1") and all(.kind == "sast" or .kind == "secret")' \
+  "$OUT/security/generated.json" >/dev/null || fail "not kept aside: $(cat "$OUT/security/generated.json" 2>&1)"
+grep -q '^### Not counted: the generated tree (tacplus/)' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+plant internal/tlsconf
+if scan BUILD_SHA="${SHA[scangen]}" -- run 2>"$TMP/err"; then fail "hand-written findings passed"; fi
+scan_verdict_is "fail: "
+blocking | grep -qxF 'gosec G402 internal/tlsconf/tls.go:7' || fail "no blocking gosec finding: $(blocking)"
+blocking | grep -qxF 'gitleaks internal/tlsconf/keys.txt:aws-access-token:1 internal/tlsconf/keys.txt:1' || fail "no blocking secret: $(blocking)"
+# Without a tacplus.yaml nothing is skipped; and what a `generated` recipe
+# gives (tacplus's own output, scanned at the source) is counted.
+plant tacplus/chassis/tlsconf
+if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed without a tacplus.yaml"; fi
+blocking | grep -qxF 'gosec G402 tacplus/chassis/tlsconf/tls.go:7' || fail "$(blocking)"
+mkdir -p "$TMP/out-$((n + 1))/generated/tacplus"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/tacplus/keys.txt"
+if scan BUILD_SHA="${SHA[scangen]}" -- run 2>"$TMP/err"; then fail "the output of a generated recipe passed"; fi
+blocking | grep -q '^gitleaks generated/tacplus/keys.txt:aws-access-token:1 ' || fail "$(blocking)"
 pass
 
 # cargo-deny on a service whose Cargo.toml path-depends on the crates its
