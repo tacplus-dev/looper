@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by looper (#104).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by looper (#141).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -226,12 +226,5 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   looper image and the hub's copy of `ci/build.gitlab-ci.yml`, and its schedule (`verify: true`, tacplus) stays
   inactive until tacplus-dev/tacplus#211 and #257 make it pass; until then a tacplus release fails its verify job;
   no release line yet
-- **Blocked on:** "only the manager writes main" (#83) is enforced once Jody creates and installs the two apps,
-  imports their keys to KMS with their bindings, applies the ruleset and swaps `GH_TOKEN` for the apps' variables
-  (README, Only the manager writes main, Setting it up); until then every job uses `GH_TOKEN` as before, and the
-  plan does not split the manager (#90): it splits only with the apps; the identity pilot's first real kernel issue (#28) waits on the hub's setup (README, Looper
-  identity: WIF pool `gitlab-loopers`, KMS keys `kernel-looper` and `tacplus-reader`, the GitLab project
-  tacplus-dev/kernel, the build trigger's bot user, kernel's protection rules) and Jody creating the `kernel-looper`
-  app; #15 (native build image) waits on tacplus#193; no build runs until the hub applies the build
-  runner (README, Build pipeline) and publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF); every
-  build fails "no pin" until a repository commits a `tacplus.lock`
+- **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
+  publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
