@@ -304,10 +304,14 @@ EOF
 }
 
 gates_jobs() { # image
+  # The gates' own timeout, a report job's longest (repo-looper's
+  # JOB_MAX_HOURS): tacplus's full gates take over 3h, and the project's
+  # default ended them at 1h (looper#140).
   cat <<EOF
 gates:
   image: "$1"
   tags: [$BUILD_RUNNER_TAGS]
+  timeout: 11h
   variables:
     GIT_STRATEGY: none
     BUILD_REPO: "$BUILD_REPO"

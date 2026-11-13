@@ -498,6 +498,9 @@ y="$OUT/build-gates.yml"
 grep -qxF "  image: \"us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A\"" "$y" || fail "not the pinned image: $(cat "$y" | head -8)"
 grep -qxF "  tags: [arm64, build]" "$y" || fail "not on the build runner"
 grep -qxF "    BUILD_SHA: \"${SHA[pass]}\"" "$y" || fail "not the commit"
+# Its own timeout, a report job's longest (looper#140): not the project's default.
+sed -n '/^gates:$/,/^security-demo:$/p' "$y" > "$TMP/gates.yml"
+grep -qxF '  timeout: 11h' "$TMP/gates.yml" || fail "the gates job sets no 11h timeout: $(head -8 "$TMP/gates.yml")"
 grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"},"repositories":["demo"]}' "$TMP/api.log" ||
   fail "the plan's token is not contents read-only on the repository: $(cat "$TMP/api.log")"
 [[ ! -e "$OUT/plan-src" ]] || fail "the plan left its checkout behind"
