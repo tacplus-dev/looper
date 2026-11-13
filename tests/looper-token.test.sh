@@ -108,6 +108,15 @@ case "$method $url" in
     t="ghs_${app#tacplus-}_$RANDOM$RANDOM"
     echo "token $app $t $(jq -c .permissions <<<"$data")" >> "$TMP/api.log"
     printf '{"token": "%s", "expires_at": "2026-11-04T20:00:00Z"}\n' "$t" ;;
+  # An issue, its events and a login's permission (looper#115), read with an
+  # installation token: $TMP/gh/<path>.json, a missing file a 404.
+  "GET https://api.github.com/repos/"*|"DELETE https://api.github.com/installation/token")
+    [[ "$auth" == ghs_* ]] || { echo "unauthenticated $url" >> "$TMP/api.log"; exit 22; }
+    p="${url#https://api.github.com/}"; p="${p%%\?*}"
+    [[ "$method" == GET ]] || { echo "revoked $auth" >> "$TMP/api.log"; exit 0; }
+    [[ "$url" != *'&page='* || "$url" == *'&page=1' ]] || { echo '[]'; exit 0; }
+    [[ -f "$TMP/gh/$p.json" ]] || exit 22
+    cat "$TMP/gh/$p.json" ;;
   *) echo "curl stub: $method $url" >&2; exit 22 ;;
 esac
 EOF
@@ -193,6 +202,58 @@ t="$(tok looper-manager STUB_UNGRANTED=tacplus-manager:workflows -- mint manager
   grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" || fail "$t $(cat "$TMP/api.log")"
 grep -q 'tacplus-manager: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/' "$TMP/err" ||
   fail "log: $(cat "$TMP/err")"
+pass
+
+# A report's token names workflows: write only for an issue that carries
+# looper:workflows, set by someone with write access (looper#115): GitHub runs
+# a pushed branch's own copy of a workflow, so it could publish the image every
+# manager runs. Set by a triager, a bot (the report's own app) or no one, or an
+# issue it cannot read: no workflows. The token that read the issue is revoked.
+NAME=workflows-label
+mkdir -p "$TMP/gh/repos/tacplus-dev/alpha/issues/7" "$TMP/gh/repos/tacplus-dev/alpha/collaborators/jody" \
+  "$TMP/gh/repos/tacplus-dev/alpha/collaborators/tri" "$TMP/gh/repos/tacplus-dev/alpha/collaborators/tacplus-looper[bot]"
+echo '{"permission": "admin"}' > "$TMP/gh/repos/tacplus-dev/alpha/collaborators/jody/permission.json"
+echo '{"permission": "read", "role_name": "triage"}' > "$TMP/gh/repos/tacplus-dev/alpha/collaborators/tri/permission.json"
+echo '{"permission": "write"}' > "$TMP/gh/repos/tacplus-dev/alpha/collaborators/tacplus-looper[bot]/permission.json"
+labels() { jq -n --arg l "$1" '{labels: ([{name: "approved"}] + (if $l == "" then [] else [{name: $l}] end))}' > "$TMP/gh/repos/tacplus-dev/alpha/issues/7.json"; }
+events() { # "login type event" ...
+  local e; for e in "$@"; do read -r who ty ev <<<"$e"
+    jq -nc --arg w "$who" --arg t "$ty" --arg e "$ev" '{event: $e, actor: {login: $w, type: $t}, label: {name: "looper:workflows"}}'
+  done | jq -s '[{event: "labeled", actor: {login: "jody", type: "User"}, label: {name: "approved"}}] + .' > "$TMP/gh/repos/tacplus-dev/alpha/issues/7/events.json"
+}
+W='{"contents":"write","issues":"write","pull_requests":"write","workflows":"write","metadata":"read"}'
+NOW='{"contents":"write","issues":"write","pull_requests":"write","metadata":"read"}'
+while IFS='|' read -r case label evs want said; do
+  labels "$label"; IFS=, read -ra e <<<"$evs"; events ${e[@]+"${e[@]}"}
+  t="$(tok looper-report -- mint report alpha#7 2>"$TMP/err")" || fail "$case: no token"
+  last="$(awk '/^token / { t = $3; p = $4 } END { print t, p }' "$TMP/api.log")"
+  [[ "$last" == "$t $want" ]] || fail "$case: $t, the last token minted: $last"
+  [[ -z "$said" ]] || grep -qF "$said" "$TMP/err" || fail "$case: log: $(cat "$TMP/err")"
+  if [[ "$want" == "$W" ]]; then
+    first="$(awk '/^token / { print $3; exit }' "$TMP/api.log")"
+    grep -qx "revoked $first" "$TMP/api.log" || fail "$case: the token that read the issue lives on: $(cat "$TMP/api.log")"
+  fi
+done <<EOF
+member|looper:workflows|jody User labeled|$W|alpha#7 carries looper:workflows, set by jody (admin): this token names workflows: write
+none||jody User labeled,jody User unlabeled|$NOW|
+triager|looper:workflows|tri User labeled|$NOW|alpha#7's looper:workflows was set by tri (read), not someone with write access: ignored
+bot|looper:workflows|tacplus-looper[bot] Bot labeled|$NOW|alpha#7's looper:workflows was set by tacplus-looper[bot] (Bot), not someone with write access: ignored
+relabelled|looper:workflows|jody User labeled,jody User unlabeled,tri User labeled|$NOW|set by tri (read)
+EOF
+labels looper:workflows; rm "$TMP/gh/repos/tacplus-dev/alpha/issues/7/events.json"
+t="$(tok looper-report -- mint report alpha#7 2>"$TMP/err")" || fail "unreadable: no token"
+grep -q "^token tacplus-looper $t $NOW\$" "$TMP/api.log" && grep -qF "could not read who set alpha#7's looper:workflows: no workflows: write" "$TMP/err" ||
+  fail "unreadable: $(cat "$TMP/api.log" "$TMP/err")"
+# The manager's set keeps it, whatever the issue; a report's start passes its issue on each refresh.
+t="$(tok looper-manager -- mint manager alpha#7 2>"$TMP/err")" || fail "manager: no token"
+grep -q "^token tacplus-manager $t .*\"workflows\":\"write\"" "$TMP/api.log" || fail "manager: $(cat "$TMP/api.log")"
+labels looper:workflows; events "jody User labeled"
+d="$TMP/labelled"; sleep 300 & job=$!; kids+=("$job")
+pid="$(REFRESH=1 tok looper-report -- start report "$d" "$job" alpha#7 2>"$TMP/err")" || fail "start failed"
+kids+=("$pid")
+grep -q "^token tacplus-looper $(GH_CONFIG_DIR="$d" gh auth token) $W\$" "$TMP/api.log" || fail "start: $(cat "$TMP/api.log")"
+kill "$job"
+! tok looper-report -- mint report alpha >/dev/null 2>"$TMP/err" || fail "an issue that is no REPO#N"
 pass
 
 # An id_token that is not the project's protected main, or for another

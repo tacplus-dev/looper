@@ -1160,7 +1160,7 @@ pass
 # run as a user of its own.
 printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' \
   '  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;' \
-  '  start) echo "start $2 $(basename "$3")" >> "$FIX/token"; mkdir -p "$3"; echo 0 ;;' \
+  '  start) echo "start $2 $(basename "$3")${5:+ $5}" >> "$FIX/token"; mkdir -p "$3"; echo 0 ;;' \
   '  *) exit 3 ;;' 'esac' > "$TMP/bin/looper-token-stub"
 chmod +x "$TMP/bin/looper-token-stub"
 APPS=(LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GH_TOKEN= GITHUB_TOKEN=)
@@ -1174,7 +1174,8 @@ done
 [[ ! -e "$FIX/token" && ! -s "$FIX/prompts" ]] || fail "a job holding a personal token went on"
 echo 'env > "$FIX/model-env"' >> "$FIX/claude.sh"; report "Done."
 run "${APPS[@]}"
-grep -qx 'start report report' "$FIX/token" && grep -qx 'start manager manager' "$FIX/token" || fail "tokens: $(cat "$FIX/token")"
+# The report's token is its issue's: workflows: write only if a member labelled it so (looper#115).
+grep -qx 'start report report alpha#4' "$FIX/token" && grep -qx 'start manager manager' "$FIX/token" || fail "tokens: $(cat "$FIX/token")"
 grep -q '^GH_CONFIG_DIR=.*/report$' "$FIX/model-env" || fail "the model's gh: $(grep GH_ "$FIX/model-env")"
 ! grep -qE '^(GH_TOKEN|GITHUB_TOKEN)=.' "$FIX/model-env" || fail "the model holds a GH_TOKEN"
 : > "$FIX/token"

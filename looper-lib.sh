@@ -32,6 +32,9 @@ LABEL_DECISION="needs-decision"      # the looper needs a decision it may not ma
 # A report's commits queued with its repository's manager (looper#70): not
 # ready, so no other report takes the issue, until the manager's verdict.
 LABEL_LANDING="looper:landing"
+# A report whose token may push a change under .github/workflows/ (looper#115):
+# only someone with write access sets it, and looper-token reads who did.
+LABEL_WORKFLOWS="looper:workflows"
 
 # Every issue is a bug or a feature (tacplus-dev/roadmap
 # decisions/issue-flow-2026-10-27.md, looper#14). A bug is fixed and ships as a
@@ -56,6 +59,7 @@ LOOPER_LABELS=(
   "$LABEL_APPROVED|0e8a16|Someone with write access approved it: the looper works it"
   "$LABEL_IN_PROGRESS|fbca04|A looper holds it"
   "$LABEL_LANDING|fbca04|Its commits are queued with the manager, which merges them and gives its verdict here"
+  "$LABEL_WORKFLOWS|5319e7|Its report's token may push a change under .github/workflows/ (set by someone with write access)"
   "$LABEL_STUCK|d93f0b|A run ended without finishing, for no known reason; a person looks"
   "$LABEL_DECISION|5319e7|The looper needs a decision it may not make"
   "$LABEL_BUG|d73a4a|The code does not do what it already promises: fixed, and released as a patch"

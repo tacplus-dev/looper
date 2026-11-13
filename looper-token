@@ -15,20 +15,26 @@
 #
 #   report   tacplus-looper: contents, issues and pull requests write, no
 #            bypass of main's ruleset. The reports and their models, the
-#            scans' models, the kicker and the plan.
+#            scans' models, the kicker and the plan. workflows: write only
+#            for a report's ISSUE that carries looper:workflows, set by
+#            someone with write access (looper#115): GitHub runs a pushed
+#            branch's own copy of a workflow.
 #   manager  tacplus-manager: contents and issues write, the ruleset's bypass
-#            actor. The managers, and the commits to main of the scans (their
-#            planning files, the roadmap's suggestions) once their model is done.
+#            actor, and workflows: write. The managers, and the commits to main
+#            of the scans (their planning files, the roadmap's suggestions)
+#            once their model is done.
 #
-#   looper-token start ROLE DIR [PID]
-#                                 mints ROLE's token into DIR/hosts.yml (gh's
+#   looper-token start ROLE DIR [PID [ISSUE]]
+#                                 mints ROLE's token (for a report, ISSUE's:
+#                                 REPO#N, of LOOPER_ORG) into DIR/hosts.yml (gh's
 #                                 config: point GH_CONFIG_DIR at DIR, and gh and
 #                                 git through `gh auth git-credential` read it on
 #                                 every call) and keeps it fresh, every
 #                                 LOOPER_TOKEN_REFRESH seconds (default 2700), in
 #                                 a process of its own until PID (default the
 #                                 caller) ends; prints that process's PID
-#   looper-token mint ROLE        one token on stdout
+#   looper-token mint ROLE [ISSUE]
+#                                 one token on stdout
 #   looper-token configured       exits 0 when this deployment's jobs use the
 #                                 apps (LOOPER_REPORT_APP_ID is set)
 #   looper-token diagnose         the hub's diagnosis (looper#95): the id_token's
@@ -60,6 +66,10 @@ set -euo pipefail
 
 GITHUB_API="${LOOPER_GITHUB_API:-https://api.github.com}"
 GITLAB_ISSUER="${LOOPER_GITLAB_ISSUER:-https://gitlab.com}"
+ORG="${LOOPER_ORG:-tacplus-dev}"
+# The label a member sets on an issue whose report may push a change under
+# .github/workflows/ (looper#115; looper-lib.sh's LABEL_WORKFLOWS).
+LABEL_WORKFLOWS="looper:workflows"
 REFRESH="${LOOPER_TOKEN_REFRESH:-2700}"
 
 usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -182,9 +192,13 @@ kms_sign() { # key in sig dir
 
 # A one-hour installation token of the role's app, on stdout: KMS signs the
 # app's JWT (only a job whose binding allows it may), GitHub mints the token.
-mint() { # role dir
-  local key app inst perms now header payload sig resp token why
+# A report's names workflows: write only for an issue that carries
+# looper:workflows, set by someone with write access (looper#115): read with
+# a token without it, which is then revoked.
+mint() { # role dir [issue]
+  local key app inst perms now header payload sig jwt token t why
   read -r key app inst perms < <(role_app "$1")
+  [[ -z "${3:-}" || "$3" =~ ^[A-Za-z0-9_.-]+#[0-9]+$ ]] || { log "no issue '$3': REPO#N"; return 1; }
   : "${LOOPER_KMS_KEYRING:?the project variable LOOPER_KMS_KEYRING is not set}"
   now="$(date +%s)"
   header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
@@ -193,18 +207,61 @@ mint() { # role dir
   why="$(kms_sign "$key" "$2/jwt-input" "$2/jwt-sig" "$2")" ||
     { rm -f "$2/jwt-input" "$2/jwt-sig"; log "no signature with $key ($1's key): $why"; return 1; }
   sig="$(b64url < "$2/jwt-sig")"; rm -f "$2/jwt-input" "$2/jwt-sig"
+  jwt="$header.$payload.$sig"
+  token="$(access_token "$key" "$jwt" "$inst" "$perms")" || return 1
+  if [[ "$1" == report && -n "${3:-}" ]] && workflows_label "$token" "$3"; then
+    t="$(access_token "$key" "$jwt" "$inst" "${perms/'"metadata":"read"'/'"workflows":"write","metadata":"read"'}")" || return 1
+    curl -fsS --retry 2 -X DELETE -H "Authorization: Bearer $token" "$GITHUB_API/installation/token" >/dev/null 2>&1 || true
+    token="$t"
+  fi
+  printf '%s\n' "$token"
+}
+
+# An installation token with PERMS, on stdout.
+access_token() { # key jwt installation perms
+  local resp token
   # An installation that does not grant workflows: write is refused a token
   # that names it: one without it still pushes all but .github/workflows/.
-  resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
-            -d "{\"permissions\":{$perms}}" "$GITHUB_API/app/installations/$inst/access_tokens")" ||
-    { [[ "$perms" == *'"workflows":"write",'* ]] &&
-      resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $header.$payload.$sig" -H 'Accept: application/vnd.github+json' \
-                -d "{\"permissions\":{${perms/'"workflows":"write",'/}}}" "$GITHUB_API/app/installations/$inst/access_tokens")" &&
-      log "$key: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/ (looper#106)"; } ||
-    { log "GitHub refused the app $key a token"; return 1; }
+  resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $2" -H 'Accept: application/vnd.github+json' \
+            -d "{\"permissions\":{$4}}" "$GITHUB_API/app/installations/$3/access_tokens")" ||
+    { [[ "$4" == *'"workflows":"write",'* ]] &&
+      resp="$(curl -fsS --retry 2 -X POST -H "Authorization: Bearer $2" -H 'Accept: application/vnd.github+json' \
+                -d "{\"permissions\":{${4/'"workflows":"write",'/}}}" "$GITHUB_API/app/installations/$3/access_tokens")" &&
+      log "$1: GitHub refused a token with workflows: write; minted one without it, which cannot push a change under .github/workflows/ (looper#106)"; } ||
+    { log "GitHub refused the app $1 a token"; return 1; }
   token="$(jq -r '.token // empty' <<<"$resp")"
   [[ -n "$token" ]] || { log "no token in GitHub's answer"; return 1; }
   printf '%s\n' "$token"
+}
+
+# A GitHub API GET with an installation token, its body on stdout.
+gh_get() { curl -fsS --retry 2 -H "Authorization: Bearer $1" -H 'Accept: application/vnd.github+json' "$2"; } # token url
+
+# Whether ISSUE (REPO#N, of LOOPER_ORG) carries looper:workflows, set last by
+# a person with write access to REPO (admin, maintain or write: a triager may
+# set labels too, and a bot, the report's own app among them, is no person),
+# as #40's rule reads an author. Read with TOKEN; anything unreadable is no.
+workflows_label() { # token issue
+  local repo="${2%#*}" n="${2#*#}" api ev who type perm page=1 all="[]" got
+  api="$GITHUB_API/repos/$ORG/$repo/issues/$n"
+  got="$(gh_get "$1" "$api")" && jq -e --arg l "$LABEL_WORKFLOWS" 'any(.labels[]; .name == $l)' <<<"$got" >/dev/null 2>&1 ||
+    { [[ -n "$got" ]] || log "could not read $2's labels: no workflows: write"; return 1; }
+  while ((page <= 20)); do
+    got="$(gh_get "$1" "$api/events?per_page=100&page=$page")" && jq -e 'type == "array"' <<<"$got" >/dev/null 2>&1 ||
+      { log "could not read who set $2's $LABEL_WORKFLOWS: no workflows: write"; return 1; }
+    [[ "$got" != "[]" ]] || break
+    all="$(jq -c --argjson a "$all" '$a + .' <<<"$got")"; page=$((page + 1))
+  done
+  ev="$(jq -c --arg l "$LABEL_WORKFLOWS" '[.[] | select(.event == "labeled" and .label.name == $l)] | last // empty' <<<"$all")"
+  [[ -n "$ev" ]] || { log "could not read who set $2's $LABEL_WORKFLOWS: no workflows: write"; return 1; }
+  who="$(jq -r '.actor.login // ""' <<<"$ev")"; type="$(jq -r '.actor.type // ""' <<<"$ev")"
+  if [[ "$type" == User && "$who" =~ ^[A-Za-z0-9-]+$ ]]; then
+    perm="$(gh_get "$1" "$GITHUB_API/repos/$ORG/$repo/collaborators/$who/permission" | jq -r '.permission // ""')" || perm=""
+  else perm="$type"; fi
+  case "$perm" in
+    admin|maintain|write) log "$2 carries $LABEL_WORKFLOWS, set by $who ($perm): this token names workflows: write (looper#115)" ;;
+    *) log "$2's $LABEL_WORKFLOWS was set by $who (${perm:-unknown}), not someone with write access: ignored (looper#115)"; return 1 ;;
+  esac
 }
 
 # The token as gh's configuration, replaced whole (a reader never sees half a
@@ -217,11 +274,11 @@ write_hosts() { # dir token
   chmod 0644 "$t"; mv -f "$t" "$1/hosts.yml"
 }
 
-start() { # role dir [pid]
-  local role="$1" dir="$2" parent="${3:-$PPID}" token
+start() { # role dir [pid [issue]]
+  local role="$1" dir="$2" parent="${3:-$PPID}" issue="${4:-}" token
   mkdir -p "$dir"
   gcp_login "$dir"
-  token="$(mint "$role" "$dir")" || fail "no $role token"
+  token="$(mint "$role" "$dir" "$issue")" || fail "no $role token"
   write_hosts "$dir" "$token"
   log "$role: a token of $(role_app "$role" | cut -d' ' -f1) in $dir, refreshed every ${REFRESH}s"
   # Fresh until the job's process ends; a refresh that fails is tried again
@@ -231,7 +288,7 @@ start() { # role dir [pid]
       next=$(( $(date +%s) + REFRESH ))
       while kill -0 "$parent" 2>/dev/null && (( $(date +%s) < next )); do sleep $(( REFRESH < 5 ? REFRESH : 5 )); done
       kill -0 "$parent" 2>/dev/null || break
-      until token="$(mint "$role" "$dir")"; do
+      until token="$(mint "$role" "$dir" "$issue")"; do
         kill -0 "$parent" 2>/dev/null || exit 0
         log "$role: the token was not refreshed; again in a minute"; sleep 60
       done
@@ -262,11 +319,11 @@ diagnose() { # dir
 }
 
 case "${1:-}" in
-  start) [[ $# -eq 3 || $# -eq 4 ]] || fail "start ROLE DIR [PID]"; start "$2" "$3" "${4:-$PPID}" ;;
+  start) [[ $# -ge 3 && $# -le 5 ]] || fail "start ROLE DIR [PID [ISSUE]]"; start "$2" "$3" "${4:-$PPID}" "${5:-}" ;;
   mint)
-    [[ $# -eq 2 ]] || fail "mint ROLE"
+    [[ $# -eq 2 || $# -eq 3 ]] || fail "mint ROLE [ISSUE]"
     d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
-    gcp_login "$d"; mint "$2" "$d" ;;
+    gcp_login "$d"; mint "$2" "$d" "${3:-}" ;;
   configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;
   diagnose)
     d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT

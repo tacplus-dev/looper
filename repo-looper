@@ -502,7 +502,9 @@ job_identity() {
     # The one manager holds it beside the gates it would run: it runs none (looper#90).
     [[ "$MODE" != manage ]] || MANAGER_TOKEN=1
   else
-    "$TOKEN_CMD" start report "$tokens/report" $$ >/dev/null || die "no report token (looper-token)"
+    # A report's names workflows: write only when its issue carries
+    # looper:workflows, set by someone with write access (looper#115).
+    "$TOKEN_CMD" start report "$tokens/report" $$ ${ISSUE:+"$REPO#$ISSUE"} >/dev/null || die "no report token (looper-token)"
     export GH_CONFIG_DIR="$tokens/report"
   fi
   if [[ "$MODE" == scan ]]; then
