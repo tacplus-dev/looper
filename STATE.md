@@ -88,7 +88,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it and on the
   code a `generated` recipe writes (cargo-deny on a service that path-depends on crates its gates generate: with
   them, laid over the checkout or the gates' `generated/` at its tacplus.yaml `output-dir`, else on its Cargo.lock's
-  crates alone, which the summary says, #126), a nightly (input `nightly: true`, main's head, no commit status) and a release add
+  crates alone, which the summary says, #126; the SAST findings and secrets in each tacplus.yaml's `output-dir`,
+  through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149), a nightly (input `nightly: true`, main's head, no commit status) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it; SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a

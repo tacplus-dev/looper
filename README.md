@@ -935,7 +935,17 @@ cannot run says why in the verdict (cargo-deny: cargo's own error).
 code (the service repositories: kernel's `codegen/`, ...) has it scanned with the checkout. One whose gates generate
 it out of the tree (tacplus's cross-test models) gives it with a `generated` recipe: after `just gates` passes, the gates job runs
 `just generated <dir>` and keeps `<dir>` as its artifact `generated/`, and the security job scans it as a second tree
-(its findings' `where` start with `generated/`). The recipe may not change a tracked file.
+(its findings' `where` start with `generated/`). The recipe may not change a tracked file. A service's own checkout
+holds the code tacplus generates for it at the `output-dir` of each `tacplus.yaml` in the tree (the root's, a client
+subproject's; an `import:`ed base config's when the file names none), and that code is tacplus's to scan at the source
+(looper#108): its SAST findings and secrets are kept aside in `security/generated.json`, not counted, and its
+dependencies are still checked. Code a service's own generator writes (kernel's codegen,
+`server/target/generated-sources/tacplus-backend`) is the service's code, and is counted (looper#149).
+
+**SpotBugs' heap** is three quarters of the job's memory (its cgroup's limit, else the machine's), at least the
+launcher's 768 MB, which kernel outgrew (looper#149); `BUILD_SPOTBUGS_MAXHEAP` (MB) sets it. A tool that throws fails
+the run with the exception's first line (`Exception in thread "main" java.lang.OutOfMemoryError: ...`), not the last
+line of its stack.
 
 **Policy.** A run fails on:
 

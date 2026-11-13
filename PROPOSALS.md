@@ -9,6 +9,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"
   while the pipeline still runs. Sizing the wait per repository (as `land_wait` sizes a land's, from gates.yaml's
   `minutes` of the set) would keep it from giving up on a build that is still on time.
+- **SpotBugs without the generated tree's bytecode** (2026-11-13, #149): SpotBugs reads every `target/classes`,
+  kernel's `tacplus/target/classes` too, the compiled code tacplus generates, whose findings are tacplus's to scan
+  (#108); leaving it out would cut the heap kernel's analysis needs. The classes a module compiles from an
+  `output-dir` are not named by tacplus.yaml (Maven's module layout says which), so it needs a rule for telling them
+  apart, e.g. a `target/classes` whose module's sources all lie under an `output-dir`.
 - **The kicker resource group's `newest_first`** (2026-11-07, #104): a kick now stops once a newer one is queued, but
   GitLab's default `unordered` process mode may still hand the `kicker` group to a stale kick first, which takes a VM
   to start and stop. `PUT /projects/:id/resource_groups/kicker` with `process_mode=newest_first` (a token with `api`
