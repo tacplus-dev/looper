@@ -1,0 +1,114 @@
+= init
+= thinking_tokens
+= thinking_tokens
+> Bash git log --oneline -3 && git diff --stat && gh issue view 122 --repo tacplus-dev/looper --comments | tail -30
+< 7733373 ROADMAP: the model per run (#136) 074c45e ROADMAP: build once per repo, commit and gate set (#134) 0c154bd PROPOSALS.md: the nightly scan's proposals (looper)  tests/repo-looper.test.sh | 76 +++++++++++++++++++++++++++++++++++++++--------  1 file changed, 64 insertions(+), 12 deletions(-)  T...
+= thinking_tokens
+= thinking_tokens
+> Bash which glab; env | grep -i -E 'gitlab|token' | sed 's/=.*/=.../'; for p in 3062702015 3052716574; do curl -s "https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/$p" | head -c 600; echo; done
+< /usr/local/bin/glab GITLAB_USER_ID=... CI_SERVER_NAME=... GITLAB_USER_EMAIL=... CI_REGISTRY_USER=... CI_API_V4_URL=... CI_RUNNER_SHORT_TOKEN=... GITLAB_USER_LOGIN=... GH_CONFIG_DIR=... CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX=... CI_CONFIG_REF_URI=... FF_MASK_ALL_DEFAULT_TOKENS=... CI_DEPENDENCY_PROXY...
+> Bash for p in 3062702015; do glab api "projects/tacplus-dev%2Fbuild/pipelines/$p" 2>&1 | head -c 800; echo; glab api "projects/tacplus-dev%2Fbuild/pipelines/$p/jobs" 2>&1 | jq -r '.[] | "\(.id) \(.name) \(.status) \(.started_at) \(.finished_at) \(.duration)"' 2>&1 | head; done
+< {"message":"404 Project Not Found"}glab: 404 Project Not Found (HTTP 404)  jq: error (at <stdin>:1): Cannot index string with string "duration" jq: parse error: Invalid numeric literal at line 1, column 40
+= thinking_tokens
+= thinking_tokens
+> Bash gh search issues --repo tacplus-dev/looper "no verdict within 3h" --json number,title,state,updatedAt 2>&1 | head -40; gh api "repos/tacplus-dev/looper/issues/comments?since=2026-11-11T00:00:00Z&per_page=100" --jq '.[] | select(.user.login|test("manager")) | "\(.created_at) \(.issue_url|split("/")|l...
+< [{"number":109,"state":"open","title":"govulncheck in the image is built with go1.26 and cannot scan a go 1.27 module: every such build's security run fails","updatedAt":"2026-11-10T13:19:23Z"},{"number":114,"state":"open","title":"Manager discards a green verdict when main moved only by planning fi...
+= thinking_tokens
+= thinking_tokens
+> Bash for n in 113 128 130; do echo "=== #$n"; gh issue view $n --repo tacplus-dev/looper --json labels,body,comments --jq '"labels: \([.labels[].name]|join(","))\n\(.body[0:1500])\n--- last comment:\n\(.comments[-1].body[0:1000] // "")"'; done
+< === #113 labels: bug,approved,priority:high,looper:landing ## Actual (2026-11-09) `repo-looper --repo website --issue 2 --build` triggered tacplus-dev/build pipeline 3043233750 for website 325305c (pinned by `build.lock`) at 03:36:35Z. Three hours later, at 06:36Z, it gave up with `no verdict within...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash git diff | head -200 && bash -n tests/repo-looper.test.sh && echo syntax-ok
+< diff --git a/tests/repo-looper.test.sh b/tests/repo-looper.test.sh index c157685..b1a34b5 100755 --- a/tests/repo-looper.test.sh +++ b/tests/repo-looper.test.sh @@ -21,6 +21,8 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER  # labels are its repository's): an edit...
+Looks complete. Running the test locally again (detached) on the rebased tree.
+> Bash nohup bash -c 'time tests/repo-looper.test.sh' > /tmp/rl122.log 2>&1 & echo $!
+< 876
+> ToolSearch {"query":"select:Monitor","max_results":1}
+< 
+> Bash until ! kill -0 876 2>/dev/null; do sleep 5; done; tail -5 /tmp/rl122.log; grep -c '^ok' /tmp/rl122.log; grep -iE 'FAIL' /tmp/rl122.log | head
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bgqqqv3ov. Output is being written to: /builds/looper/looper/homes/looper-122/tmp/claude-61000/-builds-looper-looper-issues-122/d6ddaac9-228d-4f5a-ae61-0b021ae63425/tasks/bgqqqv3ov.output. You will be notified when it completes. To check interim output, use Rea...
+While it runs, I'll commit the fix.
+> Bash git add tests/repo-looper.test.sh && git commit -q -F - <<'EOF' tests/repo-looper.test.sh: hold the manager until its reports are at work, bound every wait  A report slower to start than the test manager's 5s linger queued a land no manager took, and land_request waited for it forever: the gates hun...
+< 67eb715 tests/repo-looper.test.sh: hold the manager until its reports are at work, bound every wait
+> Bash /usr/local/bin/repo-looper --repo looper --issue 122 --checkpoint "done: fix 67eb715 committed (rebased on main 7733373), local test rerunning; previous lands red only by no build verdict within 3h (#128, every looper land since 11-11). left: land again, Blocked-by #128" 2>&1 | tail -3
+< [2026-11-13T05:43:14Z] checkpoint of #122 (a step) pushed to looper/looper-122:  3 files changed, 290 insertions(+), 12 deletions(-)
+> Bash until ! kill -0 876 2>/dev/null; do sleep 5; done; tail -5 /tmp/rl122.log; grep -c '^ok' /tmp/rl122.log
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: brc33r60l). Output is being written to: /builds/looper/looper/homes/looper-122/tmp/claude-61000/-builds-looper-looper-issues-122/d6ddaac9-228d-4f5a-ae61-0b021ae63425/tasks/brc33r60l.output. You will be notified whe...
+> Bash until ! kill -0 876 2>/dev/null; do sleep 5; done; tail -5 /tmp/rl122.log; grep -c '^ok' /tmp/rl122.log
+= task_started
+= task_notification
+< repo-looper: all scenarios pass  real	14m44.936s user	1m3.890s sys	2m47.907s 143
+= thinking_tokens
+= thinking_tokens
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_updated
+= task_notification
+= background_tasks_changed
+= thinking_tokens
+Local test passes (143 ok, 14m45s). Queuing the land again.
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 122 --land > /tmp/land122.log 2>&1 & echo $!; sleep 60; cat /tmp/land122.log
+= task_started
+= task_notification
+< 127680 [2026-11-13T05:57:54Z] checkpoint of #122 (land queued) pushed to looper/looper-122:  4 files changed, 315 insertions(+), 12 deletions(-) [2026-11-13T05:57:56Z] queued: the manager of looper merges looper/looper-122 after the lands queued before it, one at a time, and says on the issue what c...
+= thinking_tokens
+= thinking_tokens
+The land is queued. Next I'll post the comment saying why the issue waits, then record it as blocked on #128.
+> Bash gh issue comment 122 --repo tacplus-dev/looper --body-file - <<'EOF' Status from the looper of #122: the fix is done and queued to land. It waits on the build pool, not on its code.  **Pushed:** 67eb715 on `looper/looper-122`, the earlier fix (d85f68d) rebased on main 7733373 with no change. It touc...
+< https://github.com/tacplus-dev/looper/issues/122#issuecomment-6845470950 Blocked-by: #128
+The fix for #122 is done and queued to land, but it isn't on main. The build system has given no result for any of this repository's lands since 2026-11-11, so I've marked the issue blocked on #128.
+
+**The fix:** commit 67eb715 changes only `tests/repo-looper.test.sh`. It's the previous run's fix moved onto the current main, unchanged.
+- The test's manager now waits until each report has started work before it can end. That removes the race that hung the gates for 48 minutes.
+- Every `repo-looper` the test runs is stopped after 300 seconds. A wait that never ends now fails its scenario instead of hanging.
+- A new scenario, `slow-start`, makes a report start later than the manager's 5-second linger. The manager still merges its land.
+
+**Local test:** `tests/repo-looper.test.sh` passed: 143 `ok`, all scenarios pass, 14m45s. One scenario only runs as root, so it was skipped here and its part of the change is not checked locally.
+
+**Why it isn't landed:** the last land went red with "no verdict within 3h", and the earlier build check ended the same way. Every land in this repository has failed like that since 2026-11-11 (#101, #104, #108, #112, #113). The cause is #128: the build queue is backed up, and the manager counts a build that hasn't started yet as a failure. I could not open the build pipelines myself (access returns 404), so that cause comes from #128's reports.
+
+**What I did:**
+- Queued the land again at 05:57Z. It runs the full gates, because this test file maps to the full set.
+- Posted a status comment on the issue.
+- Wrote `Blocked-by: #128` as the run's outcome.
+
+The issue stays open. Once #128 is closed, the next run checks this land's result, posts the final comment and closes #122.
+= success: The fix for #122 is done and queued to land, but it isn't on main. The build system has given no result for any of this repository's lands since 2026-11-11, so I've marked the issue blocked on #128.
+
+**The fix:** commit 67eb715 changes only `tests/repo-looper.test.sh`. It's the previous run's fix moved onto the current main, unchanged.
+- The test's manager now waits until each report has started work before it can end. That removes the race that hung the gates for 48 minutes.
+- Every `repo-looper` the test runs is stopped after 300 seconds. A wait that never ends now fails its scenario instead of hanging.
+- A new scenario, `slow-start`, makes a report start later than the manager's 5-second linger. The manager still merges its land.
+
+**Local test:** `tests/repo-looper.test.sh` passed: 143 `ok`, all scenarios pass, 14m45s. One scenario only runs as root, so it was skipped here and its part of the change is not checked locally.
+
+**Why it isn't landed:** the last land went red with "no verdict within 3h", and the earlier build check ended the same way. Every land in this repository has failed like that since 2026-11-11 (#101, #104, #108, #112, #113). The cause is #128: the build queue is backed up, and the manager counts a build that hasn't started yet as a failure. I could not open the build pipelines myself (access returns 404), so that cause comes from #128's reports.
+
+**What I did:**
+- Queued the land again at 05:57Z. It runs the full gates, because this test file maps to the full set.
+- Posted a status comment on the issue.
+- Wrote `Blocked-by: #128` as the run's outcome.
+
+The issue stays open. Once #128 is closed, the next run checks this land's result, posts the final comment and closes #122.
