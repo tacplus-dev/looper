@@ -607,7 +607,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   that check as well, and catch an override (looper#65, #88) that stopped working.
 - **A secret's identity that survives a moved line** (2026-11-12, #120, #129): a gitleaks finding's id is
   `<path>:<rule>:<line>` (looper-scan, README: Security checks), both for `new` and for an exception's `id`. So an
-  unchanged fixture that moves is a new finding: #120's `GITLAB_TOKEN=s3cret-withheld` at
+  unchanged fixture that moves is a new finding: #120's withheld `GITLAB_TOKEN` fixture at
   `tests/repo-looper.test.sh:2253` came back as a new CRITICAL at `:2290` once 4ade983 (#105) added lines above it, and
   any dated exception for a secret would stop matching on the next edit above it. Keying `new` (and accepting an
   exception's id) on gitleaks' own `Fingerprint` without its line, or on the path, rule and a hash of the matched
