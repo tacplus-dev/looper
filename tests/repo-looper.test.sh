@@ -826,6 +826,21 @@ run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
 has "$OUT" "its run was done"
 pass
 
+# Likewise when the land reads the manager's verdict later than the
+# done-grace (looper#143): the verdict is not the run's report, whenever the
+# land reads it, and the grace starts at the report.
+scenario land-closes-slow-poll
+echo 'gh issue comment 4 --repo tacplus-dev/alpha --body "Starting."' >> "$FIX/claude.sh"
+closing_land
+echo 'for i in 1 2 3 4 5 6; do echo still verifying; sleep 1; done' >> "$FIX/claude.sh"
+report "Landed, the gates pass."
+echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
+run LOOPER_LAND_POLL=4 LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
+(( REPORT_SECONDS < 40 )) || fail "the finished run was not ended"
+[[ "$(others)" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
+has "$OUT" "its run was done"
+pass
+
 # A run stopped on an issue its land closed, with no closing report of its
 # own: the looper posts one, with the land, the HISTORY line and the log's end.
 scenario land-closes-no-report

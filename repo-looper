@@ -976,6 +976,9 @@ land_request() {
     log "a land of $BRANCH is already queued ($id); waiting for its verdict"
   else
     id="$(date -u +%Y%m%dT%H%M%SZ)-$n-$RANDOM$RANDOM"
+    # Before the land, whose merge can close the issue while the model still
+    # works: what it wrote until now is no closing report (looper#54, #143).
+    [[ -z "${LOOPER_RUN:-}" ]] || comments_mark "$n" "$run"
     printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n' "$id" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run/land"
     checkpoint "$n" "land queued" "$run"
     fetch . "+refs/heads/$b:refs/remotes/origin/$b" || true
@@ -1946,10 +1949,14 @@ comments_mark() { # issue run-dir
   else rm -f "$2/comments"; fi
 }
 # The run has reported on its issue: a comment since its last land, or since
-# it started when it landed nothing.
+# it started when it landed nothing, that is no manager's verdict: the land
+# re-marks only once it polled the verdict, which the watchdog can see first
+# (looper#143).
 run_reported() { # issue run-dir
-  local c
-  [[ -s "$2/comments" ]] && c="$(forge_issue_comment_count "$REPO" "$1" 2>/dev/null)" && [[ "$c" =~ ^[0-9]+$ ]] && (( c > $(cat "$2/comments") ))
+  local c m
+  [[ -s "$2/comments" ]] && m="$(cat "$2/comments")" && [[ "$m" =~ ^[0-9]+$ ]] || return 1
+  c="$(forge_issue_comment_count "$REPO" "$1" 2>/dev/null)" && [[ "$c" =~ ^[0-9]+$ ]] && (( c > m )) || return 1
+  forge_issue_comments "$REPO" "$1" 2>/dev/null | jq -es --argjson m "$m" '.[$m:] | any(contains("<!-- looper-land id=") | not)' >/dev/null
 }
 
 # The issue's run is done: it reported on the issue and the issue is closed,
@@ -1985,6 +1992,8 @@ watch_run() { # pid log run-dir [issue]
     if [[ -n "$n" ]] && run_done "$n" "$run"; then
       done_at="${done_at:-$now}"
       if (( now - done_at >= DONE_GRACE )); then echo "done" > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0; fi
+    else
+      done_at="" # the grace starts again at the run's next report (looper#143)
     fi
     if [[ -n "$n" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" && -n "${CI_JOB_ID:-}" ]] && (( now - polled >= JOB_POLL )); then
       polled="$now"

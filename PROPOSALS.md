@@ -151,11 +151,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   does, but only for that flag. A gate that runs the image's real gcloud on each command looper-token and
   looper-identity give it, with a credential that cannot authenticate, and requires the failure to be the call's (an
   auth or permission error), not gcloud's usage, would catch the next such slip.
-- **repo-looper's `land-closes-mid-run` is timing-dependent** (2026-11-05, #95): it failed #95's first land (manager job
-  https://gitlab.com/tacplus-dev/looper/-/jobs/17788357051: the stub model ran twice, its closing report never posted)
-  and passed on the same commit rebased, here. It leans on one-second watch intervals and sleeps; under a verdict job's
-  load the done-grace or the watch can fire before the stub's report. Waiting on the stub's own markers instead of
-  `sleep` would make it deterministic.
 - **The kernel pilot's setup still names jody1-328023's `us` key ring** (2026-11-05, #95): README, Setting it up (the
   hub, looper#28) creates `kernel-looper` and `tacplus-reader` in jody1-328023, `us`; tacplus-dev/cloud#19 moved the
   reader to tacplus-ci's `us-central1` key ring (its signers' move is cloud's follow-up). That section, and kernel's
