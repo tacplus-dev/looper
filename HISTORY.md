@@ -78,3 +78,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-08 looper issue No per-repository caps: start a report for every ready issue (loopers are never blocked) (#107, 6b32a66; gates: full)
 - 2026-11-08 looper issue looper-token mints report and manager tokens without workflows: write, so the App's grant never reaches a push (#106)
 - 2026-11-13 looper issue Idle watchdog stops a run that is waiting on its queued build and marks it looper:stuck (kernel#51) (#133)
+- 2026-11-13 looper issue Control jobs starve behind reports: the plan waited 1h40m for a slot, and hourly kicks piled up 5 deep in their resource group (#104)
