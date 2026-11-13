@@ -21,7 +21,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   on its branch (`.looper/land`, the issue `looper:landing` until the verdict) and waits for the manager's verdict
   comment; the manager (`repo-looper --manage`, `resource_group: looper-<repo>-main`) merges the queued branches
   by their issue's priority (`priority:high`, unlabelled, `priority:low`), then oldest first (#121): rebased on main, a conflict only in files `generated.yaml` maps resolved by regenerating them (never
-  a hand merge), any other sent back with the files named, the gates its diff calls for (in a scratch worktree under its work directory,
+  a hand merge), a report's last commit touching STATE.md alone whose only conflict is STATE.md dropped, main's kept and
+  the rest landed, the dropped diff on the issue for a docs-only land again (#131; `--land` puts the STATE.md change in
+  that last commit), any other sent back with the files named, the gates its diff calls for (in a scratch worktree under its work directory,
   which the host shares, so the tacplus compiler's sibling container sees it: not the job's /tmp, #79), pushed only on green, the
   merged branch deleted, every merge, resolution and send-back a comment on the issue with the gate verdict; it adds
   the planning files and `HISTORY.md`'s lines (closed issues', queued by their reports, and releases'); a land still
