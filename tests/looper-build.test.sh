@@ -92,6 +92,17 @@ case_commit generated "$PASS_GATES
     mkdir -p target/generated-sources/m && echo '[package]' > target/generated-sources/m/Cargo.toml
 generated out:
     mkdir -p {{out}}/model && printf 'package model\n' > {{out}}/model/model.go" "$LOCK"
+# A tacplus project whose justfile runs tacplus through a wrapper that needs
+# Docker (kernel's, eventbus's tools/tacplus.sh) unless TACPLUS_BIN names one
+# (looper#137): the build job, in the pinned image, has the image's own.
+case_commit tacplus 'TACPLUS := env_var_or_default("TACPLUS_BIN", "tools/tacplus.sh")
+gates:
+    echo "tacplus=${TACPLUS_BIN:-none}"
+    {{TACPLUS}} build --tag latest
+generated out:
+    echo "generated tacplus=${TACPLUS_BIN:-none}"' "$LOCK"
+mkdir -p "$work/tools"; printf '#!/bin/sh\necho "tacplus.sh: docker run: no Docker here" >&2; exit 1\n' > "$work/tools/tacplus.sh"
+chmod +x "$work/tools/tacplus.sh"; git -C "$work" add -A; git -C "$work" commit -qm "the wrapper"; SHA[tacplus]="$(git -C "$work" rev-parse HEAD)"
 
 # The security checks' cases (looper-scan, looper#49): a Go module, clean or
 # with a planted vulnerable pin (golang.org/x/text v0.3.0, its vulnerable
@@ -213,6 +224,7 @@ VERIFY_JUST='gates:
     echo gates
 verify:
     echo "verify ran job-token=${CI_JOB_TOKEN:-none} key=${TACPLUS_READER_APP_KEY:-none}"
+    echo "verify tacplus=${TACPLUS_BIN:-none}"
     if [ -f red ]; then cat red; exit 1; fi
 verify-changed SHA="":
     @if [ -n "{{SHA}}" ] && git cat-file -e "{{SHA}}^{commit}" 2>/dev/null && git diff --quiet "{{SHA}}" -- deps/; then echo "skip: unchanged since {{SHA}}, verified then"; else echo run; fi'
@@ -644,6 +656,47 @@ if build BUILD_SHA="${SHA[pass]}" BUILD_GATES=docs -- gates 2>"$TMP/err"; then f
 verdict_is "fail: no gates.yaml: demo maps no gate set docs"
 pass
 
+# The pinned image's own tacplus (looper#137): a tacplus project's gates run
+# with TACPLUS_BIN=tacplus, once the job's image is the one tacplus.lock pins.
+PINNED="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A"
+mkdir -p "$TMP/image-bin"
+printf '#!/bin/sh\necho "image tacplus $*"\n' > "$TMP/image-bin/tacplus"; chmod +x "$TMP/image-bin/tacplus"
+NAME="gates: a tacplus project's gates run the pinned image's own tacplus, not a wrapper that needs Docker"
+build BUILD_SHA="${SHA[tacplus]}" CI_JOB_IMAGE="$PINNED" PATH="$TMP/image-bin:$TMP/bin:$PATH" -- gates 2>"$TMP/err" ||
+  fail "gates failed: $(cat "$OUT/build-verdict" "$OUT/gates.log" 2>/dev/null)"
+verdict_is pass
+grep -qxF "tacplus=tacplus" "$OUT/gates.log" && grep -qxF "image tacplus build --tag latest" "$OUT/gates.log" ||
+  fail "not the image's tacplus: $(cat "$OUT/gates.log")"
+grep -qxF "generated tacplus=tacplus" "$OUT/gates.log" || fail "just generated ran another tacplus: $(cat "$OUT/gates.log")"
+pass
+
+NAME="gates: a job in another image than tacplus.lock pins fails, and runs no gate"
+if build BUILD_SHA="${SHA[tacplus]}" CI_JOB_IMAGE="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.2@$DIGEST_A" \
+     PATH="$TMP/image-bin:$TMP/bin:$PATH" -- gates 2>"$TMP/err"; then fail "passed"; fi
+verdict_is "fail: the job runs in us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.2@$DIGEST_A, not the build image tacplus.lock pins ($PINNED)"
+[[ ! -s "$OUT/gates.log" ]] || fail "the gates ran: $(cat "$OUT/gates.log")"
+pass
+
+NAME="gates: a pinned image with no tacplus fails, and runs no gate"
+# This machine's PATH, with every tool but a tacplus (the looper image has one).
+nt="$TMP/no-tacplus"; mkdir -p "$nt"; ntpath="$TMP/bin"
+IFS=: read -ra dirs <<< "$PATH"
+for d in "${dirs[@]}"; do
+  if [[ -x "$d/tacplus" ]]; then
+    for f in "$d"/*; do [[ "${f##*/}" == tacplus || -e "$nt/${f##*/}" ]] || ln -s "$f" "$nt/${f##*/}"; done
+  else ntpath+=":$d"; fi
+done
+if build BUILD_SHA="${SHA[tacplus]}" CI_JOB_IMAGE="$PINNED" PATH="$ntpath:$nt" -- gates 2>"$TMP/err"; then fail "passed"; fi
+verdict_is "fail: the build image tacplus.lock pins ($PINNED) has no tacplus"
+[[ ! -s "$OUT/gates.log" ]] || fail "the gates ran: $(cat "$OUT/gates.log")"
+pass
+
+NAME="gates: a repository that is no tacplus project (build.lock) gets no TACPLUS_BIN"
+build BUILD_SHA="${SHA[mapped]}" CI_JOB_IMAGE="ghcr.io/tacplus-dev/looper:main@$DIGEST_A" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+! grep -q "the image's own tacplus" "$TMP/err" || fail "$(cat "$TMP/err")"
+pass
+
 # --- status ---------------------------------------------------------------------
 NAME="status: the commit status, with a token that can only write statuses on the repository"
 build BUILD_SHA="${SHA[pass]}" -- status pending 2>"$TMP/err" || fail "status failed"
@@ -841,6 +894,12 @@ build BUILD_SHA="${SHA[verify2]}" BUILD_TAG=v1.2.3 BUILD_VERIFY_SINCE="${SHA[ver
   -- verify 2>"$TMP/err" || fail "the release's verification failed: $(cat "$TMP/err")"
 grep -qxF "verify ran job-token=none key=none" "$OUT/verify/verify.log" || fail "just verify did not run"
 [[ "$(rec kind) $(rec verified) $(rec result)" == "release ${SHA[verify2]} pass" ]] || fail "$(cat "$OUT/verify/record")"
+pass
+
+NAME="verify: in the pinned image, just verify runs the image's own tacplus (looper#137)"
+build BUILD_SHA="${SHA[verify2]}" BUILD_TAG=v1.2.3 CI_JOB_IMAGE="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A" \
+  PATH="$TMP/image-bin:$TMP/bin:$PATH" -- verify 2>"$TMP/err" || fail "the verification failed: $(cat "$TMP/err")"
+grep -qxF "verify tacplus=tacplus" "$OUT/verify/verify.log" || fail "not the image's tacplus: $(cat "$OUT/verify/verify.log")"
 pass
 
 NAME="verify: a red run fails, its record red, its failed harness and counterexample kept"

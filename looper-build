@@ -454,6 +454,7 @@ cmd_gates() {
   local src="$BUILD_OUT/src" rc=0 changed run what
   fetch_commit "$src"
   refuse_push_credential "$src"
+  image_tacplus "$src"
   if [[ -f "$src/gates.yaml" ]]; then
     # The set the manager's diff calls for (looper#71), from the commit's own map.
     run="$(gate_run "$src/gates.yaml" "${BUILD_GATES:-full}")" || verdict fail "$run"
@@ -481,6 +482,25 @@ cmd_gates() {
   built "$src"
   generated "$src"
   verdict pass
+}
+
+# A tacplus project's recipes run the pinned image's own tacplus (looper#137):
+# the job is already in that image, with no Docker, so a justfile's wrapper
+# that runs it with `docker run` (TACPLUS_BIN's default in kernel's and
+# eventbus's) cannot. TACPLUS_BIN=tacplus, once the job's image is the one
+# tacplus.lock pins (GitLab's CI_JOB_IMAGE; outside a job it cannot be told,
+# and the justfile's default stays). A repository pinned by build.lock is no
+# tacplus project: nothing to do.
+image_tacplus() { # src
+  [[ -f "$1/tacplus.lock" ]] || return 0
+  local pin; pin="$(read_pin "$1")"
+  if [[ -z "${CI_JOB_IMAGE:-}" ]]; then
+    log "no CI_JOB_IMAGE: not a build job, the justfile's own tacplus"; return 0
+  fi
+  [[ "$CI_JOB_IMAGE" == "$pin" ]] || verdict fail "the job runs in $CI_JOB_IMAGE, not the build image tacplus.lock pins ($pin)"
+  command -v tacplus >/dev/null || verdict fail "the build image tacplus.lock pins ($pin) has no tacplus"
+  export TACPLUS_BIN=tacplus
+  log "TACPLUS_BIN=tacplus: the image's own tacplus ($pin)"
 }
 
 # The command of the gate sets named (a+b), in a gate map (gates.yaml,
@@ -563,6 +583,7 @@ cmd_verify() {
   export GOPRIVATE="${GOPRIVATE:-github.com/$BUILD_ORG/*}"
   fetch_commit "$src"
   refuse_push_credential "$src"
+  image_tacplus "$src"
   verify_record() { # result verified run [skipped]
     { echo "repo $BUILD_REPO"; echo "kind $kind"; echo "checked $BUILD_SHA"; echo "verified $2"; echo "result $1"
       echo "run $3"; [[ -z "${4:-}" ]] || echo "skipped $4"; echo "checked_by ${CI_PIPELINE_URL:-}"; } > "$out/record"
