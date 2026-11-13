@@ -285,6 +285,15 @@ cmd_plan() {
 # formal verification (looper#74). A verify run's is the verification alone.
 write_gates_pipeline() { # image
   echo "# Written by looper-build plan: $BUILD_REPO at $BUILD_SHA, in its pinned build image."
+  # A job whose runner is lost (its spot VM preempted) runs again, as the
+  # parent's do: their default does not reach this child pipeline (looper#148).
+  # Not on stuck_or_timeout_failure: the gates' 11h timeout is their own.
+  cat <<'EOF'
+default:
+  retry:
+    max: 2
+    when: [runner_system_failure, scheduler_failure, unknown_failure]
+EOF
   if [[ "${BUILD_VERIFY:-}" != true ]]; then gates_jobs "$1"; fi
   if [[ "${BUILD_VERIFY:-}" == true || -n "${BUILD_TAG:-}" ]]; then verify_jobs "$1"; fi
 }
@@ -327,6 +336,27 @@ EOF
     when: always
     expire_in: 30 days
     paths: [gates.log, build-verdict, built/, generated/]
+EOF
+  # A failed gates job's verdict, on the commit as this build's (the parent's
+  # pipeline): the gates' own reason from its artifact, or none when its runner
+  # was lost on every try (looper#148). The parent's report-fail, which cannot
+  # read it, then leaves it be.
+  cat <<EOF
+gates-failed:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: gates, artifacts: true}]
+  when: on_failure
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_TAG: "${BUILD_TAG:-}"
+    BUILD_ORG: "$BUILD_ORG"
+    BUILD_STATUS_URL: "${CI_PIPELINE_URL:-}"
+    BUILD_NO_VERDICT: "no gates verdict: the gates job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
+  script:
+    - looper-build status failure
 EOF
   cat <<EOF
 security-$BUILD_REPO:
@@ -668,11 +698,21 @@ cmd_status() { # state [description]
     pending) text="building${BUILD_GATES:+: gates $BUILD_GATES}" ;;
     success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}" ;;
     # No build-verdict here when the gates' child pipeline failed (the plan passed): sed exits 2 on the missing file.
-    *) text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null || true)"; text="${text:-the build failed}" ;;
+    # A gates-failed job's (BUILD_NO_VERDICT) when the gates job left none (looper#148).
+    *) text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null || true)"; text="${text:-${BUILD_NO_VERDICT:-the build failed}}" ;;
   esac
-  local token body
+  local token body url="${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" set
   token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" || { log "no token for the commit status"; exit 1; }
-  body="$(jq -cn --arg s "$state" --arg c "$BUILD_STATUS_CONTEXT" --arg d "${text:0:140}" --arg u "${CI_PIPELINE_URL:-}" \
+  # The build's own "the build failed" leaves the reason its gates-failed job set on this pipeline.
+  if [[ "$state" == failure && "$text" == "the build failed" && -n "$url" ]] &&
+     set="$(curl -fsS -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
+              "$BUILD_GITHUB_API/repos/$BUILD_ORG/$BUILD_REPO/commits/$BUILD_SHA/statuses?per_page=100" 2>/dev/null |
+            jq -r --arg c "$BUILD_STATUS_CONTEXT" --arg u "$url" \
+              'first(.[] | select(.context == $c and .target_url == $u and .state == "failure") | .description) // empty' 2>/dev/null)" &&
+     [[ -n "$set" ]]; then
+    log "status: $BUILD_ORG/$BUILD_REPO@$BUILD_SHA $BUILD_STATUS_CONTEXT failure already set by this build: $set"; return 0
+  fi
+  body="$(jq -cn --arg s "$state" --arg c "$BUILD_STATUS_CONTEXT" --arg d "${text:0:140}" --arg u "$url" \
             '{state: $s, context: $c, description: $d} + (if $u == "" then {} else {target_url: $u} end)')"
   curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
     -d "$body" "$BUILD_GITHUB_API/repos/$BUILD_ORG/$BUILD_REPO/statuses/$BUILD_SHA" ||

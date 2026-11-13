@@ -46,11 +46,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   writes `abandoned` and runs no gates, but the child pipeline's `security-<repo>` job (`needs: gates`, `when:
   always`) still runs the scanners on the commit nobody waits for; `looper-scan run` could read the gates' artifact
   `build-verdict` and end at once on `fail: abandoned:`, saving the runner the scan as well.
-- **The child pipeline's verdict as the commit status' description** (2026-11-11, #130): `report-fail` runs in the
-  parent pipeline, whose artifacts hold only the plan's `build-verdict`, so a failure in the child (a red gate, an
-  abandoned build) is described as "the build failed", not as the gates job wrote it; reading the child's
-  `build-verdict` (the bridge's downstream pipeline, with the job token) would put "abandoned: no verdict wanted
-  after 3h" or the failed gate set on the commit.
+- **The child pipeline's verdict as the commit status' description** (2026-11-11, #130; gates done 2026-11-13, #148):
+  the child's `gates-failed` job now sets a failed gates job's reason; a failure of the child's security job (the
+  gates green) is still "the build failed" from `report-fail`, which cannot read the child's artifacts.
+- **A gates job dropped as stale** (2026-11-13, #148): the build's jobs are retried on `runner_system_failure`, but
+  not on `stuck_or_timeout_failure`, which GitLab also gives a running job whose runner manager went away without a
+  word (no update for an hour): retrying on it would retry the gates' own 11h timeout twice too (33h of a manager's
+  wait). If the recap shows lost VMs ending that way, the gates could take a timeout below the job's own (`timeout`
+  in looper-build gates), so a job timeout means only a lost runner, and the retry could then include it.
 - **clippy on a service whose generated crates the scan does not have** (2026-11-11, #126): cargo-deny now falls back
   to the gates' `generated/` at the tacplus.yaml `output-dir`, then to the `Cargo.lock`'s crates alone; clippy, which
   compiles, still fails the run (`no matching package named grpcserver`, gateway at cfe4600 by `looper-scan local`)

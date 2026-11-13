@@ -734,8 +734,17 @@ jobs run `looper-build`, from this image.
   HEAD. Its log is the artifact `gates.log`, and the job's log.
 - **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the
   code its gates generated, which fail the build as a gate does ([Security checks](#security-checks), looper#49).
+- **A job whose runner is lost runs again** (looper#148): the build's VMs are spot, and a preempted one ends its job
+  `runner_system_failure`. Every job, the child pipeline's too (the parent's `default:` does not reach it), is
+  retried twice on `runner_system_failure`, `scheduler_failure` and `unknown_failure`, so the build's verdict
+  stays pending through the retry and the manager keeps waiting on it; never on `stuck_or_timeout_failure`: the
+  gates' 11h timeout is their own failure.
 - **`pending`, `report-pass`, `report-fail`** set the GitHub commit status, context `tacplus-dev/build`, linking
-  the pipeline, with the failure's reason as its description. This is the only thing a build writes to GitHub.
+  the pipeline, with the failure's reason as its description. A failed `gates` job's reason is set by the child's
+  **`gates-failed`** job (looper#148), which reads its artifact `build-verdict`: the gates' own reason, or, with
+  none, that its runner was lost on every try (or it timed out); `report-fail`, which cannot read the child's
+  artifacts, then leaves that status be. The manager's "not merged" line quotes it, so it says which failed. This
+  is the only thing a build writes to GitHub.
 - **`publish`**, on a release (below), once the gates passed: `docker buildx build` of the repository's
   `Dockerfile` for `linux/amd64` and `linux/arm64`, pushed as `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z`
   (tacplus-dev/tacplus#223), its digest recorded in the artifact `image`.

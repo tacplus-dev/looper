@@ -332,6 +332,8 @@ case "\$method \$url" in
     printf '{\n  "token": "%s",\n  "expires_at": "2026-10-29T20:00:00Z"\n}\n' "\$(cat "$TMP/token")" ;;
   "POST https://api.github.com/repos/tacplus-dev/demo/statuses/"*)
     echo "status \$auth \${url##*/} \$data" >> "$TMP/api.log" ;;
+  "GET https://api.github.com/repos/tacplus-dev/demo/commits/"*"/statuses?per_page=100")   # the statuses set so far: \$TMP/statuses
+    echo "statuses \$auth" >> "$TMP/api.log"; cat "$TMP/statuses" 2>/dev/null || echo '[]' ;;
   "GET https://api.github.com/repos/tacplus-dev/demo")   # its visibility: CodeQL's terms (looper#49)
     echo "repo \$auth" >> "$TMP/api.log"; [[ -f "$TMP/private" ]] && echo '{"private": true}' || echo '{"private": false}' ;;
   # The build project's package registry (looper#49): the latest findings, the SBOMs.
@@ -549,6 +551,17 @@ grep -qxF "    BUILD_SHA: \"${SHA[pass]}\"" "$y" || fail "not the commit"
 # Its own timeout, a report job's longest (looper#140): not the project's default.
 sed -n '/^gates:$/,/^security-demo:$/p' "$y" > "$TMP/gates.yml"
 grep -qxF '  timeout: 11h' "$TMP/gates.yml" || fail "the gates job sets no 11h timeout: $(head -8 "$TMP/gates.yml")"
+# A job whose runner is lost (a spot VM preempted) runs again (looper#148): the
+# parent's default retry does not reach its child pipeline's jobs.
+grep -A3 -xF 'default:' "$y" | paste -sd'|' - | grep -qxF 'default:|  retry:|    max: 2|    when: [runner_system_failure, scheduler_failure, unknown_failure]' ||
+  fail "the child pipeline's jobs are not retried when their runner is lost: $(head -12 "$y")"
+# A failed gates job's verdict, the gates' own or none (its runner lost), is the commit's status, linking this pipeline.
+sed -n '/^gates-failed:$/,/^[^ ]/p' "$y" > "$TMP/gates-failed.yml"
+for l in '  needs: [{job: gates, artifacts: true}]' '  when: on_failure' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' \
+         '    - looper-build status failure'; do
+  grep -qxF -- "$l" "$TMP/gates-failed.yml" || fail "the gates-failed job lacks '$l': $(cat "$TMP/gates-failed.yml")"
+done
+grep -q '^    BUILD_NO_VERDICT: ".*runner_system_failure' "$TMP/gates-failed.yml" || fail "no text for a gates job with no verdict: $(cat "$TMP/gates-failed.yml")"
 grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"},"repositories":["demo"]}' "$TMP/api.log" ||
   fail "the plan's token is not contents read-only on the repository: $(cat "$TMP/api.log")"
 [[ ! -e "$OUT/plan-src" ]] || fail "the plan left its checkout behind"
@@ -779,6 +792,35 @@ env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TA
   "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
 [[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == \
    "failure|the build failed" ]] || fail "$(cat "$TMP/api.log")"
+pass
+
+NAME="status: the gates-failed job reports the gates' own verdict, or that their runner was lost, on the build's pipeline"
+OUT="$TMP/out-status-gates"; mkdir -p "$OUT"; : > "$TMP/api.log"
+GF=(env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION"
+    TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT"
+    CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/2 BUILD_STATUS_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1
+    BUILD_NO_VERDICT="no gates verdict: the gates job's runner was lost")
+echo "fail: the gates docs (gates.yaml) exited 1 (gates.log)" > "$OUT/build-verdict"   # the gates job's artifact
+"${GF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description + "|" + .target_url')" == \
+   "failure|the gates docs (gates.yaml) exited 1 (gates.log)|https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] || fail "$(cat "$TMP/api.log")"
+rm "$OUT/build-verdict"; : > "$TMP/api.log"   # a runner lost, its retries too: no artifact
+"${GF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == \
+   "failure|no gates verdict: the gates job's runner was lost" ]] || fail "$(cat "$TMP/api.log")"
+pass
+
+NAME="status: the build's own failure does not overwrite the reason its gates-failed job set"
+OUT="$TMP/out-status-set"; mkdir -p "$OUT"; : > "$TMP/api.log"
+jq -n '[{state: "failure", context: "tacplus-dev/build", description: "the gates exited 1", target_url: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"}]' > "$TMP/statuses"
+env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" \
+  TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" \
+  CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1 \
+  "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+grep -q '^statuses ' "$TMP/api.log" || fail "the statuses were not read: $(cat "$TMP/api.log")"
+! grep -q '^status ' "$TMP/api.log" || fail "overwrote the gates' reason: $(cat "$TMP/api.log")"
+grep -q "already" "$TMP/err" || fail "$(cat "$TMP/err")"
+rm "$TMP/statuses"
 pass
 
 # --- publish --------------------------------------------------------------------

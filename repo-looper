@@ -979,7 +979,12 @@ land_work() {
         env "${wh[@]+"${wh[@]}"}" LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
       fi
       (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
-      if (( grc != 0 )); then
+      if (( grc != 0 )) && build_jobs HEAD .; then
+        # Its verdict says which failed: the gates, or their runner on every try (looper#148).
+        { log "nothing landed: its build job failed: $(grep -m 1 -E '^(verdict: failure: |no verdict )' "$out/gates.log" | sed 's/^verdict: failure: //'), on your commits rebased on $(onto_name); its end:"
+          tail -n 30 "$out/gates.log"; } >&2
+        exit 4
+      elif (( grc != 0 )); then
         { log "nothing landed: the gates failed (exit $grc), on your commits rebased on $(onto_name); their end:"; tail -n 30 "$out/gates.log"; } >&2
         exit 4
       fi

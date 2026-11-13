@@ -73,6 +73,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 f="$FIX/issues/$repo-$n.json"
+# An issue's writers one at a time, each file replaced whole: a model's comment
+# and the manager's at once left one unparsable, and the manager waiting on it.
+case "$cmd" in "issue create"|"issue edit"|"issue comment") exec 9>"$FIX/issues.lock"; flock 9 ;; esac
+save() { printf '%s\n' "$1" > "$f.$$" && mv "$f.$$" "$f"; }
 case "$cmd" in
   api\ repos/*/issues/*)
     p="${cmd#api repos/*/}"; f="$FIX/issues/${p%%/*}-$(cut -d/ -f3 <<<"$p").json"
@@ -99,7 +103,7 @@ case "$cmd" in
     n="$(( $(jq -s 'map(.number) | max // 0' "$FIX/issues/$repo"-*.json) + 1 ))"
     jq -n --argjson n "$n" --arg t "$title" --arg b "$body" \
       '{number: $n, title: $t, state: "OPEN", labels: ($ARGS.positional | map({name: .})), body: $b, comments: [], createdAt: "2026-10-28T00:00:00Z"}' \
-      --args "${labels[@]+"${labels[@]}"}" > "$FIX/issues/$repo-$n.json"
+      --args "${labels[@]+"${labels[@]}"}" > "$FIX/x-new-$$" && mv "$FIX/x-new-$$" "$FIX/issues/$repo-$n.json"
     echo "https://github.com/tacplus-dev/$repo/issues/$n" ;;
   "issue view") [[ ! -e "$FIX/slow-view" ]] || { rm -f "$FIX/slow-view"; sleep "$(cat "$FIX/slow-view.s")"; }
     [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; jq -r "$q" "$f" ;;
@@ -111,9 +115,9 @@ case "$cmd" in
     for l in "${add[@]+"${add[@]}"}"; do t="$(jq --arg l "$l" '.labels |= (. + [{name: $l}] | unique)' <<<"$t")"; done
     for l in "${rm[@]+"${rm[@]}"}"; do t="$(jq --arg l "$l" '.labels |= map(select(.name != $l))' <<<"$t")"; done
     [[ -n "$has_body" ]] && t="$(jq --arg b "$body" '.body = $b' <<<"$t")"
-    printf '%s\n' "$t" > "$f" ;;
+    save "$t" ;;
   "issue comment")
-    t="$(jq --arg b "$body" '.comments += [{body: $b}]' "$f")"; printf '%s\n' "$t" > "$f"
+    t="$(jq --arg b "$body" '.comments += [{body: $b}]' "$f")"; save "$t"
     printf '%s#%s %s\n' "$repo" "$n" "$body" >> "$FIX/comments" ;;
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
 esac
@@ -2777,6 +2781,8 @@ b="$(cat "$FIX/build-4")"
 has "$b" "verdict: failure: the gates docs (gates.yaml) exited 1"; has "$b" "rc 1"
 has "$(cat "$FIX/land-4")" "The manager did not merge"; has "$(cat "$FIX/land-4")" "rc 4"
 has "$(cat "$FIX/land-4")" "verdict: failure: the gates docs"
+# The manager's line says which failed, from the build's verdict (looper#148).
+has "$(cat "$FIX/land-4")" "nothing landed: its build job failed: the gates docs (gates.yaml) exited 1 (gates.log), on your commits"
 [[ -z "$(landed red.md)" ]] || fail "red merged"
 [[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
 lacks "$(cat "$FIX/gates-ran")" "here"
