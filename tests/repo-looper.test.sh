@@ -1210,6 +1210,43 @@ OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT
 has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "security report of alpha could not be read"
 pass
 
+# One issue per cause, not per finding (looper#129): findings that share a fix
+# are one issue listing them all, its title the cause; a cause another
+# repository's open issue fixes is filed with its Blocked-by line from the
+# start, so it is not planned until that issue closes. A stub report with 3
+# findings of one cause (generated crates without a license, beta#2's fix):
+# the model, following the prompt, files one issue.
+scenario scan-security-cause
+templates
+issue alpha 4 CLOSED approved,bug "Done."
+issue beta 2 OPEN approved,bug "Generated crates declare no license."
+mkdir -p "$FIX/security"
+jq -n '["am", "jwk", "x509"] | map({tool: "cargo-deny", kind: "policy", id: "cargo-deny:unlicensed:\(.)@0.1.0", aliases: [], severity: "HIGH",
+  fix: true, where: "\(.)@0.1.0 (Cargo.lock)", title: "\(.) = 0.1.0 is unlicensed", new: true, excepted: null, blocking: true})' > "$FIX/security/findings.json"
+echo '## Security checks: alpha' > "$FIX/security/summary.md"
+cat > "$FIX/scan.sh" <<'EOS'
+f="$(ls "$FIX"/project/looper-runs/*-scan/security/findings.json)"
+gh issue create --repo tacplus-dev/alpha --title "Generated crates declare no license (cargo-deny unlicensed, 3 findings)" --label bug,approved \
+  --body "$(jq -r '.[] | "- \(.tool) \(.id) at \(.where)"' "$f")
+Blocked-by: tacplus-dev/beta#2"
+EOS
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
+has "$pp" "one issue per cause, not per finding"
+has "$pp" "the same upstream issue, the same generated template, the same dependency bump"
+has "$pp" "its title the cause"
+has "$pp" "with its \`Blocked-by: <org>/<repo>#N\` line in the body from the start"
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == 2 ]] || fail "not one issue: $(jq -s 'map(.title)' "$FIX"/issues/alpha-*.json)"
+for c in am jwk x509; do has "$(body alpha 5)" "cargo-deny:unlicensed:$c@0.1.0"; done
+has "$(body alpha 5)" "Blocked-by: tacplus-dev/beta#2"
+[[ "$(labels alpha 5)" == "bug,approved" ]] || fail "#5 labels $(labels alpha 5)"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "planned while beta#2 is open: $OUT"
+issue beta 2 CLOSED approved,bug "Fixed."
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ "$OUT" == 5 ]] || fail "not planned once beta#2 closed: $OUT"
+pass
+
 # The nightly scan files the build pipeline's red formal verification
 # (looper#74): the repository's latest record, read with GITLAB_TOKEN, filed
 # by looper-verify before the model runs, one bug a failed harness; the same

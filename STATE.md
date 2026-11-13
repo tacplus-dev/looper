@@ -71,8 +71,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   was set and the manager's clearing of it failed);
   `bug` and `feature` labels in every repository, unlabelled issues classified first, bugs fixed and released as
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
-  the scans file bugs as `bug`, never approve a feature, and read the roadmaps before opening an issue, and check
-  STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); the build
+  the scans file bugs as `bug`, one issue per cause and not per finding, blocked from the start (its `Blocked-by:` lines)
+  when the fix is another repository's open issue (#129), never approve a feature, and read the roadmaps before
+  opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); the build
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
   #71): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no

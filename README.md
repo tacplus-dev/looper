@@ -1002,12 +1002,17 @@ artifacts `sbom.cdx.json` and `sbom.spdx.json`, beside `image`, and the generic 
 `X.Y.Z`, of tacplus-dev/build.
 
 **The nightly agent scan** (`repo-looper --scan`) reads the repository's latest findings (with `GITLAB_TOKEN`) into its
-run directory, and its prompt's first item files each new, unaccepted finding that fails the policy or is HIGH or
-CRITICAL as a `bug` (the unchanged issue flow), and the other new ones as one issue.
+run directory, and its prompt's first item files the new, unaccepted findings that fail the policy or are HIGH or
+CRITICAL as `bug`s (the unchanged issue flow), one issue per cause, not per finding (looper#129): findings that share a
+fix (the same upstream issue, the same generated template, the same dependency bump) are one issue listing them all,
+its title the cause; the other new ones are one issue. A cause another repository's open issue fixes is filed with its
+`Blocked-by:` lines in the body from the start, so no report runs until that issue closes. The scan's other findings
+are filed the same way.
 
 ```sh
 looper-scan run | report | local DIR | sbom SOURCE DIR   # the jobs; local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them)
 tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM
+tests/repo-looper.test.sh    # scan-security-report: the scan reads the report; scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)
 ```
 
