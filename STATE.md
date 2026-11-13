@@ -42,7 +42,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-11 by lo
   naming only closed ones resumed, #46; a run that ends with its land
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
   that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one idle after its land
-  landed reports `landed`, with main's range, and stays approved for the next run to close, #37; one that ends with its land queued and no verdict is `land-pending`, held
+  landed reports `landed`, with main's range, and stays approved for the next run to close, #37; a run waiting on its
+  build, pending or running in tacplus-dev/build, is not idle until its verdict or `LOOPER_BUILD_WAIT` from its start, and one idle after its
+  build had no verdict within that wait is retried, not stuck, #133; one that ends with its land queued and no verdict is `land-pending`, held
   (`looper:landing`) until the manager's verdict, #70, a blocked one's land too, kept queued, and any other
   outcome leaves no `looper:landing`, nor does a manager wait on one with no land queued: it clears it, and says
   what holds it every `LOOPER_MANAGER_SAY`, #93;

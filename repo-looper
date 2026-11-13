@@ -117,8 +117,8 @@
 #
 # A finished or idle run ends (tacplus-dev/looper#8): a watchdog stops the model
 # when it went idle (no output and no change in the checkout for
-# LOOPER_IDLE_MINUTES; the issue gets a comment with its log tail and is
-# looper:stuck), and when the run is done (it closed the issue, or wrote its
+# LOOPER_IDLE_MINUTES, a land or a build of its pending not idle, looper#133;
+# the issue gets a comment with its log tail and is looper:stuck), and when the run is done (it closed the issue, or wrote its
 # Blocked-by outcome) and the model has not exited LOOPER_DONE_GRACE seconds
 # later. Every checkpoint also carries the run's record (prompt.md, the
 # claude.log tail) under .looper/, so a cancelled run still leaves its log.
@@ -131,7 +131,8 @@
 # ended with its land queued and no verdict yet (the manager lands it, and
 # the next run finishes the issue: looper#70), or that ended early having
 # made progress (a fix landed, a new step checkpointed; looper#34), or that went
-# idle after its fix landed (looper#37) says what is done and what is left and
+# idle after its fix landed (looper#37) or after its build had no verdict
+# within LOOPER_BUILD_WAIT of its start (looper#133) says what is done and what is left and
 # stays approved: the next run resumes from its branch. Anything else (idle
 # with nothing landed or queued, no progress) is looper:stuck, for a person.
 #
@@ -1082,11 +1083,9 @@ build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds]
   local t0="${4:-$(date +%s)}" end s v started="" fin now
   end="$(job_end)"
   while :; do
-    s="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$1/statuses?per_page=100" 2>/dev/null |
-         jq -c --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg p "/pipelines/$2" \
-           '[.[] | select(.context == $c and .creator.login == $who and (.target_url // "" | endswith($p)))]' 2>/dev/null)" || s=""
-    v="$(jq -r 'map(select(.state != "pending")) | first // empty | "\(.state): \(.description // "")"' <<<"${s:-[]}" 2>/dev/null)" || v=""
-    [[ -n "$started" ]] || started="$(epoch "$(jq -r 'map(.created_at // empty) | min // empty' <<<"${s:-[]}" 2>/dev/null)")"
+    s="$(build_statuses "$1" "$2")" || s=""
+    v="$(build_said "$s")" || v=""
+    [[ -n "$started" ]] || started="$(build_started "$s")"
     now="$(date +%s)"
     if [[ -n "$v" ]]; then
       fin="$(epoch "$(jq -r 'map(select(.state != "pending") | .created_at // empty) | first // empty' <<<"$s")")"
@@ -1108,6 +1107,47 @@ epoch() { [[ -z "$1" ]] || date -d "$1" +%s 2>/dev/null || true; } # ISO time
 build_times() { # triggered started|"" until ran|running url
   if [[ -n "$2" ]]; then echo "build times: $5: queued $(( $2 > $1 ? $2 - $1 : 0 )) s, $4 $(( $3 > $2 ? $3 - $2 : 0 )) s"
   else echo "build times: $5: queued $(( $3 - $1 )) s, not started"; fi
+}
+
+# The build pipeline id's commit statuses on sha, by the reader app, newest
+# first (a JSON array); its verdict among them ("<state>: <description>", or
+# nothing yet); its start, the first of them (epoch seconds, or nothing: still
+# queued for a runner).
+build_statuses() { # sha pipeline-id
+  gh api "repos/$LOOPER_ORG/$REPO/commits/$1/statuses?per_page=100" 2>/dev/null |
+    jq -c --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg p "/pipelines/$2" \
+      '[.[] | select(.context == $c and .creator.login == $who and (.target_url // "" | endswith($p)))]' 2>/dev/null
+}
+build_said() { jq -r 'map(select(.state != "pending")) | first // empty | "\(.state): \(.description // "")"' <<<"${1:-[]}" 2>/dev/null; } # statuses
+build_started() { epoch "$(jq -r 'map(.created_at // empty) | min // empty' <<<"${1:-[]}" 2>/dev/null)"; } # statuses
+
+# A build the run's model asked for that has not ended (looper#133): started,
+# with no verdict yet, queued in the build pool or running, and not past
+# LOOPER_BUILD_WAIT from its start, as --build counts it (build_verdict,
+# looper#128). A run waiting on one is not idle; one queued for a runner all
+# along is ended by the run's time limit, a retry. Each build's end is
+# recorded in its builds/<id>.ended: its verdict, or `no verdict within ...`
+# once its wait is over (build_capped). Statuses that cannot be read count as
+# none yet.
+build_pending() { # run-dir
+  local s b sha st v started rc=1
+  for s in "$1"/builds/*.started; do
+    [[ -f "$s" ]] || continue
+    b="${s%.started}"; [[ ! -e "$b.ended" ]] || continue
+    sha="$(sed -n 's/^sha=//p' "$b.taken" 2>/dev/null | head -n 1)"
+    st="$(build_statuses "$sha" "$(cut -d' ' -f1 "$s")")" || st=""
+    v="$(build_said "$st")" || v=""; started="$(build_started "$st")"
+    if [[ -n "$v" ]]; then echo "$v" > "$b.ended"
+    elif [[ -n "$started" ]] && (( $(date +%s) >= started + BUILD_WAIT )); then echo "no verdict within $(hours "$BUILD_WAIT") of its start" > "$b.ended"
+    else rc=0; fi
+  done
+  return "$rc"
+}
+# The run's last build ended with no verdict within LOOPER_BUILD_WAIT of its start: a run
+# idle after it waited out its build, which is a retry, never stuck.
+build_capped() { # run-dir
+  local e=("$1"/builds/*.ended)
+  [[ -f "${e[-1]}" ]] && grep -q '^no verdict' "${e[-1]}"
 }
 
 # The manager's gates on a pinned repository (looper#71): the rebased commit,
@@ -1922,8 +1962,9 @@ run_done() { # issue run-dir
 }
 
 # The watchdog, every LOOPER_WATCH_INTERVAL until killed: stops the model when
-# it went idle (no output, nothing changed in the checkout and no land of its
-# queued or running for LOOPER_IDLE_MINUTES), when its issue's run is done and it has not exited
+# it went idle (no output, nothing changed in the checkout, no land of its
+# queued or running and no build of its pending or running, looper#133, for
+# LOOPER_IDLE_MINUTES), when its issue's run is done and it has not exited
 # LOOPER_DONE_GRACE seconds later, or, polling every LOOPER_JOB_POLL in a
 # GitLab job, when GitLab no longer runs the issue run's job (looper#21): it
 # reports another status, or refuses the job's token after accepting it. An
@@ -1936,7 +1977,7 @@ watch_run() { # pid log run-dir [issue]
   while :; do
     sleep "$WATCH_INTERVAL" & z=$!; wait "$z"
     now="$(date +%s)"; s="$(stat -c %s "$2" 2>/dev/null || echo 0)"
-    if [[ "$s" != "$size" || -n "$(find "$CHECKOUT" -newer "$run/.active" -print -quit 2>/dev/null)" ]] || { [[ -n "$n" ]] && land_pending "$run"; }; then
+    if [[ "$s" != "$size" || -n "$(find "$CHECKOUT" -newer "$run/.active" -print -quit 2>/dev/null)" ]] || { [[ -n "$n" ]] && { land_pending "$run" || build_pending "$run"; }; }; then
       size="$s"; touch "$run/.active"
     elif (( now - $(stat -c %Y "$run/.active") >= IDLE )); then
       echo idle > "$run/stopped"; kill -TERM "$pid" 2>/dev/null; exit 0
@@ -2684,7 +2725,12 @@ $(sed 's/^/> /' "$run/step")"
   # one that cannot be read) is for a person; one naming only issues closed by
   # now resumes: nothing waits (looper#46).
   [[ ! -s "$run/outcome" ]] || progress=""
+  # A run idle after its build had no verdict within the wait (a build that
+  # ran that long, or hung) is retried, never stuck (looper#133).
+  local capped=""; [[ "$stopped" == idle ]] && build_capped "$run" && capped=1
   if [[ -n "$timed_out" ]]; then ended="The run reached its time limit ($(hours "$limit")) before finishing."
+  elif [[ -n "$capped" ]]; then
+    ended="The run's build had no verdict within $(hours "$BUILD_WAIT") of its start, and the run then went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ "$stopped" == idle && -n "$head_after" && -n "$progress" ]]; then
     ended="The run went idle after its fix landed: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ "$stopped" == idle ]]; then ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
@@ -2709,8 +2755,9 @@ This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run rec
     log "#$n: its outcome names only closed issues ($(paste -sd, - "$run/blockers-closed")); it resumes on the next pass"; return 0
   fi
   # A fix landed is progress however the run ended: one that went idle waiting
-  # on its land after the land was done is not stuck (looper#37).
-  if [[ -n "$timed_out" ]] || [[ -n "$progress" && ( "$stopped" != idle || -n "$head_after" ) ]]; then
+  # on its land after the land was done is not stuck (looper#37), nor one that
+  # waited out its build (looper#133).
+  if [[ -n "$timed_out" || -n "$capped" ]] || [[ -n "$progress" && ( "$stopped" != idle || -n "$head_after" ) ]]; then
     local more=""
     if [[ -n "$timed_out" ]]; then report "$n" timeout; more=" A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time."
     elif [[ -n "$head_after" ]]; then report "$n" landed

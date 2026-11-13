@@ -164,7 +164,8 @@ case "$url" in
   # app, linking the pipeline. $FIX/forge-status adds a success linking it too,
   # newer, by another creator: no verdict. $FIX/build-hold holds the build
   # (looper#128): `queued`, no runner has started it (no status); `running
-  # <ISO time>`, its first job started then (its pending status alone).
+  # <ISO time>`, its first job started then (its pending status alone);
+  # `<seconds>`, queued that long in the pool, then its verdict (looper#133).
   */projects/tacplus-dev%2Fbuild/trigger/pipeline)
     form="$(cat)"; v() { tr '&' '\n' <<<"$form" | sed -n "s/^$1=//p"; }
     sha="$(v 'inputs%5Bsha%5D')"; gates="$(v 'inputs%5Bgates%5D')"; base="$(v 'inputs%5Bbase%5D')"
@@ -184,6 +185,7 @@ case "$url" in
     case "$hold" in
       queued) ;;
       running\ *) st pending building "tacplus-reader[bot]" "${hold#running }" ;;
+      [0-9]*) ( sleep "$hold"; now="$(date -u +%FT%TZ)"; st "$state" "$desc" "tacplus-reader[bot]" ) < /dev/null > /dev/null 2>&1 & ;;
       *) st "$state" "$desc" "tacplus-reader[bot]"
          [[ ! -e "$FIX/forge-status" ]] || st success pass "tacplus-looper[bot]" ;;
     esac
@@ -2638,6 +2640,35 @@ manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=3600
 has "$(cat "$FIX/comments")" "alpha#4 The manager did not merge"; has "$(cat "$FIX/comments")" "no verdict within 1h of its start"
 [[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
 has "$OUT" "#4: not merged (exit 4)"; has "$OUT" " s, running 720"
+pass
+
+# A run waiting on its build, queued in the pool longer than the idle limit,
+# is not idle (looper#133): the watchdog leaves it alone until the verdict.
+scenario build-wait-not-idle
+pin_seed; build_model notes.md "the docs"; echo 8 > "$FIX/build-hold"
+run "${BUILDS[@]}" LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+has "$(cat "$FIX/build-4")" "verdict: success: pass: gates docs"; has "$(cat "$FIX/build-4")" "rc 0"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+lacks "$OUT" "idle (no output, no change)"
+lacks "$(labels alpha 4)" "looper:stuck"
+pass
+
+# A build with no verdict within LOOPER_BUILD_WAIT of its start ends the wait,
+# as --build counts it (looper#128); a run then idle is retried, never
+# looper:stuck.
+scenario build-capped-retry
+pin_seed; echo "running $(date -u -d '1 minute ago' +%FT%TZ)" > "$FIX/build-hold"
+cat >> "$FIX/claude.sh" <<'EOS'
+echo x > x.md && git add -A && git commit -qm "change x"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+sleep 30
+EOS
+run "${BUILDS[@]}" LOOPER_BUILD_WAIT=5 LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+has "$(cat "$FIX/build-4")" "no verdict within"; has "$(cat "$FIX/build-4")" "of its start"; has "$(cat "$FIX/build-4")" "rc 2"
+has "$OUT" "idle (no output, no change)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+c="$(cat "$FIX/comments")"
+has "$c" "had no verdict within"; has "$c" "stays approved"; lacks "$c" "Marked looper:stuck"
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------
