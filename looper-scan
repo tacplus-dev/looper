@@ -44,6 +44,8 @@ SEMGREP_CONFIG="${BUILD_SEMGREP_CONFIG:-p/default}"
 # clippy's security lints: denied, every other lint allowed.
 CLIPPY_LINTS="${BUILD_CLIPPY_LINTS:--A clippy::all -D clippy::correctness -D clippy::suspicious}"
 FINDSECBUGS="${BUILD_FINDSECBUGS:-/opt/scanners/findsecbugs-plugin.jar}"
+# SpotBugs' heap in MB (its -maxHeap); unset, it is sized to the job's memory.
+SPOTBUGS_MAXHEAP="${BUILD_SPOTBUGS_MAXHEAP:-}"
 # CodeQL (nightly and release): the bundle is fetched when a run needs it,
 # checked against its pinned checksum (it is 680 MB: not in the image).
 CODEQL_VERSION="${BUILD_CODEQL_VERSION:-2.27.3}"
@@ -79,6 +81,17 @@ notes=()
 tool_error() { # tool tree dir what
   if [[ "$3" == "$2" ]]; then problems+=("$1: $4"); else notes+=("$1: ${3#"$2"/}: not analyzed ($4)"); fi
   log "$1: $4 ($3)"
+}
+
+# Why a tool that failed did: the exception a JVM threw ("Exception in thread
+# ..."), else the last exception a log names (a Python traceback's), else its
+# last line; never the tail of a stack (looper#149).
+tool_cause() { # log
+  local l
+  l="$(grep -m1 '^Exception in thread ' "$1")" ||
+    l="$(grep -E '^(Caused by: )?[A-Za-z_][A-Za-z0-9_.$]*(Exception|Error)(: |$)' "$1" | tail -1)" || l=""
+  [[ -n "$l" ]] || l="$(tail -1 "$1")"
+  printf '%s' "$l"
 }
 
 need() { # tool
@@ -228,8 +241,7 @@ deny_run() { # manifest config raw: 0 when cargo-deny reported; else DENY_ERROR 
 deny_overlay() { # tree label
   local copy="$SCAN_WORK/cargo-overlay-$2" out
   [[ -f "$1/tacplus.yaml" && -n "$(ls -A "$BUILD_OUT/generated" 2>/dev/null)" ]] || return 1
-  out="$(sed -n 's/^output-dir:[[:space:]]*//p' "$1/tacplus.yaml" | head -1 | sed "s/[[:space:]]*#.*//; s/^[\"']//; s/[\"']$//; s:/*$::")"
-  [[ -n "$out" && "$out" != /* && "/$out/" != */../* ]] || return 1
+  out="$(inside_dir "$(tacplus_output_dir "$1/tacplus.yaml")")" || return 1
   if [[ ! -d "$copy" ]]; then
     mkdir -p "$copy/$out"
     (cd "$1" && tar --exclude=./.git -cf - .) | tar -xf - -C "$copy" && cp -a "$BUILD_OUT/generated/." "$copy/$out/" || return 1
@@ -310,7 +322,7 @@ tool_semgrep() { # tree label prefix
   local raw="$SCAN_OUT/raw/semgrep-$2.json" rc=0
   semgrep scan --config "$SEMGREP_CONFIG" --metrics=off --disable-version-check --json -o "$raw" -q "$1" \
     >/dev/null 2>"$SCAN_OUT/raw/semgrep-$2.log" || rc=$?
-  ((rc == 0)) || { tool_error semgrep "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/semgrep-$2.log")"; return 0; }
+  ((rc == 0)) || { tool_error semgrep "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/semgrep-$2.log")"; return 0; }
   norm "$SCAN_OUT/norm/semgrep-$2.json" '
     [.[0].results[]? | finding("semgrep"; "sast"; .check_id; [];
        (.extra.metadata.confidence as $c | {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}[.extra.severity] // "UNKNOWN" | unsure($c));
@@ -323,7 +335,7 @@ tool_gitleaks() { # tree label prefix
   local raw="$SCAN_OUT/raw/gitleaks-$2.json" rc=0
   # The tree, not .git: the commit's files are what it ships.
   gitleaks dir --no-banner --redact --exit-code 0 -f json -r "$raw" "$1" >/dev/null 2>"$SCAN_OUT/raw/gitleaks-$2.log" || rc=$?
-  ((rc == 0)) || { tool_error gitleaks "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/gitleaks-$2.log")"; return 0; }
+  ((rc == 0)) || { tool_error gitleaks "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/gitleaks-$2.log")"; return 0; }
   norm "$SCAN_OUT/norm/gitleaks-$2.json" '
     [.[0][]? | select(.File | ltrimstr($root + "/") | startswith(".git/") | not)
      | (.File | rel($root; $prefix)) as $f
@@ -339,7 +351,7 @@ tool_gosec() { # tree label prefix
   while read -r d; do
     i=$((i + 1)); raw="$SCAN_OUT/raw/gosec-$2-$i.json"
     if ! (cd "$d" && gosec -no-fail -fmt json -out "$raw" ./... >/dev/null 2>"$raw.log") || [[ ! -s "$raw" ]]; then
-      tool_error gosec "$1" "$d" "$(grep -m1 -i 'error' "$raw.log" || tail -1 "$raw.log")"; continue
+      tool_error gosec "$1" "$d" "$(grep -m1 -i 'error' "$raw.log" || tool_cause "$raw.log")"; continue
     fi
     norm "$SCAN_OUT/norm/gosec-$2-$i.json" '
       [.[0].Issues[]? | finding("gosec"; "sast"; .rule_id; ["CWE-" + (.cwe.id // "")]; (.confidence as $c | .severity | unsure($c)); true;
@@ -354,7 +366,7 @@ tool_bandit() { # tree label prefix
   local raw="$SCAN_OUT/raw/bandit-$2.json" rc=0
   bandit -q -r -f json -o "$raw" --exit-zero -x '*/.git/*,*/node_modules/*,*/.venv/*,*/target/*' "$1" \
     >/dev/null 2>"$SCAN_OUT/raw/bandit-$2.log" || rc=$?
-  ((rc == 0)) || { tool_error bandit "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/bandit-$2.log")"; return 0; }
+  ((rc == 0)) || { tool_error bandit "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/bandit-$2.log")"; return 0; }
   norm "$SCAN_OUT/norm/bandit-$2.json" '
     [.[0].results[]? | finding("bandit"; "sast"; .test_id; ["CWE-" + (.issue_cwe.id // "" | tostring)];
        (.issue_confidence as $c | {"HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}[.issue_severity] // "UNKNOWN" | unsure($c)); true;
@@ -379,7 +391,7 @@ tool_clippy() { # tree label prefix
       | unique_by(.where + .id)' \
       "$raw" --arg dir "$(rel_dir "$1" "$d" "$3")"
     if ((rc != 0)) && [[ "$(jq length "$SCAN_OUT/norm/clippy-$2-$i.json")" == 0 ]]; then
-      tool_error clippy "$1" "$d" "exited $rc: $(grep -m1 '^error' "$raw.log" || tail -1 "$raw.log")"
+      tool_error clippy "$1" "$d" "exited $rc: $(grep -m1 '^error' "$raw.log" || tool_cause "$raw.log")"
     fi
   done < <(projects "$1" Cargo.lock)
 }
@@ -394,17 +406,39 @@ JQ_SARIF='
      true; (($loc.artifactLocation.uri // "" | ltrimstr("file://") | rel($root; $prefix)) + ":" + ($loc.region.startLine // 0 | tostring));
      .message.text)]'
 
+# SpotBugs' heap in MB: SPOTBUGS_MAXHEAP, else three quarters of the job's
+# memory (its cgroup's limit, else the machine's), never under the launcher's
+# own 768, which kernel's analysis outgrew (looper#149).
+spotbugs_heap() {
+  local f b="" m
+  if [[ -n "$SPOTBUGS_MAXHEAP" ]]; then
+    [[ "$SPOTBUGS_MAXHEAP" =~ ^[1-9][0-9]*$ ]] || return 1
+    echo "$SPOTBUGS_MAXHEAP"; return 0
+  fi
+  for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+    b="$(cat "$f" 2>/dev/null)" && [[ "$b" =~ ^[0-9]{1,18}$ ]] && break
+    b=""
+  done
+  m="$(awk '$1 == "MemTotal:" { printf "%d", $2 * 1024 }' /proc/meminfo 2>/dev/null)" || m=""
+  [[ -n "$b" && ( -z "$m" || "$b" -lt "$m" ) ]] || b="${m:-0}"
+  m=$((b / 1048576 * 3 / 4))
+  echo $((m > 768 ? m : 768))
+}
+
 # The bytecode SpotBugs reads: every target/classes of the tree, which the
 # gates compiled (built/); this job compiles nothing (a build may run tacplus).
 tool_spotbugs() { # tree label prefix
   has_files "$1" '*.java' || return 0
   need spotbugs || return 0
-  local raw="$SCAN_OUT/raw/spotbugs-$2.sarif" classes=()
+  local raw="$SCAN_OUT/raw/spotbugs-$2.sarif" classes=() heap rc=0
   mapfile -t classes < <(find "$1" -path '*/target/classes' -type d -not -path '*/node_modules/*' | LC_ALL=C sort)
   if ((${#classes[@]} == 0)); then notes+=("spotbugs: $2: Java sources, but the gates compiled no target/classes"); return 0; fi
   [[ -f "$FINDSECBUGS" ]] || { problems+=("spotbugs: FindSecBugs is not at $FINDSECBUGS"); return 0; }
-  spotbugs -textui -quiet -effort:max -pluginList "$FINDSECBUGS" -sarif="$raw" "${classes[@]}" \
-    >/dev/null 2>"$SCAN_OUT/raw/spotbugs-$2.log" || { tool_error spotbugs "$1" "$1" "$(tail -1 "$SCAN_OUT/raw/spotbugs-$2.log")"; return 0; }
+  heap="$(spotbugs_heap)" || { problems+=("spotbugs: BUILD_SPOTBUGS_MAXHEAP '$SPOTBUGS_MAXHEAP' is not a size in MB"); return 0; }
+  log "spotbugs: $2: a heap of $heap MB"
+  spotbugs -textui -maxHeap "$heap" -quiet -effort:max -pluginList "$FINDSECBUGS" -sarif="$raw" "${classes[@]}" \
+    >/dev/null 2>"$SCAN_OUT/raw/spotbugs-$2.log" || rc=$?
+  ((rc == 0)) || { tool_error spotbugs "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/spotbugs-$2.log")"; return 0; }
   norm "$SCAN_OUT/norm/spotbugs-$2.json" "$JQ_SARIF" "$raw" --arg tool spotbugs --arg root "$1" --arg prefix "$3"
 }
 
@@ -412,13 +446,13 @@ tool_trivy() { # tree label prefix
   need trivy || return 0
   local raw="$SCAN_OUT/raw/trivy-$2.json" rc=0 ref i=0
   trivy fs -q --scanners vuln,misconfig --format json -o "$raw" "$1" 2>"$SCAN_OUT/raw/trivy-$2.log" || rc=$?
-  if ((rc != 0)); then tool_error trivy "$1" "$1" "exited $rc: $(tail -1 "$SCAN_OUT/raw/trivy-$2.log")"
+  if ((rc != 0)); then tool_error trivy "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/trivy-$2.log")"
   else norm "$SCAN_OUT/norm/trivy-$2.json" "$JQ_TRIVY" "$raw" --arg where "$3"; fi
   # The Dockerfiles' base images (by name: a private one it cannot read is not analyzed).
   while read -r ref; do
     i=$((i + 1)); raw="$SCAN_OUT/raw/trivy-$2-image-$i.json"; rc=0
     trivy image -q --scanners vuln --format json -o "$raw" "$ref" 2>"$raw.log" || rc=$?
-    if ((rc != 0)); then notes+=("trivy: image $ref: not analyzed ($(tail -1 "$raw.log"))"); continue; fi
+    if ((rc != 0)); then notes+=("trivy: image $ref: not analyzed ($(tool_cause "$raw.log"))"); continue; fi
     norm "$SCAN_OUT/norm/trivy-$2-image-$i.json" "$JQ_TRIVY" "$raw" --arg where "image $ref: "
   done < <(base_images "$1")
 }
@@ -469,7 +503,7 @@ tool_codeql() { # tree label prefix
            > "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1 ||
        ! codeql database analyze "$db" "codeql/$lang-queries" --format=sarif-latest --output="$raw" -q \
            >> "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1; then
-      tool_error codeql "$1" "$1" "$lang: $(tail -1 "$SCAN_OUT/raw/codeql-$2-$lang.log")"; continue
+      tool_error codeql "$1" "$1" "$lang: $(tool_cause "$SCAN_OUT/raw/codeql-$2-$lang.log")"; continue
     fi
     norm "$SCAN_OUT/norm/codeql-$2-$lang.json" "$JQ_SARIF" "$raw" --arg tool codeql --arg root "$1" --arg prefix "$3"
   done
@@ -613,7 +647,7 @@ scan_tree() { # src previous-findings started
   skip_generated_tree "$src"
   if need syft; then
     syft scan -q "dir:$src" -o "cyclonedx-json=$SCAN_OUT/sbom.cdx.json" -o "spdx-json=$SCAN_OUT/sbom.spdx.json" 2>"$SCAN_OUT/raw/syft.log" ||
-      problems+=("syft: $(tail -1 "$SCAN_OUT/raw/syft.log")")
+      problems+=("syft: $(tool_cause "$SCAN_OUT/raw/syft.log")")
   fi
 
   # The exceptions, the policy, the comparison.
@@ -659,21 +693,50 @@ scan_tree() { # src previous-findings started
   scan_verdict pass
 }
 
-# A service's generated tree (looper#108): the output-dir of the tacplus.yaml
-# at its root, as a path prefix ("tacplus/") in SCAN_GEN; none without one,
-# or with one that is not a directory inside the tree.
-SCAN_GEN=""
+# A top-level scalar of a YAML file, unquoted, without its comment.
+yaml_scalar() { # file key
+  local v
+  v="$(sed -nE "s/^$2:[[:space:]]*//p" "$1" | head -1 | sed -E 's/(^|[[:space:]]+)#.*$//; s/[[:space:]]+$//')"
+  [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]] && v="${BASH_REMATCH[1]}"
+  printf '%s' "$v"
+}
+
+# The output-dir a tacplus config names: its own, else that of the config it
+# imports, resolved relative to it (tacplus docs/USER.md: Config Composition).
+tacplus_output_dir() { # config
+  local f="$1" v i
+  for ((i = 0; i < 8; i++)); do
+    v="$(yaml_scalar "$f" output-dir)"; [[ -z "$v" ]] || { printf '%s' "$v"; return 0; }
+    v="$(yaml_scalar "$f" import)"; [[ -n "$v" ]] || return 0
+    [[ "$v" == /* ]] || v="$(dirname "$f")/$v"
+    [[ -f "$v" ]] || return 0
+    f="$v"
+  done
+}
+
+# A path relative to a directory, without ./ or trailing /; fails when it is
+# not a directory inside it.
+inside_dir() { # path
+  local d="${1#./}"
+  while [[ "$d" == */ ]]; do d="${d%/}"; done
+  [[ -n "$d" && "$d" != . && "$d" != /* && "/$d/" != */../* ]] || return 1
+  printf '%s' "$d"
+}
+
+# A service's generated trees (looper#108, looper#149): the output-dir of
+# every tacplus.yaml in the tree (a service's, a client subproject's), each
+# relative to its config, as path prefixes ("tacplus/") in SCAN_GEN; none of
+# a config without one, or with one that is not a directory inside it.
+SCAN_GEN=()
 generated_tree() { # src
-  local d
-  SCAN_GEN=""
-  [[ -f "$1/tacplus.yaml" ]] || return 0
-  d="$(sed -nE 's/^output-dir:[[:space:]]*//p' "$1/tacplus.yaml" | head -1 | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//')"
-  [[ "$d" =~ ^\"(.*)\"$ || "$d" =~ ^\'(.*)\'$ ]] && d="${BASH_REMATCH[1]}"
-  d="${d#./}"; d="${d%/}"
-  if [[ -z "$d" || "$d" == . || "$d" == /* || "/$d/" == */../* ]]; then
-    notes+=("tacplus.yaml: output-dir '$d' is not a directory inside the tree: its generated code is counted"); return 0
-  fi
-  SCAN_GEN="$d/"
+  local p rel d
+  SCAN_GEN=()
+  while read -r p; do
+    rel="${p#"$1"}"; rel="${rel#/}"; rel="${rel:+$rel/}"
+    if d="$(inside_dir "$(tacplus_output_dir "$p/tacplus.yaml")")"; then SCAN_GEN+=("$rel$d/")
+    else notes+=("${rel}tacplus.yaml: output-dir '$(tacplus_output_dir "$p/tacplus.yaml")' is not a directory inside its project: its generated code is counted")
+    fi
+  done < <(projects "$1" tacplus.yaml)
 }
 
 # The code tacplus generates is tacplus's (looper#108): a service's SAST
@@ -681,21 +744,23 @@ generated_tree() { # src
 # (security/generated.json), not counted, since tacplus scans its generated
 # output itself, at the source (its `generated` recipe). Its dependencies are
 # still checked (SCA), as is everything a `generated` recipe gives.
+scan_gen_list() { printf '%s\n' "${SCAN_GEN[@]}" | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g'; }
 skip_generated_tree() { # src
   local f
   generated_tree "$1"
-  [[ -n "$SCAN_GEN" ]] || return 0
-  local parts=()
+  ((${#SCAN_GEN[@]})) || return 0
+  local parts=() g
+  g="$(printf '%s\n' "${SCAN_GEN[@]}" | jq -R . | jq -sc .)"
   for f in "$SCAN_OUT"/norm/*-source.json "$SCAN_OUT"/norm/*-source-*.json; do
     [[ -f "$f" ]] || continue
-    jq --arg g "$SCAN_GEN" '[.[] | select((.kind == "sast" or .kind == "secret") and (.where | startswith($g)))]' "$f" > "$f.gen"
-    jq --arg g "$SCAN_GEN" '[.[] | select((.kind == "sast" or .kind == "secret") and (.where | startswith($g)) | not)]' "$f" > "$f.tmp"
+    jq --argjson g "$g" '[.[] | select((.kind == "sast" or .kind == "secret") and (.where as $w | any($g[]; . as $p | $w | startswith($p))))]' "$f" > "$f.gen"
+    jq --argjson g "$g" '[.[] | select((.kind == "sast" or .kind == "secret") and (.where as $w | any($g[]; . as $p | $w | startswith($p))) | not)]' "$f" > "$f.tmp"
     mv "$f.tmp" "$f"; parts+=("$f.gen")
   done
   ((${#parts[@]})) || parts=(/dev/null)
   jq -s '[.[][]] | unique_by([.tool, .id, .where]) | sort_by(.tool, .id, .where)' "${parts[@]}" > "$SCAN_OUT/generated.json"
   rm -f "$SCAN_OUT"/norm/*.gen
-  log "the generated tree ($SCAN_GEN): $(jq length "$SCAN_OUT/generated.json") SAST finding(s) and secret(s) not counted (tacplus's to scan)"
+  log "the generated tree ($(scan_gen_list)): $(jq length "$SCAN_OUT/generated.json") SAST finding(s) and secret(s) not counted (tacplus's to scan)"
 }
 
 # The same checks on a directory, as a build would run them on its commit:
@@ -742,8 +807,8 @@ write_summary() { # blocking
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
-  if [[ -n "$SCAN_GEN" ]]; then
-    echo; echo "### Not counted: the generated tree ($SCAN_GEN)"
+  if ((${#SCAN_GEN[@]})); then
+    echo; echo "### Not counted: the generated tree ($(scan_gen_list))"
     jq -r 'length as $n | "\($n) SAST finding(s) and secret(s) in the code tacplus generates (security/generated.json): tacplus scans its generated output at the source; its dependencies are checked here (looper#108)."
            , (group_by(.tool + " " + .id)[] | "- \(.[0].tool) \(.[0].id): \(length)")' "$SCAN_OUT/generated.json"
   fi

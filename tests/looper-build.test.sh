@@ -154,6 +154,17 @@ scan_commit scanbadexc "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-
 scan_commit scangen tacplus.yaml 'language: go
 output-dir: "tacplus"
 src: proto' .gitignore 'tacplus/'
+# Two tacplus configs (looper#149): the root's output-dir from the base it
+# imports, a client subproject's its own; server/ is the service's own codegen.
+scan_commit scangen2 tacplus.yaml 'import: config/tacplus-base.yaml  # the shared fields
+pkg: com.example.demo' config/tacplus-base.yaml 'language: java
+output-dir: tacplus/target/generated-sources/' client/tacplus.yaml "language: go
+output-dir: 'gen'" .gitignore 'target/
+client/gen/'
+# A Java project: SpotBugs reads the target/classes the gates compiled.
+scan_commit scanjava src/main/java/demo/Main.java 'package demo;
+
+public class Main { public static void main(String[] a) { } }' .gitignore 'target/'
 scan_commit scanpod k8s/pod.yaml 'apiVersion: v1
 kind: Pod
 metadata:
@@ -1094,6 +1105,65 @@ blocking | grep -qxF 'gosec G402 tacplus/chassis/tlsconf/tls.go:7' || fail "$(bl
 mkdir -p "$TMP/out-$((n + 1))/generated/tacplus"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/tacplus/keys.txt"
 if scan BUILD_SHA="${SHA[scangen]}" -- run 2>"$TMP/err"; then fail "the output of a generated recipe passed"; fi
 blocking | grep -q '^gitleaks generated/tacplus/keys.txt:aws-access-token:1 ' || fail "$(blocking)"
+pass
+
+NAME="security: the generated trees are every tacplus.yaml's output-dir, through its import; a service's own codegen is counted"
+for d in tacplus/target/generated-sources/chassis client/gen/chassis server/target/generated-sources/tacplus-backend; do
+  mkdir -p "$TMP/out-$((n + 1))/built/$d"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/built/$d/keys.txt"
+done
+if scan BUILD_SHA="${SHA[scangen2]}" -- run 2>"$TMP/err"; then fail "the service's own codegen passed"; fi
+[[ "$(blocking)" == "gitleaks server/target/generated-sources/tacplus-backend/keys.txt:aws-access-token:1 server/target/generated-sources/tacplus-backend/keys.txt:1" ]] ||
+  fail "blocking: $(blocking)"
+[[ "$(jq -r '[.[] | select(.tool == "gitleaks") | .where] | join(" ")' "$OUT/security/generated.json")" == \
+   "client/gen/chassis/keys.txt:1 tacplus/target/generated-sources/chassis/keys.txt:1" ]] ||
+  fail "not kept aside: $(cat "$OUT/security/generated.json" 2>&1)"
+grep -qxF '### Not counted: the generated tree (client/gen/, tacplus/target/generated-sources/)' "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+pass
+
+# SpotBugs (looper#149): a stub that records how it ran, and throws as the
+# real one did on kernel (its heap exhausted writing the SARIF) when told to.
+JB="$TMP/scanbin-java"; mkdir -p "$JB"; : > "$TMP/findsecbugs.jar"
+cat > "$JB/spotbugs" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == -version ]] && { echo 4.10.5; exit; }
+$(opt -sarif)
+echo "spotbugs \$*" >> "$TMP/spotbugs.log"
+if [[ -n "\${SPOTBUGS_THROW:-}" ]]; then
+  printf 'Out of memory\nTotal memory: 805M\n free memory: 169M\nAnalyzed: %s\n' "\$tree" >&2
+  printf 'Exception in thread "main" java.lang.OutOfMemoryError: Java heap space\n' >&2
+  printf '\tat edu.umd.cs.findbugs.sarif.SarifBugReporter.finish(SarifBugReporter.java:43)\n' >&2
+  printf '\tat edu.umd.cs.findbugs.FindBugs2.analyzeApplication(FindBugs2.java:1166)\n' >&2
+  printf '\tat edu.umd.cs.findbugs.FindBugs2.main(FindBugs2.java:1232)\n' >&2
+  exit 1
+fi
+echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"SpotBugs","rules":[]}},"results":[]}]}' > "\$out"
+EOF
+chmod +x "$JB/spotbugs"
+JAVA_SCAN=(PATH="$JB:$TMP/bin:$( ((REAL_SCAN)) || echo "$SB:")$PATH" BUILD_FINDSECBUGS="$TMP/findsecbugs.jar")
+scan_java() { # [VAR=value...]: scan the Java project, its classes compiled
+  mkdir -p "$TMP/out-$((n + 1))/built/target/classes/demo"; : > "$TMP/out-$((n + 1))/built/target/classes/demo/Main.class"
+  : > "$TMP/spotbugs.log"
+  scan "${JAVA_SCAN[@]}" BUILD_SHA="${SHA[scanjava]}" "$@" -- run 2>"$TMP/err"
+}
+
+NAME="security: SpotBugs' heap is sized to the job's memory, or BUILD_SPOTBUGS_MAXHEAP"
+scan_java || fail "$(cat "$OUT/security/verdict")"
+heap="$(sed -nE 's/^spotbugs .*-maxHeap ([0-9]+) .*/\1/p' "$TMP/spotbugs.log")"
+[[ -n "$heap" ]] && ((heap >= 768)) || fail "SpotBugs ran with no heap of at least 768 MB: $(cat "$TMP/spotbugs.log")"
+grep -q ' [^ ]*/target/classes$' "$TMP/spotbugs.log" || fail "not on the classes: $(cat "$TMP/spotbugs.log")"
+scan_java BUILD_SPOTBUGS_MAXHEAP=6144 || fail "$(cat "$OUT/security/verdict")"
+grep -q '^spotbugs .*-maxHeap 6144 ' "$TMP/spotbugs.log" || fail "not the heap asked for: $(cat "$TMP/spotbugs.log")"
+if scan_java BUILD_SPOTBUGS_MAXHEAP=6g; then fail "passed with a heap that is no size"; fi
+scan_verdict_is "fail: spotbugs: BUILD_SPOTBUGS_MAXHEAP '6g' is not a size in MB"
+[[ ! -s "$TMP/spotbugs.log" ]] || fail "SpotBugs ran: $(cat "$TMP/spotbugs.log")"
+pass
+
+NAME="security: a tool that throws fails the run with its exception's first line, not its stack's last"
+if scan_java SPOTBUGS_THROW=1; then fail "passed"; fi
+scan_verdict_is 'fail: spotbugs: exited 1: Exception in thread "main" java.lang.OutOfMemoryError: Java heap space'
+grep -qxF -- '- spotbugs: exited 1: Exception in thread "main" java.lang.OutOfMemoryError: Java heap space' "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
 pass
 
 # cargo-deny on a service whose Cargo.toml path-depends on the crates its
