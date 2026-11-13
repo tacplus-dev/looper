@@ -47,6 +47,7 @@ Done (moved from Next on 2026-11-05):
 - A build nobody waits for any more does not run its gates (#130). Agent, at Jody's request, 2026-11-11.
 - A land whose only conflict is STATE.md lands its code and sends back only its STATE.md commit (#131). Agent, at Jody's request, 2026-11-11.
 - Each repository's nightly scan checks STATE.md's Blocked on against the issues' states (#132). Agent, at Jody's request, 2026-11-11.
+- A build runs once per repository, commit and gate set: a green or in-flight build is reused, and a land whose tree a green build already checked merges on that verdict (#134). Agent, at Jody's request, 2026-11-12.
 ## Later
 - A protected release line with review, instead of pushing to main (README)
 - Doppelganger decides resource requests (more loopers, new repositories) instead of fixed rules (README)
