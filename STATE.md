@@ -74,7 +74,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
   #71): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
-  tacplus project: the looper's pins the looper image by digest, #71), no agent, read-only
+  tacplus project: the looper's pins the looper image by digest, #71; a `tacplus.lock` project's gates and verify run
+  with the image's own tacplus, `TACPLUS_BIN=tacplus`, once the job's image is checked to be the pin, #137), no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status (a manager waits
   `LOOPER_BUILD_WAIT` from the build's start, never its trigger; a build with no verdict by its job's end leaves the
   land queued and its pipeline, on the build's branch, for the next manager to take up; the recap has each manager's
