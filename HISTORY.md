@@ -79,3 +79,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-08 looper issue looper-token mints report and manager tokens without workflows: write, so the App's grant never reaches a push (#106)
 - 2026-11-13 looper issue Idle watchdog stops a run that is waiting on its queued build and marks it looper:stuck (kernel#51) (#133)
 - 2026-11-13 looper issue Control jobs starve behind reports: the plan waited 1h40m for a slot, and hourly kicks piled up 5 deep in their resource group (#104)
+- 2026-11-13 looper issue Builds of kernel and eventbus always fail: their gates run tools/tacplus.sh, which needs Docker, inside the build image (#137)
