@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **looper-trace's generated tree as tacplus writes it** (2026-11-14, #152): looper-scan now takes a service's
+  generated tree as tacplus's runner does (the `output-name`, default `model`, in the `output-dir`, through `import:`),
+  but looper-trace's `output_dirs` still prunes the bare `output-dir`: operator's `output-dir: .` prunes nothing
+  (its `tacplus/` is left to the `Code generated` header check). Why: one reading of the tree for both tools; low
+  stakes while every generated file carries the header. Its test: operator's layout in `tests/looper-trace.test.sh`.
 - **The logs unioned on a report's resume too** (2026-11-07, #105): the manager's rebase now unions PROPOSALS.md
   and HISTORY.md (`LOG_ATTRS`), but a report resuming from its branch (`resume`) still rebases it on main
   with plain git: a branch whose only conflict is a PROPOSALS.md append falls back to main merged in, its conflict

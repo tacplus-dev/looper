@@ -972,9 +972,9 @@ finding; an exception for one goes in `security-exceptions.yaml` like any other 
 needs no scan of its own for them.
 
 cargo-deny reads the build's graph with `cargo metadata`, which needs every path dependency's manifest: a service
-whose `Cargo.toml` path-depends on the crates its gates generate (its tacplus.yaml `output-dir`, gateway's
+whose `Cargo.toml` path-depends on the crates its gates generate (its tacplus.yaml's generated tree, gateway's
 `target/generated-sources/model`) has them from `built/`; without them, cargo-deny runs on a copy of the tree with the
-gates' `generated/` laid at the `output-dir`, and failing that on the `Cargo.lock`'s crates alone (each pinned, from
+gates' `generated/` laid at that tree, and failing that on the `Cargo.lock`'s crates alone (each pinned, from
 crates.io or git), which the summary lists under "Not analyzed, or in part" with why (looper#126). A tool that
 cannot run says why in the verdict (cargo-deny: cargo's own error).
 
@@ -983,8 +983,10 @@ code (the service repositories: kernel's `codegen/`, ...) has it scanned with th
 it out of the tree (tacplus's cross-test models) gives it with a `generated` recipe: after `just gates` passes, the gates job runs
 `just generated <dir>` and keeps `<dir>` as its artifact `generated/`, and the security job scans it as a second tree
 (its findings' `where` start with `generated/`). The recipe may not change a tracked file. A service's own checkout
-holds the code tacplus generates for it at the `output-dir` of each `tacplus.yaml` in the tree (the root's, a client
-subproject's; an `import:`ed base config's when the file names none), and that code is tacplus's to scan at the source
+holds the code tacplus generates for it in the generated tree of each `tacplus.yaml` in the tree (the root's, a client
+subproject's): its `output-name` (default `model`) in its `output-dir`, unless the `output-dir` already ends in it, as
+tacplus writes it (looper#152: operator's `output-dir: .` with `output-name: tacplus` is `tacplus/`), each field the
+`import:`ed base config's when the file names none; and that code is tacplus's to scan at the source
 (looper#108): its SAST findings and secrets are kept aside in `security/generated.json`, not counted, and its
 dependencies are still checked. Code a service's own generator writes (kernel's codegen,
 `server/target/generated-sources/tacplus-backend`) is the service's code, and is counted (looper#149).
@@ -995,14 +997,15 @@ the run with the exception's first line (`Exception in thread "main" java.lang.O
 line of its stack.
 
 **A service's generated tree is tacplus's to scan** (looper#108). The code tacplus generates into a service (the
-`output-dir` of the `tacplus.yaml` at its root: `tacplus/`, `target/generated-sources`) is the same in every
+generated tree of the `tacplus.yaml` at its root: `tacplus/`, `target/generated-sources/model`) is the same in every
 service, and only tacplus can fix it. So a service's SAST findings and secrets there (gosec, gitleaks, Semgrep,
 clippy, any SAST tool) are not counted: they are kept aside in `security/generated.json` and summed up in the summary
 ("Not counted: the generated tree"), and no service writes exceptions for them. Everything else in that tree is still
 checked: its dependencies (SCA: OSV-Scanner, govulncheck, cargo-deny's advisories, licenses, sources and bans). tacplus
 scans its generated output once, at the source: its `generated` recipe's output (above) is counted in full, with
 tacplus's own `security-exceptions.yaml`. A repository with no `tacplus.yaml` at its root (tacplus itself), or one
-whose `output-dir` is not a directory inside the tree, has nothing skipped.
+that names no `output-dir` or whose generated tree is not a directory inside the tree, has nothing skipped (a note
+says so).
 
 **Policy.** A run fails on:
 
