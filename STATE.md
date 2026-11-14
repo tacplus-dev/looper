@@ -80,7 +80,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); the build
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
-  #71): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
+  #71, and `wait`: the requester's wait, past which a gates job writes `abandoned` and runs no gates, #130;
+  repo-looper does not pass it yet, until tacplus-dev/cloud pins the build project's CI file at a commit declaring it): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
   tacplus project: the looper's pins the looper image by digest, #71; a `tacplus.lock` project's gates and verify run
   with the image's own tacplus, `TACPLUS_BIN=tacplus`, once the job's image is checked to be the pin, #137), no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status (a manager waits
