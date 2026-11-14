@@ -4,6 +4,8 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+<<<<<<< HEAD
+=======
 - **The image's revision baked in, so a job knows the image it runs** (2026-11-14, #153): a manager or verdict job
   now ends between lands once `ghcr.io/tacplus-dev/looper:main` names another digest than it read at its start, but
   that first read stands for the image the runner pulled moments before: an image published between the pull and
@@ -13,6 +15,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   its own digest exactly (`ghcr.io/tacplus-dev/looper:main-<sha7>`'s) and compare that with `:main`'s, closing the
   window; a job whose image has no revision keeps today's first read. The same revision would let the recap's stale
   image item (#58) and the plan's image by digest (#115) name the commit a running job is on.
+>>>>>>> origin/main
 - **The security tests' stub branch run by the gates too** (2026-11-14, #154): `tests/looper-build.test.sh`'s
   security section runs with the real scanners where they are (the looper image: every land's gates) and with its
   stubs where they are not (GitHub's `ubuntu-24.04-arm`: the `image` workflow's Test step, the only place the stubs
