@@ -53,7 +53,9 @@
 #       looper image (LOOPER_RECAP_IMAGE, ghcr.io/tacplus-dev/
 #       looper:main) against main's head (looper#58): its revision label, the
 #       commits of main not in it and the latest image workflow run; stale for
-#       LOOPER_RECAP_IMAGE_HOURS (2) is over. Per runner: the VMs its jobs
+#       LOOPER_RECAP_IMAGE_HOURS (2) is over. It compares digests too: at
+#       main's head it is current only as main-<sha7>'s build, the attested
+#       build the pipelines run by digest (looper#115). Per runner: the VMs its jobs
 #       ran on, the jobs that failed before one was ready, the prepare times
 #       (boot to ready: every job has a fresh VM, looper#42) and the disk use the
 #       jobs logged at their end. GitHub Actions runs of the workflows named like
@@ -1097,25 +1099,48 @@ def actions(start, until, sources, items):
 
 def image_check(until, sources, items):
     """The looper image's revision against main's head (looper#58): a stale
-    image, its missing commits and the latest image workflow run."""
+    image, its missing commits and the latest image workflow run. Its digest
+    against main-<sha7>'s, the attested build of main's head the pipelines run
+    by digest (looper#115): at the head, another digest is not current."""
     ref = ENV.get("LOOPER_RECAP_IMAGE", "ghcr.io/tacplus-dev/looper:main")
     repo = ENV.get("LOOPER_RECAP_IMAGE_REPO", "tacplus-dev/looper")
     if not ref:
         sources["image"] = "not configured"
         return None
+
+    def digest(r):
+        return json.loads(run(["docker", "buildx", "imagetools", "inspect", r, "--format", "{{json .Manifest}}"]))["digest"]
     try:
         got = json.loads(run(["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Image}}"]))
         # One platform's image, or a map of the platforms' (the same revision each).
         imgs = [got] if "config" in got else [got[k] for k in sorted(got)]
         revs = sorted({((i.get("config") or {}).get("Labels") or {}).get("org.opencontainers.image.revision") or "" for i in imgs})
         rev = revs[0] if len(revs) == 1 else ""
+        dig = digest(ref)
         head = json.loads(run(["gh", "api", f"repos/{repo}/commits/main"]))["sha"]
     except (Unreadable, ValueError, KeyError, TypeError, AttributeError) as e:
         sources["image"] = f"unavailable: {e}"
         return None
     sources["image"] = "ok"
-    out = {"ref": ref, "revision": rev or None, "main": head, "current": rev == head, "missing": [], "latest_run": None}
+    # The same repository's main-<sha7> (looper#115); not found: not built yet.
+    name = ref.split("@")[0]
+    name = name.rsplit(":", 1)[0] if ":" in name.rsplit("/", 1)[-1] else name
+    tag = f"main-{head[:7]}"
+    try:
+        hdig = digest(f"{name}:{tag}")
+    except (Unreadable, ValueError, KeyError, TypeError) as e:
+        hdig = None
+        if "not found" not in str(e):
+            sources["image"] = f"partial: {e}"
+    out = {"ref": ref, "revision": rev or None, "main": head, "digest": dig, "head_digest": hdig,
+           "current": rev == head and dig == hdig, "missing": [], "latest_run": None}
     if rev == head:
+        if not out["current"]:
+            items.append({"key": f"image/{repo}", "count": 1, "over": True, "recovered": False, "wait_hours": 0,
+                          "summary": f"{ref} is not the build of main's head: its digest {dig[:19]} against "
+                                     + (f"{tag}'s {hdig[:19]}" if hdig else f"{tag} not built")
+                                     + "; the pipelines run main's attested build by digest (looper#115)",
+                          "evidence": []})
         return out
     try:
         if rev:
@@ -1316,9 +1341,18 @@ def report(night, classes, sdir, cov):
                  + f"; the longest [{c['longest']['minutes']} min]({c['longest']['url']})."))
     im = night.get("image")
     if im:
-        L.append(f"Image: {im['ref']} " + ("is at main's head." if im["current"] else
-                 f"is {len(im['missing'])} commit{'s' * (len(im['missing']) != 1)} behind main ({(im['revision'] or 'no revision')[:12]} against {im['main'][:12]})"
-                 + (f"; the latest image run: [{im['latest_run']['conclusion'] or im['latest_run']['status']}]({im['latest_run']['url']})" if im.get("latest_run") else "") + "."))
+        tag, dig = f"main-{im['main'][:7]}", (im.get("digest") or "no digest")[:19]
+        if im["current"]:
+            st = f"is main's head's build ({dig})."
+        elif im["revision"] == im["main"]:
+            # At the head, another build's digest (looper#115).
+            st = (f"is at main's head ({im['main'][:12]}) but not its build: {dig} against "
+                  + (f"{tag}'s {im['head_digest'][:19]}" if im.get("head_digest") else f"{tag} not built")
+                  + "; the pipelines run main's attested build by digest (looper#115).")
+        else:
+            st = (f"is {len(im['missing'])} commit{'s' * (len(im['missing']) != 1)} behind main ({(im['revision'] or 'no revision')[:12]} against {im['main'][:12]})"
+                  + (f"; the latest image run: [{im['latest_run']['conclusion'] or im['latest_run']['status']}]({im['latest_run']['url']})" if im.get("latest_run") else "") + ".")
+        L.append(f"Image: {im['ref']} {st}")
     mds = night.get("models") or {}
     L.append("Models: " + ("; ".join(
         f"{md_} {d['runs']} run{'s' * (d['runs'] != 1)}, {d['tokens']['total']:,} tokens (input {d['tokens']['input']:,},"

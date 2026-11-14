@@ -90,8 +90,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   bumped by hand (a reviewed commit, then the hub's copy into each GitLab project), so a change to `looper-dispatch` or
   the kicker takes effect only after both. A `looper-dispatch pin` that writes main's newest attested digest into them
   (verified as the plan verifies it), run by the hub before its copy, would keep them current without trusting a tag.
-  The first bump is due once `image.yml` attests (#115's second land): the pinned build (eea43fc's) predates #115, so
-  its plan still gives its jobs `:main`; a bump before an attested build exists would fail every plan.
+  The pin is main's first attested build (#115's last land, 2026-11-14); every bump since is by hand, and a pin that
+  predates #115 (a plan on `:main`) or names an unattested build fails `plan-image` or every plan.
 - **The image's release tags guarded as main is** (2026-11-10, #115): `image.yml` builds a `vX.Y.Z` tag only at a
   commit of main, but a report's token (contents: write) may push a tag, and main's ruleset names no tag; a tag
   ruleset (only the manager creates `v*`) would close it, and `gh attestation verify` of a release could then require

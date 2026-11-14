@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub
-# (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper:main); this project only runs them, on the
+# (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper); this project only runs them, on the
 # autoscaled runner registered to the tacplus-dev group. `looper-plan` lists the ready issues across
 # tacplus-dev and writes a child pipeline with a report job per ready issue, every one (no
 # per-repository cap, looper#107), and each such repository's manager (`looper-dispatch plan`, the code
@@ -16,7 +16,7 @@ stages:
   - run
 
 # The tacplus-dev loopers (github.com/tacplus-dev/looper, image
-# ghcr.io/tacplus-dev/looper:main). Every clone and build happens here, on the
+# ghcr.io/tacplus-dev/looper). Every clone and build happens here, on the
 # autoscaled runner, and nothing runs on the Mac (Jody 2026-10-29): the kicker
 # schedule's `looper-kick` below starts this pipeline through the API when a
 # repository has a ready issue and no looper job of its own. Nothing is passed
@@ -48,6 +48,11 @@ stages:
 # so up to 11h, a manager's 11h; the project's maximum job timeout allows it
 # (tacplus-dev/looper#7).
 #
+# The looper image by digest, never a tag (looper#115): GitHub runs a pushed
+# branch's own copy of image.yml, which could push :main. This file's jobs run
+# the digest it names, a reviewed change like build.lock's; the plan's jobs the
+# attested build of main's head, which looper-dispatch plan verifies.
+#
 # FLEET_ID_TOKEN is the job's GitLab OIDC identity for our fleet (looper
 # identity in roadmap/items/looper-hierarchy.md): to be exchanged at the
 # kernel's cloud-auth facade for a platform token. Nothing consumes it yet;
@@ -77,7 +82,7 @@ stages:
 
 looper-plan:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper:main
+  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
   tags: [arm64, autoscale]
   retry:
     max: 2
@@ -128,7 +133,7 @@ looper-run:
 # that waited for a runner do not run their hours back to back.
 looper-kick:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper:main
+  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
   tags: [arm64, autoscale]
   needs: []
   rules:
@@ -152,7 +157,7 @@ looper-kick:
 # after the setup and whenever the ruleset or the apps change.
 looper-ruleset-probe:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper:main
+  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
   tags: [arm64, autoscale]
   needs: []
   rules:
@@ -176,7 +181,7 @@ looper-ruleset-probe:
 # expected one, and says why (gcloud's own error, its class).
 looper-token-diagnose:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper:main
+  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
   tags: [arm64, autoscale]
   needs: []
   rules:

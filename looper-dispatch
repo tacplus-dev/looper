@@ -9,7 +9,8 @@
 # pipeline when a tacplus-dev repository has a ready issue no report job holds
 # (however many reports it has: no per-repository cap, looper#107), or commits
 # queued to land (an issue labelled looper:landing) and no manager job; the pipeline's
-# plan runs repo-looper in ghcr.io/tacplus-dev/looper:main. The nightly scan
+# plan runs repo-looper in ghcr.io/tacplus-dev/looper, by the digest of main's
+# attested build (looper#115). The nightly scan
 # is its other schedule.
 #
 #   looper-dispatch run                one pass: start the pipeline if a repository needs it
@@ -212,7 +213,8 @@ pass() {
 # the jobs' too. With none to plan, one job that says so: a child pipeline has
 # at least one.
 plan() {
-  local jobs ready repo n t v any="" image="${LOOPER_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}"
+  local jobs ready repo n t v any="" image
+  image="$(job_image)" || exit 1
   printf 'variables:\n  GIT_STRATEGY: none\n  LOOPER_WORK: /builds/looper\n'
   for v in GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL; do
     [[ -z "${!v:-}" ]] || printf '  %s: %s\n' "$v" "${!v}"
@@ -258,6 +260,36 @@ plan() {
   fi
   [[ -n "$any" ]] || printf 'looper-none:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "no repository with a ready issue is free"\n' \
     "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"
+}
+
+# The image the plan's jobs run (looper#115): the looper image by digest,
+# never a tag, the attested build of main's newest commit that has one, main's
+# head once its image is built. GitHub runs a pushed branch's own copy of
+# image.yml, which could push any tag: an attestation names the commit and
+# the ref it was built from and the workflow that built it, so `gh attestation
+# verify` takes main-<sha7> only as main's image.yml built it from that commit
+# of main. None in main's last 20 commits fails the plan: never a tag.
+# LOOPER_JOB_IMAGE, by digest alone, instead (an instance's own pin).
+LOOPER_IMAGE_NAME="${LOOPER_IMAGE_NAME:-ghcr.io/tacplus-dev/looper}"
+LOOPER_IMAGE_SOURCE="${LOOPER_IMAGE_SOURCE:-tacplus-dev/looper}"
+job_image() {
+  local sha d head=""
+  if [[ -n "${LOOPER_JOB_IMAGE:-}" ]]; then
+    [[ "$LOOPER_JOB_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || { log "LOOPER_JOB_IMAGE $LOOPER_JOB_IMAGE is no image by digest (looper#115)" >&2; return 1; }
+    echo "$LOOPER_JOB_IMAGE"; return 0
+  fi
+  for sha in $(gh api "repos/$LOOPER_IMAGE_SOURCE/commits?sha=main&per_page=20" --jq '.[].sha'); do
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ -n "$head" ]] || head="$sha"
+    d="$(gh attestation verify "oci://$LOOPER_IMAGE_NAME:main-${sha::7}" --repo "$LOOPER_IMAGE_SOURCE" --source-ref refs/heads/main \
+           --source-digest "$sha" --cert-identity "https://github.com/$LOOPER_IMAGE_SOURCE/.github/workflows/image.yml@refs/heads/main" \
+           --deny-self-hosted-runners --format json 2>/dev/null | jq -r 'first(.[].verificationResult.statement.subject[].digest.sha256) // empty')" || d=""
+    [[ "$d" =~ ^[0-9a-f]{64}$ ]] || continue
+    [[ "$sha" == "$head" ]] || log "main's head ${head::7} has no attested image yet: the jobs run ${sha::7}'s, $LOOPER_IMAGE_NAME@sha256:$d" >&2
+    echo "$LOOPER_IMAGE_NAME@sha256:$d"; return 0
+  done
+  log "no attested build of $LOOPER_IMAGE_SOURCE's main in its last 20 commits (looper#115): main's image.yml attests each build it pushes; no plan, never the image by a tag" >&2
+  return 1
 }
 
 # A planned job's environment (looper#83), by its repo-looper arguments: the

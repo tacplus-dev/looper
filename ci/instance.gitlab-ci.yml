@@ -34,9 +34,12 @@ variables:
   LOOPER_RUNNER_TAG: seabeam-looper
   LOOPER_JOB_TAGS: $LOOPER_RUNNER_TAG
   LOOPER_PIPELINE: $CI_PROJECT_PATH
+  # The looper image by digest, never a tag (looper#115): this file's jobs and
+  # the plan's (looper-dispatch plan), which verifies no attestation here.
+  LOOPER_JOB_IMAGE: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
 
 default:
-  image: ghcr.io/tacplus-dev/looper:main
+  image: $LOOPER_JOB_IMAGE
   tags: [$LOOPER_RUNNER_TAG]
   retry:
     max: 2

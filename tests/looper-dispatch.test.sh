@@ -36,6 +36,24 @@ if [[ "$cmd" == "api graphql" ]]; then
              | sed -E 's/^([a-z0-9_]+): repository\(owner: "[^"]+", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3/')
   jq -c '{data: .}' <<<"$data"; exit "$rc"
 fi
+# The looper image's attested builds (looper#115): main's commits, newest
+# first, from $FIX/main-commits (else two), and an attestation of
+# main-<sha7> from $FIX/attested/<sha7>, its digest (no directory: each
+# commit's is d...d; no file: not attested). Each verify's arguments go to
+# $FIX/attest.
+if [[ "$cmd" == "api repos/tacplus-dev/looper/commits?sha=main&per_page=20" ]]; then
+  if [[ -f "$FIX/main-commits" ]]; then cat "$FIX/main-commits"; else printf '%s\n' "$(printf 'a%.0s' {1..40})" "$(printf 'b%.0s' {1..40})"; fi
+  exit 0
+fi
+if [[ "$cmd" == "attestation verify" ]]; then
+  echo "$*" >> "$FIX/attest"
+  t="${1##*:main-}"
+  if [[ ! -d "$FIX/attested" ]]; then d="$(printf 'd%.0s' {1..64})"
+  elif [[ -f "$FIX/attested/$t" ]]; then d="$(cat "$FIX/attested/$t")"
+  else echo "Error: no attestations found for $1" >&2; exit 1; fi
+  jq -n --arg d "$d" '[{verificationResult: {statement: {subject: [{name: "ghcr.io/tacplus-dev/looper", digest: {sha256: $d}}]}}}]'
+  exit 0
+fi
 repo=""; n=""; q="."; label=""; rm=""; body=""; vis=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -561,6 +579,8 @@ for source in schedule api; do
   got="$(env "${CLEAN[@]}" "${plan_vars[@]}" CI_PIPELINE_SOURCE="$source" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" \
            HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)" || fail "plan failed ($source)"
   # The scan is as it was; the rest is a report per issue and a manager per repository (looper#70).
+  # The jobs' image by digest (looper#115), where the inline plan named the tag.
+  sed -i "s|image: ghcr.io/tacplus-dev/looper:main\$|image: ghcr.io/tacplus-dev/looper@sha256:$(printf 'd%.0s' {1..64})|" "$FIX/inline-$source/looper-jobs.yml"
   [[ "$source" != schedule ]] || diff -u "$FIX/inline-$source/looper-jobs.yml" <(printf '%s\n' "$got") >&2 || fail "the plan ($source) is not the inline one's"
 done
 [[ "$(grep -c '^looper-scan-' "$FIX/inline-schedule/looper-jobs.yml")" == 5 ]] || fail "scheduled: $(cat "$FIX/inline-schedule/looper-jobs.yml")"
@@ -575,6 +595,39 @@ for j in alpha-4 fleet-lab-8 tacplus-9; do
     || fail "looper-$j is not the inline one's"
 done
 grep -qx '  tags: \[arm64, autoscale-16\]' <<<"$got" || fail "tacplus's tags: $got"
+pass
+
+# The image the plan's jobs run (looper#115): ghcr.io/tacplus-dev/looper by
+# digest, never a tag, the attested build of main's newest commit that has one
+# (gh attestation verify: built from that commit of main by main's image.yml);
+# none attested in main's last 20 commits fails the plan. LOOPER_JOB_IMAGE, by
+# digest alone, instead. And each CI file of ci/ names the looper image by digest.
+scenario plan-image
+plan_image() { PLAN="$(env -u CI_PIPELINE_SOURCE -u LOOPER_JOB_IMAGE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" \
+  FIX="$FIX" GITLAB_TOKEN=tok "$@" "$ROOT/looper-dispatch" plan 2>"$FIX/err")"; }
+A="$(printf 'a%.0s' {1..40})"; B="$(printf 'b%.0s' {1..40})"; D="$(printf 'd%.0s' {1..64})"; E="$(printf 'e%.0s' {1..64})"
+plan_image || fail "plan failed: $(cat "$FIX/err")"
+[[ "$(grep -c '^  image: ' <<<"$PLAN")" == "$(grep -c '^looper-' <<<"$PLAN")" && "$(grep '^  image: ' <<<"$PLAN" | sort -u)" == "  image: ghcr.io/tacplus-dev/looper@sha256:$D" ]] ||
+  fail "images: $(grep image: <<<"$PLAN")"
+[[ "$(head -1 "$FIX/attest")" == "oci://ghcr.io/tacplus-dev/looper:main-${A::7} --repo tacplus-dev/looper --source-ref refs/heads/main --source-digest $A --cert-identity https://github.com/tacplus-dev/looper/.github/workflows/image.yml@refs/heads/main --deny-self-hosted-runners --format json" ]] ||
+  fail "verify: $(cat "$FIX/attest")"
+# main's head not built yet: the newest that is, said.
+mkdir -p "$FIX/attested"; echo "$E" > "$FIX/attested/${B::7}"
+plan_image || fail "plan failed: $(cat "$FIX/err")"
+[[ "$(grep '^  image: ' <<<"$PLAN" | sort -u)" == "  image: ghcr.io/tacplus-dev/looper@sha256:$E" ]] || fail "images: $(grep image: <<<"$PLAN")"
+grep -qF "main's head ${A::7} has no attested image yet: the jobs run ${B::7}'s, ghcr.io/tacplus-dev/looper@sha256:$E" "$FIX/err" || fail "log: $(cat "$FIX/err")"
+rm "$FIX/attested/${B::7}"
+! plan_image || fail "planned with no attested image: $PLAN"
+grep -qF "no attested build of tacplus-dev/looper's main in its last 20 commits (looper#115): main's image.yml attests each build it pushes; no plan, never the image by a tag" "$FIX/err" || fail "log: $(cat "$FIX/err")"
+: > "$FIX/attest"
+plan_image LOOPER_JOB_IMAGE="ghcr.io/tacplus-dev/looper@sha256:$E" || fail "plan failed: $(cat "$FIX/err")"
+[[ "$(grep '^  image: ' <<<"$PLAN" | sort -u)" == "  image: ghcr.io/tacplus-dev/looper@sha256:$E" && ! -s "$FIX/attest" ]] || fail "LOOPER_JOB_IMAGE: $PLAN"
+! plan_image LOOPER_JOB_IMAGE=ghcr.io/tacplus-dev/looper:main || fail "planned with a tag: $PLAN"
+grep -qF "LOOPER_JOB_IMAGE ghcr.io/tacplus-dev/looper:main is no image by digest" "$FIX/err" || fail "log: $(cat "$FIX/err")"
+for f in "$ROOT"/ci/*.yml; do
+  ! grep -nE 'ghcr\.io/tacplus-dev/looper(:[^@[:space:]]*)?([[:space:]]|$)' "$f" | grep -v '^[0-9]*:#' || fail "$f names the looper image by tag"
+  ! grep -nE '^[[:space:]]*image: .*ghcr\.io/tacplus-dev/looper' "$f" | grep -vE "@sha256:[0-9a-f]{64}\"?\$" || fail "$f: an image not by digest"
+done
 pass
 
 # The plan when GitLab's jobs cannot be read: every repository with a ready

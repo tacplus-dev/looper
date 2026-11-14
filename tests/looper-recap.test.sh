@@ -14,7 +14,8 @@
 # older than 7; report writes the recap file with links to the night's advice.
 # tacplus-dev/build's jobs are read with GITLAB_TOKEN, or with its own token
 # read from Secret Manager by version when LOOPER_RECAP_BUILD_TOKEN_SECRET is
-# set (looper#85; tacplus-dev/cloud#12); Cloud Build is not read.
+# set (looper#85; tacplus-dev/cloud#12); Cloud Build is not read. The image at
+# main's head is current only with main-<sha7>'s digest (looper#115).
 # The advice's check is looper-suggest's (tests/looper-suggest.test.sh).
 # Run: tests/looper-recap.test.sh   (REGEN=1: rewrite tests/recap/expected.json)
 set -euo pipefail
@@ -75,11 +76,18 @@ echo "gcloud $*" >> "$TMP/calls"
 [[ "$*" == "secrets versions access 3 --secret=recap-build-token --project=p1" ]] || exit 1
 echo glpat-build
 EOF
+# docker: the image's labels (:main only) and a tag's manifest from $FX/docker/manifest-<tag>.json,
+# a tag with none not found (main-<sha7> not built, looper#115).
 cat > "$TMP/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "docker $*" >> "$TMP/calls"
-[[ "$*" == "buildx imagetools inspect ghcr.io/tacplus-dev/looper:main --format {{json .Image}}" ]] || exit 1
-cat "$FX/docker/inspect.json"
+[[ $# == 6 && "$1 $2 $3 $5" == "buildx imagetools inspect --format" && "$4" == ghcr.io/tacplus-dev/looper:* ]] || exit 1
+tag="${4##*:}"
+case "$6" in
+  "{{json .Image}}") [[ "$tag" == main ]] || exit 1; cat "$FX/docker/inspect.json" ;;
+  "{{json .Manifest}}") f="$FX/docker/manifest-$tag.json"; [[ -f "$f" ]] || { echo "ERROR: $4: not found" >&2; exit 1; }; cat "$f" ;;
+  *) exit 1 ;;
+esac
 EOF
 chmod +x "$TMP/bin/"*
 export PATH="$TMP/bin:$PATH" TMP FX
@@ -144,6 +152,8 @@ lacks "$(q '.items[].key')" "scan_holds_repo"
 lacks "$(q '.loopers.tacplus.holds | keys[]')" "scan_holds_repo"
 # The image against main's head (looper#58): 2 commits behind, the latest image run cancelled.
 [[ "$(q '.image | "\(.current) \(.revision[0:12]) \(.main[0:12]) \([.missing[].sha] | join(",")) \(.latest_run.conclusion)"')" == "false aaaaaaaaaaaa cccccccccccc bbbbbbbbbbbb,cccccccccccc cancelled" ]] || fail "image: $(q .image)"
+# Its digest, and main-ccccccc not built (looper#115): no digest, the source still read.
+[[ "$(q '.image | "\(.digest[0:19]) \(.head_digest)"')" == "sha256:d1d1d1d1d1d1 null" ]] || fail "image: $(q .image)"
 has "$(q '.items[] | select(.key == "image/tacplus-dev/looper") | "\(.over) \(.wait_hours) \(.summary)"')" "true 9 ghcr.io/tacplus-dev/looper:main is at aaaaaaaaaaaa, main at cccccccccccc: 2 commits of main not in it, the oldest 9 h old; the latest image run: cancelled at cccccccccccc"
 # A 150-minute full-gate land, and a 125-minute scan holding tacplus.
 [[ "$(q '.loopers.tacplus.lands.full | "\(.count) \(.minutes.max)"')" == "1 150" ]] || fail "lands: $(q .loopers.tacplus.lands)"
@@ -371,6 +381,35 @@ variant 1600 "" 'map(if .id == 1600 then .created_at = "2026-11-01T21:20:00.000Z
 [[ "$(v '.control["looper-plan"] | "\(.unstarted) \(.queue_minutes.max)"')" == "0 100" ]] || fail "plan: $(v .control)"
 has "$(v '.items[] | select(.key == "control-queue/looper-plan") | "\(.over) \(.summary)"')" "true looper-plan queued up to 100 min (p90 100, over 1 job; threshold 10 min): a control job waited for a runner, behind reports or an older kick"
 has "$(v '.items[] | select(.key == "control-queue/looper-kick") | "\(.wait_hours) \(.summary)"')" "5.01 looper-kick queued up to 300 min (p90 300, over 2 jobs;"
+pass
+
+# The image at main's head is current only as main's build (looper#115): :main's digest that of
+# main-<sha7>, which the pipelines run by digest; a :main pushed by another build is not.
+image_variant() { # main-ccccccc's digest, none: not built
+  rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; local d="$TMP/fx/docker"
+  sed -i 's/aaaaaaaaaaaa1111111111111111111111111111/cccccccccccc3333333333333333333333333333/' "$d/inspect.json"
+  [[ -z "$1" ]] || jq --arg x "$1" '.digest = $x' "$d/manifest-main.json" > "$d/manifest-main-ccccccc.json"
+  FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+}
+NAME=image-main-is-heads-build
+image_variant "sha256:$(printf 'd1%.0s' {1..32})"
+[[ "$(v '.image | "\(.current) \(.revision[0:12]) \(.digest == .head_digest) \(.missing)"')" == "true cccccccccccc true []" ]] || fail "image: $(v .image)"
+[[ "$(v .sources.image)" == ok ]] || fail "sources: $(v .sources)"
+lacks "$(v '.items[].key')" "image/"
+recap report "$TMP/v.json" "$TMP/classes.json" > "$TMP/vr.md" || fail "report"
+has "$(cat "$TMP/vr.md")" "Image: ghcr.io/tacplus-dev/looper:main is main's head's build (sha256:d1d1d1d1d1d1)."
+pass
+
+NAME=image-main-not-heads-build
+image_variant "sha256:$(printf 'e2%.0s' {1..32})"
+[[ "$(v '.image | "\(.current) \(.revision[0:12]) \(.digest[0:19]) \(.head_digest[0:19])"')" == "false cccccccccccc sha256:d1d1d1d1d1d1 sha256:e2e2e2e2e2e2" ]] || fail "image: $(v .image)"
+has "$(v '.items[] | select(.key == "image/tacplus-dev/looper") | "\(.over) \(.count) \(.summary)"')" "true 1 ghcr.io/tacplus-dev/looper:main is not the build of main's head: its digest sha256:d1d1d1d1d1d1 against main-ccccccc's sha256:e2e2e2e2e2e2; the pipelines run main's attested build by digest (looper#115)"
+recap report "$TMP/v.json" "$TMP/classes.json" > "$TMP/vr.md" || fail "report"
+has "$(cat "$TMP/vr.md")" "Image: ghcr.io/tacplus-dev/looper:main is at main's head (cccccccccccc) but not its build: sha256:d1d1d1d1d1d1 against main-ccccccc's sha256:e2e2e2e2e2e2; the pipelines run main's attested build by digest (looper#115)."
+# main-ccccccc not built yet: the same item, the source read.
+image_variant ""
+[[ "$(v '"\(.image.current) \(.image.head_digest) \(.sources.image)"')" == "false null ok" ]] || fail "image: $(v .image)"
+has "$(v '.items[] | select(.key == "image/tacplus-dev/looper") | "\(.over) \(.summary)"')" "true ghcr.io/tacplus-dev/looper:main is not the build of main's head: its digest sha256:d1d1d1d1d1d1 against main-ccccccc not built;"
 pass
 
 NAME=collect-without-credentials

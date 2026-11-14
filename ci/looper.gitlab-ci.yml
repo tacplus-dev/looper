@@ -46,7 +46,7 @@ variables:
   GIT_STRATEGY: none
 
 default:
-  image: ghcr.io/tacplus-dev/looper:main
+  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
   tags: [arm64, build]
   retry:
     max: 2

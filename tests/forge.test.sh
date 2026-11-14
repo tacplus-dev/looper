@@ -246,6 +246,7 @@ dispatch() { # args...
     PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" ORG="$ORG" PIPELINE="$ORG/tools/looper" TOKEN="$TOKEN" CI_PIPELINE_SOURCE="${SOURCE:-}" \
     LOOPER_FORGE="$FORGE" LOOPER_ORG="$ORG" LOOPER_FORGE_TOKEN="$TOKEN" GH_TOKEN="$TOKEN" GITLAB_TOKEN=pipeline-token \
     LOOPER_PIPELINE="$ORG/tools/looper" LOOPER_LIB="$ROOT/looper-lib.sh" CI_API_V4_URL=https://gitlab.com/api/v4 \
+    LOOPER_JOB_IMAGE="ghcr.io/tacplus-dev/looper@sha256:$(printf '0%.0s' {1..64})" \
     "$ROOT/looper-dispatch" "$@"
 }
 no_token_in_argv() { ! grep -qF "$TOKEN" "$FIX/argv" || fail "the token on a command line: $(grep -F "$TOKEN" "$FIX/argv" | head -n 1)"; }

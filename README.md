@@ -355,7 +355,7 @@ lander are gone. One job per issue needs none of them.
     it out (PROPOSALS.md: the revision baked into the image would tell).
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line
+tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest
 tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running
 ```
 
@@ -755,7 +755,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for a VM, one more VM's cost); the runs and tokens per model, a refused model transient (#136)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for a VM, one more VM's cost); the runs and tokens per model, a refused model transient (#136); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
 ```
 
 ## Build pipeline
@@ -1449,6 +1449,18 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
     holding it could edit `image.yml` on its branch and publish the looper image every manager runs. `looper-token`
     reads the label and its last `labeled` event with a token without it, which it then revokes, at each refresh;
     anything it cannot read is no. Without the label a report cannot push a change under `.github/workflows/`.
+  - Only main's build is the looper image (looper#115). `image.yml` builds only on main (a `v*` tag only at a commit
+    of main) and attests what it pushes (`actions/attest-build-provenance`). A branch's copy of it, run by GitHub, can
+    push no tag, and an attestation names the ref it was built from: `gh attestation verify
+    oci://ghcr.io/tacplus-dev/looper:main-<sha7> --repo tacplus-dev/looper --source-ref refs/heads/main --source-digest
+    <sha> --cert-identity https://github.com/tacplus-dev/looper/.github/workflows/image.yml@refs/heads/main
+    --deny-self-hosted-runners` accepts main's build alone.
+  - The pipelines run that build by digest, never a tag (looper#115). `looper-dispatch plan` gives its jobs
+    `ghcr.io/tacplus-dev/looper@sha256:…`, the build of main's newest commit that `gh attestation verify` takes as main's
+    (`main-<sha7>`, the flags above), main's head once its image is built; none in main's last 20 commits fails the
+    plan, naming `image.yml`. The CI files of `ci/` name the image by digest (main's attested build of a reviewed
+    commit, a change like `build.lock`'s; the instance's `LOOPER_JOB_IMAGE`, which the plan then takes as is). The
+    recap's image check compares `:main`'s digest with `main-<sha7>`'s of main's head.
   - A refusal says why (looper#95): gcloud's own error, its class (the token exchange refused, the key's binding not
     naming the job, a quota project, the key's path, gcloud refusing the command) and the claims the provider maps
     (`project_id`, `ref`, `ref_protected`, `environment`, and the `attribute.role` they make), never the id_token. The

@@ -272,6 +272,8 @@
  ],
  "image": {
   "current": false,
+  "digest": "sha256:d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+  "head_digest": null,
   "latest_run": {
    "conclusion": "cancelled",
    "id": 777,
