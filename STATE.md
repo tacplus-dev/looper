@@ -106,7 +106,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it; a service's generated tree (its root `tacplus.yaml`'s
   `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
-  counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); SARIF and JSON reports, the new findings since the
+  counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); a recorded baseline per repository (#146,
+  `security-baseline.json`, written by `looper-scan baseline`: MEDIUM, LOW and UNKNOWN findings counted per tool, rule
+  and file, not line, are baselined, never new, so not filed; an issue's run is handed the repository's latest
+  findings to record it from); SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
   and run by hand (`looper-scan local`) on tacplus and kernel; this repository's own tree passes its gitleaks, a gate
