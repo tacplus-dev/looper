@@ -103,3 +103,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue Full-gates builds of tacplus projects all end 'the build failed' since 2026-11-13 09:30Z (stratum, eventbus, deploymentproxy), and no report can see why (#144, 6b99879; gates: build, docs)
 - 2026-11-14 looper issue A long-running manager keeps a stale image: fixes on main do not reach lands for up to 11 h (#153, 668ad9d; gates: full)
 - 2026-11-14 looper issue Build once per (repo, commit, gate set): reuse a green or in-flight build instead of building the same commit again (112 builds of 86 commits in 24 h) (#134, 56fd579; gates: full, docs)
+- 2026-11-14 looper issue looper-scan: a recorded security baseline per repository (line-independent), so only findings new against it are reported and filed (#146, 6033db3; gates: docs)
