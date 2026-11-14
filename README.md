@@ -339,10 +339,24 @@ lander are gone. One job per issue needs none of them.
     `looper:in-progress` holds it instead (a closed one too, for as long as its report may take to end).
     It polls every `LOOPER_MANAGER_POLL` (30). A land that would not finish before its job ends (looper#38: its estimate, by gate set, as before) is left queued, and the manager
     ends: the kicker starts the next one.
+  - **It ends between lands once its image is stale** (looper#153). A job keeps the image it started on for its
+    whole life, up to 11 h, while a fix to `repo-looper` or `looper-build` on main publishes a new one, so a fixed
+    fault kept turning lands red until the manager happened to end (#118's fix, on main from 01:08Z, reached no
+    land until 06:30Z, and the stale manager refused #115, #138 and #130 on the fault it fixed). In the looper
+    image (`LOOPER_IMAGE`, the Dockerfile's), a manager or verdict job reads at its start the digest its jobs'
+    image tag names (`LOOPER_JOB_IMAGE`, the plan's, default `ghcr.io/tacplus-dev/looper:main`: the registry's
+    manifest HEAD, anonymous) and reads it again before each land (a verdict job, before each batch member):
+    another digest, and it starts no further land and ends, exit 0, its log naming both (`<image> is now <new>;
+    this job started on <old>`); the kicker starts the next job, which pulls the new image, and what is queued is
+    its. Never mid-land, never a land sent back or left red. An image the plan pinned by digest is not watched
+    (it moves nowhere), nor is anything outside the looper image (a manager run by hand), and a registry it
+    cannot read is no change: the job says so once and goes on as it is. The digest read at the start stands
+    for the image the runner pulled moments before; one published between the two is missed, and that job runs
+    it out (PROPOSALS.md: the revision baked into the image would tell).
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-report-pending, manager-report-running
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running
 ```
 
 ### Build jobs

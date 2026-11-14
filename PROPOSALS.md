@@ -4,6 +4,15 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The image's revision baked in, so a job knows the image it runs** (2026-11-14, #153): a manager or verdict job
+  now ends between lands once `ghcr.io/tacplus-dev/looper:main` names another digest than it read at its start, but
+  that first read stands for the image the runner pulled moments before: an image published between the pull and
+  the read is never seen, and that job runs the stale one out (up to 11 h, as before #153). `image.yml` labels the
+  image with `org.opencontainers.image.revision` and tags it `main-<sha7>`, but nothing inside the container can
+  read either. A `--build-arg REVISION=$GITHUB_SHA` baked as `ENV LOOPER_IMAGE_REVISION` would let the job resolve
+  its own digest exactly (`ghcr.io/tacplus-dev/looper:main-<sha7>`'s) and compare that with `:main`'s, closing the
+  window; a job whose image has no revision keeps today's first read. The same revision would let the recap's stale
+  image item (#58) and the plan's image by digest (#115) name the commit a running job is on.
 - **looper-trace's generated tree as tacplus writes it** (2026-11-14, #152): looper-scan now takes a service's
   generated tree as tacplus's runner does (the `output-name`, default `model`, in the `output-dir`, through `import:`),
   but looper-trace's `output_dirs` still prunes the bare `output-dir`: operator's `output-dir: .` prunes nothing

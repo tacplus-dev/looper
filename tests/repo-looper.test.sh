@@ -162,7 +162,7 @@ EOF
 # to $FIX/gitlab, and its command line to $FIX/curl-argv.
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-url=""; auth=""; out=""; w=""; f=""; body=()
+url=""; auth=""; out=""; w=""; f=""; body=(); hdrs=()
 printf '%s\n' "$*" >> "$FIX/curl-argv"
 enc() { printf '%s' "$1" | jq -sRr @uri; }
 # The body as curl joins it: --data as given (@- stdin, @file), --data-urlencode
@@ -177,7 +177,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
       *@*) n="${2%%@*}"; body+=("${n:+$n=}$(enc "$(datum "@${2#*@}")")") ;;
       *) body+=("$(enc "$2")") ;;
     esac; shift 2 ;;
-  -H) h="$2"; [[ "$h" != @* ]] || h="$(cat "${h#@}")"; auth="${h%%:*}"; shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
+  -H) h="$2"; [[ "$h" != @* ]] || h="$(cat "${h#@}")"; auth="${h%%:*}"; hdrs+=("$h"); shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
   http*) url="$1"; shift ;; --fail-with-body) f=body; shift ;; -*f*) f=1; shift ;; *) shift ;;
 esac; done
 echo "$auth $url" >> "$FIX/gitlab"
@@ -190,6 +190,17 @@ reply() { # code body
 # latest security report of the repository the URL names; its packages
 # (looper#50), $FIX/packages.json.
 case "$url" in
+  # The image registry (looper#153), as ghcr answers a tag's manifest HEAD:
+  # a bearer challenge without a token, then the digest $FIX/image-digest
+  # holds; no file, HTTP 404. Each read is a line of $FIX/image-reads.
+  https://ghcr.io/token*) reply 200 '{"token":"anon"}'; exit 0 ;;
+  https://ghcr.io/v2/*/manifests/*)
+    [[ -f "$FIX/image-digest" ]] || { reply 404 '{"errors":[{"code":"MANIFEST_UNKNOWN"}]}'; exit 0; }
+    if [[ " ${hdrs[*]-} " != *" Authorization: Bearer anon "* ]]; then
+      reply 401 'WWW-Authenticate: Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:tacplus-dev/looper:pull"'; exit 0
+    fi
+    echo "$url $(cat "$FIX/image-digest")" >> "$FIX/image-reads"
+    reply 200 "Docker-Content-Digest: $(cat "$FIX/image-digest")"; exit 0 ;;
   # The build project's trigger (looper#71): its token on stdin (never argv), the
   # body decoded as a form (+ a space, %XX its byte) as GitLab does, its gates
   # input checked as GitLab does (HTTP 422), an input given empty refused as
@@ -299,7 +310,7 @@ looper() { # [VAR=value...] -- repo-looper args
   timeout -k 10 "$BOUND" env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
-      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
+      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY -u LOOPER_IMAGE -u LOOPER_JOB_IMAGE LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -2353,6 +2364,56 @@ has "$(labels alpha 4)" "looper:landing"
 branch || fail "the branch is gone"
 pass
 
+# A manager that sees a newer image (looper#153): its job keeps the image it
+# started on for its whole life, so a fix on main reached no land until it
+# happened to end. In the looper image (LOOPER_IMAGE), before each land it reads
+# the digest its job's image tag names (LOOPER_JOB_IMAGE, the plan's); when it
+# differs from the one it started on, it finishes no further land and ends,
+# exit 0, naming both digests: the kicker starts the next manager on the new
+# image. Here #4's gates publish the new image mid-land: #4 lands, #5 stays
+# queued, looper:landing, for the next manager.
+OLD_IMAGE="sha256:$(printf '%064d' 0 | tr 0 a)"; NEW_IMAGE="sha256:$(printf '%064d' 0 | tr 0 b)"
+image_scenario() { # name: #4 queued with gates that publish the new image, #5 queued after it
+  scenario "$1"
+  issue alpha 5 OPEN approved,bug "Fix that."
+  echo "$OLD_IMAGE" > "$FIX/image-digest"
+  queue 4 2026-11-03T10:00:00Z four.txt 4 "echo $NEW_IMAGE > \"\$FIX/image-digest\""
+  queue 5 2026-11-03T11:00:00Z five.txt 5
+}
+image_scenario manager-new-image
+manage LOOPER_IMAGE=1
+[[ "$(landed four.txt)" == 4 ]] || fail "#4 not landed: $(origin log --oneline main)"
+[[ -z "$(landed five.txt)" ]] || fail "#5 landed on the stale image: $(origin log --oneline main)"
+has "$OUT" "this job runs on ghcr.io/tacplus-dev/looper:main at $OLD_IMAGE"
+has "$OUT" "ghcr.io/tacplus-dev/looper:main is now $NEW_IMAGE; this job started on $OLD_IMAGE"
+has "$OUT" "the manager ends: the kicker starts the next"
+lacks "$OUT" "merging #5"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "The manager merged"
+! grep -q '^alpha#5 ' "$FIX/comments" || fail "#5 got a verdict: $(cat "$FIX/comments")"
+has "$(labels alpha 5)" "looper:landing"
+origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
+# Every read was the tag's manifest, with the registry's own anonymous token.
+grep -q 'manifests/main ' "$FIX/image-reads" || fail "no manifest read: $(cat "$FIX/image-reads" 2>/dev/null)"
+pass
+
+# Nothing is watched, and both lands merge: for an image the plan pinned by
+# digest (it moves nowhere), outside the looper image (a manager run by hand),
+# and for a registry that cannot be read, which the manager says once.
+both_land() { [[ "$(landed four.txt)" == 4 && "$(landed five.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"; lacks "$OUT" "is now"; }
+image_scenario manager-image-pinned
+manage LOOPER_IMAGE=1 "LOOPER_JOB_IMAGE=ghcr.io/tacplus-dev/looper@$OLD_IMAGE"
+both_land; lacks "$OUT" "could not read"; [[ ! -e "$FIX/image-reads" ]] || fail "a pinned image was read: $(cat "$FIX/image-reads")"
+pass
+image_scenario manager-image-not-in-image
+manage
+both_land; [[ ! -e "$FIX/image-reads" ]] || fail "the image was read: $(cat "$FIX/image-reads")"
+pass
+image_scenario manager-image-unread
+rm "$FIX/image-digest"
+manage LOOPER_IMAGE=1 LOOPER_JOB_IMAGE=ghcr.io/other/looper:main
+both_land; has "$OUT" "could not read the digest of ghcr.io/other/looper:main"
+pass
+
 # The manager of alpha in the background, in a GitLab job (80) that reads the
 # scenario's jobs, lingering for none.
 manager_gitlab() { looper LOOPER_MANAGER_POLL=1 LOOPER_MANAGER_LINGER=0 "${GL[@]}" CI_JOB_ID=80 -- --repo alpha --manage > "$FIX/manager.log" 2>&1 & MANAGER=$!; }
@@ -2452,6 +2513,26 @@ for n in 4 5 6; do lacks "$(labels alpha "$n")" "looper:landing"; done
 : > "$FIX/comments"; m="$(origin rev-parse main)"
 ! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a verdict twice: $OUT"
 [[ "$(origin rev-parse main)" == "$m" && ! -s "$FIX/comments" ]] || fail "the second merge: $OUT"
+pass
+
+# A verdict job that sees a newer image between batch members (looper#153)
+# judges no further land: it stops as it does when its time is short, pushes
+# staging with the lands judged so far and writes its verdict, which the
+# manager job merges; what is left is the next batch's, on the new image.
+image_scenario verdict-new-image
+verdict LOOPER_IMAGE=1
+main_unchanged
+[[ "$(origin show looper/staging:four.txt)" == 4 ]] || fail "staging: $(origin log --oneline looper/staging)"
+! origin show looper/staging:five.txt >/dev/null 2>&1 || fail "#5 judged on the stale image"
+[[ "$(wc -l < "$FIX/verdict/lands")" == 1 ]] || fail "lands: $(cat "$FIX/verdict/lands")"
+has "$OUT" "ghcr.io/tacplus-dev/looper:main is now $NEW_IMAGE; this job started on $OLD_IMAGE"
+has "$OUT" "the verdict job stops: the next batch, on the new image, judges what is left"
+merge
+[[ "$(landed four.txt)" == 4 && -z "$(landed five.txt)" ]] || fail "main: $(origin log --oneline main)"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "The manager merged"
+! grep -q '^alpha#5 ' "$FIX/comments" || fail "#5 got a verdict: $(cat "$FIX/comments")"
+has "$(labels alpha 5)" "looper:landing"
+origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
 pass
 
 # The verdict job takes the queued lands by priority, then oldest (looper#121):

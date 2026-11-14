@@ -61,7 +61,10 @@
 # clears, looper#93) or a report of it runs (in a GitLab job, a
 # report job running: not one waiting for the VM the manager holds, looper#82;
 # elsewhere, an issue looper:in-progress), or was within
-# LOOPER_MANAGER_LINGER seconds (default 300). Each container a report's model
+# LOOPER_MANAGER_LINGER seconds (default 300), and while its job's image is
+# the one its tag names (looper#153: before each land it reads the digest of
+# LOOPER_JOB_IMAGE, and ends, exit 0, when it is not the one it started on,
+# so the next manager runs the new image). Each container a report's model
 # starts (docker run, tacplus) is limited to the report's memory, without swap
 # (looper#41): the model's docker is looper-docker. The gates a land runs are
 # the set its diff calls for: the repository's gates.yaml maps paths to gate
@@ -205,6 +208,9 @@
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
 # LOOPER_LAND_POLL (seconds between a waiting --land's reads of its issue, default 30),
 # LOOPER_MANAGER_POLL (the manager's, seconds, default 30), LOOPER_MANAGER_LINGER,
+# LOOPER_JOB_IMAGE (the jobs' image, the plan's; default ghcr.io/tacplus-dev/looper:main;
+# a manager or verdict job in the looper image, LOOPER_IMAGE, ends between
+# lands once its tag names another digest, looper#153),
 # LOOPER_CHILD_MEMORY_GB (a report's, unless its gate set's memory: asks more), LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
 # roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
@@ -1714,11 +1720,88 @@ append_history_new() { # lines (one string)
   (( ${#add[@]} == 0 )) || append_history "${add[@]}"
 }
 
+# --- the job's image (looper#153) ---------------------------------------------------
+#
+# A manager (or verdict) job keeps the image it started on for its whole life,
+# up to 11 h, while a fix to repo-looper or looper-build on main publishes a
+# new one: until the job happened to end, a fixed fault still turned lands red
+# (looper#153: #118's fix, on main since 01:08Z, reached no land until 06:30Z,
+# and the stale manager refused the lands of #115, #138 and #130 on the fault
+# it fixed). So the job watches its image's tag: before each land (never
+# mid-land) it reads the digest the tag names now, and when that differs from
+# the one the tag named at its start, it starts no further land and ends, exit
+# 0, logging both digests; the kicker starts the next job, which pulls the new
+# image. What is queued is that job's.
+#
+# The image is LOOPER_JOB_IMAGE, the plan's (default ghcr.io/tacplus-dev/looper:main),
+# watched when this process runs in the looper image (LOOPER_IMAGE, the
+# Dockerfile's) and the image is named by a tag: one the plan pinned by digest
+# moves nowhere, and a manager run by hand is no job. The digest read at the
+# start stands for the image the runner pulled moments before: one published
+# between the two is missed, and the job runs it out (PROPOSALS.md: the
+# revision baked into the image would tell). A registry that cannot be read
+# is no change: the job goes on as it is, saying so once.
+JOB_IMAGE="${LOOPER_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}"
+IMAGE_STARTED=""   # the digest the tag named at this job's start (its first read that succeeded)
+IMAGE_UNREAD=""    # the registry could not be read, said
+MANIFEST_TYPES='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
+image_watched() { [[ -n "${LOOPER_IMAGE:-}" && "$JOB_IMAGE" == *.*/* && "$JOB_IMAGE" != *@* ]]; }
+
+# The digest a registry publishes for a tag: the manifest's, from a HEAD of it
+# (the registry API, as docker pulls). A bearer challenge is answered with the
+# token its realm grants for the scope it names, anonymous: the image is public,
+# and the token is no credential of the job's, so it may go on a command line.
+image_digest() { # host/name[:tag]
+  local ref="$1" host path tag url hdr ch realm service scope tok digest
+  host="${ref%%/*}"; path="${ref#*/}"
+  if [[ "$path" == *:* ]]; then tag="${path##*:}"; path="${path%:*}"; else tag=latest; fi
+  url="https://$host/v2/$path/manifests/$tag"
+  hdr="$(curl -sSI --retry 2 -H "Accept: $MANIFEST_TYPES" "$url" 2>/dev/null | tr -d '\r')" || return 1
+  if ch="$(grep -i -m 1 '^www-authenticate: *bearer ' <<<"$hdr")"; then
+    realm="$(sed -n 's/.*realm="\([^"]*\)".*/\1/p' <<<"$ch")"; service="$(sed -n 's/.*service="\([^"]*\)".*/\1/p' <<<"$ch")"
+    scope="$(sed -n 's/.*scope="\([^"]*\)".*/\1/p' <<<"$ch")"
+    [[ "$realm" == https://* ]] || return 1
+    tok="$(curl -fsS --retry 2 -G --data-urlencode "service=$service" --data-urlencode "scope=$scope" "$realm" 2>/dev/null \
+            | jq -r '.token // .access_token // empty')" && [[ -n "$tok" ]] || return 1
+    hdr="$(curl -sSI --retry 2 -H "Authorization: Bearer $tok" -H "Accept: $MANIFEST_TYPES" "$url" 2>/dev/null | tr -d '\r')" || return 1
+  fi
+  digest="$(sed -n 's/^docker-content-digest: *//Ip' <<<"$hdr" | tail -n 1)"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  echo "$digest"
+}
+
+# At the job's start: the digest its image's tag names now, logged.
+image_start() {
+  image_watched || return 0
+  if IMAGE_STARTED="$(image_digest "$JOB_IMAGE")"; then
+    log "this job runs on $JOB_IMAGE at $IMAGE_STARTED; once the tag names another image it ends between lands, and the next job runs on it (looper#153)"
+  else
+    IMAGE_STARTED=""
+    log "could not read the digest of $JOB_IMAGE: this job goes on as it is, and its first read that succeeds stands for the image it started on (looper#153)"
+  fi
+}
+
+# Before a land: whether the tag names another image than this job started
+# on, logged with both digests. A registry that cannot be read is no change.
+image_moved() {
+  local now
+  image_watched || return 1
+  if ! now="$(image_digest "$JOB_IMAGE")"; then
+    [[ -n "$IMAGE_UNREAD" ]] || log "could not read the digest of $JOB_IMAGE: this job goes on as it is (looper#153)"
+    IMAGE_UNREAD=1; return 1
+  fi
+  IMAGE_UNREAD=""
+  [[ -n "$IMAGE_STARTED" ]] || { IMAGE_STARTED="$now"; log "this job runs on $JOB_IMAGE at $now, its first read that succeeded (looper#153)"; return 1; }
+  [[ "$now" != "$IMAGE_STARTED" ]] || return 1
+  log "$JOB_IMAGE is now $now; this job started on $IMAGE_STARTED, and ends so that the next runs on the new image (looper#153)"
+}
+
 # The manager (looper#70): the only merger of the repository's main. It adds
 # the planning files, then, every LOOPER_MANAGER_POLL, merges the queued lands
 # oldest first and adds a HISTORY.md line for each new release, until no
 # report is at work and no land queued for LOOPER_MANAGER_LINGER seconds, or
-# a land would outlast its job. A looper:landing with no land queued it
+# a land would outlast its job, or its image's tag names a newer image
+# (looper#153). A looper:landing with no land queued it
 # clears; held, it says by what every LOOPER_MANAGER_SAY seconds (looper#93).
 manage() {
   local idle_since tags_seen t new q n id sha rc labelled said=0
@@ -1730,11 +1813,13 @@ manage() {
   sync_checkout
   tags_seen="$(release_tags)"; idle_since="$(date +%s)"
   log "the manager of $REPO: merging its reports' queued branches, one at a time"
+  image_start
   while :; do
     labelled="$(landing_issues)" || labelled=""
     if ! q="$(queued_lands)"; then log "could not read $REPO's branches"; q=""; labelled=""; fi
     while read -r _ _ n id sha; do
       [[ -n "$n" ]] || continue
+      if image_moved; then log "the manager ends: the kicker starts the next, on the new image, and what is queued is its"; return 0; fi
       rc=0; merge_report "$n" "$id" "$sha" || rc=$?
       (( rc != LAND_DEFERRED )) || { log "the manager stops: its job's time is short; the next manager merges what is queued"; return 0; }
     done <<<"$q"
@@ -1807,9 +1892,13 @@ verdict_batch() {
   git -C "$CHECKOUT" update-ref "$STAGING_REF" "$main"
   ONTO="$STAGING_REF"
   log "the verdict job of $REPO: its queued lands onto $STAGING, on main ${main:0:7}"
+  image_start
   q="$(queued_lands)" || die "could not read $REPO's branches"
   while read -r _ _ n id sha; do
     [[ -n "$n" ]] || continue
+    # A newer image between batch members (looper#153): the lands judged so far
+    # are the verdict's, the rest the next batch's, as when its time is short.
+    if image_moved; then log "the verdict job stops: the next batch, on the new image, judges what is left"; break; fi
     rc=0; judge_land "$n" "$id" "$sha" "$VERDICT_DIR/$n-$id" || rc=$?
     (( rc != LAND_DEFERRED )) || { log "the verdict job stops: its time is short; the next batch judges what is left"; break; }
     (( rc == 0 )) || continue
