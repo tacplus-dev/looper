@@ -96,3 +96,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue Manager sends every branch back on a PROPOSALS.md conflict: the nightly scan's append on main collides with each report's append (5 of 7 tacplus lands, 2026-11-06) (#105)
 - 2026-11-14 looper issue Image's govulncheck v1.1.4 (x/tools v0.29.0) panics on any go 1.27 module importing net/http: every Go security run still fails after #109 (#151, 30e48b2; gates: full)
 - 2026-11-14 looper issue The looper image is not published: the image workflow fails on main (#150)
+- 2026-11-14 looper issue tacplus-dev/build refuses every gateway build trigger with a 422 (empty gate set; report --build and manager land), and start_build's curl -f hides why (#127, b3ef357; gates: full)
