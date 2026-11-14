@@ -3615,6 +3615,9 @@ Change no code. Find, in order:
 $(security_item "$report")
 2. Known vulnerabilities in dependencies the build's checks do not cover (the ecosystem's own auditor where it
    applies: cargo audit, npm audit, govulncheck, pip-audit, the Maven/Gradle dependency tree against advisories).
+   An advisory an entry of the checkout's security-exceptions.yaml accepts (its \`id\` the advisory's or an alias,
+   README: Security checks) is not filed until its \`expires\` has passed or a fixed version is published, whichever
+   is first; then file it again, naming the entry.
 3. The repository's own gates failing on main ($(gates_hint)).
 4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
    MAJOR.MINOR line it should follow.

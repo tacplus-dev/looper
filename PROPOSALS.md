@@ -670,6 +670,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   runner before tacplus#195's `swift:` and darwin/arm64 `rust:` recipes rely on it. Approved, but no ROADMAP.md
   links it (tacplus's lists #195 only); the design and Jody's questions are on the issue.
   **Promoted** (2026-10-30, ROADMAP.md Next; built 2026-10-31, #36).
+- **Syft 1.57.1, and drop `SYFT_XNET_VERSION`** (2026-11-13, #142): Syft v1.57.1 requires `golang.org/x/net v0.62.0`,
+  the Dockerfile's own condition for dropping `SYFT_XNET_VERSION` and its replace. A mechanical bump, verified by the
+  image's smoke and a `govulncheck -mode binary /usr/local/bin/syft`; it does not fix GO-2026-6905
+  (github.com/blakesmith/ar, accepted in `security-exceptions.yaml` until 2026-12-13): v1.57.1 still requires it.
+- **Report GO-2026-6905 upstream** (2026-11-13, #142): github.com/blakesmith/ar's `Reader.Next` accepts a negative
+  member size and `Reader.Read` panics; no release fixes it and Syft requires it. An upstream fix (blakesmith/ar, or
+  anchore/syft dropping it) is what retires the exception before it expires; a `replace` with a patched fork (as
+  gitleaks' xz, #65) is the fallback if it does not come by 2026-12-13.
 - **The recap counts dropped STATE.md commits** (2026-11-11, #131): the manager logs `#N: dropped its STATE.md
   commit` when STATE.md was a land's only conflict; `looper-recap` reads `resolved its conflicts by regenerating`
   and `not merged (exit 3)` only, so a drop counts as a plain merge. Counting them beside the sent-backs would show

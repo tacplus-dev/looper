@@ -1,0 +1,9 @@
+# Accepted security findings (looper-scan; README: Security checks). From the
+# day after an entry expires, the build fails until it is renewed or fixed; the
+# nightly scan files an accepted advisory again then, or once a fixed version
+# is published, whichever is first.
+exceptions:
+  - id: GO-2026-6905
+    reason: "looper#142: the image's syft carries github.com/blakesmith/ar, no fixed version; a crafted .deb panics syft and fails the security run closed; syft reads only what our own builds produce"
+    decided_by: jodydadescott
+    expires: 2026-12-13
