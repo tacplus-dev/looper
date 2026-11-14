@@ -193,7 +193,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
-  not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
+  not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58) with the
+  failed step's log tail, read by the jobs API since the report job runs inside the run it reports (#154)
 - **Known gaps:** the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
   `is_error` result) and the `modelUsage` names are the CLI's as of 2026-11-13, unexercised against a spent quota; a
   high model refused mid-run (its quota spent during the run) is not retried on the default: that run ends, and the
