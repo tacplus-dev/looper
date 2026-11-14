@@ -71,7 +71,8 @@ nightly security checks of the main branch, whose head the plan reads when BUILD
 (true: the formal verification of the main branch, likewise; BUILD_VERIFY_SINCE, _RESULT and _RUN: the last
 record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
-LOOPER_GATES_BASE, a full hash), the tacplus-reader
+LOOPER_GATES_BASE, a full hash), BUILD_WAIT (the requester's wait, in seconds: a gates job whose pipeline
+is older runs no gates), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
 EOF
@@ -118,6 +119,7 @@ check_inputs() {
   [[ "${BUILD_GATES:-}" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] ||
     verdict fail "BUILD_GATES '${BUILD_GATES:-}' is not a gate set (gates.yaml's set names, joined by +)"
   [[ -z "${BUILD_BASE:-}" || "$BUILD_BASE" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_BASE '$BUILD_BASE' is not a full commit hash"
+  [[ "${BUILD_WAIT:-}" =~ ^[0-9]*$ ]] || verdict fail "BUILD_WAIT '$BUILD_WAIT' is not a number of seconds"
 }
 
 # A run's URL, as a record names it (written into the child pipeline).
@@ -336,6 +338,7 @@ gates:
     BUILD_ORG: "$BUILD_ORG"
     BUILD_GATES: "${BUILD_GATES:-}"
     BUILD_BASE: "${BUILD_BASE:-}"
+    BUILD_WAIT: "$([[ -n "${BUILD_TAG:-}" || "${BUILD_NIGHTLY:-}" == true ]] || echo "${BUILD_WAIT:-}")"
 EOF
   embedded_script gates
   cat <<'EOF'
@@ -497,10 +500,27 @@ drop_job_credentials() {
         CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2
 }
 
+# A build nobody waits for any more (looper#130): its requester waits
+# BUILD_WAIT seconds for a verdict, and a gates job that starts later (the
+# runners busy) runs no gates. It is counted from the pipeline's creation
+# (CI_PIPELINE_CREATED_AT); a nightly's and a release's have no wait, and are
+# never abandoned. The job ends itself: the trigger token cannot cancel it.
+check_wanted() {
+  [[ -n "${BUILD_WAIT:-}" && -n "${CI_PIPELINE_CREATED_AT:-}" ]] || return 0
+  local created m
+  created="$(date -u -d "$CI_PIPELINE_CREATED_AT" +%s 2>/dev/null)" ||
+    { log "the pipeline's creation time '$CI_PIPELINE_CREATED_AT' cannot be read: it builds"; return 0; }
+  (( $(date +%s) - created > BUILD_WAIT )) || return 0
+  m=$(( (BUILD_WAIT + 59) / 60 ))   # as repo-looper's hours: 3h, 2h30m, 10m
+  if (( m < 60 )); then m="${m}m"; elif (( m % 60 )); then m="$(( m / 60 ))h$(( m % 60 ))m"; else m="$(( m / 60 ))h"; fi
+  verdict fail "abandoned: no verdict wanted after $m"
+}
+
 cmd_gates() {
   refuse_write_credentials
   check_inputs
   mkdir -p "$BUILD_OUT"
+  check_wanted
   local key="${TACPLUS_READER_APP_KEY:-}"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"')" ||
     verdict fail "no read-only GitHub token (the tacplus-reader app)"

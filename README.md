@@ -741,7 +741,9 @@ jobs run `looper-build`, from this image.
 
 - **Started** from the API or the web with **inputs** `repo`, `sha` and, for a release, `tag`; a manager's merge
   and a report's `--build` ([Build jobs](#build-jobs), looper#71) add `gates` (the commit's `gates.yaml` sets,
-  joined by `+`; none: its full, or `just gates` without a `gates.yaml`) and `base` (their `LOOPER_GATES_BASE`). The project forbids
+  joined by `+`; none: its full, or `just gates` without a `gates.yaml`), `base` (their `LOOPER_GATES_BASE`) and
+  `wait` (the seconds they wait for its verdict, `LOOPER_BUILD_WAIT`, once the project's CI file declares it,
+  looper#130; a nightly, a release and a verify run pass none). The project forbids
   pipeline variables (as this group does); inputs are typed and checked against their pattern before any job runs.
   A push to the project starts nothing.
 
@@ -754,7 +756,10 @@ jobs run `looper-build`, from this image.
   the build image by digest, of the same line), or for a repository that is no tacplus project its `build.lock`
   (`build_image:` by digest alone; the looper's, looper#71). No pin, or a bad one, is a **fail** verdict, never a guess. It
   writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' jobs.
-- **`gates`**, in the pinned build image: `just gates` on the commit, or, when the commit has a `gates.yaml`, the
+- **`gates`**, in the pinned build image, first compares the pipeline's creation (`CI_PIPELINE_CREATED_AT`) with
+  now: past its `wait`, nobody waits for its verdict any more, and it writes the verdict `abandoned: no verdict wanted
+  after 3h` (say) and runs no gates (looper#130; the trigger token cannot cancel a pipeline, the job ends itself). Else
+  `just gates` on the commit, or, when the commit has a `gates.yaml`, the
   sets `gates` names (its full when none), in turn, with `LOOPER_GATES_BASE` the `base` (fetched too). It fails if
   a set is not in the map, if the commit has no `gates` recipe where `just gates` runs,
   if a gate fails, or if the build changed a tracked file (`git status --porcelain --untracked-files=no`) or moved

@@ -744,6 +744,38 @@ if build BUILD_SHA="${SHA[pass]}" BUILD_GATES=docs -- gates 2>"$TMP/err"; then f
 verdict_is "fail: no gates.yaml: demo maps no gate set docs"
 pass
 
+# A build nobody waits for any more (looper#130): past the requester's wait,
+# counted from the pipeline's creation, the gates job runs no gates.
+ago() { date -u -d "@$(( $(date +%s) - $1 ))" +%Y-%m-%dT%H:%M:%SZ; } # seconds
+NAME="gates: a pipeline older than its requester's wait exits at once, abandoned"
+if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 CI_PIPELINE_CREATED_AT="$(ago 10900)" -- gates 2>"$TMP/err"; then fail "built"; fi
+verdict_is "fail: abandoned: no verdict wanted after 3h"
+[[ ! -e "$OUT/gates.log" && ! -e "$OUT/src" ]] || fail "the gates ran: $(cat "$OUT/gates.log" 2>/dev/null)"
+[[ ! -s "$TMP/api.log" && ! -s "$SRV/log" ]] || fail "it asked GitHub: $(cat "$TMP/api.log" "$SRV/log")"
+if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=600 CI_PIPELINE_CREATED_AT="$(ago 700)" -- gates 2>"$TMP/err"; then fail "built"; fi
+verdict_is "fail: abandoned: no verdict wanted after 10m"
+pass
+
+NAME="gates: a fresh pipeline builds; one with no wait, or no creation time, is never abandoned"
+build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 CI_PIPELINE_CREATED_AT="$(ago 60)" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass; grep -q "gates ok" "$OUT/gates.log" || fail "the gates did not run"
+build BUILD_SHA="${SHA[pass]}" CI_PIPELINE_CREATED_AT="$(ago 999999)" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=3h -- gates 2>"$TMP/err"; then fail "built"; fi
+verdict_is "fail: BUILD_WAIT '3h' is not a number of seconds"
+pass
+
+NAME="plan: the gates job has a build's wait; a nightly's and a release's never"
+build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 -- plan 2>"$TMP/err" || fail "plan failed"
+grep -qxF '    BUILD_WAIT: "10800"' <(sed -n '/^gates:$/,/^security-demo:$/p' "$OUT/build-gates.yml") || fail "no wait: $(head -16 "$OUT/build-gates.yml")"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_WAIT=10800 -- plan 2>"$TMP/err" || fail "release plan failed"
+grep -qxF '    BUILD_WAIT: ""' "$OUT/build-gates.yml" || fail "a release has a wait: $(grep BUILD_WAIT "$OUT/build-gates.yml")"
+build BUILD_SHA= BUILD_NIGHTLY=true BUILD_WAIT=10800 -- plan 2>"$TMP/err" || fail "nightly plan failed"
+grep -qxF '    BUILD_WAIT: ""' "$OUT/build-gates.yml" || fail "a nightly has a wait: $(grep BUILD_WAIT "$OUT/build-gates.yml")"
+pass
+
 # The pinned image's own tacplus (looper#137): a tacplus project's gates run
 # with TACPLUS_BIN=tacplus, once the job's image is the one tacplus.lock pins.
 PINNED="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A"
