@@ -174,10 +174,20 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_STORED) as z:
         z.writestr(f"META-INF/maven/{g}/{a}/pom.properties", f"groupId={g}\nartifactId={a}\nversion={v}\n")
 EOF
 }
-# A service's tacplus.yaml: its generated tree is the output-dir (looper#108).
+# A service's tacplus.yaml: its generated tree is the output-dir (looper#108),
+# ending in the output-name as tacplus nests it (blobstore's).
 scan_commit scangen tacplus.yaml 'language: go
 output-dir: "tacplus"
+output-name: tacplus
 src: proto' .gitignore 'tacplus/'
+# The output-dir's output-name (looper#152): operator's `output-dir: .` with
+# `output-name: tacplus` (from the base it imports here) generates tacplus/; a
+# client's `output-dir: gen` with no output-name, gen/model/.
+scan_commit scangen3 tacplus.yaml 'import: tacplus-base.yaml
+output-dir: .' tacplus-base.yaml 'language: go
+output-name: "tacplus"  # the generated package' client/tacplus.yaml 'language: go
+output-dir: gen/' .gitignore 'tacplus/
+client/gen/model/'
 # Two tacplus configs (looper#149): the root's output-dir from the base it
 # imports, a client subproject's its own; server/ is the service's own codegen.
 scan_commit scangen2 tacplus.yaml 'import: config/tacplus-base.yaml  # the shared fields
@@ -1181,17 +1191,31 @@ blocking | grep -q '^gitleaks generated/tacplus/keys.txt:aws-access-token:1 ' ||
 pass
 
 NAME="security: the generated trees are every tacplus.yaml's output-dir, through its import; a service's own codegen is counted"
-for d in tacplus/target/generated-sources/chassis client/gen/chassis server/target/generated-sources/tacplus-backend; do
+for d in tacplus/target/generated-sources/model/chassis client/gen/model/chassis server/target/generated-sources/tacplus-backend; do
   mkdir -p "$TMP/out-$((n + 1))/built/$d"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/built/$d/keys.txt"
 done
 if scan BUILD_SHA="${SHA[scangen2]}" -- run 2>"$TMP/err"; then fail "the service's own codegen passed"; fi
 [[ "$(blocking)" == "gitleaks server/target/generated-sources/tacplus-backend/keys.txt:aws-access-token:1 server/target/generated-sources/tacplus-backend/keys.txt:1" ]] ||
   fail "blocking: $(blocking)"
 [[ "$(jq -r '[.[] | select(.tool == "gitleaks") | .where] | join(" ")' "$OUT/security/generated.json")" == \
-   "client/gen/chassis/keys.txt:1 tacplus/target/generated-sources/chassis/keys.txt:1" ]] ||
+   "client/gen/model/chassis/keys.txt:1 tacplus/target/generated-sources/model/chassis/keys.txt:1" ]] ||
   fail "not kept aside: $(cat "$OUT/security/generated.json" 2>&1)"
-grep -qxF '### Not counted: the generated tree (client/gen/, tacplus/target/generated-sources/)' "$OUT/security/summary.md" ||
+grep -qxF '### Not counted: the generated tree (client/gen/model/, tacplus/target/generated-sources/model/)' "$OUT/security/summary.md" ||
   fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: a generated tree is the output-dir's output-name, as tacplus writes it: operator's output-dir . is tacplus/ (looper#152)"
+for d in tacplus/types/services client/gen/model/chassis client/gen/hand; do
+  mkdir -p "$TMP/out-$((n + 1))/built/$d"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/built/$d/keys.txt"
+done
+if scan BUILD_SHA="${SHA[scangen3]}" -- run 2>"$TMP/err"; then fail "the hand-written secret passed"; fi
+[[ "$(blocking)" == "gitleaks client/gen/hand/keys.txt:aws-access-token:1 client/gen/hand/keys.txt:1" ]] || fail "blocking: $(blocking)"
+[[ "$(jq -r '[.[] | select(.tool == "gitleaks") | .where] | join(" ")' "$OUT/security/generated.json")" == \
+   "client/gen/model/chassis/keys.txt:1 tacplus/types/services/keys.txt:1" ]] ||
+  fail "not kept aside: $(cat "$OUT/security/generated.json" 2>&1)"
+grep -qxF '### Not counted: the generated tree (client/gen/model/, tacplus/)' "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+grep -q 'the generated tree (client/gen/model/, tacplus/): 2 SAST finding(s) and secret(s) not counted' "$TMP/err" || fail "$(cat "$TMP/err")"
 pass
 
 # SpotBugs (looper#149): a stub that records how it ran, and throws as the

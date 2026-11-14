@@ -237,12 +237,12 @@ deny_run() { # manifest config raw: 0 when cargo-deny reported; else DENY_ERROR 
   DENY_ERROR="exited $rc: $e"; return 1
 }
 
-# The tree with the gates' generated/ at its tacplus.yaml output-dir, a copy
-# made once a tree; fails when there is no such output-dir or generated/.
+# The tree with the gates' generated/ at its tacplus.yaml's generated tree, a
+# copy made once a tree; fails when there is no such tree or generated/.
 deny_overlay() { # tree label
   local copy="$SCAN_WORK/cargo-overlay-$2" out
   [[ -f "$1/tacplus.yaml" && -n "$(ls -A "$BUILD_OUT/generated" 2>/dev/null)" ]] || return 1
-  out="$(inside_dir "$(tacplus_output_dir "$1/tacplus.yaml")")" || return 1
+  out="$(tacplus_generated_dir "$1/tacplus.yaml")" || return 1
   if [[ ! -d "$copy" ]]; then
     mkdir -p "$copy/$out"
     (cd "$1" && tar --exclude=./.git -cf - .) | tar -xf - -C "$copy" && cp -a "$BUILD_OUT/generated/." "$copy/$out/" || return 1
@@ -720,12 +720,12 @@ yaml_scalar() { # file key
   printf '%s' "$v"
 }
 
-# The output-dir a tacplus config names: its own, else that of the config it
+# A field a tacplus config names: its own, else that of the config it
 # imports, resolved relative to it (tacplus docs/USER.md: Config Composition).
-tacplus_output_dir() { # config
+tacplus_field() { # config key
   local f="$1" v i
   for ((i = 0; i < 8; i++)); do
-    v="$(yaml_scalar "$f" output-dir)"; [[ -z "$v" ]] || { printf '%s' "$v"; return 0; }
+    v="$(yaml_scalar "$f" "$2")"; [[ -z "$v" ]] || { printf '%s' "$v"; return 0; }
     v="$(yaml_scalar "$f" import)"; [[ -n "$v" ]] || return 0
     [[ "$v" == /* ]] || v="$(dirname "$f")/$v"
     [[ -f "$v" ]] || return 0
@@ -742,18 +742,40 @@ inside_dir() { # path
   printf '%s' "$d"
 }
 
-# A service's generated trees (looper#108, looper#149): the output-dir of
-# every tacplus.yaml in the tree (a service's, a client subproject's), each
-# relative to its config, as path prefixes ("tacplus/") in SCAN_GEN; none of
-# a config without one, or with one that is not a directory inside it.
+# The tree a tacplus config generates, relative to its project, as tacplus
+# writes it (its runner): the output-name (default model) in the output-dir,
+# unless the output-dir already ends in it (looper#152: operator's
+# `output-dir: .` with `output-name: tacplus` is tacplus/). Fails when the
+# config names no output-dir or the tree is not a directory inside its project.
+tacplus_generated_dir() { # config
+  local dir name
+  dir="$(tacplus_field "$1" output-dir)"; [[ -n "$dir" ]] || return 1
+  name="$(tacplus_field "$1" output-name)"; name="${name:-model}"
+  [[ "$name" != */* && "$name" != . && "$name" != .. ]] || return 1
+  if [[ "$dir" == . || "$dir" == ./ ]]; then dir=""
+  else dir="$(inside_dir "$dir")" || return 1
+  fi
+  [[ "${dir##*/}" == "$name" ]] || dir="${dir:+$dir/}$name"
+  printf '%s' "$dir"
+}
+# How a config names its tree, for a note.
+tacplus_output_spec() { # config
+  printf "output-dir '%s', output-name '%s'" "$(tacplus_field "$1" output-dir)" "$(tacplus_field "$1" output-name)"
+}
+
+# A service's generated trees (looper#108, looper#149, looper#152): the tree
+# every tacplus.yaml in the tree (a service's, a client subproject's)
+# generates, each relative to its config, as path prefixes ("tacplus/") in
+# SCAN_GEN; none of a config without an output-dir, or whose tree is not a
+# directory inside it.
 SCAN_GEN=()
 generated_tree() { # src
   local p rel d
   SCAN_GEN=()
   while read -r p; do
     rel="${p#"$1"}"; rel="${rel#/}"; rel="${rel:+$rel/}"
-    if d="$(inside_dir "$(tacplus_output_dir "$p/tacplus.yaml")")"; then SCAN_GEN+=("$rel$d/")
-    else notes+=("${rel}tacplus.yaml: output-dir '$(tacplus_output_dir "$p/tacplus.yaml")' is not a directory inside its project: its generated code is counted")
+    if d="$(tacplus_generated_dir "$p/tacplus.yaml")"; then SCAN_GEN+=("$rel$d/")
+    else notes+=("${rel}tacplus.yaml: $(tacplus_output_spec "$p/tacplus.yaml") is not a directory inside its project: its generated code is counted")
     fi
   done < <(projects "$1" tacplus.yaml)
 }
