@@ -277,14 +277,20 @@ looper() { # [VAR=value...] -- repo-looper args
 run() { # [VAR=value...]: work alpha#4, the manager beside its report (looper#70)
   local p rc=0
   manager_start "$@"
-  local t=$SECONDS
+  local t=$SECONDS; RUN_DAYS=("$(date -u +%F)")
   looper "$@" -- --repo alpha --issue 4 > "$FIX/report-4.log" 2>&1 & p=$!
   at_work "$p" 4
   wait "$p" || rc=$?
   REPORT_SECONDS=$(( SECONDS - t )) REPORT_END="$(date -u +%s)"
   OUT="$(cat "$FIX/report-4.log")"
   (( rc == 0 )) || { echo "$OUT"; manager_stop; fail "repo-looper exited $rc$(bound_hit "$rc")"; }
-  manager_wait
+  manager_wait; RUN_DAYS+=("$(date -u +%F)")
+}
+# The day the last run dated its lines in $1 (HISTORY.md's): the day it started,
+# or the next if it crossed midnight UTC; a date the test takes itself can be
+# either (looper#150).
+run_day() { # text
+  if [[ "$1" == *"- ${RUN_DAYS[1]} "* ]]; then echo "${RUN_DAYS[1]}"; else echo "${RUN_DAYS[0]}"; fi
 }
 # The report alone, for a scenario whose issue no report works (held by a run
 # that is gone, say): its stale looper:in-progress would keep a manager waiting.
@@ -873,7 +879,7 @@ c="$(others)"
 [[ "$(grep -c '^alpha#4 ' <<<"$c")" == 1 ]] || fail "comments: $c"
 has "$c" "closed with no closing report from its run"
 has "$c" "main $(origin rev-parse --short main~2)..$(origin rev-parse --short main~1)"
-has "$c" "- $(date -u +%F) looper issue Issue 4 (#4, $(origin rev-parse --short main~1))"
+has "$c" "- $(run_day "$c") looper issue Issue 4 (#4, $(origin rev-parse --short main~1))"
 has "$c" "last words"
 has "$c" "https://gl.test/jobs/77"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
@@ -910,7 +916,6 @@ templates() { # the four templates, as tacplus-dev/roadmap templates/repo/ has t
 }
 close_it() { echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"; }
 history() { origin show main:HISTORY.md; }
-today="$(date -u +%F)"
 
 # A missing planning file is created from the template on main before the model
 # runs, never ROADMAP.md; a closed issue appends exactly one well-formed line.
@@ -925,7 +930,7 @@ has "$c" "HISTORY.md"; has "$c" "PROPOSALS.md"; has "$c" "STATE.md"; lacks "$c" 
 has "$c" "# STATE: alpha"
 ! origin cat-file -e main:ROADMAP.md 2>/dev/null || fail "ROADMAP.md created"
 [[ "$(origin show main:PROPOSALS.md)" == "$(sed 's/<repo>/alpha/' "$FIX/templates/PROPOSALS.md")" ]] || fail "PROPOSALS.md: $(origin show main:PROPOSALS.md)"
-h="$(history)"
+h="$(history)"; today="$(run_day "$h")"
 [[ "$h" == "$(sed 's/<repo>/alpha/' "$FIX/templates/HISTORY.md")"$'\n'"- $today looper issue Issue 4 (#4, $(cat "$FIX/fix"))" ]] || fail "HISTORY.md: $h"
 [[ "$(grep -c '^- ' <<<"$h")" == 1 ]] || fail "HISTORY.md: $h"
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
@@ -948,7 +953,7 @@ run
 [[ "$(origin rev-parse main~1)" == "$seeded" ]] || fail "main: $(origin log --oneline main)"
 [[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)' ]] || fail "HISTORY.md: $(history)"
 push_fix; close_it; issue alpha 4 OPEN approved,bug "Fix it."
-run
+run; today="$(run_day "$(history)")"
 [[ "$(history)" == $'# History: alpha\n\n- 2026-10-01 agent decision first (x)\n'"- $today looper issue Issue 4 (#4, $(origin rev-parse --short main~1))" ]] \
   || fail "HISTORY.md: $(history)"
 [[ "$(origin show main:STATE.md)" == "my state" ]] || fail "STATE.md overwritten"
@@ -959,7 +964,7 @@ scenario history-release
 templates
 push_fix; echo 'git tag v1.2.3 && git push -q origin v1.2.3' >> "$FIX/claude.sh"; close_it
 run
-h="$(history)"
+h="$(history)"; today="$(run_day "$h")"
 has "$h" "- $today looper issue Issue 4 (#4, "
 has "$h" "- $today looper release v1.2.3 (https://github.com/tacplus-dev/alpha/releases/tag/v1.2.3)"
 pass
