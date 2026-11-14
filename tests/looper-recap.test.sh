@@ -43,6 +43,7 @@ case "$rest" in
   jobs\?*) page="$(grep -oE 'page=[0-9]+' <<<"$rest" | tail -1 | cut -d= -f2)"
            f="$FX/gitlab/$proj/jobs-$page.json"; [[ -f "$f" ]] || { [[ -d "$FX/gitlab/$proj" ]] && { echo '[]'; exit 0; }; exit 22; }; cat "$f" ;;
   jobs/*/trace) id="${rest#jobs/}"; id="${id%/trace}"; f="$FX/gitlab/$proj/trace-$id.txt"; [[ -f "$f" ]] || exit 22; cat "$f" ;;
+  pipelines/*) f="$FX/gitlab/$proj/pipeline-${rest#pipelines/}.json"; [[ -f "$f" ]] || exit 22; cat "$f" ;;
   *) exit 22 ;;
 esac
 EOF
@@ -155,6 +156,9 @@ has "$(q '.items[].key')" "scan/tacplus"
 # GitHub Actions (nightly, release, images only).
 [[ "$(q '.actions.by_workflow | keys | join(",")')" == tacplus/nightly ]] || fail "actions: $(q .actions)"
 [[ "$(q '.items[] | select(.key == "actions/tacplus/nightly") | "\(.count) \(.recovered)"')" == "1 true" ]] || fail "$(q .items)"
+# The builds against the commits they built (looper#134): pipeline 77, alpha's 1111111111 on docs.
+[[ "$(q '.builds | "\(.builds) \(.commits) \(.duplicates) \(.per_commit) \(.unread)"')" == "1 1 0 1 0" ]] || fail "builds: $(q .builds)"
+lacks "$(q '.items[].key')" "builds/"
 # A job outside the window is left out.
 lacks "$(q '.failed_jobs[].id')" 900
 pass
@@ -279,6 +283,9 @@ has "$R" "Plan queue: p50 1, p90 1, max 1 min over 1 job (1 canceled before star
 has "$R" "Kick queue: p50 0.5, p90 0.5, max 0.5 min over 2 jobs; the longest [0.5 min](https://gitlab.com/tacplus-dev/looper/-/jobs/1500)."
 has "$R" "Longest lands: [tacplus #12 full](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 150 min."
 has "$R" "Not read: gitlab:tacplus-dev/cluster"
+# Builds a commit, against the nights before (looper#134): falling.
+[[ "$(c '[.builds_per_commit[] | "\(.night) \(.per_commit)"] | join(", ")')" == "2026-10-31 2.5, 2026-11-01 1.8, 2026-11-02 1" ]] || fail "trend: $(c .builds_per_commit)"
+has "$R" "Builds (looper#134): 1 of 1 commits, 1 a commit (0 built a commit again); the nights before: 2026-11-01 1.8, 2026-10-31 2.5: falling."
 # The managers' scores, the concurrency and the capacity numbers (looper#72, looper#107).
 has "$R" "Managers: alpha 1 merged (report to merge p50 7, p90 7 min), conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; tacplus 3 merged (report to merge p50 80, p90 240 min), conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
 has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
@@ -340,6 +347,22 @@ lacks "$(v '.items[].key')" "scan_holds_repo"
 [[ "$(v '.capacity.waiting_for_vm.jobs[] | select(.issue == 16) | "\(.minutes) \(.pool)"')" == "97 tacplus-dev arm64 autoscale-16" ]] || fail "VM waits: $(v .capacity.waiting_for_vm)"
 pass
 
+# Duplicate builds (looper#134): builds against the distinct commits they built. Pipeline 78 builds
+# alpha's 1111111111 again, 79 another commit, 80 is the nightly (no gate build), 81 cannot be read:
+# 3 builds of 2 commits, 1.5 a commit, over the threshold.
+NAME=collect-duplicate-builds
+rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; d="$TMP/fx/gitlab/tacplus-dev_build"
+jq '. + [range(78; 82) as $p | .[1] | .id = 2000 + $p | .pipeline.id = $p]' "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json"
+for p in 78:"build alpha $(printf '1%.0s' {1..40})  full" 79:"build beta $(printf '2%.0s' {1..40})  docs+build" 80:"nightly alpha "; do
+  jq -n --arg n "${p#*:}" --argjson i "${p%%:*}" '{id: $i, name: $n, web_url: "https://gitlab.com/tacplus-dev/build/-/pipelines/\($i)"}' > "$d/pipeline-${p%%:*}.json"
+done
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(jq -r '.builds | "\(.builds) \(.commits) \(.duplicates) \(.per_commit) \(.unread) \(.again[0].repo) \(.again[0].builds) \(.again[0].sets)"' "$TMP/v.json")" == \
+   '3 2 1 1.5 1 alpha 2 ["docs","full"]' ]] || fail "builds: $(jq -c .builds "$TMP/v.json")"
+has "$(jq -r '.items[] | select(.key == "builds/duplicates") | "\(.over) \(.count) \(.summary)"' "$TMP/v.json")" \
+  "true 1 gitlab.com/tacplus-dev/build: 3 builds of 2 commits (1.5 a commit): 1 built a commit again (threshold 1.1 a commit); most: alpha 1111111111 2"
+FX="$TMP/fx" recap classify "$TMP/v.json" --history "$FX/history" > "$TMP/vc.json" || fail "classify"
+has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" "Builds (looper#134): 3 of 2 commits, 1.5 a commit (1 built a commit again), 1 pipeline not read; the nights before: 2026-11-01 1.8, 2026-10-31 2.5: falling."
 # The plan pending 100 minutes behind reports (looper#104, 2026-11-06: 1h40m), and a kick
 # 5 hours behind older kicks: each control job's queue its own item, over its threshold.
 NAME=control-queues

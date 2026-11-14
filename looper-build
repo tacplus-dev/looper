@@ -742,9 +742,11 @@ cmd_status() { # state [description]
   case "$state" in pending|success|failure|error) ;; *) usage >&2; exit 2 ;; esac
   refuse_write_credentials
   check_inputs
+  # A pending or green status names the build's key, its gate set and base
+  # (looper#134): a request for the same key reuses this build (repo-looper).
   [[ -n "$text" ]] || case "$state" in
-    pending) text="building${BUILD_GATES:+: gates $BUILD_GATES}" ;;
-    success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}" ;;
+    pending) text="building${BUILD_GATES:+: gates $BUILD_GATES}${BUILD_BASE:+ on base $BUILD_BASE}" ;;
+    success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}${BUILD_BASE:+ on base $BUILD_BASE}" ;;
     # No build-verdict here when the gates' child pipeline failed (the plan passed): sed exits 2 on the missing file.
     # A gates-failed job's (BUILD_NO_VERDICT) when the gates job left none (looper#148).
     # The security-failed job's (BUILD_STATUS_OF=security) only when the gates passed: red gates are gates-failed's (looper#144).

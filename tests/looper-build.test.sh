@@ -860,6 +860,15 @@ body="${line#status Bearer "$READ_TOKEN" "${SHA[pass]}" }"
 build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=docs -- status success 2>"$TMP/err" || fail "status failed"
 [[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == "success|pass: gates docs" ]] ||
   fail "a gate set's pass does not name it: $(cat "$TMP/api.log")"
+# The status names the build's key (looper#134), the gate set and its base: a
+# request for the same key finds it, pending or green, and builds nothing again.
+B="$(printf 'b%.0s' {1..40})"
+for st in pending:building success:pass; do
+  : > "$TMP/api.log"
+  build BUILD_SHA="${SHA[mapped]}" BUILD_GATES=docs BUILD_BASE="$B" -- status "${st%%:*}" 2>"$TMP/err" || fail "status failed"
+  [[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == "${st%%:*}|${st#*:}: gates docs on base $B" ]] ||
+    fail "the ${st%%:*} status does not name its key: $(cat "$TMP/api.log")"
+done
 pass
 
 NAME="status: a failure says why"

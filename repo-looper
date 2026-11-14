@@ -948,11 +948,12 @@ onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging
 # when a gate map chose it, and the set and why in its `gate-sets`.
 land_work() {
   no_repo_code "a land's gates"
-  local gates out; gates="$(land_gates)"
+  local gates out queued; gates="$(land_gates)"
   [[ -n "$gates" || -f "$CHECKOUT/$GATE_MAP" ]] || die "no gates to re-run before landing: $REPO has no $GATE_MAP, no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
   out="${LOOPER_RUN:-$(mktemp -d)}"; mkdir -p "$WORK"
+  queued="$(git rev-parse HEAD)"
   ( flock 8
     for i in 1 2 3; do
       fetch . main || { log "could not fetch main; nothing landed"; exit 1; }
@@ -979,7 +980,7 @@ land_work() {
       if build_jobs HEAD .; then
         # A pinned repository's gates are a build job's verdict (looper#71).
         log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
-        build_gates "$before" > "$out/gates.log" 2>&1 || grc=$?
+        build_gates "$before" "$queued" > "$out/gates.log" 2>&1 || grc=$?
         if (( grc == 3 )); then
           { log "nothing landed yet: its build has no verdict and this job's end is near; the land stays queued, and the next manager takes the build's verdict up:"; tail -n 3 "$out/gates.log"; } >&2
           exit "$BUILD_LEFT"
@@ -1200,6 +1201,64 @@ start_build() { # sha gates base
   echo "$id ${url:-$BUILD_API/projects/$BUILD_PROJECT/pipelines/$id}"
 }
 
+# A build is keyed by (repository, commit, gate set, base) (looper#134): a
+# request for a key that has a green build, or one queued or running, reuses
+# that build and its verdict instead of starting another. A pending or green
+# status names its key (looper-build status: "building: gates SET on base
+# BASE", "pass: ..."), so any job finds it; a build triggered and not yet
+# started has no status yet: this host's record of it, written with its start
+# under a lock, BUILD_RECORDS/<sha>-<set>-<base> ("<pipeline id> <URL>"),
+# covers that until LOOPER_BUILD_WAIT has passed. A failed build is reused by
+# nothing: a request after it builds again.
+BUILD_RECORDS="$WORK/builds"
+
+# The build of the key to reuse, as "<pipeline id> <URL> green|running"
+# (running: queued or running); fails when there is none.
+find_build() { # sha gates base
+  local s r f
+  s="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$1/statuses?per_page=100" 2>/dev/null)" || s='[]'
+  f="$BUILD_RECORDS/$1-${2:-_}-$3"
+  [[ ! -s "$f" ]] || (( $(date +%s) - $(stat -c %Y "$f") >= BUILD_WAIT )) || r="$(cat "$f")"
+  jq -re --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg key "${2:+: gates $2} on base $3" --arg rec "${r:-}" '
+    def id: .target_url | capture("/pipelines/(?<id>[0-9]+)$").id;
+    # Each pipeline its newest status (GitHub lists them newest first), then the build to reuse.
+    [.[] | select(.context == $c and .creator.login == $who and ((.target_url // "") | test("/pipelines/[0-9]+$")))]
+    | group_by(.target_url) | map(.[0]) as $last
+    | ([$last[] | select(.state == "success" and .description == "pass" + $key) | "\(id) \(.target_url) green"]
+       + [$last[] | select(.state == "pending" and .description == "building" + $key) | "\(id) \(.target_url) running"]
+       + (if $rec == "" then [] else ($rec | split(" ")) as [$i, $u]
+          | [$last[] | select(.target_url == $u)] as $st
+          | if $st == [] or $st[0].state == "pending" then ["\($rec) running"] elif $st[0].state == "success" then ["\($rec) green"] else [] end end))
+    | first // empty' <<<"$s" 2>/dev/null
+}
+
+# The build of a key: one to reuse (find_build), else one started, after the
+# command given (the commit pushed where the build fetches it), and recorded.
+# Sets BUILD_P to "<pipeline id> <URL>" and BUILD_REUSED to green or running
+# (empty when started); fails, BUILD_P saying why, when none could be started
+# or BUILDS_LEFT (when set) is 0.
+get_build() { # sha gates base [command...]
+  local sha="$1" gates="$2" base="$3" fd r rc=0; shift 3
+  BUILD_P=""; BUILD_REUSED=""
+  mkdir -p "$BUILD_RECORDS"; exec {fd}>"$BUILD_RECORDS/.lock"; flock "$fd"
+  if r="$(find_build "$sha" "$gates" "$base")"; then
+    BUILD_P="${r% *}"; BUILD_REUSED="${r##* }"
+  elif [[ -n "${BUILDS_LEFT:-}" ]] && (( BUILDS_LEFT <= 0 )); then
+    BUILD_P="this run has asked for $BUILD_MAX builds already"; rc=1
+  # What it runs holds no lock: a process it leaves behind would hold it.
+  elif (( $# )) && ! r="$("$@" 2>&1 {fd}>&-)"; then
+    BUILD_P="$r"; rc=1
+  elif BUILD_P="$(start_build "$sha" "$gates" "$base" {fd}>&-)"; then
+    echo "$BUILD_P" > "$BUILD_RECORDS/$sha-${gates:-_}-$base"
+    find "$BUILD_RECORDS" -maxdepth 1 -type f -name '*-*' -mmin +"$(( BUILD_WAIT / 60 + 60 ))" -delete 2>/dev/null || true
+  else rc=1; fi
+  exec {fd}>&-
+  return "$rc"
+}
+
+# How a reused build is said: green, or queued or running.
+reused_what() { if [[ "$1" == green ]]; then echo green; else echo "queued or running"; fi; }
+
 # The verdict of the build pipeline id on sha: the commit status the build's
 # reader app set, linking that pipeline, once it is no longer pending. Builds
 # run on spot, a few at a time (looper#128): one queued for a runner is no red
@@ -1289,19 +1348,33 @@ build_capped() { # run-dir
 # its branch, a record on top of the commit (build_record): the next manager
 # whose rebase gives the same tree on the same base and gate set checks that
 # commit out and takes the same pipeline's verdict up, triggering none.
-build_gates() { # base
-  local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates="" t0 r; sha="$(git rev-parse HEAD)"
+# A build of the same key is reused (get_build, looper#134), and so is one of
+# the commit queued, before its rebase, when the rebase left its tree as it was
+# (a merge commit linearized): the same tree, gate set and base, so the same
+# gates. Its verdict is that build's, on that commit; nothing is built again.
+build_gates() { # base [queued commit]
+  local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates="" t0 r c="${2:-}"; sha="$(git rev-parse HEAD)"
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
   if r="$(build_record "$b")" && [[ "$(sed -n 's/^base=//p' <<<"$r")" == "$1" && "$(sed -n 's/^gates=//p' <<<"$r")" == "$gates" ]] &&
      sha="$(sed -n 's/^sha=//p' <<<"$r")" && [[ "$(git rev-parse -q --verify "$sha^{tree}" 2>/dev/null)" == "$(git rev-parse HEAD^{tree})" ]]; then
     git reset -q --hard "$sha"
     p="$(sed -n 's/^pipeline=//p' <<<"$r") $(sed -n 's/^url=//p' <<<"$r")"; t0="$(sed -n 's/^triggered=//p' <<<"$r")"
     echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}: an earlier manager's, its verdict taken up"
+  elif sha="$(git rev-parse HEAD)" && [[ -n "$c" && "$c" != "$sha" && "$(git rev-parse "$c^{tree}")" == "$(git rev-parse "$sha^{tree}")" ]] &&
+     r="$(find_build "$c" "$gates" "$1")"; then
+    echo "the build job $(cut -d' ' -f2 <<<"$r") of $REPO ${c:0:7}, the gates ${gates:-full} on base ${1:0:7}: reused, the $(reused_what "${r##* }") build of ${c:0:7}, the same tree on the same base"
+    # Left to run (3), it is found again by its key: no record.
+    build_verdict "$c" "${r%% *}" "$(cut -d' ' -f2 <<<"$r")"; return
   else
-    sha="$(git rev-parse HEAD)"; t0="$(date +%s)"
-    git push -q -f origin "$sha:refs/heads/$b" || { echo "nothing built: the rebased commit could not be pushed to $b"; return 1; }
-    p="$(start_build "$sha" "$gates" "$1")" || { echo "nothing built: $p"; git push -q origin --delete "$b" >/dev/null 2>&1 || true; return 1; }
-    echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}"
+    t0="$(date +%s)"
+    get_build "$sha" "$gates" "$1" git push -q -f origin "$sha:refs/heads/$b" ||
+      { echo "nothing built: $BUILD_P"; git push -q origin --delete "$b" >/dev/null 2>&1 || true; return 1; }
+    p="$BUILD_P"
+    if [[ -n "$BUILD_REUSED" ]]; then
+      echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}: reused, the $(reused_what "$BUILD_REUSED") build of ${sha:0:7}, the same tree on the same base"
+    else
+      echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}"
+    fi
   fi
   build_verdict "$sha" "${p%% *}" "${p#* }" "$t0" || rc=$?
   if (( rc == 3 )); then
@@ -1350,7 +1423,7 @@ build_request() {
   for (( i = 0; i < 300; i++ )); do [[ -s "$d/$id.started" || -s "$d/$id.refused" ]] && break; sleep 1; done
   [[ ! -s "$d/$id.refused" ]] || die "the looper did not start the build: $(cat "$d/$id.refused")"
   [[ -s "$d/$id.started" ]] || die "the looper did not start the build within 5 minutes"
-  echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}"
+  echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}$([[ ! -s "$d/$id.reused" ]] || echo " (reused: $(reused_what "$(cat "$d/$id.reused")"): this key's build, looper#134)")"
   build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")"
 }
 
@@ -1368,12 +1441,16 @@ build_server() { # run-dir
       base="$(sed -n 's/^base=//p' "$d/$id.taken" | head -n 1)"
       if ! [[ "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]]; then
         echo "not a build request (sha=, gates=, base=)" > "$d/$id.refused"
-      elif (( ++k > BUILD_MAX )); then
-        echo "this run has asked for $BUILD_MAX builds already" > "$d/$id.refused"
-      elif p="$(start_build "$sha" "$gates" "$base")"; then
-        echo "$p" > "$d/$id.started"; log "started a build of $REPO ${sha:0:7} (the gates ${gates:-full}) for its model: ${p#* }"
+      elif BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
+        # A build of the same key, green or queued or running, is reused (looper#134).
+        if [[ -n "$BUILD_REUSED" ]]; then
+          echo "$BUILD_REUSED" > "$d/$id.reused"; log "a build of $REPO ${sha:0:7} (the gates ${gates:-full}) for its model: reused, $(reused_what "$BUILD_REUSED"): ${BUILD_P#* }"
+        else
+          k=$(( k + 1 )); log "started a build of $REPO ${sha:0:7} (the gates ${gates:-full}) for its model: ${BUILD_P#* }"
+        fi
+        echo "$BUILD_P" > "$d/$id.started"
       else
-        echo "$p" > "$d/$id.refused"; log "a build of $REPO ${sha:0:7} for its model: $p"
+        echo "$BUILD_P" > "$d/$id.refused"; log "a build of $REPO ${sha:0:7} for its model: $BUILD_P"
       fi
     done
     sleep 1 & z=$!; wait "$z"
@@ -1476,7 +1553,7 @@ reports_active() {
 # id: merged (green), sent back (a conflict it does not resolve), or not
 # merged (red, or why not).
 verdict_comment() { # issue id rc record-dir sha
-  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build dropped
+  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build dropped reused
   b="$(wip_branch "$n")"; url="$(wip_url "$n")"
   regen="$(cat "$rec/regenerated" 2>/dev/null || true)"; conflicts="$(cat "$rec/conflicts" 2>/dev/null || true)"
   dropped="$(cat "$rec/dropped" 2>/dev/null || true)"
@@ -1486,7 +1563,9 @@ verdict_comment() { # issue id rc record-dir sha
     why="$(sed -n 's/^[^:]*: //p' "$rec/gate-sets" 2>/dev/null | tail -n 1)"
     # A pinned repository's gates are a build job's (looper#71): its link.
     build="$(sed -n 's/^the build job \([^ ]*\) of .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
-    [[ -z "$build" ]] || build=", a build job's verdict ($build)"
+    # One that had built this tree already (looper#134): reused, not built again.
+    reused="$(sed -n 's/^the build job [^ ]* of .*: reused, \(.*\)$/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}"
     what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green."
     [[ -z "$regen" ]] || what+=" It resolved the rebase's conflicts by regenerating them, never by hand: $(sed 's/.*/`&`/' <<<"$regen" | paste -sd, - | sed 's/,/, /g')."
     # A STATE.md commit dropped (looper#131): its diff, to land again.

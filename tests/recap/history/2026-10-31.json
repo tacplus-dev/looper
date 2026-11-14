@@ -16,5 +16,10 @@
    "running": 2,
    "summary": "x"
   }
- ]
+ ],
+ "builds": {
+  "builds": 25,
+  "commits": 10,
+  "per_commit": 2.5
+ }
 }

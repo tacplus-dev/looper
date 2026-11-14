@@ -377,6 +377,15 @@ pin issue (filed by the hub) commits one.
 - **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the
   build's `tacplus-reader` app set (creator `tacplus-reader[bot]`: the looper's own `GH_TOKEN` could set one too)
   linking the pipeline that was started, once it is no longer pending.
+- **A build runs once per repository, commit, gate set and base** (looper#134): a request for a key that has a green
+  build reuses its verdict, and one for a key whose build is queued or running waits on that build, whoever asked for it
+  (the report's model twice, its retried run, the manager after the report): both see its one verdict. A pending or
+  green status names its key (`building: gates <set> on base <base>`, `pass: ...`), so any job finds it; a build
+  triggered and not started yet has no status, and the host's record of it (`$LOOPER_WORK/<repo>/builds/`, written
+  with its start under a lock) covers that. A failed build is reused by nothing. **A land whose rebased tree is the
+  tree a build already passed**, with the same gate set on the same base (the report's last build, the rebase a no-op
+  or one that only linearized a merge), merges on that build's verdict, and its comment links it, `reused`. The
+  [nightly recap](#nightly-recap) counts the builds against the commits they built.
 - **No container runtime in the report**: its model's `docker` refuses, saying to use `--build` (so `tacplus`,
   which runs through docker, is the build job's alone); no `looper-docker`, no broker, no `DOCKER_HOST`. Its prompt's
   rule 4 says so. Since looper#68 the model runs as a user outside the socket's group, so it cannot reach the host's
@@ -395,7 +404,7 @@ pin issue (filed by the hub) commits one.
   BuildKit, without the host's Docker.
 
 ```sh
-tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on a build job's verdict of the rebased commit; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
 tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin
 ```
 
@@ -668,7 +677,11 @@ of its model's exit, and the high models the account refused, `model: M refused`
 `model_refused/<model>`, recovered: its runs fell back),
 GitHub Actions' nightly, release and image workflows of every repository, and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
 `org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
-catches a stale image when no run failed. A source it cannot read is named in `sources`, never guessed.
+catches a stale image when no run failed. **Duplicate builds** (looper#134): `tacplus-dev/build`'s gate builds (each
+pipeline read by its name, `build <repo> <sha> <tag> <gates>`; no nightly, verify run or release) against the distinct
+commits they built, the commits built again, and an item `builds/duplicates` over `LOOPER_RECAP_BUILD_RATIO` (1.1)
+builds a commit; the report puts tonight's ratio beside the earlier nights' and says whether it is falling. A source
+it cannot read is named in `sources`, never guessed.
 `tacplus-dev/build`'s jobs (`LOOPER_RECAP_BUILD_PROJECT`) are read with `GITLAB_TOKEN` (looper#85): the cloud gitlab
 stack makes `tacplus-looper-bot` a Reporter of tacplus-dev/build (tacplus-dev/cloud#12, option B), so the scan job
 leaves `LOOPER_RECAP_BUILD_TOKEN_SECRET` unset and needs no `gcloud` login. Should the build's artifacts ever carry

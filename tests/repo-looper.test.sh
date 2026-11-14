@@ -213,7 +213,7 @@ case "$url" in
     # tacplus-dev/build's gates input (ci/build.gitlab-ci.yml): else HTTP 422.
     [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || { reply 422 '{"message":{"base":["gates input does not match the regex"]}}'; exit 0; }
     echo "$(v token) $(v 'inputs[repo]') $sha $gates $base" >> "$FIX/builds"
-    id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}"
+    id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}${base:+ on base $base}"
     if ! git clone -q "$FIX/origin.git" "$d/src" 2>/dev/null || ! git -C "$d/src" -c advice.detachedHead=false checkout -q "$sha" 2>/dev/null; then
       state=failure; desc="tacplus-dev/alpha has no commit $sha"
     elif [[ -f "$d/src/gates.yaml" ]]; then
@@ -222,16 +222,23 @@ case "$url" in
         { state=failure; desc="the gates ${gates:-full} (gates.yaml) exited 1 (gates.log)"; }
     fi
     rm -rf "$d"; mkdir -p "$FIX/statuses"; f="$FIX/statuses/$sha.json"; [[ -f "$f" ]] || echo '[]' > "$f"
-    now="$(date -u +%FT%TZ)"; hold="$(cat "$FIX/build-hold" 2>/dev/null || true)"
-    st() { jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" --arg t "${4:-$now}" \
-             '[{state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: $w}, created_at: $t}] + . | if $s == "pending" then . else [{state: $s, context: "tacplus-dev/build", description: $d, target_url: $u, creator: {login: $w}, created_at: $t}] + . end' "$f" > "$f.new" && mv "$f.new" "$f"; }
-    case "$hold" in
-      queued) ;;
-      running\ *) st pending building "tacplus-reader[bot]" "${hold#running }" ;;
-      [0-9]*) ( sleep "$hold"; now="$(date -u +%FT%TZ)"; st "$state" "$desc" "tacplus-reader[bot]" ) < /dev/null > /dev/null 2>&1 & ;;
-      *) st "$state" "$desc" "tacplus-reader[bot]"
-         [[ ! -e "$FIX/forge-status" ]] || st success pass "tacplus-looper[bot]" ;;
-    esac
+    now="$(date -u +%FT%TZ)"; hold="$(cat "$FIX/build-hold" 2>/dev/null || true)"; pend="building${gates:+: gates $gates}${base:+ on base $base}"
+    st1() { ( flock 7; jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" --arg t "${4:-$now}" \
+              '[{state: $s, context: "tacplus-dev/build", description: $d, target_url: $u, creator: {login: $w}, created_at: $t}] + .' "$f" > "$f.new" && mv "$f.new" "$f" ) 7>"$f.lock"; }
+    st() { st1 pending "$pend" "$3" "${4:-}"; [[ "$1" == pending ]] || st1 "$1" "$2" "$3" "${4:-}"; }
+    # $FIX/build-slow: the build is pending for that many seconds, its verdict after (looper#134).
+    if [[ -s "$FIX/build-slow" ]]; then
+      st pending "$pend" "tacplus-reader[bot]"
+      ( sleep "$(cat "$FIX/build-slow")"; st1 "$state" "$desc" "tacplus-reader[bot]" "$(date -u +%FT%TZ)" ) > /dev/null 2>&1 &
+    else
+      case "$hold" in
+        queued) ;;
+        running\ *) st pending "$pend" "tacplus-reader[bot]" "${hold#running }" ;;
+        [0-9]*) ( sleep "$hold"; now="$(date -u +%FT%TZ)"; st "$state" "$desc" "tacplus-reader[bot]" ) < /dev/null > /dev/null 2>&1 & ;;
+        *) st "$state" "$desc" "tacplus-reader[bot]"
+           [[ ! -e "$FIX/forge-status" ]] || st success pass "tacplus-looper[bot]" ;;
+      esac
+    fi
     reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"
     exit 0 ;;
   */packages/generic/security-*/latest/*)
@@ -2965,20 +2972,51 @@ lacks "$p" "looper-docker"; lacks "$p" "DOCKER_HOST="; lacks "$p" "BUILD_TRIGGER
 [[ ! -e "$FIX/real-docker" ]] || fail "the model reached docker: $(cat "$FIX/real-docker")"
 b="$(cat "$FIX/build-4")"
 has "$b" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha $(cut -c1-7 "$FIX/head"), the gates docs"
-has "$b" "verdict: success: pass: gates docs"; has "$b" "rc 0"
+has "$b" "verdict: success: pass: gates docs on base $main0"; has "$b" "rc 0"
 [[ "$(head -n 1 "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0" ]] || fail "the build asked for: $(cat "$FIX/builds")"
 has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0"
 [[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
-# The manager's gates: a build job of the rebased commit, never the gates here.
-[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
-[[ "$(sed -n 2p "$FIX/builds")" == "glptt-build alpha $(origin rev-parse main) docs $main0" ]] || fail "the manager's build: $(cat "$FIX/builds")"
-has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, notes.md, maps to docs), a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/902): green"
+# The manager's gates: a build job's verdict on the rebased commit, never the gates here. Its
+# tree, gate set and base are those the report's build passed (looper#134): that verdict, no second build.
+[[ "$(origin rev-parse main)" == "$(cat "$FIX/head")" ]] || fail "the rebase moved the commit: $(origin log --oneline main)"
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "built again: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, notes.md, maps to docs), a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901), reused: the green build of $(cut -c1-7 "$FIX/head"), the same tree on the same base: green"
 [[ "$(sort -u "$FIX/gates-ran")" == "docs build $main0" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
 [[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
 ! grep -q glptt-build "$FIX/curl-argv" || fail "the trigger token was on a command line"
 pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$pr" "Verify with a build job: "; has "$pr" "have no container runtime (no \`docker\`, so no \`tacplus\` here either)"; has "$pr" "\`tacplus\` runs in the build job only"
 lacks "$pr" "limited to 2048m of memory"
+pass
+
+# A build is keyed by (repo, commit, gate set, base) (looper#134). Two requests
+# for the same key while it is queued or running start one pipeline, and both
+# see its verdict; a third, once it is green, reuses it too. A land whose
+# rebase rewrote the commits (a merge commit, linearized) into the same tree, on
+# the same base, merges on the report's green build: it builds nothing again.
+scenario build-job-once
+pin_seed; echo 12 > "$FIX/build-slow"   # pending long enough for both requests, on a loaded machine too
+cat >> "$FIX/claude.sh" <<'EOS'
+git checkout -q -b side && echo "the docs" > notes.md && git add -A && git commit -qm "notes" && git checkout -q - && git merge -q --no-ff side -m "merge the notes"
+git rev-parse HEAD > "$FIX/head"
+for i in 1 2; do "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-$i" 2>&1 & done; wait
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-3" 2>&1; echo "rc $?" >> "$FIX/build-3"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+main0="$(origin rev-parse main)"
+run "${BUILDS[@]}"
+[[ "$(cat "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0" ]] || fail "builds: $(cat "$FIX/builds")"
+for i in 1 2 3; do
+  has "$(cat "$FIX/build-$i")" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha $(cut -c1-7 "$FIX/head"), the gates docs"
+  has "$(cat "$FIX/build-$i")" "verdict: success: pass: gates docs on base $main0"
+done
+has "$(cat "$FIX/build-1" "$FIX/build-2")" "reused: queued or running"
+has "$(cat "$FIX/build-3")" "reused: green"; has "$(cat "$FIX/build-3")" "rc 0"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(origin rev-parse main)" != "$(cat "$FIX/head")" && "$(origin rev-parse main^{tree})" == "$(git -C "$FIX/origin.git" rev-parse "$(cat "$FIX/head")^{tree}")" ]] ||
+  fail "not a rewritten commit of the same tree: $(origin log --oneline main)"
+has "$(cat "$FIX/land-4")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901), reused: the green build of $(cut -c1-7 "$FIX/head"), the same tree on the same base: green"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
 pass
 
 # A red build: --build says why and exits 1, and the manager merges nothing.
@@ -3007,21 +3045,23 @@ git -C "$FIX/seed" commit -qam images && git -C "$FIX/seed" push -q origin main
 echo 'echo pixels > a.img' > "$FIX/claude.sh"; build_model notes.md "the docs"
 run "${BUILDS[@]}"
 has "$(cat "$FIX/build-4")" "the gates docs+images"; has "$(cat "$FIX/build-4")" "rc 0"
-[[ "$(cut -d' ' -f4 "$FIX/builds")" == $'docs+images\ndocs+images' ]] || fail "the builds asked for: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f4 "$FIX/builds")" == 'docs+images' ]] || fail "the builds asked for: $(cat "$FIX/builds")"
 has "$(cat "$FIX/land-4")" "The manager merged"
 has "$(cat "$FIX/gates-ran")" "images build"
 pass
 
 # A pinned repository without a gate map (tacplus-dev/gateway): its builds run
 # its full gates, the set asked for by name (looper#127): GitLab refused the
-# empty gates input it was sent with a 422.
+# empty gates input it was sent with a 422. One build: the land reuses the
+# report's green build of the same tree (looper#134).
 scenario build-job-no-map
 pin_seed; git -C "$FIX/seed" rm -q gates.yaml && printf 'gates:\n\ttrue\n' > "$FIX/seed/justfile"
 git -C "$FIX/seed" add justfile && git -C "$FIX/seed" commit -qm "no map, a justfile" && git -C "$FIX/seed" push -q origin main
 build_model notes.md "the docs"
 run "${BUILDS[@]}"
 has "$(cat "$FIX/build-4")" "the gates full (no gates.yaml)"; has "$(cat "$FIX/build-4")" "verdict: success: pass: gates full"; has "$(cat "$FIX/build-4")" "rc 0"
-[[ "$(cut -d' ' -f4 "$FIX/builds")" == $'full\nfull' ]] || fail "the builds asked for: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f4 "$FIX/builds")" == full ]] || fail "the builds asked for: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "reused: the green build of"
 has "$(cat "$FIX/land-4")" "The manager merged"
 [[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
 pass
@@ -3107,12 +3147,17 @@ pass
 
 # A build with no verdict within LOOPER_BUILD_WAIT of its start ends the wait,
 # as --build counts it (looper#128); a run then idle is retried, never
-# looper:stuck.
+# looper:stuck. The build is past its wait when requested, so the model keeps
+# talking while its request runs (its checkpoint, the key's lookup, the
+# trigger, the first poll: longer than the idle window on a loaded machine)
+# and is idle only once the request has said so.
 scenario build-capped-retry
 pin_seed; echo "running $(date -u -d '1 minute ago' +%FT%TZ)" > "$FIX/build-hold"
 cat >> "$FIX/claude.sh" <<'EOS'
 echo x > x.md && git add -A && git commit -qm "change x"
+( while :; do echo "asking for a build"; sleep 1; done ) & talk=$!
 "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+kill "$talk"
 sleep 30
 EOS
 run "${BUILDS[@]}" LOOPER_BUILD_WAIT=5 LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1

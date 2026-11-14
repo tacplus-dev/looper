@@ -45,6 +45,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   high model, but neither has one today (a conflict is resolved only by regenerating the files `generated.yaml`
   maps; any other is sent back). A model resolving a code conflict in the manager, on that model, would save the
   report a run; it needs a design (what it may change, the gates after it).
+- **A queued build found from any host** (2026-11-13, #134): a build is reused by its key once its `pending` job has
+  set the commit status; before that (the build pipeline queued for a runner, which #128 saw for hours), only the
+  host that triggered it knows of it (`$LOOPER_WORK/<repo>/builds/`), so a report and a manager on two VMs can still
+  each start one. The trigger's caller could set a status of its own at once (another context, say
+  `tacplus-dev/build/requested`, linking the pipeline), or the build project could set the pending status from a
+  job that needs no runner; either makes a queued build findable everywhere.
+- **A build's key in full, whatever its gate set** (2026-11-13, #134): the status naming the key is cut at GitHub's
+  140 characters, so a gate set of many names (with the 40-hex base) is never reused, only built again. The base
+  abbreviated, or the sets hashed, would keep every key whole.
 - **SpotBugs without the generated tree's bytecode** (2026-11-13, #149): SpotBugs reads every `target/classes`,
   kernel's `tacplus/target/classes` too, the compiled code tacplus generates, whose findings are tacplus's to scan
   (#108); leaving it out would cut the heap kernel's analysis needs. The classes a module compiles from an

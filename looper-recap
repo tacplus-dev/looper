@@ -37,6 +37,10 @@
 #       it sent back, red gates, lands left for the next manager, redone work
 #       (a land again after a send-back or red), and from GitHub each merge's
 #       build status (a red main after it) and the reverts on main. The
+#       builds of LOOPER_RECAP_BUILD_PROJECT (looper#134): its gate builds
+#       (each pipeline's name; no nightly, verify run or release) against the
+#       distinct commits they built, and the commits built again; classify
+#       puts the ratio beside the earlier nights'. The
 #       concurrency (looper#107: no per-repository cap), from the kicker's
 #       capacity lines, in all and per repository: how many reports were active
 #       and running at once (peak and mean), the hours ready issues waited with
@@ -83,7 +87,8 @@
 # LOOPER_RECAP_BACKLOG (3: lands queued, p90 of the passes: the manager behind),
 # LOOPER_RECAP_VM_WAIT (300 s: a report's wait for a VM that counts),
 # LOOPER_RECAP_VM_WAIT_HOURS (1), LOOPER_RECAP_CONTROL_QUEUE (600 s: a
-# control job's queue, its longest, looper#104). One more VM: LOOPER_RECAP_VM_MACHINE
+# control job's queue, its longest, looper#104), LOOPER_RECAP_BUILD_RATIO (1.1:
+# builds of the build project a commit, looper#134). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing). LOOPER_RECAP_PASS (180 s, the kicker's
 # LOOPER_INTERVAL), LOOPER_RECAP_BUILD_CONTEXT (tacplus-dev/build).
@@ -129,6 +134,7 @@ T = {
     "backlog": int(num("LOOPER_RECAP_BACKLOG", 3)),
     "vm_wait_s": int(num("LOOPER_RECAP_VM_WAIT", 300)),
     "vm_wait_hours": num("LOOPER_RECAP_VM_WAIT_HOURS", 1),
+    "build_ratio": num("LOOPER_RECAP_BUILD_RATIO", 1.1),
     "control_queue_s": int(num("LOOPER_RECAP_CONTROL_QUEUE", 600)),
 }
 # The control jobs whose queues the recap reports on their own (looper#104):
@@ -667,6 +673,8 @@ def collect(until):
             lp["deferred_lands"] += lg["deferred"]
         p["queue_s"], p["prepare_s"], p["run_s"] = dist(qs), dist(ps), dist(rs)
         out["projects"][project] = p
+        if project == ENV.get("LOOPER_RECAP_BUILD_PROJECT", "tacplus-dev/build"):
+            out["builds"] = builds_of(project, tok, rows, items)
         for cls, fl in sorted(fails.items()):
             n, rec = len(fl), all(r for r, _, _ in fl)
             # The hours its failed jobs ran before failing: lost, then waited again on the retry.
@@ -790,6 +798,45 @@ def collect(until):
                       "scans": [dict(x, minutes=minutes(x.pop("s"))) for x in top(scans)],
                       "holds": [dict(x, hours=hours(x.pop("s"))) for x in top(holdl)]}
     out["items"] = sorted(items, key=lambda x: x["key"])
+    return out
+
+
+# A build pipeline's name (ci/build.gitlab-ci.yml): "build <repo> <sha> [<tag>] [<gates>]".
+BUILD_NAME = re.compile(r"build ([\w.-]+) ([0-9a-f]{40})(?: +(v\d+\.\d+\.\d+))?(?: +([\w+-]+))? *")
+
+
+def builds_of(project, tok, rows, items):
+    """The builds of the build project's pipelines whose jobs finished in the
+    window (looper#134): a build is keyed by (repository, commit, gate set), so
+    builds against distinct commits is the duplicate count, which the build
+    reuse of repo-looper brings to 1 a commit. A pipeline is read by its name
+    (a nightly's, a verify run's and a release's are no gate build); one that
+    cannot be read is counted as unread."""
+    pipes = sorted({(j.get("pipeline") or {}).get("id") for j, *_ in rows} - {None})
+    builds, unread = [], 0
+    for pid in pipes:
+        try:
+            pl = json.loads(gitlab(f"projects/{enc(project)}/pipelines/{pid}", tok))
+        except (Unreadable, ValueError):
+            unread += 1
+            continue
+        m = BUILD_NAME.fullmatch(pl.get("name") or "")
+        if m and not m.group(3):
+            builds.append({"repo": m.group(1), "sha": m.group(2), "set": m.group(4) or "full",
+                           "url": pl.get("web_url") or f"https://gitlab.com/{project}/-/pipelines/{pid}"})
+    per = {}
+    for b in builds:
+        per.setdefault((b["repo"], b["sha"]), []).append(b)
+    n, c = len(builds), len(per)
+    again = sorted(((k, v) for k, v in per.items() if len(v) > 1), key=lambda x: (-len(x[1]), x[0]))
+    out = {"builds": n, "commits": c, "duplicates": n - c, "per_commit": whole(round(n / c, 2)) if c else None, "unread": unread,
+           "again": [{"repo": r, "sha": sha[:10], "builds": len(v), "sets": sorted({b["set"] for b in v})} for (r, sha), v in again[:5]]}
+    if n > c:
+        items.append({"key": "builds/duplicates", "count": n - c, "over": n / c > T["build_ratio"], "recovered": False,
+                      "summary": f"gitlab.com/{project}: {n} builds of {c} commits ({out['per_commit']} a commit): "
+                                 f"{n - c} built a commit again (threshold {T['build_ratio']} a commit); most: "
+                                 + ", ".join(f"{r} {sha[:10]} {len(v)}" for (r, sha), v in again[:3]),
+                      "evidence": [b["url"] for _, v in again[:3] for b in v][:5]})
     return out
 
 
@@ -1109,13 +1156,21 @@ def load(path):
 
 def classify(night, history):
     d = dt.date.fromisoformat(night["night"])
-    before = {}
+    before, ratios = {}, []
     for k in range(1, 7):
         day = (d - dt.timedelta(days=k)).isoformat()
         p = os.path.join(history, f"{day}.json") if history else ""
         if p and os.path.isfile(p):
-            before[day] = {x["key"] for x in load(p).get("items", [])}
+            h = load(p)
+            before[day] = {x["key"] for x in h.get("items", [])}
+            if (h.get("builds") or {}).get("per_commit") is not None:
+                ratios.append({"night": day, "per_commit": h["builds"]["per_commit"]})
     out = {"night": night["night"], "history": sorted(before), "recurring": [], "transient": [], "once": []}
+    # Builds a commit, night by night (looper#134): the duplicates' trend.
+    b = night.get("builds") or {}
+    if b.get("per_commit") is not None:
+        ratios.append({"night": night["night"], "per_commit": b["per_commit"]})
+    out["builds_per_commit"] = sorted(ratios, key=lambda x: x["night"])
     for it in night.get("items", []):
         seen = sorted([day for day, keys in before.items() if it["key"] in keys] + [night["night"]])
         row = {"key": it["key"], "summary": it["summary"], "nights": len(seen), "seen": seen, "over": it["over"],
@@ -1232,6 +1287,17 @@ def report(night, classes, sdir, cov):
                              for r, c in sorted(cc["repos"].items())) + ".")
     else:
         L.append("Concurrency: no kicker pass read.")
+    b = night.get("builds")
+    if b:
+        tr = [x for x in classes.get("builds_per_commit", []) if x["night"] != n]
+        trend = ""
+        if tr and b["per_commit"] is not None:
+            last = tr[-1]["per_commit"]
+            trend = "; the nights before: " + ", ".join(f"{x['night']} {x['per_commit']}" for x in reversed(tr)) + ": " + \
+                ("falling" if b["per_commit"] < last else "rising" if b["per_commit"] > last else "flat")
+        L.append(f"Builds (looper#134): {b['builds']} of {b['commits']} commits"
+                 + (f", {b['per_commit']} a commit ({b['duplicates']} built a commit again)" if b["per_commit"] is not None else "")
+                 + (f", {b['unread']} pipeline{'s' * (b['unread'] != 1)} not read" if b["unread"] else "") + trend + ".")
     cp = night.get("capacity")
     if cp:
         w, vm = cp["waiting_for_vm"], cp["one_more_vm"]

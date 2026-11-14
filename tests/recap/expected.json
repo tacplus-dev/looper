@@ -31,6 +31,14 @@
    }
   ]
  },
+ "builds": {
+  "again": [],
+  "builds": 1,
+  "commits": 1,
+  "duplicates": 0,
+  "per_commit": 1,
+  "unread": 0
+ },
  "capacity": {
   "one_more_vm": {
    "machine": "t2a-standard-8",
@@ -964,6 +972,7 @@
  },
  "thresholds": {
   "backlog": 3,
+  "build_ratio": 1.1,
   "control_queue_s": 600,
   "count": 3,
   "disk_pct": 85,

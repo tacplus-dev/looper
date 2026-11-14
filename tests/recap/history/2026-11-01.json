@@ -22,5 +22,10 @@
    "recovered": false,
    "summary": "x"
   }
- ]
+ ],
+ "builds": {
+  "builds": 18,
+  "commits": 10,
+  "per_commit": 1.8
+ }
 }
