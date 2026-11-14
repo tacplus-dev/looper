@@ -86,3 +86,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-13 looper issue STATE.md's Blocked on names closed issues: #83, #90, #28, tacplus#193 (#141, 3ac18f9; gates: docs)
 - 2026-11-13 looper issue A land whose only conflict is STATE.md lands its code and sends back only its STATE.md commit (#131, db1a3f1; gates: full)
 - 2026-11-14 looper issue Full gates flaky on main: repo-looper.test.sh land-closes-mid-run, the watchdog counts the manager's verdict as the run's report (#143)
+- 2026-11-14 looper issue Security floor: services' SAST (gosec, gitleaks) skips the tacplus-generated tree; tacplus scans its own generated output (#108)
