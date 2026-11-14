@@ -114,9 +114,12 @@ case "$method $url" in
     [[ "$auth" == ghs_* ]] || { echo "unauthenticated $url" >> "$TMP/api.log"; exit 22; }
     p="${url#https://api.github.com/}"; p="${p%%\?*}"
     [[ "$method" == GET ]] || { echo "revoked $auth" >> "$TMP/api.log"; exit 0; }
-    [[ "$url" != *'&page='* || "$url" == *'&page=1' ]] || { echo '[]'; exit 0; }
-    [[ -f "$TMP/gh/$p.json" ]] || exit 22
-    cat "$TMP/gh/$p.json" ;;
+    # A list's page N > 1: $TMP/gh/<path>.N.json, past its last an empty page.
+    n=1; [[ "$url" != *'&page='* ]] || n="${url##*&page=}"
+    f="$TMP/gh/$p.json"; [[ "$n" == 1 ]] || f="$TMP/gh/$p.$n.json"
+    [[ "$n" == 1 || -f "$f" ]] || { echo '[]'; exit 0; }
+    [[ -f "$f" ]] || exit 22
+    cat "$f" ;;
   *) echo "curl stub: $method $url" >&2; exit 22 ;;
 esac
 EOF
@@ -217,7 +220,7 @@ echo '{"permission": "read", "role_name": "triage"}' > "$TMP/gh/repos/tacplus-de
 echo '{"permission": "write"}' > "$TMP/gh/repos/tacplus-dev/alpha/collaborators/tacplus-looper[bot]/permission.json"
 labels() { jq -n --arg l "$1" '{labels: ([{name: "approved"}] + (if $l == "" then [] else [{name: $l}] end))}' > "$TMP/gh/repos/tacplus-dev/alpha/issues/7.json"; }
 events() { # "login type event" ...
-  local e; for e in "$@"; do read -r who ty ev <<<"$e"
+  local e; rm -f "$TMP/gh/repos/tacplus-dev/alpha/issues/7/events".*.json; for e in "$@"; do read -r who ty ev <<<"$e"
     jq -nc --arg w "$who" --arg t "$ty" --arg e "$ev" '{event: $e, actor: {login: $w, type: $t}, label: {name: "looper:workflows"}}'
   done | jq -s '[{event: "labeled", actor: {login: "jody", type: "User"}, label: {name: "approved"}}] + .' > "$TMP/gh/repos/tacplus-dev/alpha/issues/7/events.json"
 }
@@ -240,6 +243,28 @@ triager|looper:workflows|tri User labeled|$NOW|alpha#7's looper:workflows was se
 bot|looper:workflows|tacplus-looper[bot] Bot labeled|$NOW|alpha#7's looper:workflows was set by tacplus-looper[bot] (Bot), not someone with write access: ignored
 relabelled|looper:workflows|jody User labeled,jody User unlabeled,tri User labeled|$NOW|set by tri (read)
 EOF
+# An issue of many events, each as large as GitHub's (looper#115: the pages read
+# so far, passed to jq as an argument, passed the kernel's limit, and the check
+# fell to unreadable): the last labeled event wins, wherever its page.
+many() { # page login type: 6 pages of 100 events, looper:workflows labeled on page 1 by jody, then on PAGE by LOGIN
+  local d="$TMP/gh/repos/tacplus-dev/alpha/issues/7" n f
+  for n in 1 2 3 4 5 6; do
+    f="$d/events.$n.json"; [[ "$n" != 1 ]] || f="$d/events.json"
+    jq -nc --argjson n "$n" --argjson at "$1" --arg w "$2" --arg t "$3" --arg pad "$(printf '%02000d' 0)" '
+      [range(100) as $i | {event: "commented", actor: {login: "someone", type: "User"}, body: $pad}]
+      | if $n == 1 then .[0] = {event: "labeled", actor: {login: "jody", type: "User"}, label: {name: "looper:workflows"}} else . end
+      | if $n == $at then .[99] = {event: "labeled", actor: {login: $w, type: $t}, label: {name: "looper:workflows"}} else . end' > "$f"
+  done
+}
+labels looper:workflows
+for c in "5 jody User|$W|set by jody (admin)" "5 tri User|$NOW|set by tri (read)" "1 jody User|$W|set by jody (admin)"; do
+  IFS='|' read -r at want said <<<"$c"; many $at
+  t="$(tok looper-report -- mint report alpha#7 2>"$TMP/err")" || fail "many $at: no token"
+  last="$(awk '/^token / { t = $3; p = $4 } END { print t, p }' "$TMP/api.log")"
+  [[ "$last" == "$t $want" ]] && grep -qF "$said" "$TMP/err" || fail "many $at: $last: $(cat "$TMP/err")"
+done
+rm -f "$TMP/gh/repos/tacplus-dev/alpha/issues/7/events".*.json
+
 labels looper:workflows; rm "$TMP/gh/repos/tacplus-dev/alpha/issues/7/events.json"
 t="$(tok looper-report -- mint report alpha#7 2>"$TMP/err")" || fail "unreadable: no token"
 grep -q "^token tacplus-looper $t $NOW\$" "$TMP/api.log" && grep -qF "could not read who set alpha#7's looper:workflows: no workflows: write" "$TMP/err" ||

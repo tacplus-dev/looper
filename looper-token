@@ -242,7 +242,7 @@ gh_get() { curl -fsS --retry 2 -H "Authorization: Bearer $1" -H 'Accept: applica
 # set labels too, and a bot, the report's own app among them, is no person),
 # as #40's rule reads an author. Read with TOKEN; anything unreadable is no.
 workflows_label() { # token issue
-  local repo="${2%#*}" n="${2#*#}" api ev who type perm page=1 all="[]" got
+  local repo="${2%#*}" n="${2#*#}" api ev="" last who type perm page=1 got
   api="$GITHUB_API/repos/$ORG/$repo/issues/$n"
   got="$(gh_get "$1" "$api")" && jq -e --arg l "$LABEL_WORKFLOWS" 'any(.labels[]; .name == $l)' <<<"$got" >/dev/null 2>&1 ||
     { [[ -n "$got" ]] || log "could not read $2's labels: no workflows: write"; return 1; }
@@ -250,9 +250,11 @@ workflows_label() { # token issue
     got="$(gh_get "$1" "$api/events?per_page=100&page=$page")" && jq -e 'type == "array"' <<<"$got" >/dev/null 2>&1 ||
       { log "could not read who set $2's $LABEL_WORKFLOWS: no workflows: write"; return 1; }
     [[ "$got" != "[]" ]] || break
-    all="$(jq -c --argjson a "$all" '$a + .' <<<"$got")"; page=$((page + 1))
+    # Only each page's last labeled event for it is kept: an issue's events
+    # are megabytes, past what a command line holds (looper#115).
+    last="$(jq -c --arg l "$LABEL_WORKFLOWS" '[.[] | select(.event == "labeled" and .label.name == $l)] | last // empty' <<<"$got")"
+    [[ -z "$last" ]] || ev="$last"; page=$((page + 1))
   done
-  ev="$(jq -c --arg l "$LABEL_WORKFLOWS" '[.[] | select(.event == "labeled" and .label.name == $l)] | last // empty' <<<"$all")"
   [[ -n "$ev" ]] || { log "could not read who set $2's $LABEL_WORKFLOWS: no workflows: write"; return 1; }
   who="$(jq -r '.actor.login // ""' <<<"$ev")"; type="$(jq -r '.actor.type // ""' <<<"$ev")"
   if [[ "$type" == User && "$who" =~ ^[A-Za-z0-9-]+$ ]]; then
