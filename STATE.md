@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by looper (#147).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by looper (#142).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -241,6 +241,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   decide`) is the hub's to wire; formal verification (#74) has run only against stubs: it starts with the next
   looper image and the hub's copy of `ci/build.gitlab-ci.yml`, and its schedule (`verify: true`, tacplus) stays
   inactive until tacplus-dev/tacplus#211 and #257 make it pass; until then a tacplus release fails its verify job;
-  no release line yet
+  no release line yet; the image's Syft carries GO-2026-6905 (github.com/blakesmith/ar, no fixed version: a crafted
+  `.deb` panics it and fails the security run closed), accepted in `security-exceptions.yaml` until 2026-12-13 (#142):
+  from 2026-12-14 looper's builds fail on it until it is renewed or fixed, and the nightly scan files it again then or
+  once a fixed version is published
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
