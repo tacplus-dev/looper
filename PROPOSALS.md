@@ -642,6 +642,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   exception's id) on gitleaks' own `Fingerprint` without its line, or on the path, rule and a hash of the matched
   secret, would keep a moved secret the same finding; the line stays in `where`. #129's one issue per cause is the
   issue-side half of the same noise.
+- **The release jars' scan, cached and bounded** (2026-11-13, #147): every security run of a repository with release
+  jars now runs `trivy rootfs` on them, so a land's security job downloads Trivy's databases (its Java database is
+  some hundreds of MB) as a nightly's does, and the gates' `built/` artifact carries the jars (a shaded service jar
+  is tens of MB, GitLab's artifact limit applies). A cache of `~/.cache/trivy` on the security job (keyed by the day)
+  would spare the download; a jar over the limit would need another way to the security job (the gates' Syft SBOM
+  of it, say, scanned by `trivy sbom`).
 
 ## Promoted / declined
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap

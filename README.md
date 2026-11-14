@@ -920,7 +920,8 @@ run by two jobs of the child pipeline `plan` writes, beside `gates`:
   registry, with the job's token). The next run compares with it, and the nightly agent scan reads it.
 
 **When.** Every build: OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
-FindSecBugs, and a Syft SBOM of the source. A **nightly** and every **release** tag add CodeQL and Trivy. A nightly is
+FindSecBugs, Trivy on the release jars the gates built (below), and a Syft SBOM of the source. A **nightly** and every
+**release** tag add CodeQL and Trivy on the tree. A nightly is
 a pipeline of tacplus-dev/build started with the inputs `repo` and `"nightly": true` and no `sha` (a pipeline schedule
 per repository, on `main`; the plan scans `main`'s head then); it runs the gates and the checks and sets no commit
 status. A release's `publish` makes the SBOM of the image it pushed.
@@ -937,12 +938,12 @@ status. A release's `publish` makes the SBOM of the image it pushed.
 | [Bandit](https://github.com/PyCQA/bandit) | 1.9.4 | wheel hashes (`scanners/requirements.txt`) | Python files |
 | [SpotBugs](https://github.com/spotbugs/spotbugs) + [FindSecBugs](https://github.com/find-sec-bugs/find-sec-bugs) | 4.10.5 + 1.14.0 | release sha256, Maven Central sha256 | the bytecode the gates compiled (`target/classes`) |
 | [CodeQL](https://github.com/github/codeql-action) (nightly, release) | 2.27.3 | the bundle's sha256, fetched when a run needs it (680 MB, not in the image) | Go, Python, Java, JavaScript/TypeScript, Rust; public repositories only |
-| [Trivy](https://github.com/aquasecurity/trivy) (nightly, release) | 0.76.1 | module checksum (`go install`, sum.golang.org), built with Go 1.27.4 in a layer of its own, its symbol table kept (govulncheck reads it): govulncheck reports x/net and x/crypto vulnerabilities in the stripped release binary (looper#64); smoke-scanned at the image build | the tree (vulnerabilities, Kubernetes manifests and other configs), the Dockerfiles' base images |
+| [Trivy](https://github.com/aquasecurity/trivy) | 0.76.1 | module checksum (`go install`, sum.golang.org), built with Go 1.27.4 in a layer of its own, its symbol table kept (govulncheck reads it): govulncheck reports x/net and x/crypto vulnerabilities in the stripped release binary (looper#64); smoke-scanned at the image build | every run: the release jars (`trivy rootfs --scanners vuln`: the dependencies they shade); nightly and release: the tree (vulnerabilities, Kubernetes manifests and other configs), the Dockerfiles' base images |
 | [Syft](https://github.com/anchore/syft) | 1.56.0 | module checksums (a build module, its go.sum from sum.golang.org), built with Go 1.27.4 and `golang.org/x/net` required at v0.62.0, its symbol table kept: the release binary has x/net v0.61.0 (GO-2026-6860/6866), which Syft 1.56.0 still requires (looper#88); the override goes when a release requires x/net v0.62.0 | the SBOM, CycloneDX and SPDX: the source every run, the image on a release |
 
 The vulnerability databases are fetched each run, and `security/databases.json` records what each result was checked
 against: OSV's API and the query time, govulncheck's `db_last_modified`, cargo-deny's advisory-db commit and time,
-Trivy's database `UpdatedAt`/`DownloadedAt` and check bundle, the Semgrep rules and the fetch time. The tools'
+Trivy's database `UpdatedAt`/`DownloadedAt`, its Java database's `UpdatedAt` and its check bundle, the Semgrep rules and the fetch time. The tools'
 versions as run are `security/tools.json`. To move a tool, change its version and checksum in the `Dockerfile` (the
 Python ones: regenerate `scanners/requirements.txt` as its header says; CodeQL: `CODEQL_VERSION`/`CODEQL_SHA256` in
 `looper-scan`).
@@ -958,8 +959,18 @@ says is public (fleet-dev and fleet-seatrials are private: no CodeQL there, and 
 **The tree as the gates built it.** The security job scans its own checkout of the commit, with what the gates
 built laid over it: the gates job keeps as its artifact `built/` the untracked files its gates left in the checkout
 that are source (code generated in place: tacplus's Go does not build without its `go generate`) or bytecode
-(`target/classes`, which SpotBugs reads; the security job compiles nothing, as a build may run tacplus), never
-dependencies (`node_modules/`, `vendor/`) or other output. A laid-over file that would change a tracked one fails the run.
+(`target/classes`, which SpotBugs reads; the security job compiles nothing, as a build may run tacplus) or a release
+jar, never dependencies (`node_modules/`, `vendor/`) or other output. A laid-over file that would change a tracked one
+fails the run.
+
+**The release jars** (looper#147). A jar's shaded dependencies are in no manifest OSV-Scanner reads
+(tacplus-dev/kernel#59: Hazelcast's shaded Jackson), so the gates keep in `built/` the jars a build releases: a Maven
+module's `target/*.jar` and `*.war`, a Gradle project's `build/libs/*`, not their `-sources`, `-javadoc` or `-tests`
+jars nor the shade plugin's `original-` one. Every run, a build's too, scans them with `trivy rootfs --scanners vuln`
+(the jars alone, at their paths: a finding is `<package>@<version> (<the jar>)`), under the policy of every other
+finding; an exception for one goes in `security-exceptions.yaml` like any other (its CVE as the `id`). A repository
+needs no scan of its own for them.
+
 cargo-deny reads the build's graph with `cargo metadata`, which needs every path dependency's manifest: a service
 whose `Cargo.toml` path-depends on the crates its gates generate (its tacplus.yaml `output-dir`, gateway's
 `target/generated-sources/model`) has them from `built/`; without them, cargo-deny runs on a copy of the tree with the
