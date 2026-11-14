@@ -234,7 +234,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); the think job (#28) and the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
   tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
-  `nightly` input; a schedule per repository), and on the day they start tacplus's build fails them (gosec's HIGH
+  `nightly` input; a schedule per repository; a nightly's and a verify run's child pipeline got the parent's empty
+  `BUILD_SHA` until #138, whose fix, the `gates` trigger forwarding no variables, starts with that copy too), and on the day they start tacplus's build fails them (gosec's HIGH
   findings, six OSV advisories with fixes) as kernel's does (gitleaks: PEM markers in its Java) until each is fixed
   or accepted in a `security-exceptions.yaml` (PROPOSALS.md), and tacplus has no `generated` recipe yet, so its
   cross-test models are not scanned; the suggestion pass (#50) has run only against a stub roadmap: it starts with
