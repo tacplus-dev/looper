@@ -1,4 +1,6 @@
 [0Ksection_start:1793577660:prepare_executor[0KPreparing the "docker-autoscaler" executor
 [0Ksection_start:1793577720:prepare_script[0KRunning on runner-vm-1300 via gitlab-runner-mgr...
 [2026-11-02T00:01:00Z] work
+[2026-11-02T00:01:01Z] model: claude-fable-5-1 for the scan (a scan job's step)
+[2026-11-02T00:40:00Z] tokens: claude-fable-5-1 input=800 output=21000 cache_read=1800000 cache_write=90000
 [2026-11-02T00:00:00Z] disk at the end: 55% used of 100G (/builds)

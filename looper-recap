@@ -22,7 +22,9 @@
 #       succeeded. From the looper jobs' logs, per repository: slot use (each
 #       plan's children against its capacity), the held reasons with their
 #       counts and hours, the lands' times by gate set and the deferred lands,
-#       and how long each scan held the repository; and the hours each ready
+#       and how long each scan held the repository; the runs and tokens per
+#       model (looper#136: each run's `model: M for` line, its `tokens: M`
+#       lines, a high model refused: an item); and the hours each ready
 #       issue waited, and why: no free slot, a conflict (and what overlaps), the
 #       job's time left (its limit would outlast the job), queued behind a land
 #       (the lander's "queued since"), a scan holding the repository (its job
@@ -301,6 +303,11 @@ M_LANDED = re.compile(r"\] #(\d+): landed on main: ([0-9a-f]+)\.\.([0-9a-f]+), o
 M_NOT = re.compile(r"\] #(\d+): not merged \(exit (\d+)\)")
 M_RESOLVED = re.compile(r"\] #(\d+): resolved its conflicts by regenerating: (.*)$")
 M_DEFERRED = re.compile(r"\] #(\d+): left queued for the next manager")
+# The model of each run and its tokens (looper#136), as repo-looper logs them.
+MODEL_RUN = re.compile(r"\] model: (\S+) for ")
+MODEL_REFUSED = re.compile(r"\] model: (\S+) refused ")
+TOKENS = re.compile(r"\] tokens: (\S+) input=(\d+) output=(\d+) cache_read=(\d+) cache_write=(\d+)")
+TOKEN_KINDS = ("input", "output", "cache_read", "cache_write")
 # A land's build (looper#128): its queue time apart from its run time.
 M_BUILD = re.compile(r"\] #(\d+): its build (\S+): queued (\d+) s, (?:(?:ran|running) (\d+) s|not started)")
 CAPACITY = re.compile(r"\] capacity: (.*)$")
@@ -333,7 +340,7 @@ def read_log(text, started, finished):
     """What a job's log says: its prepare time and VM, a pull or gate failure,
     and for a looper job its plans, holds, lands and disk."""
     out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False,
-           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}}
+           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}}
     now = started
     waiting = {}   # issue -> (reason, since)
     landing = {}   # issue -> since
@@ -367,6 +374,17 @@ def read_log(text, started, finished):
             out["pull"] = True
         if "nothing landed: the gates failed" in line or "verdict: FAIL" in line:
             out["gate_fail"] = True
+        m = MODEL_RUN.search(line) or MODEL_REFUSED.search(line) or TOKENS.search(line)
+        if m:
+            md = out["models"].setdefault(m.group(1), {"runs": 0, "refused": 0, "tokens": dict.fromkeys(TOKEN_KINDS, 0)})
+            if m.re is MODEL_RUN:
+                md["runs"] += 1
+            elif m.re is MODEL_REFUSED:
+                md["refused"] += 1
+            else:
+                for k, v in zip(TOKEN_KINDS, m.groups()[1:]):
+                    md["tokens"][k] += int(v)
+            continue
         m = PLAN.search(line)
         if m:
             running = [x for x in m.group(3).split() if x.startswith("#")]
@@ -533,7 +551,7 @@ def collect(until):
     projects = list(dict.fromkeys(projects))
     sources, items = {}, []
     out = {"night": night, "window": {"from": stamp(start), "until": stamp(until)}, "thresholds": T,
-           "sources": sources, "projects": {}, "failed_jobs": [], "loopers": {}, "runner_pools": {},
+           "sources": sources, "projects": {}, "failed_jobs": [], "loopers": {}, "runner_pools": {}, "models": {},
            "longest": {"queues": [], "lands": [], "scans": [], "holds": []}}
     queues, lands, scans, holdl = [], [], [], []
     passes, managers, vmwait, groups = [], {}, [], {}
@@ -604,6 +622,15 @@ def collect(until):
             kind, repo = looper_repo(j.get("name"))
             if kind is None:
                 continue
+            # The runs and tokens per model (looper#136): how fast the Fable quota goes.
+            for model, md in lg["models"].items():
+                tm = out["models"].setdefault(model, {"runs": 0, "refused": 0, "tokens": dict.fromkeys(TOKEN_KINDS, 0)})
+                tm["runs"] += md["runs"]
+                tm["refused"] += md["refused"]
+                for k in TOKEN_KINDS:
+                    tm["tokens"][k] += md["tokens"][k]
+                if md["refused"]:
+                    tm.setdefault("refused_in", []).append(url)
             lp = out["loopers"].setdefault(repo, {"jobs": 0, "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred_lands": 0,
                                                   "scans": [], "scan_runs": [], "queued": [], "pools": {}})
             lp["jobs"] += 1
@@ -739,6 +766,15 @@ def collect(until):
             items.append({"key": f"disk/{runner}", "count": sum(1 for x in disk if x >= T["disk_pct"]), "over": True, "recovered": False,
                           "summary": f"runner {runner}: disk {max(disk)}% used at a job's end (threshold {T['disk_pct']}%)",
                           "evidence": [f"https://gitlab.com/{ENV.get('LOOPER_ORG', 'tacplus-dev')}/looper/-/jobs"]})
+
+    for model, md in sorted(out["models"].items()):
+        md["tokens"]["total"] = sum(md["tokens"][k] for k in TOKEN_KINDS)
+        ev = sorted(md.pop("refused_in", []))
+        if md["refused"]:
+            n = md["refused"]
+            items.append({"key": f"model_refused/{model}", "count": n, "over": n >= T["count"], "recovered": True,
+                          "summary": f"the account refused {model} {n} time{'s' * (n != 1)}: those runs fell back to the default model",
+                          "evidence": ev[:5]})
 
     out["managers"] = managers_of(managers, start, until, sources, items)
     out["concurrency"] = concurrency_of(passes, out["managers"], items, pools)
@@ -1217,6 +1253,12 @@ def report(night, classes, sdir, cov):
         L.append(f"Image: {im['ref']} " + ("is at main's head." if im["current"] else
                  f"is {len(im['missing'])} commit{'s' * (len(im['missing']) != 1)} behind main ({(im['revision'] or 'no revision')[:12]} against {im['main'][:12]})"
                  + (f"; the latest image run: [{im['latest_run']['conclusion'] or im['latest_run']['status']}]({im['latest_run']['url']})" if im.get("latest_run") else "") + "."))
+    mds = night.get("models") or {}
+    L.append("Models: " + ("; ".join(
+        f"{md_} {d['runs']} run{'s' * (d['runs'] != 1)}, {d['tokens']['total']:,} tokens (input {d['tokens']['input']:,},"
+        f" output {d['tokens']['output']:,}, cache read {d['tokens']['cache_read']:,}, cache write {d['tokens']['cache_write']:,})"
+        + (f", refused {d['refused']}" if d["refused"] else "")
+        for md_, d in sorted(mds.items(), key=lambda x: (-x[1]["runs"], x[0]))) or "no run named its model") + ".")
     gone = [f"{k} ({v})" for k, v in sorted(night["sources"].items()) if v != "ok"]
     if gone:
         L.append("Not read: " + "; ".join(gone) + ".")

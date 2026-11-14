@@ -9,6 +9,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"
   while the pipeline still runs. Sizing the wait per repository (as `land_wait` sizes a land's, from gates.yaml's
   `minutes` of the set) would keep it from giving up on a build that is still on time.
+- **A high model refused mid-run, retried on the default** (2026-11-13, #136): a report's high model
+  (`claude-fable-5-1`) is probed before the run and falls back to the default when refused; one whose weekly quota
+  runs out during the run ends with the CLI's error, its work checkpointed, and only the next run falls back. Reading
+  the run's last result (an `is_error` result naming the model's limit, before any progress) and resuming at once on
+  the default would spend no run on it. Also: the probe is one turn of the high model for every such run; a refusal
+  could be remembered for the job (or the night) instead of probed again.
+- **The managers' model steps** (2026-11-13, #136): the rule puts every model step of a manager or verdict job on the
+  high model, but neither has one today (a conflict is resolved only by regenerating the files `generated.yaml`
+  maps; any other is sent back). A model resolving a code conflict in the manager, on that model, would save the
+  report a run; it needs a design (what it may change, the gates after it).
 - **SpotBugs without the generated tree's bytecode** (2026-11-13, #149): SpotBugs reads every `target/classes`,
   kernel's `tacplus/target/classes` too, the compiled code tacplus generates, whose findings are tacplus's to scan
   (#108); leaving it out would cut the heap kernel's analysis needs. The classes a module compiles from an

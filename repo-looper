@@ -192,7 +192,10 @@
 #
 # Environment: GH_TOKEN (pushes and issue calls; on GitLab, LOOPER_FORGE_TOKEN), CLAUDE_CODE_OAUTH_TOKEN (the
 # model), LOOPER_WORK (default /work), LOOPER_RUNS (default LOOPER_WORK/NAME/runs),
-# LOOPER_MODEL (default claude-opus-5-5), LOOPER_TIMEOUT (seconds per issue,
+# LOOPER_MODEL_HIGH (the model of a priority:high issue's report and of a
+# scan, manager or verdict job's model step, default claude-fable-5-1),
+# LOOPER_MODEL_DEFAULT (every other run's, default claude-opus-5-5), LOOPER_MODEL
+# (when set, every run's: it overrides both, looper#136), LOOPER_TIMEOUT (seconds per issue,
 # default 14400), LOOPER_STOP_EARLY (default 600), LOOPER_CHECKPOINT_INTERVAL
 # (seconds, default 3600), LOOPER_IDLE_MINUTES (default 20), LOOPER_DONE_GRACE
 # (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
@@ -377,7 +380,10 @@ fi
 model_users() { [[ "${LOOPER_MODEL_USERS:-1}" != 0 && "$(id -u)" == 0 ]] && command -v setpriv useradd groupadd >/dev/null; }
 MODEL_USER=""
 case "$MODE" in one) MODEL_USER="${LOOPER_USER_PREFIX:-looper-}$ISSUE" ;; scan) MODEL_USER="${LOOPER_USER_PREFIX:-looper-}scan" ;; esac
-MODEL="${LOOPER_MODEL:-claude-opus-5-5}"
+# The model of each run (looper#136; choose_model, below).
+MODEL_HIGH="${LOOPER_MODEL_HIGH:-claude-fable-5-1}"
+MODEL_DEFAULT="${LOOPER_MODEL_DEFAULT:-claude-opus-5-5}"
+MODEL="${LOOPER_MODEL:-$MODEL_DEFAULT}"
 TIMEOUT="${LOOPER_TIMEOUT:-14400}"
 MAX_LIMIT=36000   # 10h: what a `Timeout:` line may ask for
 JOB_MAX_HOURS="${LOOPER_JOB_MAX_HOURS:-11}"   # the longest job --job-timeout asks GitLab for
@@ -1906,7 +1912,8 @@ RENDER='
           else empty end
       elif .type == "user" then .message.content[]? | select(type == "object" and .type == "tool_result")
         | "< " + (.content | if type == "array" then map(.text? // "") | join(" ") else . end | short)
-      elif .type == "result" then "= \(.subtype // "result")\(if .result then ": " + .result else "" end)"
+      elif .type == "result" then "= \(.subtype // "result")\(if .result then ": " + .result else "" end)",
+        (.modelUsage | select(type == "object") | "= usage: \(tojson)")
       elif .type == "system" then "= \(.subtype // "system")"
       else empty end
   ) catch $line'
@@ -2043,6 +2050,61 @@ broker_start() { # dir
   log "the docker broker did not start: this model has no docker"; kill "$BROKER_PID" 2>/dev/null; BROKER_PID=""; return 1
 }
 
+# The model of a run (looper#136; Jody, 2026-11-12: the weekly Fable quota
+# went unused): MODEL_HIGH for a report on a priority:high issue and for every
+# model step of a scan, manager or verdict job; MODEL_DEFAULT for every other;
+# LOOPER_MODEL, when set, for all of them. A high model is probed first: one
+# the account refuses (no access, its quota spent) falls back to the default,
+# and the run goes on. Sets MODEL and MODEL_SAID (the start comment's words),
+# writes the run's record's `model` file and logs the choice, which the
+# nightly recap counts per model (`model: M for W (why)`).
+choose_model() { # run-dir [issue]
+  local why said refused="" reason
+  if [[ -n "${LOOPER_MODEL:-}" ]]; then
+    MODEL="$LOOPER_MODEL"; why="LOOPER_MODEL"; said="which LOOPER_MODEL sets"
+  elif [[ "$MODE" =~ ^(scan|manage|verdict|merge)$ ]]; then
+    MODEL="$MODEL_HIGH"; why="a $MODE job's step"; said="the model of a $MODE job's step"
+  elif [[ -n "${2:-}" ]] && forge_issue_view "$REPO" "$2" labels '.labels[].name' 2>/dev/null | grep -qx "$LABEL_PRIORITY_HIGH"; then
+    MODEL="$MODEL_HIGH"; why="$LABEL_PRIORITY_HIGH"; said="the model of a \`$LABEL_PRIORITY_HIGH\` issue"
+  else
+    MODEL="$MODEL_DEFAULT"; why="the default"; said="the default model"
+  fi
+  if [[ -z "${LOOPER_MODEL:-}" && "$MODEL" != "$MODEL_DEFAULT" ]] && ! reason="$(model_probe "$MODEL")"; then
+    log "model: $MODEL refused ($reason): falling back to $MODEL_DEFAULT"
+    refused="$MODEL"; said="the default model: \`$MODEL\`, $said, was refused ($reason), so it falls back"
+    MODEL="$MODEL_DEFAULT"; why="$why; $refused refused"
+  fi
+  MODEL_SAID="on \`$MODEL\`, $said"
+  log "model: $MODEL for ${2:+#}${2:-the $MODE} ($why)"
+  printf 'model=%s\nwhy=%s\n%s' "$MODEL" "$why" "${refused:+refused=$refused
+reason=$reason
+}" > "$1/model"
+}
+
+# Whether the account serves a model: one turn, no tools, with the model's
+# environment (model_env). Fails, printing why (the answer's error, redacted
+# and short), when it refuses it or does not answer.
+model_probe() { # model
+  local out withheld
+  mapfile -t withheld < <(model_env)
+  out="$(cd "${TMPDIR:-/tmp}" && printf 'A model probe (looper#136): reply with the one word ok.\n' |
+    env "${withheld[@]}" timeout -k 10 120 claude --print --output-format json --model "$1" 2>&1)" || true
+  jq -e 'type == "object" and .is_error == false' <<<"$out" >/dev/null 2>&1 && return 0
+  out="$(jq -r '.result // empty' <<<"$out" 2>/dev/null || printf '%s' "$out")"
+  printf '%s' "${out:-no answer}" | tr '\n' ' ' | redact | cut -c1-200 | sed 's/[[:space:]]*$//'
+  return 1
+}
+
+# The tokens of a model's run, each model's on a line of the job's log
+# (`tokens: M input=N output=N cache_read=N cache_write=N`), from the
+# modelUsage of its result (RENDER's `= usage:` line), for the nightly recap.
+log_tokens() { # log-file
+  local u; u="$(sed -n 's/^= usage: //p' "$1" 2>/dev/null | tail -n 1)"
+  [[ -n "$u" ]] || return 0
+  jq -r 'to_entries[] | "tokens: \(.key) input=\(.value.inputTokens // 0) output=\(.value.outputTokens // 0) cache_read=\(.value.cacheReadInputTokens // 0) cache_write=\(.value.cacheCreationInputTokens // 0)"' <<<"$u" 2>/dev/null |
+    while IFS= read -r l; do log "$l"; done
+}
+
 # Runs the model with the watchdog beside it. A run dir with an issue is an
 # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the
 # watchdog also ends it once the issue is done.
@@ -2110,6 +2172,7 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
   wait "$fmt" 2>/dev/null || true
   kill "$k" 2>/dev/null; wait "$k" 2>/dev/null || true
   rm -rf "$dir"
+  log_tokens "$2"
   return "$rc"
 }
 
@@ -2684,6 +2747,9 @@ work_issue() { # issue
   ensure_labels "$REPO"
   forge_issue_edit "$REPO" "$n" --add-label "$LABEL_IN_PROGRESS" >/dev/null
   limit="$(run_limit "$n")"
+  # The run's model (looper#136), named in its start comment.
+  choose_model "$run" "$n"
+  local capped=""
   # A limit that would outlast the job is capped at the job's deadline
   # (looper#35): the run stops by itself, checkpointed and its outcome
   # commented, before GitLab kills the job (an issue's `Timeout:` line can
@@ -2692,9 +2758,10 @@ work_issue() { # issue
   if [[ -n "$deadline" ]] && left=$(( deadline - $(date +%s) )) && (( limit > left )); then
     (( left > 0 )) || left=1   # never 0: `timeout 0` would not stop it
     log "#$n: limit $(hours "$limit") capped at $(hours "$left") by this job"
-    forge_issue_comment "$REPO" "$n" "The looper of $REPO starts this issue with its limit $(hours "$limit") capped at $(hours "$left") by this job (${CI_JOB_URL:-$CI_JOB_ID}), which ends sooner: the run stops by itself before then, its work checkpointed, and the next run resumes it." >/dev/null || true
+    capped=" Its limit $(hours "$limit") is capped at $(hours "$left") by this job (${CI_JOB_URL:-$CI_JOB_ID}), which ends sooner: the run stops by itself before then, its work checkpointed, and the next run resumes it."
     limit="$left"
   fi
+  forge_issue_comment "$REPO" "$n" "The looper of $REPO starts this issue $MODEL_SAID.$capped" >/dev/null || true
   # Bug or feature (looper#14): an unlabelled issue is classified first; a
   # feature no ROADMAP.md links is proposed, never built.
   local kind; kind="$(issue_kind "$n")"
@@ -3087,6 +3154,7 @@ The issue, #$n (its title and body, then each comment, oldest first):
 $(issue_texts "$n")
 PR
   local rc=0
+  choose_model "$run" "$n"
   run_claude "$run/prompt.md" "$run/claude.log" "$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))" "$run" "$n" || rc=$?
   # The model's comment goes on the issue: never the nonce (looper#40).
   if [[ -f "$out/comment.md" ]]; then redact < "$out/comment.md" > "$out/comment.md.new" && mv "$out/comment.md.new" "$out/comment.md"; fi
@@ -3516,6 +3584,7 @@ scan() {
   # Its model runs as looper-scan (looper#83), its containers limited as a report's (looper#41).
   model_job_private
   LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
+  choose_model "$run"
   if [[ "$REPO" == "$LOOPER_ROADMAP_REPO" ]]; then suggest_scan "$run"; return; fi
   report="$(security_report "$run")"
   ensure_labels "$REPO"

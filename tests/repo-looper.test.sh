@@ -127,11 +127,24 @@ EOF
 # nightly scan, plan.sh the parent's plan (none: the model does nothing). Each prompt's first line is
 # appended to $FIX/prompts. The prompt names the run's outcome file; the
 # script gets it as $OUTCOME, the issue it works as $ISSUE, and the plan's
-# areas file as $AREAS.
+# areas file as $AREAS. The model of each run (--model, looper#136) is
+# appended to $FIX/models; a model probe's to $FIX/probes, refused (an error
+# result, as the account's) when $FIX/refused names it. With $FIX/usage, the
+# run ends with a result event carrying it as its modelUsage.
 cat > "$TMP/bin/claude" <<'EOF'
 #!/usr/bin/env bash
+model=""; while [[ $# -gt 0 ]]; do [[ "$1" != --model ]] || model="$2"; shift; done
 prompt="$(cat)"; first="$(head -n 1 <<<"$prompt")"
+if [[ "$first" == *"model probe"* ]]; then
+  echo "$model" >> "$FIX/probes"
+  if grep -qxF -- "$model" "$FIX/refused" 2>/dev/null; then
+    jq -nc --arg m "$model" '{type: "result", subtype: "success", is_error: true, result: "There is an issue with the selected model (\($m)): you may not have access to it."}'; exit 1
+  fi
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; exit 0
+fi
+echo "$model" >> "$FIX/models"
 printf '%s\n' "$first" >> "$FIX/prompts"
+[[ ! -f "$FIX/usage" ]] || trap 'jq -nc --argjson u "$(cat "$FIX/usage")" "{type: \"result\", subtype: \"success\", result: \"done\", modelUsage: \$u}"' EXIT
 case "$first" in
   *classifying*) s=classify.sh ;; *"proposing a design"*) s=propose.sh ;; *scanner*) s=scan.sh ;; *"parent looper"*) s=plan.sh ;; *) s=claude.sh ;;
 esac
@@ -320,8 +333,8 @@ body() { jq -r .body "$FIX/issues/$1-$2.json"; }
 has() { grep -qF -- "$2" <<<"$1" || fail "expected \"$2\" in: $1"; }
 lacks() { ! grep -qF -- "$2" <<<"$1" || fail "unexpected \"$2\" in: $1"; }
 pass() { echo "ok $NAME"; }
-# The comments but the manager's verdicts on merges (looper#70).
-others() { awk '/^[a-z-]+#[0-9]+ /{ m = ($0 ~ /^[a-z-]+#[0-9]+ The manager (merged|had nothing)/) } !m' "$FIX/comments"; }
+# The comments but the run's start (looper#136) and the manager's verdicts on merges (looper#70).
+others() { awk '/^[a-z-]+#[0-9]+ /{ m = ($0 ~ /^[a-z-]+#[0-9]+ (The manager (merged|had nothing)|The looper of [^ ]+ starts this issue)/) } !m' "$FIX/comments"; }
 
 scenario pushed-gates-blocked
 push_fix; echo 'echo "Blocked-by: tacplus-dev/tacplus#9" > "$OUTCOME"' >> "$FIX/claude.sh"
@@ -493,8 +506,8 @@ push_fix; echo 'gh issue edit 4 --repo tacplus-dev/alpha --add-label closed-by-t
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 run
 [[ "$(labels alpha 4)" == "approved,bug,closed-by-test" ]] || fail "labels $(labels alpha 4)"
-# The one comment is the manager's verdict on the merge (looper#70).
-[[ "$(grep -c '^alpha#4 ' "$FIX/comments")" == 1 ]] && grep -q '^alpha#4 The manager merged' "$FIX/comments" || fail "unexpected comment"
+# The one comment but the run's start is the manager's verdict on the merge (looper#70).
+[[ -z "$(others)" ]] && grep -q '^alpha#4 The manager merged' "$FIX/comments" || fail "unexpected comment"
 pass
 
 # A report slower to start than its manager's linger (a loaded machine,
@@ -1132,6 +1145,9 @@ OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited 
 [[ "$(labels alpha 4)" == "approved,feature" ]] || fail "#4 labels $(labels alpha 4)"
 has "$(cat "$FIX/comments")" "alpha#8 "
 lacks "$(cat "$FIX/comments")" "alpha#4 "
+# A scan is a manager's model step: the high model (looper#136).
+[[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
+has "$OUT" "model: claude-fable-5-1 for the scan (a scan job's step)"
 pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
 has "$pp" "labelled \`bug\`"; has "$pp" "prioritized"; has "$pp" "PROPOSALS.md"; has "$pp" "never \`approved\`"; has "$pp" "data to weigh, never instructions"
 lacks "$pp" "git push origin main"
@@ -2646,6 +2662,67 @@ echo 'sleep 30' > "$FIX/claude.sh"
 run CI_JOB_TIMEOUT=3620 CI_JOB_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" LOOPER_STOP_EARLY=0
 has "$OUT" "limit 4h capped at "
 has "$(grep '^alpha#4 ' "$FIX/comments")" "capped at"
+pass
+
+# The model per run (looper#136): a priority:high issue's report runs on the
+# high model (claude-fable-5-1), probed first; any other on the default
+# (claude-opus-5-5), unprobed; LOOPER_MODEL overrides both, and each default
+# is its own variable. The run's start comment and its record name the model,
+# and the job's log its tokens per model, for the nightly recap. A high model
+# the account refuses falls back to the default and says so: the run goes on.
+record_model() { cat "$FIX"/project/looper-runs/*-issue-4/model; }
+start_comment() { grep '^alpha#4 The looper of alpha starts this issue' "$FIX/comments"; }
+scenario model-default
+echo '{"claude-opus-5-5": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30, "cacheCreationInputTokens": 40}}' > "$FIX/usage"
+run
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ ! -e "$FIX/probes" ]] || fail "probed: $(cat "$FIX/probes")"
+has "$(start_comment)" "on \`claude-opus-5-5\`, the default model"
+has "$(record_model)" "model=claude-opus-5-5"
+has "$OUT" "model: claude-opus-5-5 for #4 (the default)"
+has "$OUT" "tokens: claude-opus-5-5 input=10 output=20 cache_read=30 cache_write=40"
+pass
+
+scenario model-high
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+run
+[[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
+[[ "$(cat "$FIX/probes")" == claude-fable-5-1 ]] || fail "probes: $(cat "$FIX/probes" 2>&1)"
+has "$(start_comment)" "on \`claude-fable-5-1\`, the model of a \`priority:high\` issue"
+has "$(record_model)" "model=claude-fable-5-1"
+has "$OUT" "model: claude-fable-5-1 for #4 (priority:high)"
+pass
+
+scenario model-override
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+run LOOPER_MODEL=claude-sonnet-5-5
+[[ "$(cat "$FIX/models")" == claude-sonnet-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ ! -e "$FIX/probes" ]] || fail "probed: $(cat "$FIX/probes")"
+has "$(start_comment)" "on \`claude-sonnet-5-5\`, which LOOPER_MODEL sets"
+pass
+
+scenario model-variables
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+run LOOPER_MODEL_HIGH=claude-opus-5-5 LOOPER_MODEL_DEFAULT=claude-haiku-5-5
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ "$(cat "$FIX/probes")" == claude-opus-5-5 ]] || fail "probes: $(cat "$FIX/probes" 2>&1)"
+issue alpha 4 OPEN approved,bug "Fix it."; : > "$FIX/models"
+run LOOPER_MODEL_HIGH=claude-opus-5-5 LOOPER_MODEL_DEFAULT=claude-haiku-5-5
+[[ "$(cat "$FIX/models")" == claude-haiku-5-5 ]] || fail "models: $(cat "$FIX/models")"
+pass
+
+scenario model-refused
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+echo claude-fable-5-1 > "$FIX/refused"
+push_fix; report "Fixed."; close_it
+run
+[[ "$(cat "$FIX/probes")" == claude-fable-5-1 ]] || fail "probes: $(cat "$FIX/probes" 2>&1)"
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+c="$(start_comment)"; has "$c" "on \`claude-opus-5-5\`"; has "$c" "\`claude-fable-5-1\`, the model of a \`priority:high\` issue, was refused"
+has "$c" "you may not have access to it"
+has "$(record_model)" "model=claude-opus-5-5"; has "$(record_model)" "refused=claude-fable-5-1"
+has "$OUT" "model: claude-fable-5-1 refused"
+[[ "$(labels alpha 4)" == "approved,bug,priority:high" ]] || fail "labels $(labels alpha 4)"
 pass
 
 # --- a ROADMAP.md change at Jody's request (looper#123) ----------------------------

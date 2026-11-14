@@ -159,6 +159,17 @@ has "$(q '.items[].key')" "scan/tacplus"
 lacks "$(q '.failed_jobs[].id')" 900
 pass
 
+# The runs and tokens per model (looper#136), from the looper jobs' `model:` and
+# `tokens:` lines: alpha#5 on the default, with a sub-agent's haiku; the scan of
+# tacplus on Fable; tacplus#16's Fable refused (its quota spent), so it ran on
+# the default: counted, and an item, recovered.
+NAME=collect-models
+[[ "$(q '.models | to_entries | map("\(.key) \(.value.runs) \(.value.refused) \(.value.tokens.input) \(.value.tokens.output) \(.value.tokens.cache_read) \(.value.tokens.cache_write) \(.value.tokens.total)") | join(", ")')" == \
+   "claude-fable-5-1 1 1 800 21000 1800000 90000 1911800, claude-haiku-5-5 0 0 300 900 0 0 1200, claude-opus-5-5 2 0 1700 46000 3400000 210000 3657700" ]] ||
+  fail "models: $(q .models)"
+has "$(q '.items[] | select(.key == "model_refused/claude-fable-5-1") | "\(.count) \(.over) \(.recovered) \(.summary)"')" "1 false true the account refused claude-fable-5-1 1 time: those runs fell back to the default model"
+pass
+
 # The managers, the concurrency and the capacity (looper#72, looper#107), from the managers' logs (looper#70), the
 # kicker's capacity lines and GitHub: tacplus's manager merged #20, #22 (its Cargo.lock conflict
 # regenerated) and #21 (sent back once: redone), red gates on #23, #24 left for the next manager;
@@ -222,7 +233,8 @@ for k in failures/tacplus-dev/looper/image_pull held/tacplus/limit_outlasts_job 
 done
 # Seen once (the 10-25 night is older than 7), recovered on retry: transient, no advice.
 # The send-back its report redid too.
-[[ "$(c '.transient | map(.key) | join(" ")')" == "actions/tacplus/nightly failures/tacplus-dev/looper/timeout manager/tacplus/sent-back" ]] || fail "transient: $(c .transient)"
+# A model the account refused once (looper#136) is transient too: its runs fell back.
+[[ "$(c '.transient | map(.key) | join(" ")')" == "actions/tacplus/nightly failures/tacplus-dev/looper/timeout manager/tacplus/sent-back model_refused/claude-fable-5-1" ]] || fail "transient: $(c .transient)"
 # Seen once, not recovered: noted, no advice.
 [[ "$(c '.once | map(.key) | join(" ")')" == "failures/tacplus-dev/build/gate_failure manager/kernel/backlog" ]] || fail "once: $(c .once)"
 lacks "$(c '.recurring[].key')" "timeout"
@@ -271,6 +283,8 @@ has "$R" "Not read: gitlab:tacplus-dev/cluster"
 has "$R" "Managers: alpha 1 merged (report to merge p50 7, p90 7 min), conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; tacplus 3 merged (report to merge p50 80, p90 240 min), conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
 has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
 lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
+# The runs and tokens per model (looper#136), the most runs first.
+has "$R" "Models: claude-opus-5-5 2 runs, 3,657,700 tokens (input 1,700, output 46,000, cache read 3,400,000, cache write 210,000); claude-fable-5-1 1 run, 1,911,800 tokens (input 800, output 21,000, cache read 1,800,000, cache write 90,000), refused 1; claude-haiku-5-5 0 runs, 1,200 tokens"
 has "$R" "Capacity: queue p90 20 min over 24 jobs; 3 issues waited 2.78 h for a VM ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min, [tacplus#12](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 20 min); one more t2a-standard-8 is about \$7.39 a day (\$0.308 an hour)."
 has "$R" "- \`wait/tacplus\`: tacplus: ready issues waited 2.25 h with no report job "; has "$R" "(2 of 7 nights, over its threshold tonight, 2.25 h of waiting). No advice tonight."
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`manager/kernel/backlog\`: kernel: its manager behind: "

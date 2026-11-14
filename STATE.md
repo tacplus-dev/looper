@@ -33,7 +33,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   conflict holds (#39), its time-left holds and re-plans (#33, #59) and its in-job lander (#34, #38, #44) are
   retired; each report's model's containers limited to its memory (4 GB, or the `memory:` its land's gate set asks in `gates.yaml`, #74)
   without swap by `looper-docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone (#41); a
-  report's limit capped at its job's deadline (its job sized for its issue's limit and an hour, #35); every model's
+  report's limit capped at its job's deadline (its job sized for its issue's limit and an hour, #35); each run's model
+  chosen per run (#136): `claude-fable-5-1` (`LOOPER_MODEL_HIGH`) for a `priority:high` issue's report and a scan's
+  model step, `claude-opus-5-5` (`LOOPER_MODEL_DEFAULT`) otherwise, `LOOPER_MODEL` over both, a high model probed
+  first and a refused one falling back to the default, said in the run's start comment (which every report posts,
+  naming its model), its record's `model` file and the job's log with its tokens per model; every model's
   `pkill` is `looper-pkill`, which signals only its run's own processes (tacplus#222, #61); each report's model runs
   as its own unprivileged user (`looper-<issue>`; uid and gid from a reserved range, never the Docker socket's gid,
   #69), owning its clone, home and run directory, so it cannot signal or read another run's processes or files,
@@ -119,7 +123,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   pass, the hours ready issues waited at it, how often all reports were busy (and running) and the merge backlog, with advice to
   raise or lower it after two nights running, a raise only for waits while all its reports ran, else the pool's item
   `capacity/<pool>` (#92); a scan holds a queued report only in its resource group (#92); the capacity: queue p90, issues waiting for a VM and one more VM's cost
-  a day, for Jody's manual scale-up, #72) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
+  a day, for Jody's manual scale-up, #72; the runs and tokens per model and the refused models, #136) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
   would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
   suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the
   looper commits `suggestions/recap/<night>.md` and `.json` with them, for Jody's daily report. Trace propagation
@@ -176,7 +180,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58)
-- **Known gaps:** the model's own user (#68) takes effect with the image built after its land (the broker,
+- **Known gaps:** the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
+  `is_error` result) and the `modelUsage` names are the CLI's as of 2026-11-13, unexercised against a spent quota; a
+  high model refused mid-run (its quota spent during the run) is not retried on the default: that run ends, and the
+  next run probes and falls back; the model's own user (#68) takes effect with the image built after its land (the broker,
   `looper-docker-broker`, is in it); the verdict job's gates (#90) still run a report's commits as its job's user,
   which writes the verdict the manager job trusts, and the
   broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads tacplus-dev/build's

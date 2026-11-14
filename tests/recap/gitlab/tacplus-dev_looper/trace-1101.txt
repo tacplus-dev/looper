@@ -1,4 +1,7 @@
 [0Ksection_start:1793513100:prepare_executor[0KPreparing the "docker-autoscaler" executor
 [0Ksection_start:1793513190:prepare_script[0KRunning on runner-vm-1101 via gitlab-runner-mgr...
 [2026-11-01T06:05:00Z] work
+[2026-11-01T06:05:01Z] model: claude-opus-5-5 for #5 (the default)
+[2026-11-01T07:05:00Z] tokens: claude-opus-5-5 input=1200 output=34000 cache_read=2500000 cache_write=150000
+[2026-11-01T07:05:00Z] tokens: claude-haiku-5-5 input=300 output=900 cache_read=0 cache_write=0
 [2026-11-02T00:00:00Z] disk at the end: 40% used of 100G (/builds)
