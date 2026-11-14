@@ -93,3 +93,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue repo-looper start_build sends a multi-set gates input with an unescaped +: GitLab reads a space and refuses (422) every docs+X build and land (#118, 18e2d3c; gates: full)
 - 2026-11-14 looper issue The nightly scan files one issue per cause, not per finding, blocked from the start when the fix is upstream (#129)
 - 2026-11-14 looper issue Security job never scans a built jar: trivy is skipped on lands, and on nightly/release it reads only the checkout (#147, 0484884; gates: docs)
+- 2026-11-14 looper issue Manager sends every branch back on a PROPOSALS.md conflict: the nightly scan's append on main collides with each report's append (5 of 7 tacplus lands, 2026-11-06) (#105)
