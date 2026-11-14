@@ -92,8 +92,20 @@ case_commit generated "$PASS_GATES
     mkdir -p target/generated-sources/m && echo '[package]' > target/generated-sources/m/Cargo.toml
     mkdir -p target/lib svc/build/libs node_modules/x/target && echo jar > target/demo-1.0.jar && echo jar > svc/build/libs/svc-1.0.jar
     echo jar > target/demo-1.0-sources.jar && echo jar > target/original-demo-1.0.jar && echo jar > target/lib/dep.jar && echo jar > node_modules/x/target/x.jar
+    mkdir -p target/generated-sources/model/src target/generated-sources/model/node_modules client/gen/model
+    echo '{}' > target/generated-sources/model/registry.json && echo '# Agent' > target/generated-sources/model/AGENT.md
+    : > target/generated-sources/model/src/lib.rs && echo x > target/generated-sources/model/node_modules/a.json
+    echo '{}' > target/other.json && echo 'openapi: 3.0.0' > client/gen/model/openapi.yaml
 generated out:
     mkdir -p {{out}}/model && printf 'package model\n' > {{out}}/model/model.go" "$LOCK"
+# A tacplus project (gateway's shape, looper#155): its src/registry.rs compiles
+# in files tacplus generates in its output-dir that are no source (.json, .md),
+# and a client subproject's tacplus.yaml generates its own tree (looper#149).
+mkdir -p "$work/src" "$work/client"
+printf 'language: rust\noutput-dir: target/generated-sources/model  # the crates the gates generate\n' > "$work/tacplus.yaml"
+printf 'language: go\noutput-dir: gen/\n' > "$work/client/tacplus.yaml"
+printf 'const REGISTRY_JSON: &str = include_str!("../target/generated-sources/model/registry.json");\nconst AGENT_MD: &str = include_str!("../target/generated-sources/model/AGENT.md");\n' > "$work/src/registry.rs"
+git -C "$work" add -A; git -C "$work" commit -qm "the tacplus configs"; SHA[generated]="$(git -C "$work" rev-parse HEAD)"
 # A tacplus project whose justfile runs tacplus through a wrapper that needs
 # Docker (kernel's, eventbus's tools/tacplus.sh) unless TACPLUS_BIN names one
 # (looper#137): the build job, in the pinned image, has the image's own.
@@ -1193,11 +1205,14 @@ grep -qxF '      yaml_variables: false' <<<"$g" || fail "the gates trigger forwa
 grep -qxF '      pipeline_variables: false' <<<"$g" || fail "the gates trigger forwards the parent's pipeline variables: $g"
 pass
 
-NAME="gates: the code a generated recipe writes, and the release jars, are the gates' artifact, for the security checks"
+NAME="gates: the code a generated recipe writes, the release jars and every tacplus.yaml's generated tree whole are the gates' artifact, for the security checks"
 build BUILD_SHA="${SHA[generated]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
 [[ "$(cat "$OUT/generated/model/model.go")" == "package model" ]] || fail "no generated code: $(ls -R "$OUT")"
-[[ "$(cd "$OUT/built" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" == "./gen/spec.go ./svc/build/libs/svc-1.0.jar ./target/classes/x/A.class ./target/demo-1.0.jar ./target/generated-sources/m/Cargo.toml " ]] ||
+# The generated tree's .json and .md a src/registry.rs include_str!s (looper#155), a .yaml a client's generates;
+# not a .json outside a generated tree, nor a generated tree's dependencies.
+[[ "$(cd "$OUT/built" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" == "./client/gen/model/openapi.yaml ./gen/spec.go ./svc/build/libs/svc-1.0.jar ./target/classes/x/A.class ./target/demo-1.0.jar ./target/generated-sources/m/Cargo.toml ./target/generated-sources/model/AGENT.md ./target/generated-sources/model/registry.json ./target/generated-sources/model/src/lib.rs " ]] ||
   fail "built: $(cd "$OUT/built" && find . -type f)"
+[[ "$(cat "$OUT/built/target/generated-sources/model/registry.json")" == "{}" ]] || fail "registry.json not kept as written"
 build BUILD_SHA="${SHA[pass]}" -- gates 2>"$TMP/err" || fail "gates failed"
 [[ ! -e "$OUT/generated" ]] || fail "generated code without a recipe"
 pass

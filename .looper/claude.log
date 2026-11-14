@@ -1,0 +1,176 @@
+= init
+I'll start by reading the issue comments, the relevant code in `looper-build`, and its tests.
+> Bash gh issue view 155 --repo tacplus-dev/looper --comments 2>&1 | tail -40; ls
+< author:	tacplus-looper association:	none edited:	false status:	none -- The looper of looper starts this issue on `claude-fable-5-1`, the model of a `priority:high` issue. Its limit 4h is capped at 4h by this job (https://gitlab.com/tacplus-dev/looper/-/jobs/18030524969), which ends sooner: the run s...
+> Grep built\(\)
+< looper-build:616:built() { # src
+> Grep built
+< 49:    mkdir -p target && echo built > target/out 782:if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 CI_PIPELINE_CREATED_AT="$(ago 10900)" -- gates 2>"$TMP/err"; then fail "built"; fi 786:if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=600 CI_PIPELINE_CREATED_AT="$(ago 700)" -- gates 2>"$TMP/err"; ...
+> Bash wc -l looper-build tests/looper-build.test.sh looper-scan && cat gates.yaml && grep -n "output-dir\|output_dir" looper-scan looper-build | head -40
+<    928 looper-build   1624 tests/looper-build.test.sh    937 looper-scan   3489 total # The gate map of tacplus-dev/looper (looper#48; README: Gates scaled to the # diff): the gates a land runs, chosen by the paths its diff changes. A path no # set names, a change to this file, the nightly scan and ...
+> Read /builds/looper/looper/issues/155/looper-build
+< 560	  changed="$(git -C "$src" status --porcelain --untracked-files=no)" 561	  [[ -z "$changed" ]] || verdict fail "the build changed tracked files: $(echo "$changed" | head -20 | tr '\n' ' ')" 562	  [[ "$(git -C "$src" rev-parse HEAD)" == "$BUILD_SHA" ]] || verdict fail "the build moved HEAD off $B...
+> Read /builds/looper/looper/issues/155/tests/looper-build.test.sh
+< 1150	build BUILD_SHA="${SHA[verify2]}" BUILD_OUT="$SKIP_OUT" "${VAPI[@]}" -- verify-report 2>"$TMP/err" || fail "the report failed" 1151	[[ "$(grep -c '^package-put' "$TMP/api.log")" == 1 ]] && grep -q "verify-demo/latest/record " "$TMP/api.log" || 1152	  fail "a skip publishes more than its record ...
+> Read /builds/looper/looper/issues/155/looper-scan
+< 760	    [[ -f "$v" ]] || return 0 761	    f="$v" 762	  done 763	} 764	 765	# A path relative to a directory, without ./ or trailing /; fails when it is 766	# not a directory inside it. 767	inside_dir() { # path 768	  local d="${1#./}" 769	  while [[ "$d" == */ ]]; do d="${d%/}"; done 770	  [[ -n "$d...
+> Bash grep -n "tacplus_field\|^rust_generated\|generated/" looper-scan looper-lib.sh looper-build tests/looper-build.test.sh | head -50
+< looper-scan:13:#            (generated/, the gates job's artifact), the policy and the looper-scan:76:       looper-scan local DIR         the same checks on a checkout (and DIR's generated/ under BUILD_OUT), nothing published looper-scan:131:# where, title}. where is a path in the tree, prefixed wi...
+= thinking_tokens
+= thinking_tokens
+> Read /builds/looper/looper/issues/155/looper-scan
+< 720	    | sort_by(.tool, .id, file_of, line_of) 721	    | reduce .[] as $f ({q: $quota, out: []}; 722	        ($f.tool + "|" + $f.id + "|" + ($f | file_of)) as $k 723	        | if ($f | baselinable) and (.q[$k] // 0) > 0 then .q[$k] -= 1 | .out += [$f + {baselined: true, new: false}] 724	          e...
+> Bash grep -n "SHA\[generated\]\|generated\]=" tests/looper-build.test.sh | head; grep -n "^source\|looper-lib\|looper-scan" looper-build | head; grep -n "^projects()" -A 12 looper-scan; sed -n 280,310p tests/looper-build.test.sh
+< 1197:build BUILD_SHA="${SHA[generated]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")" 18:#   (the security checks, looper#49, are looper-scan's: the child pipeline's 32:# Self-contained (no looper-lib.sh, no jq on the gates path): the plan embeds 128:# The kind of the security che...
+> Bash grep -n "built/\|built()" README.md STATE.md PROPOSALS.md | head -20; grep -n "108\|output-dir" STATE.md README.md | head
+< README.md:995:built laid over it: the gates job keeps as its artifact `built/` the untracked files its gates left in the checkout README.md:1002:(tacplus-dev/kernel#59: Hazelcast's shaded Jackson), so the gates keep in `built/` the jars a build releases: a Maven README.md:1011:`target/generated-sour...
+> Read /builds/looper/looper/issues/155/README.md
+< 990	CodeQL is free for open-source codebases (the [GitHub CodeQL terms](https://github.com/github/codeql-cli-binaries/blob/main/LICENSE.md)): 991	tacplus-dev's repositories are OSI-licensed (Apache-2.0), and `looper-scan` runs CodeQL only on a repository GitHub 992	says is public (fleet-dev and flee...
+> Bash grep -n "generated " tests/looper-build.test.sh | grep -n "case_commit\|commit" | head; grep -n "^case_commit()" -A 25 tests/looper-build.test.sh | head -50
+> Bash sed -n 100,118p PROPOSALS.md; sed -n 1,60p STATE.md
+< 1:89:case_commit generated "$PASS_GATES 38:case_commit() { # name justfile-body [lock] 39-  git -C "$work" checkout -q --orphan "$1" 40-  git -C "$work" rm -rqf --ignore-unmatch . >/dev/null 41-  printf 'tracked\n' > "$work/data.txt" 42-  printf '%s\n' "$2" > "$work/justfile" 43-  [[ $# -lt 3 ]] || ...
+<   writes `abandoned` and runs no gates, but the child pipeline's `security-<repo>` job (`needs: gates`, `when:   always`) still runs the scanners on the commit nobody waits for; `looper-scan run` could read the gates' artifact   `build-verdict` and end at once on `fail: abandoned:`, saving the runne...
+> Read /builds/looper/looper/issues/155/tests/looper-build.test.sh
+< 85	EOF 86	git -C "$work" add -A; git -C "$work" commit -qm mapped; SHA[mapped]="$(git -C "$work" rev-parse HEAD)" 87	case_commit blocktag "$PASS_GATES"; printf 'build_image: ghcr.io/tacplus-dev/looper:main\n' > "$work/build.lock" 88	git -C "$work" add -A; git -C "$work" commit -qm blocktag; SHA[bloc...
+> Bash grep -n "built/\|built\`" STATE.md | head; grep -n "output-dir" tests/looper-build.test.sh | head -20; sed -n 900,928p looper-build
+< 177:# A service's tacplus.yaml: its generated tree is the output-dir (looper#108), 180:output-dir: "tacplus" 183:# The output-dir's output-name (looper#152): operator's `output-dir: .` with 185:# client's `output-dir: gen` with no output-name, gen/model/. 187:output-dir: .' tacplus-base.yaml 'langua...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Context gathered. Now I'll check how looper-scan sources looper-build (to share the tacplus.yaml readers), where STATE.md describes `built/`, and whether the build test runs here.
+> Bash grep -n "source\|looper-build" looper-scan | head -8; grep -n "release jar\|#147\|#49" STATE.md | head; sed -n 1,37p tests/looper-build.test.sh; grep -n "yaml_scalar\|tacplus_field\|inside_dir\|tacplus_generated_dir\|tacplus_output_spec" looper-scan looper-build tests/*.sh | grep -v "^looper-scan:7[...
+< 11:#            looper-build plan writes): every tool of the run's kind on the 21:#   sbom     an SBOM, CycloneDX and SPDX, of a source (publish: the release image) 37:# repository's build image; it sources looper-build for the build's 42:# shellcheck source=looper-build 43:source "${LOOPER_BUILD:-$...
+> Bash command -v just openssl python3 git sort; sort --version | head -1; git log --oneline -3 -- looper-build; sed -n 170,200p tests/looper-build.test.sh; sed -n 236,262p looper-scan
+< /usr/local/bin/just /usr/bin/openssl /opt/venv/bin/python3 /usr/bin/git /usr/bin/sort sort (GNU coreutils) 9.7 9fdd4e7 repo-looper, looper-build, looper-recap: build once per (repo, commit, gate set, base) (#134) f635776 looper-build: a gates job past its requester's wait runs no gates (#130) 30bb6a...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Edit /builds/looper/looper/issues/155/tests/looper-build.test.sh
+< The file /builds/looper/looper/issues/155/tests/looper-build.test.sh has been updated successfully.
+> Edit /builds/looper/looper/issues/155/tests/looper-build.test.sh
+< The file /builds/looper/looper/issues/155/tests/looper-build.test.sh has been updated successfully.
+= thinking_tokens
+= thinking_tokens
+Now run the build test to see it fail on the new assertion (it takes a few minutes, so detached).
+> Bash nohup tests/looper-build.test.sh > /tmp/lb1.log 2>&1 & echo $!
+< 978
+= thinking_tokens
+= thinking_tokens
+While it runs, I'll implement the fix: move the tacplus.yaml readers from looper-scan into looper-build (which looper-scan sources), and have `built()` keep every tacplus.yaml's generated tree whole.
+> Bash python3 - <<'EOF' import re p='looper-scan'; s=open(p).read() start=s.index('# A top-level scalar of a YAML file, unquoted, without its comment.\n') end=s.index("# A service's generated trees (looper#108, looper#149, looper#152)") block=s[start:end] s=s[:start]+"# yaml_scalar, tacplus_field, inside_...
+< # A top-level scalar of a YAML file, unquoted, without its comment. yaml_scalar() { # file key   local v   v="$(sed -nE "s/^$2:[[:space:]]*//p" "$1" | head -1 | sed -E 's/(^|[[:space:]]+)#.*$//; s/[[:space:]]+$//')"   [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]] && v="${BASH_REMATCH[1]}" 51 /tmp/b...
+Now add the readers and the new `built()` to looper-build.
+> Bash python3 - <<'EOF' p='looper-build'; s=open(p).read() block=open('/tmp/block.sh').read().rstrip('\n')+'\n' old_head = """# What the gates built that the security checks need (looper#49), the gates # job's artifact built/: the untracked files of the checkout that are source # or a manifest (code gener...
+< Exit code 127 syntax ok
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && rm -rf lst && git init -q lst && cd lst && mkdir -p target/generated-sources/model/src && touch target/generated-sources/model/{a.json,src/lib.rs} && git -C /tmp/lst ls-files -z --others -- "target/generated-sources/model/" | tr '\0' '\n'; echo ---; cd /builds/looper/looper/issues/155 && ...
+< target/generated-sources/model/a.json target/generated-sources/model/src/lib.rs --- client/gen/model tacplus --- echo "generated tacplus=${TACPLUS_BIN:-none}" generated tacplus=tacplus [2026-11-14T09:36:34Z] verdict: pass /builds/looper/looper/issues/155/looper-build: line 966: unexpected EOF while ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+The first run read looper-build mid-edit. I'll stop it, review the edited region, and rerun.
+> Bash kill 978 2>/dev/null; sleep 1; cd /builds/looper/looper/issues/155 && bash -n looper-build && sed -n '/^# The generated trees of a checkout/,/^RELEASE_JAR=/p' looper-build
+< # The generated trees of a checkout (looper#155): the tree each tracked # tacplus.yaml (the root's, a client subproject's: looper#149) generates, # relative to the checkout, one a line; none of a config without an # output-dir or whose tree is not a directory inside its project. generated_trees() { ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "port\|PORT" tests/git-server.py | head -5; grep -n "git-server.py\|PORT" tests/looper-build.test.sh | head -5
+< 13:# Prints its port on stdout once listening. 15:import base64 16:import http.server 17:import os 18:import socket 6:# tests/git-server.py is GitHub's git (an HTTPS proxy for every host) and, as 347:python3 -I "$ROOT/tests/git-server.py" "$SRV/repos" "$SRV/cert.pem" "$SRV/key.pem" "$SRV/log" "$SRV/...
+Random port, so the two runs can go side by side: the new test against the old code in a scratch worktree, and against the fixed code here.
+> Bash rm -rf /tmp/old && git worktree add -q /tmp/old HEAD && cp tests/looper-build.test.sh /tmp/old/tests/ && (cd /tmp/old && nohup tests/looper-build.test.sh > /tmp/lb-old.log 2>&1 & echo "old $!") && (nohup tests/looper-build.test.sh > /tmp/lb-new.log 2>&1 & echo "new $!")
+< old 5269 new 5272
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+While the tests run, I'll update the README paragraph on `built/`, STATE.md and PROPOSALS.md.
+> Read /builds/looper/looper/issues/155/STATE.md
+< 96	  its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment 97	  linking it; the nightly recap counts builds against the commits they built, #134), and on a release 98	  a reproducible image published to Artifact Registry through WIF; tested ...
+> Bash grep -n "^- \*\*" PROPOSALS.md | head -5; sed -n 1,12p PROPOSALS.md; grep -n "Last updated" STATE.md
+< 7:- **The image's revision baked in, so a job knows the image it runs** (2026-11-14, #153): a manager or verdict job 16:- **looper-trace's generated tree as tacplus writes it** (2026-11-14, #152): looper-scan now takes a service's 21:- **Trivy in the tacplus build image, or stratum's `audit-jar` out...
+> Edit /builds/looper/looper/issues/155/README.md
+< The file /builds/looper/looper/issues/155/README.md has been updated successfully.
+> Edit /builds/looper/looper/issues/155/STATE.md
+< The file /builds/looper/looper/issues/155/STATE.md has been updated successfully.
+> Edit /builds/looper/looper/issues/155/STATE.md
+< The file /builds/looper/looper/issues/155/STATE.md has been updated successfully.
+> Edit /builds/looper/looper/issues/155/PROPOSALS.md
+> Bash tail -3 /tmp/lb-old.log; echo ===; tail -3 /tmp/lb-new.log
+< The file /builds/looper/looper/issues/155/PROPOSALS.md has been updated successfully.
+< ok status: a failure with no verdict file (the gates' child pipeline failed) is still reported ok status: the gates-failed job reports the gates' own verdict, or that their runner was lost, on the build's pipeline ok status: the build's own failure does not overwrite the reason its gates-failed job ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Tests are still running. Meanwhile I'll run the trace check (rule 13) and the planning-files check, then wait for both test runs to finish.
+> Bash /usr/local/bin/looper-trace check 2>&1 | tail -5; echo ===; ./planning-files-check origin/main 2>&1 | tail -5
+< looper-trace: /builds/looper/looper/issues/155 verdict: pass (0 handlers, 0 findings) === planning-files-check: ok
+> Bash for i in $(seq 1 110); do if ! kill -0 5269 2>/dev/null && ! kill -0 5272 2>/dev/null; then break; fi; sleep 5; done; echo "old:"; grep -n "FAIL\|^not ok" /tmp/lb-old.log | head; tail -2 /tmp/lb-old.log; echo "new:"; grep -n "FAIL\|^not ok" /tmp/lb-new.log | head; tail -2 /tmp/lb-new.log
+= task_started
+= task_notification
+< old: 58:FAIL gates: the code a generated recipe writes, the release jars and every tacplus.yaml's generated tree whole are the gates' artifact, for the security checks: built: ./svc/build/libs/svc-1.0.jar [2026-11-14T09:38:53Z] verdict: pass token {"permissions":{"contents":"read","metadata":"read"}...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+The old code fails the new assertion as expected. The fixed code passed it and is on the later cases. I'll wait for it to finish and clean up the scratch worktree.
+> Bash for i in $(seq 1 110); do kill -0 5272 2>/dev/null || break; sleep 5; done; grep -n "FAIL\|^not ok" /tmp/lb-new.log | head; tail -3 /tmp/lb-new.log; grep -c "^ok" /tmp/lb-new.log; cd /builds/looper/looper/issues/155 && git worktree remove --force /tmp/old && git status --short
+= task_started
+= task_notification
+< ok security: a write credential is refused skip publish --dry-run, real buildx: the same commit twice gives the same digest: no docker with buildx here looper-build: all passed 82  M PROPOSALS.md  M README.md  M STATE.md  M looper-build  M looper-scan  M tests/looper-build.test.sh
+You've hit your weekly limit · resets 3am (UTC)
+= success: You've hit your weekly limit · resets 3am (UTC)
+= usage: {"claude-fable-5-1":{"inputTokens":642,"outputTokens":17718,"cacheReadInputTokens":1152895,"cacheCreationInputTokens":63650,"webSearchRequests":0,"costUSD":2.4535437500000006,"contextWindow":1000000,"maxOutputTokens":64000,"thinkingTokens":6627,"canonicalModel":"claude-fable-5-1","provider":"firstParty","costBasis":"list"}}

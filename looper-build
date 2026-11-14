@@ -606,18 +606,87 @@ gate_run() { # gates.yaml sets
   echo "$cmd"
 }
 
+# A top-level scalar of a YAML file, unquoted, without its comment.
+yaml_scalar() { # file key
+  local v
+  v="$(sed -nE "s/^$2:[[:space:]]*//p" "$1" | head -1 | sed -E 's/(^|[[:space:]]+)#.*$//; s/[[:space:]]+$//')"
+  [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]] && v="${BASH_REMATCH[1]}"
+  printf '%s' "$v"
+}
+
+# A field a tacplus config names: its own, else that of the config it
+# imports, resolved relative to it (tacplus docs/USER.md: Config Composition).
+tacplus_field() { # config key
+  local f="$1" v i
+  for ((i = 0; i < 8; i++)); do
+    v="$(yaml_scalar "$f" "$2")"; [[ -z "$v" ]] || { printf '%s' "$v"; return 0; }
+    v="$(yaml_scalar "$f" import)"; [[ -n "$v" ]] || return 0
+    [[ "$v" == /* ]] || v="$(dirname "$f")/$v"
+    [[ -f "$v" ]] || return 0
+    f="$v"
+  done
+}
+
+# A path relative to a directory, without ./ or trailing /; fails when it is
+# not a directory inside it.
+inside_dir() { # path
+  local d="${1#./}"
+  while [[ "$d" == */ ]]; do d="${d%/}"; done
+  [[ -n "$d" && "$d" != . && "$d" != /* && "/$d/" != */../* ]] || return 1
+  printf '%s' "$d"
+}
+
+# The tree a tacplus config generates, relative to its project, as tacplus
+# writes it (its runner): the output-name (default model) in the output-dir,
+# unless the output-dir already ends in it (looper#152: operator's
+# `output-dir: .` with `output-name: tacplus` is tacplus/). Fails when the
+# config names no output-dir or the tree is not a directory inside its project.
+tacplus_generated_dir() { # config
+  local dir name
+  dir="$(tacplus_field "$1" output-dir)"; [[ -n "$dir" ]] || return 1
+  name="$(tacplus_field "$1" output-name)"; name="${name:-model}"
+  [[ "$name" != */* && "$name" != . && "$name" != .. ]] || return 1
+  if [[ "$dir" == . || "$dir" == ./ ]]; then dir=""
+  else dir="$(inside_dir "$dir")" || return 1
+  fi
+  [[ "${dir##*/}" == "$name" ]] || dir="${dir:+$dir/}$name"
+  printf '%s' "$dir"
+}
+# How a config names its tree, for a note.
+tacplus_output_spec() { # config
+  printf "output-dir '%s', output-name '%s'" "$(tacplus_field "$1" output-dir)" "$(tacplus_field "$1" output-name)"
+}
+
+# The generated trees of a checkout (looper#155): the tree each tracked
+# tacplus.yaml (the root's, a client subproject's: looper#149) generates,
+# relative to the checkout, one a line; none of a config without an
+# output-dir or whose tree is not a directory inside its project.
+generated_trees() { # src
+  local c d
+  while IFS= read -r c; do
+    d="$(tacplus_generated_dir "$1/$c")" || continue
+    printf '%s\n' "$(dirname "$c")/$d" | sed 's#^\./##'
+  done < <(git -C "$1" ls-files -- tacplus.yaml '*/tacplus.yaml')
+}
+
 # What the gates built that the security checks need (looper#49), the gates
 # job's artifact built/: the untracked files of the checkout that are source
 # or a manifest (code generated in place, which a Go module or a Cargo
 # workspace may not build without) or bytecode (target/classes, for
 # SpotBugs) or a release jar (RELEASE_JAR: what trivy rootfs reads for the
-# dependencies it shades, looper#147), never dependencies or other output.
-# The security job lays it over its own checkout of the commit.
+# dependencies it shades, looper#147), and every file of a tacplus.yaml's
+# generated tree (looper#155: gateway's src/registry.rs include_str!s the
+# registry.json and AGENT.md tacplus writes in target/generated-sources/model,
+# without which the security job's clippy cannot compile it), never
+# dependencies or other output. The security job lays it over its own checkout
+# of the commit.
 built() { # src
-  local out="$BUILD_OUT/built"
+  local out="$BUILD_OUT/built" t
   rm -rf "$out"; mkdir -p "$out"
-  git -C "$1" ls-files -z --others |
-    { grep -zE "(^|/)target/classes/|\.(go|rs|py|java|kt|scala|ts|tsx|js|mjs|cs|swift)\$|(^|/)(go\.(mod|sum)|Cargo\.(toml|lock)|pom\.xml|package(-lock)?\.json|pyproject\.toml|requirements[^/]*\.txt)\$|$RELEASE_JAR" || true; } |
+  { git -C "$1" ls-files -z --others |
+      { grep -zE "(^|/)target/classes/|\.(go|rs|py|java|kt|scala|ts|tsx|js|mjs|cs|swift)\$|(^|/)(go\.(mod|sum)|Cargo\.(toml|lock)|pom\.xml|package(-lock)?\.json|pyproject\.toml|requirements[^/]*\.txt)\$|$RELEASE_JAR" || true; }
+    while IFS= read -r t; do git -C "$1" ls-files -z --others -- "$t/"; done < <(generated_trees "$1"); } |
+    LC_ALL=C sort -zu |
     { grep -zvE "(^|/)(node_modules|vendor|\.venv|venv|\.git)/|(^|/)target/(.*/)?(debug|release|deps|build)/|$NOT_RELEASE_JAR" || true; } |
     (cd "$1" && tar --null -T - -cf -) | tar -xf - -C "$out" || verdict fail "the gates' built files could not be kept"
   [[ -n "$(ls -A "$out")" ]] || rmdir "$out"

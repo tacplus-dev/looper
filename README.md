@@ -995,7 +995,10 @@ says is public (fleet-dev and fleet-seatrials are private: no CodeQL there, and 
 built laid over it: the gates job keeps as its artifact `built/` the untracked files its gates left in the checkout
 that are source (code generated in place: tacplus's Go does not build without its `go generate`) or bytecode
 (`target/classes`, which SpotBugs reads; the security job compiles nothing, as a build may run tacplus) or a release
-jar, never dependencies (`node_modules/`, `vendor/`) or other output. A laid-over file that would change a tracked one
+jar, and every file of each tracked `tacplus.yaml`'s generated tree (its `output-name` in its `output-dir`, as
+tacplus writes it, the root's and a client subproject's: looper#155, a crate `include_str!`s the `registry.json` and
+`AGENT.md` tacplus writes beside its crates, which no source extension names, and clippy cannot compile it without
+them), never dependencies (`node_modules/`, `vendor/`) or other output. A laid-over file that would change a tracked one
 fails the run.
 
 **The release jars** (looper#147). A jar's shaded dependencies are in no manifest OSV-Scanner reads

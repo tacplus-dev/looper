@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by looper (#134).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by looper (#155).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -98,7 +98,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
   and with a real buildx (same commit, same digest); its deterministic security checks (#49, `looper-scan`, README:
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
-  clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it and on the
+  clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it (the
+  gates' `built/`: the untracked sources, manifests, bytecode, release jars, and each tacplus.yaml's generated tree
+  whole, the `.json` and `.md` a crate `include_str!`s too, #155) and on the
   code a `generated` recipe writes (cargo-deny on a service that path-depends on crates its gates generate: with
   them, laid over the checkout or the gates' `generated/` at its tacplus.yaml's generated tree, else on its Cargo.lock's
   crates alone, which the summary says, #126; the SAST findings and secrets in each tacplus.yaml's generated tree
