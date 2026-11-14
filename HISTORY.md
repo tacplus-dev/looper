@@ -98,3 +98,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue The looper image is not published: the image workflow fails on main (#150)
 - 2026-11-14 looper issue tacplus-dev/build refuses every gateway build trigger with a 422 (empty gate set; report --build and manager land), and start_build's curl -f hides why (#127, b3ef357; gates: full)
 - 2026-11-14 looper issue Security job still counts operator's tacplus-generated tree: 231 of 237 failing findings are under tacplus/ (after #108) (#152, 426b33f; gates: build, docs)
+- 2026-11-14 looper issue Image's syft carries GO-2026-6905 (github.com/blakesmith/ar, no fixed version): a crafted .deb panics the security run (#142)
