@@ -94,3 +94,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue The nightly scan files one issue per cause, not per finding, blocked from the start when the fix is upstream (#129)
 - 2026-11-14 looper issue Security job never scans a built jar: trivy is skipped on lands, and on nightly/release it reads only the checkout (#147, 0484884; gates: docs)
 - 2026-11-14 looper issue Manager sends every branch back on a PROPOSALS.md conflict: the nightly scan's append on main collides with each report's append (5 of 7 tacplus lands, 2026-11-06) (#105)
+- 2026-11-14 looper issue Image's govulncheck v1.1.4 (x/tools v0.29.0) panics on any go 1.27 module importing net/http: every Go security run still fails after #109 (#151, 30e48b2; gates: full)
