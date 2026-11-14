@@ -89,3 +89,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue Security floor: services' SAST (gosec, gitleaks) skips the tacplus-generated tree; tacplus scans its own generated output (#108)
 - 2026-11-14 looper issue Security job fails a tacplus project on tacplus's own generated code: built/ lays the output-dir over the source (#145)
 - 2026-11-14 looper issue A land whose gates job dies with runner_system_failure (spot preemption) is reported "not merged" instead of retried (#148)
+- 2026-11-14 looper issue Choose the model per run: Fable 5.1 for priority:high issues and manager steps, Opus 5.5 otherwise (#136, e426ce5; gates: full)
