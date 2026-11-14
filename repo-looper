@@ -2809,13 +2809,14 @@ A comment since that run may answer it: the comments end the issue's text, at th
 "
   fi
   new_nonce "$run"
+  local security; security="$(security_report "$run")"
   cat > "$run/prompt.md" <<PR
 You are the looper of $LOOPER_ORG/$REPO, working issue #$n. Your working directory is a clone of this
 repository on its own branch, $BRANCH, at origin/main: other issues of this repository may be worked at the
 same time, each in its own job. Read the issue first: its text, as the looper read it when this run started,
 is at the end of this prompt (rule 12 says whose text directs you); \`$(forge_cmd view "$REPO" "$n")\`
 shows any comment since. It was approved by someone with write access; issues it links to and the documents it
-cites (decision records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.
+cites (decision records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.$(security_context "$security")
 $resumed
 Rules:
 1. Do what the issue asks, completely: its acceptance criteria are the definition of done. If it asks for
@@ -3270,16 +3271,16 @@ scan_labels() { # the newest issue number before the scan
 security_report() { # run-dir [repo, into run-dir/security-<repo>]
   local api="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}" project="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}" f
   local repo="${2:-$REPO}" out="$1/security${2:+-${2//\//_}}"
-  [[ -n "${GITLAB_TOKEN:-}" ]] || { log "scan: no GITLAB_TOKEN: the build's security report is not read" >&2; return 0; }
+  [[ -n "${GITLAB_TOKEN:-}" ]] || { log "security: no GITLAB_TOKEN: the build's security report is not read" >&2; return 0; }
   mkdir -p "$out"
   for f in findings.json summary.md; do
     if ! curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") -o "$out/$f" \
            "$api/projects/$project/packages/generic/security-$repo/latest/$f" 2>/dev/null; then
-      log "scan: no security report of $repo from the build pipeline" >&2; rm -rf "$out"; return 0
+      log "security: no security report of $repo from the build pipeline" >&2; rm -rf "$out"; return 0
     fi
   done
   jq -e 'type == "array"' "$out/findings.json" >/dev/null 2>&1 ||
-    { log "scan: the build's security report of $repo is not a findings list" >&2; rm -rf "$out"; return 0; }
+    { log "security: the build's security report of $repo is not a findings list" >&2; rm -rf "$out"; return 0; }
   echo "$out"
 }
 
@@ -3309,7 +3310,8 @@ security_item() { # report-dir or ""
   if [[ -n "$1" ]]; then cat <<IT
 1. The build pipeline's deterministic security checks (looper-scan; README: Security checks): the latest
    report of $REPO's build is $1/summary.md, its findings $1/findings.json (each: tool, id, aliases,
-   severity, fix, where, new, excepted, blocking). File the findings that are \`new\` and not \`excepted\`
+   severity, fix, where, new, baselined, excepted, blocking; a finding the repository's security-baseline.json
+   records is \`baselined\`, never \`new\`). File the findings that are \`new\` and not \`excepted\`
    and that the policy fails (\`blocking\`) or are HIGH or CRITICAL one issue per cause, not per finding:
    findings that share a fix (the same upstream issue, the same generated template, the same dependency bump)
    are one issue listing them all (each one's tool, id and where), its title the cause (looper#129); the other
@@ -3318,6 +3320,15 @@ IT
   else
     echo "1. The build pipeline's security report of $REPO could not be read (README: Security checks): say so in no issue; go on."
   fi
+}
+
+# An issue's run gets the same report (looper#146): the model holds no GitLab
+# credential (looper#25), so this is how it reads the findings, and records
+# them as the repository's security-baseline.json when its issue asks.
+security_context() { # report-dir or ""
+  [[ -n "$1" ]] || return 0
+  printf '\n%s\n%s' "The build pipeline's latest security report of $REPO (README: Security checks) is $1/summary.md, its findings" \
+    "$1/findings.json; \`$(dirname "$LOOPER_SELF")/looper-scan baseline $1/findings.json > security-baseline.json\` records them as its baseline."
 }
 
 # --- the roadmap's suggestion pass (looper#50) ------------------------------------

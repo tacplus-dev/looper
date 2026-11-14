@@ -1257,6 +1257,34 @@ OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT
 has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "security report of alpha could not be read"
 pass
 
+# An issue's run gets the same report (looper#146), the model holding no GitLab
+# credential: the findings in its run directory, where its prompt points, with
+# the command that records them as the repository's baseline; none, no word.
+scenario issue-security-report
+mkdir -p "$FIX/security"
+echo '[{"tool":"gosec","kind":"sast","id":"G306","severity":"MEDIUM","fix":true,"where":"main.go:6","new":true,"excepted":null,"blocking":false}]' > "$FIX/security/findings.json"
+echo '## Security checks: alpha' > "$FIX/security/summary.md"
+report "Done."
+run GITLAB_TOKEN=glpat-t
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+d="$(ls -d "$FIX"/project/looper-runs/*-issue-4)/security"
+has "$p" "Read them before changing anything.
+The build pipeline's latest security report of alpha (README: Security checks) is $d/summary.md, its findings
+$d/findings.json; \`"
+has "$p" "/looper-scan baseline $d/findings.json > security-baseline.json\` records them as its baseline."
+cmp -s "$d/findings.json" "$FIX/security/findings.json" || fail "the report was not read: $(ls "$d" 2>&1)"
+grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/security-alpha/latest/findings.json" "$FIX/gitlab" ||
+  fail "$(cat "$FIX/gitlab")"
+pass
+scenario issue-no-security-report
+report "Done."
+run
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+! grep -q "security report" <<<"$p" || fail "a report without one: $p"
+has "$p" "Read them before changing anything.
+"
+pass
+
 # One issue per cause, not per finding (looper#129): findings that share a fix
 # are one issue listing them all, its title the cause; a cause another
 # repository's open issue fixes is filed with its Blocked-by line from the

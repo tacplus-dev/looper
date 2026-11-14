@@ -22,6 +22,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   with plain git: a branch whose only conflict is a PROPOSALS.md append falls back to main merged in, its conflict
   marked for the model to resolve by hand. The same attributes on that rebase (and on the model's own
   `git rebase origin/main`, via the checkout's config) would spare that run its hand merge.
+- **A baseline's stale entries told** (2026-11-13, #146): a `security-baseline.json` entry whose findings were fixed
+  keeps its count, so as many new ones of the same rule in the same file would be baselined unseen. The summary could
+  list the entries a run used less than their count (and the run could say "record the baseline again"), so a fix
+  shrinks the baseline as the decision on tacplus-dev/tacplus#585 intends.
+- **New findings compared by file too** (2026-11-13, #146): a finding the baseline does not take is still `new` by
+  `tool|id|where` against the previous run, its line included, so a finding beyond a baseline's count is filed again
+  when an edit moves it. Comparing with the previous run per tool, rule and file (counts, as the baseline does) would
+  make `new` line-independent everywhere.
 - **A build's wait as long as tacplus's full gates** (2026-11-13, #140): the gates job now has its own 11h
   timeout, but `repo-looper --build` and a manager's merge wait for a verdict `LOOPER_BUILD_WAIT` (default 3h),
   and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"

@@ -209,6 +209,35 @@ spec:
       image: nginx
       securityContext:
         privileged: true'
+# A recorded baseline (looper#146): two files written 0644 (gosec's G306,
+# MEDIUM), baselined; then the same two moved down by an edit above them and a
+# third beside them; the planted pin with a baseline that names its HIGH
+# finding too; a baseline without counts.
+WRITES='	_ = os.WriteFile("a.txt", []byte("a"), 0644)
+	_ = os.WriteFile("b.txt", []byte("b"), 0644)'
+scan_commit scanbase main.go "package main
+
+import \"os\"
+
+func main() {
+$WRITES
+}"
+G306_BASELINE='[
+  {"count":2,"file":"main.go","id":"G306","tool":"gosec"}
+]'
+scan_commit scanbased main.go "package main
+
+import \"os\"
+
+// main writes three files,
+// each readable by all.
+func main() {
+$WRITES
+	_ = os.WriteFile(\"c.txt\", []byte(\"c\"), 0644)
+}" security-baseline.json "$G306_BASELINE"
+scan_commit scanvulnbase "${VULN[@]}" security-baseline.json '[{"tool":"osv-scanner","id":"GO-2021-0113","file":"golang.org/x/text@0.3.0 (go.mod)","count":1},
+ {"tool":"osv-scanner","id":"GO-2026-5970","file":"golang.org/x/text@0.3.0 (go.mod)","count":1}]'
+scan_commit scanbadbase security-baseline.json '[{"tool":"gosec","id":"G306","file":"main.go"}]'
 # A Rust service as tacplus's are (gateway, looper#126): its Cargo.toml
 # path-depends on the crates its tacplus.yaml output-dir holds, which only a
 # build generates; its Cargo.lock locks what they depend on (rustix 1.1.4,
@@ -457,9 +486,11 @@ cat > "$SB/gosec" <<EOF
 #!/usr/bin/env bash
 $(opt -out)
 [[ "\$1" == -version ]] && { echo "Version: 2.30.0"; exit; }
-{ echo '{"Issues":['
-  grep -rl --include='*.go' 'InsecureSkipVerify: true' . | sed 's|^\./||' | awk -v d="\$PWD" '{ printf "%s{\"severity\":\"HIGH\",\"confidence\":\"HIGH\",\"cwe\":{\"id\":\"295\"},\"rule_id\":\"G402\",\"details\":\"TLS InsecureSkipVerify set true.\",\"file\":\"%s/%s\",\"line\":\"7\"}", (NR > 1 ? "," : ""), d, \$0 }'
-  echo '],"Stats":{"files":1}}'; } > "\$out"
+# G306 at each os.WriteFile (each writes 0644) and G402 at each InsecureSkipVerify, as gosec reports them.
+grep -rn --include='*.go' -e 'os.WriteFile(' -e 'InsecureSkipVerify: true' . | jq -Rs --arg pwd "\$PWD" '{Issues: [split("\n")[] | capture("^[.]/(?<f>[^:]+):(?<l>[0-9]+):(?<t>.*)")
+  | if (.t | contains("InsecureSkipVerify")) then {severity: "HIGH", cwe: {id: "295"}, rule_id: "G402", details: "TLS InsecureSkipVerify set true."}
+    else {severity: "MEDIUM", cwe: {id: "276"}, rule_id: "G306", details: "Expect WriteFile permissions to be 0600 or less"} end
+    + {confidence: "HIGH", file: (\$pwd + "/" + .f), line: .l}], Stats: {files: 1}}' > "\$out"
 EOF
 cat > "$SB/trivy" <<EOF
 #!/usr/bin/env bash
@@ -1430,6 +1461,46 @@ rm "$TMP/previous.json"
   fail "new: $(jq -c '[.[] | select(.new)]' "$OUT/security/findings.json")"
 sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH govulncheck GO-2021-0113' ||
   fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: a recorded baseline: its findings, by tool, rule and file up to its count, are baselined, not new, wherever their lines move"
+scan BUILD_SHA="${SHA[scanbase]}" -- run 2>"$TMP/err" || fail "MEDIUM findings failed the build: $(cat "$OUT/security/verdict")"
+g306() { jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | {where, new, baselined}]' "$OUT/security/findings.json"; }
+[[ "$(g306)" == '[{"where":"main.go:6","new":true,"baselined":false},{"where":"main.go:7","new":true,"baselined":false}]' ]] || fail "$(g306)"
+"$ROOT/looper-scan" baseline "$OUT/security/findings.json" > "$TMP/baseline.json" 2>"$TMP/err" || fail "baseline: $(cat "$TMP/err")"
+if ((REAL_SCAN)); then
+  jq -e 'any(.[]; . == {"count": 2, "file": "main.go", "id": "G306", "tool": "gosec"})' "$TMP/baseline.json" >/dev/null || fail "$(cat "$TMP/baseline.json")"
+else
+  [[ "$(cat "$TMP/baseline.json")" == "$G306_BASELINE" ]] || fail "baseline: $(cat "$TMP/baseline.json")"
+fi
+cp "$OUT/security/findings.json" "$TMP/previous.json"
+scan BUILD_SHA="${SHA[scanbased]}" -- run 2>"$TMP/err" || fail "the baselined commit failed: $(cat "$OUT/security/verdict")"
+rm "$TMP/previous.json"
+[[ "$(g306)" == '[{"where":"main.go:8","new":false,"baselined":true},{"where":"main.go:9","new":false,"baselined":true},{"where":"main.go:10","new":true,"baselined":false}]' ]] ||
+  fail "$(g306)"
+grep -q ', 2 baselined (security-baseline.json), ' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | grep -q '^- MEDIUM gosec G306: main.go:10$' ||
+  fail "$(cat "$OUT/security/summary.md")"
+[[ "$(jq -c '[.runs[] | select(.tool.driver.name == "gosec") | .results[] | select(.ruleId == "G306") | [.level, .properties.baselined]]' "$OUT/security/findings.sarif")" == \
+   '[["note",true],["note",true],["warning",false]]' ]] || fail "SARIF: $(jq -c . "$OUT/security/findings.sarif")"
+pass
+
+NAME="security: a baseline never takes a HIGH finding nor one the policy fails, and a baseline without counts fails the run"
+if scan BUILD_SHA="${SHA[scanvulnbase]}" -- run 2>"$TMP/err"; then fail "a baseline accepted a HIGH finding"; fi
+blocking | grep -q '^osv-scanner GO-2021-0113 golang.org/x/text@0.3.0 (go.mod)$' || fail "$(blocking)"
+jq -e 'all(.[]; .baselined == false or (.severity | IN("MEDIUM", "LOW", "UNKNOWN")))' "$OUT/security/findings.json" >/dev/null ||
+  fail "$(cat "$OUT/security/findings.json")"
+if ((!REAL_SCAN)); then
+  jq -e '.[] | select(.id == "GO-2026-5970") | .baselined and (.new | not)' "$OUT/security/findings.json" >/dev/null || fail "$(cat "$OUT/security/findings.json")"
+  "$ROOT/looper-scan" baseline "$TMP/vuln-findings.json" > "$TMP/baseline.json" 2>"$TMP/err" || fail "baseline: $(cat "$TMP/err")"
+  [[ "$(cat "$TMP/baseline.json")" == '[
+  {"count":1,"file":"golang.org/x/text@0.3.0 (go.mod)","id":"GO-2026-5970","tool":"osv-scanner"}
+]' ]] || fail "the baseline of the planted pin: $(cat "$TMP/baseline.json")"
+fi
+jq -n '[{tool: "gitleaks", kind: "secret", id: "k", severity: "CRITICAL", where: "a:1", blocking: true, excepted: null}]' > "$TMP/secret.json"
+[[ "$("$ROOT/looper-scan" baseline "$TMP/secret.json")" == $'[\n]' ]] || fail "a secret was baselined"
+if scan BUILD_SHA="${SHA[scanbadbase]}" -- run 2>"$TMP/err"; then fail "a baseline without counts passed"; fi
+scan_verdict_is "fail: security-baseline.json: not a list of {tool, id, file, count}"
 pass
 
 NAME="security: the report publishes the run's findings as the repository's latest, with the job token"

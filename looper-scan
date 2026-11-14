@@ -15,7 +15,9 @@
 #   report   the security-report job: the run's findings as the repository's
 #            latest (the build project's generic package security-<repo>),
 #            what the next run compares with and the nightly agent scan reads
-#   local    the same checks on a checkout, by hand: no credential, no baseline
+#   local    the same checks on a checkout, by hand: no credential, no previous run
+#   baseline a run's findings as the repository's recorded baseline
+#            (security-baseline.json, looper#146): what it accepts as its start
 #   sbom     an SBOM, CycloneDX and SPDX, of a source (publish: the release image)
 #
 # The kinds (BUILD_SCAN_KIND): build (every build): OSV-Scanner, govulncheck,
@@ -27,7 +29,10 @@
 # The policy: a secret fails, and so does a HIGH or CRITICAL finding with a
 # fix (a fixed version, or our own code: a SAST finding), unless an unexpired
 # exception names it; an exception that has expired, or says less than an id,
-# a reason, who decided and an expiry date, fails too. A tool that cannot run
+# a reason, who decided and an expiry date, fails too. A finding the commit's
+# security-baseline.json records (by tool, rule and file, not line: up to its
+# count) is baselined, never new; a secret, a HIGH or CRITICAL finding, one
+# the policy fails or an exception accepts is never baselined. A tool that cannot run
 # fails the run. It runs in the looper image (jq, the scanners), never in the
 # repository's build image; it sources looper-build for the build's
 # credentials (the tacplus-reader app, read-only) and checkout.
@@ -55,12 +60,22 @@ CODEQL_SHA256="${BUILD_CODEQL_SHA256:-0c9e32e9fcf65be4ab8df0cf0a7bb83e64aff4099f
 CODEQL_DIR="${BUILD_CODEQL_DIR:-${HOME:-/tmp}/.cache/looper-codeql/$CODEQL_VERSION}"
 # The exceptions a repository accepts, at its root.
 EXCEPTIONS_FILE=security-exceptions.yaml
+# The findings a repository accepts as its starting point, at its root (looper#146).
+BASELINE_FILE=security-baseline.json
+# What a baseline records and matches: a finding no policy fails, not a secret,
+# MEDIUM, LOW or UNKNOWN, no exception's; its file, its where without the line.
+JQ_BASELINE='
+def baselinable: .excepted == null and (.blocking | not) and .kind != "secret" and (.severity | IN("MEDIUM", "LOW", "UNKNOWN"));
+def file_of: .where | sub(":[0-9]+$"; "");
+def line_of: (.where | capture(":(?<l>[0-9]+)$").l // "0") | tonumber;
+'
 
 scan_usage() {
   cat <<'EOF'
 usage: looper-scan run               the security checks of BUILD_REPO at BUILD_SHA (BUILD_SCAN_KIND build|nightly|release)
        looper-scan local DIR         the same checks on a checkout (and DIR's generated/ under BUILD_OUT), nothing published
-       looper-scan report            the run's findings, published as the repository's latest (the next run's baseline)
+       looper-scan report            the run's findings, published as the repository's latest (what the next run compares with)
+       looper-scan baseline FINDINGS a run's findings.json as a security-baseline.json (MEDIUM, LOW and UNKNOWN only)
        looper-scan sbom SOURCE DIR   a CycloneDX and an SPDX SBOM of SOURCE (dir:..., oci-archive:...) in DIR
 Reports go to BUILD_OUT/security (default: ./security).
 EOF
@@ -682,19 +697,33 @@ scan_tree() { # src previous-findings started
       elif .expires < $today then "exception \(.id) expired on \(.expires) (\(.decided_by): \(.reason))"
       else empty end' <<<"$exceptions")"
   [[ -z "$errs" ]] || while IFS= read -r t; do problems+=("$t"); done <<<"$errs"
+  local baseline='[]'
+  if [[ -f "$src/$BASELINE_FILE" ]] && ! baseline="$(jq -ce 'if type == "array" and all(.[]; type == "object" and keys == ["count", "file", "id", "tool"]
+           and ([.tool, .id, .file] | all(type == "string")) and (.count | type == "number" and . >= 1 and . == floor)) then . else error end' \
+         "$src/$BASELINE_FILE" 2>/dev/null)"; then
+    problems+=("$BASELINE_FILE: not a list of {tool, id, file, count} (looper-scan baseline writes it)"); baseline='[]'
+  fi
 
   local norms=()
   mapfile -t norms < <(find "$SCAN_OUT/norm" -name '*.json' | LC_ALL=C sort)
   ((${#norms[@]})) || norms=(/dev/null)
-  jq -s --argjson exc "$exceptions" --arg today "$today" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') '
+  # The baseline's count of a tool, rule and file goes to its findings in line order.
+  jq -s --argjson exc "$exceptions" --arg today "$today" --argjson base "$baseline" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') "$JQ_BASELINE"'
     ($prev[0] // [] | map(.tool + "|" + .id + "|" + .where) | map({(.): true}) | add // {}) as $old
+    | ($base | map({(.tool + "|" + .id + "|" + .file): .count}) | add // {}) as $quota
     | [.[][]] | unique_by([.tool, .id, .where]) | map(
         . as $f
         | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x)))][0]) as $e
         | . + {excepted: ($e.id // null),
                blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix))),
                new: ($old[.tool + "|" + .id + "|" + .where] | not)})
-    | sort_by(if .blocking then 0 else 1 end, {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}[.severity] // 4, .tool, .id, .where)' \
+    | sort_by(.tool, .id, file_of, line_of)
+    | reduce .[] as $f ({q: $quota, out: []};
+        ($f.tool + "|" + $f.id + "|" + ($f | file_of)) as $k
+        | if ($f | baselinable) and (.q[$k] // 0) > 0 then .q[$k] -= 1 | .out += [$f + {baselined: true, new: false}]
+          else .out += [$f + {baselined: false}] end)
+    | .out
+    | sort_by(if .blocking then 0 else 1 end, {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}[.severity] // 4, .tool, .id, file_of, line_of)' \
     "${norms[@]}" > "$SCAN_OUT/findings.json" || scan_verdict fail "the findings could not be read together (a tool's report)"
 
   tool_versions > "$SCAN_OUT/tools.json"
@@ -831,9 +860,9 @@ write_sarif() {
   jq '{"$schema": "https://json.schemastore.org/sarif-2.1.0.json", version: "2.1.0",
        runs: (group_by(.tool) | map({tool: {driver: {name: .[0].tool, informationUri: "https://github.com/tacplus-dev/looper#security-checks",
          rules: (map({id: .id, properties: {severity: .severity}}) | unique_by(.id))}},
-         results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted then "note" else "warning" end),
-           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" else "" end))},
-           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, aliases: .aliases},
+         results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted or .baselined then "note" else "warning" end),
+           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" else "" end))},
+           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, baselined: .baselined, aliases: .aliases},
            locations: [{physicalLocation: {artifactLocation: {uri: (.where | sub(":[0-9]+$"; ""))},
              region: {startLine: ((.where | capture(":(?<l>[0-9]+)$").l // "1") | tonumber)}}}]})}))}' \
     "$SCAN_OUT/findings.json"
@@ -843,7 +872,7 @@ write_summary() { # blocking
   local f="$SCAN_OUT/findings.json" p
   echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
   echo
-  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.excepted)] | length) accepted by an exception."' "$f"
+  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception."' "$f"
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
@@ -874,6 +903,21 @@ cmd_report() {
   log "published as security-$BUILD_REPO/latest: the next run's baseline"
 }
 
+# --- baseline -----------------------------------------------------------------------
+
+# A run's findings (its findings.json: the security job's artifact, or the
+# repository's latest) as the security-baseline.json a repository commits:
+# per tool, rule and file, how many of its findings a later run takes as
+# baselined. Only what may be baselined; one entry a line, sorted, so a
+# change to it reads as a diff.
+cmd_baseline() { # findings
+  [[ $# -eq 1 && -f "$1" ]] || { scan_usage >&2; exit 2; }
+  jq -e 'type == "array"' "$1" >/dev/null 2>&1 || { echo "looper-scan: $1 is not a findings list" >&2; exit 1; }
+  jq -r "$JQ_BASELINE"'
+    [.[] | select(baselinable) | {tool, id, file: file_of}] | group_by([.tool, .id, .file]) | map(.[0] + {count: length})
+    | "[", (.[:-1][] | "  " + tojson + ","), (.[-1:][] | "  " + tojson), "]"' "$1"
+}
+
 # --- sbom ---------------------------------------------------------------------------
 
 cmd_sbom() { # source dir
@@ -886,6 +930,7 @@ case "${1:-}" in
   run) cmd_run ;;
   local) shift; cmd_local "$@" ;;
   report) cmd_report ;;
+  baseline) shift; cmd_baseline "$@" ;;
   sbom) shift; cmd_sbom "$@" ;;
   -h|--help) scan_usage ;;
   *) scan_usage >&2; exit 2 ;;
