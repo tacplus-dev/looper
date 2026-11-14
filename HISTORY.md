@@ -83,3 +83,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-13 looper issue looper-build: the gates job has no timeout, so the build project's default (1h) ends tacplus full gates (#140, cca9634; gates: docs)
 - 2026-11-14 looper issue govulncheck in the image is built with go1.26 and cannot scan a go 1.27 module: every such build's security run fails (#109, b2e2f4f; gates: full)
 - 2026-11-14 looper issue The manager retries forever a land its ROADMAP.md guard refuses, even for an approved 'at Jody's request' ROADMAP change (#123, 3ec8e74; gates: full)
+- 2026-11-13 looper issue STATE.md's Blocked on names closed issues: #83, #90, #28, tacplus#193 (#141, 3ac18f9; gates: docs)
