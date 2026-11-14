@@ -92,3 +92,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue Choose the model per run: Fable 5.1 for priority:high issues and manager steps, Opus 5.5 otherwise (#136, e426ce5; gates: full)
 - 2026-11-14 looper issue repo-looper start_build sends a multi-set gates input with an unescaped +: GitLab reads a space and refuses (422) every docs+X build and land (#118, 18e2d3c; gates: full)
 - 2026-11-14 looper issue The nightly scan files one issue per cause, not per finding, blocked from the start when the fix is upstream (#129)
+- 2026-11-14 looper issue Security job never scans a built jar: trivy is skipped on lands, and on nightly/release it reads only the checkout (#147, 0484884; gates: docs)
