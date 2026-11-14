@@ -46,11 +46,12 @@
 # gates its diff calls for (looper#48), pushes only on green, and deletes the
 # branch. A rebase that conflicts only in files the
 # repository's generated.yaml maps it resolves by regenerating them (main's
-# side, then the set's command: never a hand merge); a report's last commit,
-# touching STATE.md alone, whose only conflict is STATE.md, it drops, main's
-# STATE.md kept, and lands the rest, the branch kept for that commit's land
-# again (looper#131); any other conflict it sends back to the report, the
-# files named. Every merge, resolution and
+# side, then the set's command: never a hand merge); PROPOSALS.md and
+# HISTORY.md, append-only, it unions (git's union merge, looper#105); a
+# report's last commit, touching STATE.md alone, whose only conflict is
+# STATE.md, it drops, main's STATE.md kept, and lands the rest, the branch
+# kept for that commit's land again (looper#131); any other conflict it sends
+# back to the report, the files named. Every merge, resolution and
 # send-back is a comment on the issue, with the gate verdict. A report that
 # ended while its land was queued is landed all the same; the verdict frees
 # the issue, and its next report finishes it from the branch. The manager adds
@@ -771,7 +772,16 @@ read_sets() { # file: GM_SETS, GM_RUN, GM_MIN, GM_MEM, GM_PATHS
 # them, never by a hand merge: rebase_on_main.
 GEN_MAP=generated.yaml
 
-# Rebases the checkout's HEAD on origin/main (looper#70). A commit whose
+# The append-only logs loopers write (looper#105): main's nightly scan and a
+# report both append to PROPOSALS.md (HISTORY.md, alike), and their appends
+# conflict on every land. The manager's rebase resolves those two with git's
+# union merge (main's lines, then the branch's), from attributes of its own:
+# no repository carries a .gitattributes for it.
+LOG_ATTRS='/PROPOSALS.md merge=union
+/HISTORY.md merge=union'
+
+# Rebases the checkout's HEAD on origin/main (looper#70), LOG_ATTRS's logs
+# unioned (looper#105). A commit whose
 # replay conflicts only in files main's generated.yaml maps is resolved by
 # regenerating them: main's side of each, then each of their sets' commands,
 # once, at the root, every tracked file it changes taken; the rebase goes on.
@@ -788,11 +798,13 @@ GEN_MAP=generated.yaml
 # dropped (a land of STATE.md alone) is sent back all the same.
 ONTO=origin/main
 rebase_on_main() {
-  local map files f s p hit sets i orig done=""
+  local map files f s p hit sets i orig done="" attrs
   REGENERATED=""; CONFLICTS=""; REGEN_REFUSED=""; DROPPED=""
   no_repo_code "a rebase"
   orig="$(git rev-parse HEAD)"
-  git rebase -q "$ONTO" >/dev/null 2>&1 && return 0
+  attrs="$(mktemp)"; printf '%s\n' "$LOG_ATTRS" > "$attrs"
+  local -a union=(-c "core.attributesFile=$attrs")
+  git "${union[@]}" rebase -q "$ONTO" >/dev/null 2>&1 && { rm -f "$attrs"; return 0; }
   map="$(mktemp)"
   git show "$ONTO:$GEN_MAP" > "$map" 2>/dev/null || : > "$map"
   if [[ -n "$MANAGER_TOKEN" && -s "$map" ]]; then
@@ -805,7 +817,7 @@ rebase_on_main() {
     if [[ "$files" == STATE.md && "$(git diff-tree --no-commit-id --name-only -r REBASE_HEAD)" == STATE.md ]]; then
       DROPPED+="$(git show --format='commit %h %s' REBASE_HEAD)"$'\n'
       CONFLICTS=""
-      GIT_EDITOR=true git rebase --skip >/dev/null 2>&1 && { done=1; break; }
+      GIT_EDITOR=true git "${union[@]}" rebase --skip >/dev/null 2>&1 && { done=1; break; }
       continue
     fi
     { [[ -s "$map" ]] && read_sets "$map" 2>/dev/null; } || break
@@ -829,10 +841,10 @@ rebase_on_main() {
     done
     git add -u && git add -- $files 2>/dev/null || true
     CONFLICTS=""
-    if git diff --cached --quiet; then GIT_EDITOR=true git rebase --skip >/dev/null 2>&1 && { done=1; break; }
-    else GIT_EDITOR=true git rebase --continue >/dev/null 2>&1 && { done=1; break; }; fi
+    if git diff --cached --quiet; then GIT_EDITOR=true git "${union[@]}" rebase --skip >/dev/null 2>&1 && { done=1; break; }
+    else GIT_EDITOR=true git "${union[@]}" rebase --continue >/dev/null 2>&1 && { done=1; break; }; fi
   done
-  rm -f "$map"
+  rm -f "$map" "$attrs"
   if [[ -n "$done" ]]; then
     [[ -n "$DROPPED" && "$(git rev-list --count "$ONTO..HEAD")" == 0 ]] || return 0
     CONFLICTS="STATE.md"; DROPPED=""
@@ -1490,7 +1502,7 @@ $(sed 's/^/> /' <<<"$step")"
   elif [[ "$rc" == 0 ]]; then
     what="The manager had nothing to merge from [\`$b\`]($url): main has its commits already."
   elif [[ "$rc" == 3 ]]; then
-    what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
+    what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates, and PROPOSALS.md and HISTORY.md it unions; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
   elif [[ "$rc" == "$ROADMAP_RC" ]]; then
     what="The manager refused [\`$b\`]($url): it changes ROADMAP.md, which is Jody's, changed only by an agent at his request, and $(cat "$rec/roadmap" 2>/dev/null || echo "this land is not"). A land may change ROADMAP.md only when its issue carries \`$LABEL_APPROVED\` from a member and its own text, a member's, says it is at Jody's request (looper#123). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. If Jody asked for it, say so in the issue's text, then remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise drop the ROADMAP.md change and propose it in PROPOSALS.md."
   elif [[ "$rc" == 4 ]]; then

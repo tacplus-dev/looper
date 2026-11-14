@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The logs unioned on a report's resume too** (2026-11-07, #105): the manager's rebase now unions PROPOSALS.md
+  and HISTORY.md (`LOG_ATTRS`), but a report resuming from its branch (`resume`) still rebases it on main
+  with plain git: a branch whose only conflict is a PROPOSALS.md append falls back to main merged in, its conflict
+  marked for the model to resolve by hand. The same attributes on that rebase (and on the model's own
+  `git rebase origin/main`, via the checkout's config) would spare that run its hand merge.
 - **A build's wait as long as tacplus's full gates** (2026-11-13, #140): the gates job now has its own 11h
   timeout, but `repo-looper --build` and a manager's merge wait for a verdict `LOOPER_BUILD_WAIT` (default 3h),
   and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"

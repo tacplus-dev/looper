@@ -312,7 +312,10 @@ lander are gone. One job per issue needs none of them.
   - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
     (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
     resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
-    and the gates judge the result. A report's last commit, touching `STATE.md` alone (its `--land` makes the
+    and the gates judge the result. `PROPOSALS.md` and `HISTORY.md`, the append-only logs loopers write, it
+    resolves with git's union merge (main's lines, then the branch's; from attributes of its own, so no repository
+    carries a `.gitattributes`, looper#105): the nightly scan's append on main never blocks a land. A report's last
+    commit, touching `STATE.md` alone (its `--land` makes the
     branch so: commits since main that change `STATE.md` and other files made again without it, and a last commit
     of the `STATE.md` change), whose only conflict is `STATE.md` it **drops** (looper#131): main's `STATE.md` is
     kept, the rest lands on its gates, and the verdict quotes the dropped diff; the branch stays and the issue stays
