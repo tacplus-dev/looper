@@ -28,7 +28,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   merged branch deleted, every merge, resolution and send-back a comment on the issue with the gate verdict; it adds
   the planning files and `HISTORY.md`'s lines (closed issues', queued by their reports, and releases'); a land still
   queued when its report's time runs out is merged after it; a land its job has no time for (the last land's time
-  on its gate set, #38) waits for the next manager; with nothing queued, the manager lingers only for report jobs
+  on its gate set, #38) waits for the next manager; a manager or verdict job in the looper image ends between lands, exit 0, once
+  `ghcr.io/tacplus-dev/looper:main` (`LOOPER_JOB_IMAGE`) names another digest than at its start, both logged, so the next job
+  runs the new image (#153: a stale manager kept a fixed fault turning lands red for up to 11 h); with nothing queued, the manager lingers only for report jobs
   running, never for ones created or pending, which on a one-VM pool wait for its VM (#82); the parent and its in-job children (#32), its area plan and
   conflict holds (#39), its time-left holds and re-plans (#33, #59) and its in-job lander (#34, #38, #44) are
   retired; each report's model's containers limited to its memory (4 GB, or the `memory:` its land's gate set asks in `gates.yaml`, #74)
