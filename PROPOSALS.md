@@ -648,6 +648,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   is tens of MB, GitLab's artifact limit applies). A cache of `~/.cache/trivy` on the security job (keyed by the day)
   would spare the download; a jar over the limit would need another way to the security job (the gates' Syft SBOM
   of it, say, scanned by `trivy sbom`).
+- **The build project's CI file checked against ci/build.gitlab-ci.yml** (2026-11-11, #127): gitlab.com/tacplus-dev/build's
+  `.gitlab-ci.yml` is a hand copy of `ci/build.gitlab-ci.yml`, and a copy that lags (an input #71 or later added and
+  the copy lacks) refuses every trigger with a 422. #127 could not tell whether gateway's 422s were the empty gates
+  input or such a drift: no run holds a token that reads the build project's files. A nightly (the recap's job, say,
+  with a `read_repository` reader) comparing the two and filing a bug on a difference would catch it before a land
+  does; since #127 the trigger's refusal carries GitLab's body, which names the input.
 
 ## Promoted / declined
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap

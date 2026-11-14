@@ -156,7 +156,8 @@ EOF
 # scope[] parameters, as GitLab does; one job by its id (/projects/:id/jobs/:id),
 # or this job, CI_JOB_ID, for its own token (/job). $FIX/revoked refuses the
 # job's token (HTTP 401), as GitLab does once the job ended; no file answers
-# HTTP 500. With -f a failure exits 22; -w prints the HTTP status. Each
+# HTTP 500. With -f a failure exits 22 and prints no body, as curl's -f (with
+# --fail-with-body it prints it); -w prints the HTTP status. Each
 # request's auth header (given, or from a file: -H @file) and URL are appended
 # to $FIX/gitlab, and its command line to $FIX/curl-argv.
 cat > "$TMP/bin/curl" <<'EOF'
@@ -177,11 +178,11 @@ while [[ $# -gt 0 ]]; do case "$1" in
       *) body+=("$(enc "$2")") ;;
     esac; shift 2 ;;
   -H) h="$2"; [[ "$h" != @* ]] || h="$(cat "${h#@}")"; auth="${h%%:*}"; shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
-  http*) url="$1"; shift ;; -*f*) f=1; shift ;; *) shift ;;
+  http*) url="$1"; shift ;; --fail-with-body) f=body; shift ;; -*f*) f=1; shift ;; *) shift ;;
 esac; done
 echo "$auth $url" >> "$FIX/gitlab"
 reply() { # code body
-  if [[ -n "$out" ]]; then printf '%s\n' "$2" > "$out"; else printf '%s\n' "$2"; fi
+  if [[ "$1" != 200 && "$f" == 1 ]]; then :; elif [[ -n "$out" ]]; then printf '%s\n' "$2" > "$out"; else printf '%s\n' "$2"; fi
   [[ "$1" == 200 || -z "$f" ]] || { echo "curl: (22) The requested URL returned error: $1" >&2; exit 22; }
   [[ -z "$w" ]] || printf '%s' "$1"
 }
@@ -191,7 +192,9 @@ reply() { # code body
 case "$url" in
   # The build project's trigger (looper#71): its token on stdin (never argv), the
   # body decoded as a form (+ a space, %XX its byte) as GitLab does, its gates
-  # input checked as GitLab does (HTTP 422), recorded
+  # input checked as GitLab does (HTTP 422), an input given empty refused as
+  # tacplus-dev/build's trigger refused gateway's (HTTP 422, looper#127), and
+  # $FIX/trigger-refuses refusing any (HTTP 422, its content the body); recorded
   # in $FIX/builds as "<token> <repo> <sha> <gates> <base>"; the build itself, at
   # once: the commit's gate set from origin, as looper-build runs it
   # (BUILD_STUB=build in its environment), and its commit status by the reader
@@ -205,6 +208,8 @@ case "$url" in
     dec() { local x="${1//+/ }"; printf '%b' "${x//%/\\x}"; }
     v() { local kv; while IFS= read -r -d '&' kv; do [[ "$(dec "${kv%%=*}")" != "$1" ]] || dec "${kv#*=}"; done <<<"$form&"; }
     sha="$(v 'inputs[sha]')"; gates="$(v 'inputs[gates]')"; base="$(v 'inputs[base]')"
+    [[ ! -e "$FIX/trigger-refuses" ]] || { reply 422 "$(cat "$FIX/trigger-refuses")"; exit 0; }
+    for kv in ${form//&/ }; do [[ "$kv" == *= ]] && { reply 422 "{\"message\":{\"base\":[\"$(dec "${kv%=}"): empty\"]}}"; exit 0; }; done
     # tacplus-dev/build's gates input (ci/build.gitlab-ci.yml): else HTTP 422.
     [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || { reply 422 '{"message":{"base":["gates input does not match the regex"]}}'; exit 0; }
     echo "$(v token) $(v 'inputs[repo]') $sha $gates $base" >> "$FIX/builds"
@@ -2974,6 +2979,34 @@ has "$(cat "$FIX/build-4")" "the gates docs+images"; has "$(cat "$FIX/build-4")"
 [[ "$(cut -d' ' -f4 "$FIX/builds")" == $'docs+images\ndocs+images' ]] || fail "the builds asked for: $(cat "$FIX/builds")"
 has "$(cat "$FIX/land-4")" "The manager merged"
 has "$(cat "$FIX/gates-ran")" "images build"
+pass
+
+# A pinned repository without a gate map (tacplus-dev/gateway): its builds run
+# its full gates, the set asked for by name (looper#127): GitLab refused the
+# empty gates input it was sent with a 422.
+scenario build-job-no-map
+pin_seed; git -C "$FIX/seed" rm -q gates.yaml && printf 'gates:\n\ttrue\n' > "$FIX/seed/justfile"
+git -C "$FIX/seed" add justfile && git -C "$FIX/seed" commit -qm "no map, a justfile" && git -C "$FIX/seed" push -q origin main
+build_model notes.md "the docs"
+run "${BUILDS[@]}"
+has "$(cat "$FIX/build-4")" "the gates full (no gates.yaml)"; has "$(cat "$FIX/build-4")" "verdict: success: pass: gates full"; has "$(cat "$FIX/build-4")" "rc 0"
+[[ "$(cut -d' ' -f4 "$FIX/builds")" == $'full\nfull' ]] || fail "the builds asked for: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "The manager merged"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# GitLab's refusal says why: the trigger's response body reaches the report's
+# --build and the manager's verdict, redacted (looper#127).
+scenario build-job-refused
+pin_seed; build_model notes.md "the docs"
+echo '{"message":{"base":["gates input: not declared"]},"token":"glptt-build"}' > "$FIX/trigger-refuses"
+run "${BUILDS[@]}"
+b="$(cat "$FIX/build-4")"
+has "$b" "the looper did not start the build: GitLab refused to start the build: "; has "$b" "gates input: not declared"; has "$b" "error: 422"
+lacks "$b" "glptt-build"
+has "$(cat "$FIX/land-4")" "gates input: not declared"; lacks "$(cat "$FIX/land-4")" "glptt-build"
+has "$(cat "$FIX/land-4")" "The manager did not merge"
+[[ -z "$(landed notes.md)" ]] || fail "merged unbuilt"
 pass
 
 # Without the trigger a pinned repository keeps today's path: the model's
