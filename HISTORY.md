@@ -101,3 +101,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue Image's syft carries GO-2026-6905 (github.com/blakesmith/ar, no fixed version): a crafted .deb panics the security run (#142)
 - 2026-11-14 looper issue Nightly builds start with an empty sha: BUILD_SHA is not a full commit hash (#138, 8809c56; gates: docs+build+ci)
 - 2026-11-14 looper issue Full-gates builds of tacplus projects all end 'the build failed' since 2026-11-13 09:30Z (stratum, eventbus, deploymentproxy), and no report can see why (#144, 6b99879; gates: build, docs)
+- 2026-11-14 looper issue A long-running manager keeps a stale image: fixes on main do not reach lands for up to 11 h (#153, 668ad9d; gates: full)
