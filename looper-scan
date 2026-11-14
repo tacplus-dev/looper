@@ -908,13 +908,14 @@ cmd_report() {
 # A run's findings (its findings.json: the security job's artifact, or the
 # repository's latest) as the security-baseline.json a repository commits:
 # per tool, rule and file, how many of its findings a later run takes as
-# baselined. Only what may be baselined; one entry a line, sorted, so a
-# change to it reads as a diff.
+# baselined. Only what may be baselined; one entry a line, sorted, its keys
+# too (as the README shows it; jq's tojson keeps the order they were put in,
+# looper#154), so a change to it reads as a diff.
 cmd_baseline() { # findings
   [[ $# -eq 1 && -f "$1" ]] || { scan_usage >&2; exit 2; }
   jq -e 'type == "array"' "$1" >/dev/null 2>&1 || { echo "looper-scan: $1 is not a findings list" >&2; exit 1; }
   jq -r "$JQ_BASELINE"'
-    [.[] | select(baselinable) | {tool, id, file: file_of}] | group_by([.tool, .id, .file]) | map(.[0] + {count: length})
+    [.[] | select(baselinable) | {file: file_of, id, tool}] | group_by([.tool, .id, .file]) | map({count: length} + .[0])
     | "[", (.[:-1][] | "  " + tojson + ","), (.[-1:][] | "  " + tojson), "]"' "$1"
 }
 

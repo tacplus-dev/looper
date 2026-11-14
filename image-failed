@@ -11,22 +11,47 @@
 #   image-failed   from the workflow's environment: GH_TOKEN (issues: write,
 #                  actions: read), GITHUB_REPOSITORY, GITHUB_SHA, GITHUB_RUN_ID,
 #                  GITHUB_SERVER_URL
+#
+# The log is each failed job's, by the jobs API (looper#154): this runs in the
+# report job of the run it reports, which `gh run view --log-failed` refuses
+# while the run is in progress. Of a job's log, the failed step's lines alone
+# (from its ##[group]Run line to the ##[error] that failed it; without one,
+# the job's last lines), timestamps and colours stripped, its last 40.
 set -euo pipefail
 TITLE="The looper image is not published: the image workflow fails on main"
 REPO="$GITHUB_REPOSITORY"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/$GITHUB_RUN_ID"
 
-if log="$(gh run view "$GITHUB_RUN_ID" --repo "$REPO" --log-failed 2>/dev/null)"; then
-  log="$(tail -n 40 <<<"$log")"
-else
-  log="(the failed step's log could not be read; see the run)"
-fi
-body="The \`image\` run $RUN_URL failed on main at ${GITHUB_SHA::7}, so \`ghcr.io/tacplus-dev/looper:main\` was not published at that commit: the loopers keep running the last image published.
-
-The tail of the failed step's log:
+step_log() { # a job's log on stdin: its failed step's lines, up to the error that failed it
+  sed -E $'s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //; s/\x1b\\[[0-9;]*m//g' |
+    awk '/^##\[group\]Run / { n = 0 } { b[n++] = $0 } /^##\[error\]/ { for (i = 0; i < n; i++) print b[i]; found = 1; exit }
+         END { if (!found) for (i = 0; i < n; i++) print b[i] }'
+}
+unread="(the failed step's log could not be read; see the run)"
+logs=""
+if jobs="$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs" \
+    --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name, (([.steps[] | select(.conclusion == "failure") | .name] | first) // "-")] | @tsv' 2>/dev/null)"; then
+  while IFS=$'\t' read -r id job step; do
+    [[ -n "$id" ]] || continue
+    if log="$(gh api "repos/$REPO/actions/jobs/$id/logs" --allow-escape-sequences 2>/dev/null | step_log | tail -n 40)" && [[ -n "$log" ]]; then
+      :
+    else
+      log="$unread"
+    fi
+    logs+="
+The tail of the failed step's log (job \`$job\`, step \`$step\`):
 \`\`\`
 $log
 \`\`\`"
+  done <<<"$jobs"
+fi
+[[ -n "$logs" ]] || logs="
+The tail of the failed step's log:
+\`\`\`
+$unread
+\`\`\`"
+body="The \`image\` run $RUN_URL failed on main at ${GITHUB_SHA::7}, so \`ghcr.io/tacplus-dev/looper:main\` was not published at that commit: the loopers keep running the last image published.
+$logs"
 
 open="$(gh issue list --repo "$REPO" --state open --label bug --search "\"$TITLE\" in:title" --json number,title |
   jq -r --arg t "$TITLE" '[.[] | select(.title == $t)][0].number // empty')"

@@ -1489,7 +1489,8 @@ g306() { jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | {where, new,
 [[ "$(g306)" == '[{"where":"main.go:6","new":true,"baselined":false},{"where":"main.go:7","new":true,"baselined":false}]' ]] || fail "$(g306)"
 "$ROOT/looper-scan" baseline "$OUT/security/findings.json" > "$TMP/baseline.json" 2>"$TMP/err" || fail "baseline: $(cat "$TMP/err")"
 if ((REAL_SCAN)); then
-  jq -e 'any(.[]; . == {"count": 2, "file": "main.go", "id": "G306", "tool": "gosec"})' "$TMP/baseline.json" >/dev/null || fail "$(cat "$TMP/baseline.json")"
+  # The real scanners find more: the planted entry among them, written as the README shows it (looper#154).
+  grep -qE '^  \{"count":2,"file":"main.go","id":"G306","tool":"gosec"\},?$' "$TMP/baseline.json" || fail "baseline: $(cat "$TMP/baseline.json")"
 else
   [[ "$(cat "$TMP/baseline.json")" == "$G306_BASELINE" ]] || fail "baseline: $(cat "$TMP/baseline.json")"
 fi

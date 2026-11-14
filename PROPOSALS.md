@@ -13,6 +13,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   its own digest exactly (`ghcr.io/tacplus-dev/looper:main-<sha7>`'s) and compare that with `:main`'s, closing the
   window; a job whose image has no revision keeps today's first read. The same revision would let the recap's stale
   image item (#58) and the plan's image by digest (#115) name the commit a running job is on.
+- **The security tests' stub branch run by the gates too** (2026-11-14, #154): `tests/looper-build.test.sh`'s
+  security section runs with the real scanners where they are (the looper image: every land's gates) and with its
+  stubs where they are not (GitHub's `ubuntu-24.04-arm`: the `image` workflow's Test step, the only place the stubs
+  run). #146's baseline test passed the gates and failed the image build twice, because only the stub branch compared
+  the file's text, so main went unpublished from 85dce58 until #154. A switch that forces the stubs
+  (`LOOPER_TEST_STUB_SCAN=1`, say; a PATH without the scanners does it by hand) run once more by the `build` and
+  `full` sets, or by the image workflow's Test step before the push, would make a land fail where the image build will.
 - **looper-trace's generated tree as tacplus writes it** (2026-11-14, #152): looper-scan now takes a service's
   generated tree as tacplus's runner does (the `output-name`, default `model`, in the `output-dir`, through `import:`),
   but looper-trace's `output_dirs` still prunes the bare `output-dir`: operator's `output-dir: .` prunes nothing
