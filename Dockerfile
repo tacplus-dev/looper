@@ -60,8 +60,12 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # and each so built must report it (looper#124: go1.27.4 for net/http's GO-2026-6859).
 # govulncheck too (looper#109): it type-checks a module with the Go it was built
 # with, and the base image's go1.26 cannot load a `go 1.27` module; the smoke
-# proves it scans one (vuln.go.dev: the network). GO_TOOLCHAIN is the newest Go
-# release: bump it when one lands.
+# proves it scans one (vuln.go.dev: the network). It builds the call graph (SSA)
+# only when a vulnerable package is imported, and govulncheck 1.1.4's x/tools
+# v0.29.0 panics on go1.27's net/http there (looper#151): the smoke imports
+# net/http beside x/text v0.3.0 and must report the call to its GO-2021-0113,
+# so the image build fails when a govulncheck cannot build go1.27's call graph.
+# GO_TOOLCHAIN is the newest Go release: bump it when one lands.
 # gitleaks too (looper#65: its 8.30.1 release binary, go1.24.11, has 70 reachable
 # vulnerabilities, and upstream has not released since): built in a module made
 # here, its go.sum from sum.golang.org, which replaces github.com/ulikunitz/xz
@@ -94,7 +98,7 @@ ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15
 ARG GOSEC_VERSION=2.30.0 GOSEC_SHA256=0867994920453070a5d6a713e35921a3058473e5c3bf777fdd5a2d6f95313fda
 ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc47824faf662f4fad005343d96007e
 ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8
-ARG GOVULNCHECK_VERSION=1.1.4
+ARG GOVULNCHECK_VERSION=1.9.0
 RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=https://github.com; \
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
     get deny.tgz "$gh/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl.tar.gz" "$CARGO_DENY_SHA256"; \
@@ -107,11 +111,12 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     install -m 0644 "$d/findsecbugs-plugin.jar" /opt/scanners/findsecbugs-plugin.jar; \
     GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
     go version /usr/local/bin/govulncheck | grep -qx "/usr/local/bin/govulncheck: $GO_TOOLCHAIN"; \
-    mkdir "$d/govulncheck"; printf 'module looper.local/smoke\n\ngo 1.27\n\ntoolchain %s\n' "$GO_TOOLCHAIN" > "$d/govulncheck/go.mod"; \
-    printf 'package main\n\nimport "math/rand/v2"\n\nfunc main() { println(rand.N(6)) }\n' > "$d/govulncheck/main.go"; \
-    (cd "$d/govulncheck" && govulncheck -format json ./... > "$d/govulncheck.json") || \
-      { echo "govulncheck: a go 1.27 module does not load" >&2; exit 1; }; \
+    mkdir "$d/govulncheck"; printf 'module looper.local/smoke\n\ngo 1.27\n\ntoolchain %s\n\nrequire golang.org/x/text v0.3.0\n' "$GO_TOOLCHAIN" > "$d/govulncheck/go.mod"; \
+    printf 'package main\n\nimport (\n\t"math/rand/v2"\n\t"net/http"\n\n\t"golang.org/x/text/language"\n)\n\nfunc main() {\n\t_, _ = language.Parse("en")\n\tprintln(rand.N(6))\n\t_ = http.ListenAndServe(":0", nil)\n}\n' > "$d/govulncheck/main.go"; \
+    (cd "$d/govulncheck" && GOFLAGS=-mod=mod govulncheck -format json ./... > "$d/govulncheck.json") || \
+      { echo "govulncheck: a go 1.27 module importing net/http does not scan" >&2; exit 1; }; \
     jq -s -e --arg go "$GO_TOOLCHAIN" '[.[] | .config? // empty | .go_version] == [$go]' "$d/govulncheck.json" >/dev/null; \
+    jq -s -e '[.[] | .finding? // empty | select(.trace[0].function == "Parse") | .osv] | index("GO-2021-0113")' "$d/govulncheck.json" >/dev/null; \
     GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
     mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
       go mod init looper.local/gitleaks 2>/dev/null; \
