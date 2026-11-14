@@ -1169,12 +1169,14 @@ build_jobs() { # rev [dir]
 
 # Starts the build of a commit on GitHub with the gate set and base given (no
 # set: the commit's full), and prints "<pipeline id> <its URL>"; else why not.
-# The token goes on no command line.
+# The token goes on no command line. Each field is percent-encoded: a form
+# reads a set's + as a space (looper#118).
 start_build() { # sha gates base
   local r id url
-  r="$(printf 'token=%s&ref=main&inputs%%5Brepo%%5D=%s&inputs%%5Bsha%%5D=%s&inputs%%5Bgates%%5D=%s&inputs%%5Bbase%%5D=%s' \
-         "$BUILD_TRIGGER_TOKEN" "$REPO" "$1" "$2" "$3" |
-       curl -fsS --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data @- 2>&1)" ||
+  r="$(printf '%s' "$BUILD_TRIGGER_TOKEN" |
+       curl -fsS --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data-urlencode token@- \
+         --data-urlencode ref=main --data-urlencode "inputs%5Brepo%5D=$REPO" --data-urlencode "inputs%5Bsha%5D=$1" \
+         --data-urlencode "inputs%5Bgates%5D=$2" --data-urlencode "inputs%5Bbase%5D=$3" 2>&1)" ||
     { echo "GitLab refused to start the build: $(redact <<<"$r" | tail -n 1)"; return 1; }
   id="$(jq -r '.id // empty' <<<"$r" 2>/dev/null)"; url="$(jq -r '.web_url // empty' <<<"$r" 2>/dev/null)"
   [[ "$id" =~ ^[0-9]+$ ]] || { echo "GitLab started no pipeline: $(redact <<<"$r" | head -c 300)"; return 1; }

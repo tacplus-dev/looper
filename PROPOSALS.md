@@ -652,3 +652,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   commit` when STATE.md was a land's only conflict; `looper-recap` reads `resolved its conflicts by regenerating`
   and `not merged (exit 3)` only, so a drop counts as a plain merge. Counting them beside the sent-backs would show
   whether the docs-only lands again they cause are worth a union or a regeneration of STATE.md instead.
+- **repo-looper's pollers read a GitHub API error as "nothing yet"** (seen on #118, 2026-11-11). With the core rate
+  limit spent (0/5600), `build_verdict` (`gh api .../statuses ... 2>/dev/null || v=""`) kept polling until
+  "no verdict within 3h", and `--land`'s wait for the manager's verdict comment fed the error object to jq
+  (`object ({"message":...) and string ... cannot have their containment checked`). Both should tell an API error
+  (rate limit: wait for its reset; else say so) from an absent verdict. A `bug` to file once confirmed.

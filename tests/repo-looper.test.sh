@@ -161,9 +161,21 @@ EOF
 # to $FIX/gitlab, and its command line to $FIX/curl-argv.
 cat > "$TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-url=""; auth=""; out=""; w=""; f=""
+url=""; auth=""; out=""; w=""; f=""; body=()
 printf '%s\n' "$*" >> "$FIX/curl-argv"
+enc() { printf '%s' "$1" | jq -sRr @uri; }
+# The body as curl joins it: --data as given (@- stdin, @file), --data-urlencode
+# [name]=content or [name]@file with the content percent-encoded.
+datum() { # value
+  [[ "$1" != @* ]] || { [[ "$1" == @- ]] && cat || cat "${1#@}"; return; }; printf '%s' "$1"
+}
 while [[ $# -gt 0 ]]; do case "$1" in
+  -d|--data|--data-binary) body+=("$(datum "$2")"); shift 2 ;;
+  --data-urlencode) case "$2" in
+      *=*) n="${2%%=*}"; body+=("${n:+$n=}$(enc "${2#*=}")") ;;
+      *@*) n="${2%%@*}"; body+=("${n:+$n=}$(enc "$(datum "@${2#*@}")")") ;;
+      *) body+=("$(enc "$2")") ;;
+    esac; shift 2 ;;
   -H) h="$2"; [[ "$h" != @* ]] || h="$(cat "${h#@}")"; auth="${h%%:*}"; shift 2 ;; -o) out="$2"; shift 2 ;; -w) w="$2"; shift 2 ;; --retry) shift 2 ;;
   http*) url="$1"; shift ;; -*f*) f=1; shift ;; *) shift ;;
 esac; done
@@ -177,7 +189,9 @@ reply() { # code body
 # latest security report of the repository the URL names; its packages
 # (looper#50), $FIX/packages.json.
 case "$url" in
-  # The build project's trigger (looper#71): the form on stdin (never argv), recorded
+  # The build project's trigger (looper#71): its token on stdin (never argv), the
+  # body decoded as a form (+ a space, %XX its byte) as GitLab does, its gates
+  # input checked as GitLab does (HTTP 422), recorded
   # in $FIX/builds as "<token> <repo> <sha> <gates> <base>"; the build itself, at
   # once: the commit's gate set from origin, as looper-build runs it
   # (BUILD_STUB=build in its environment), and its commit status by the reader
@@ -187,9 +201,13 @@ case "$url" in
   # <ISO time>`, its first job started then (its pending status alone);
   # `<seconds>`, queued that long in the pool, then its verdict (looper#133).
   */projects/tacplus-dev%2Fbuild/trigger/pipeline)
-    form="$(cat)"; v() { tr '&' '\n' <<<"$form" | sed -n "s/^$1=//p"; }
-    sha="$(v 'inputs%5Bsha%5D')"; gates="$(v 'inputs%5Bgates%5D')"; base="$(v 'inputs%5Bbase%5D')"
-    echo "$(v token) $(v 'inputs%5Brepo%5D') $sha $gates $base" >> "$FIX/builds"
+    form="$(IFS='&'; printf '%s' "${body[*]}")"
+    dec() { local x="${1//+/ }"; printf '%b' "${x//%/\\x}"; }
+    v() { local kv; while IFS= read -r -d '&' kv; do [[ "$(dec "${kv%%=*}")" != "$1" ]] || dec "${kv#*=}"; done <<<"$form&"; }
+    sha="$(v 'inputs[sha]')"; gates="$(v 'inputs[gates]')"; base="$(v 'inputs[base]')"
+    # tacplus-dev/build's gates input (ci/build.gitlab-ci.yml): else HTTP 422.
+    [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || { reply 422 '{"message":{"base":["gates input does not match the regex"]}}'; exit 0; }
+    echo "$(v token) $(v 'inputs[repo]') $sha $gates $base" >> "$FIX/builds"
     id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}"
     if ! git clone -q "$FIX/origin.git" "$d/src" 2>/dev/null || ! git -C "$d/src" -c advice.detachedHead=false checkout -q "$sha" 2>/dev/null; then
       state=failure; desc="tacplus-dev/alpha has no commit $sha"
@@ -2905,6 +2923,20 @@ has "$(cat "$FIX/land-4")" "nothing landed: its build job failed: the gates docs
 [[ -z "$(landed red.md)" ]] || fail "red merged"
 [[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
 lacks "$(cat "$FIX/gates-ran")" "here"
+pass
+
+# A diff mapping to two sets asks for both, joined by +: the trigger's form
+# encodes the + (looper#118), else GitLab reads a space and refuses the input.
+scenario build-job-sets
+pin_seed
+printf 'images:\n  run: echo "images ${BUILD_STUB:-here}" >> "$FIX/gates-ran"\n  paths: ["*.img"]\n' >> "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" commit -qam images && git -C "$FIX/seed" push -q origin main
+echo 'echo pixels > a.img' > "$FIX/claude.sh"; build_model notes.md "the docs"
+run "${BUILDS[@]}"
+has "$(cat "$FIX/build-4")" "the gates docs+images"; has "$(cat "$FIX/build-4")" "rc 0"
+[[ "$(cut -d' ' -f4 "$FIX/builds")" == $'docs+images\ndocs+images' ]] || fail "the builds asked for: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "The manager merged"
+has "$(cat "$FIX/gates-ran")" "images build"
 pass
 
 # Without the trigger a pinned repository keeps today's path: the model's
