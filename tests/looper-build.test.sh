@@ -437,7 +437,7 @@ echo '{"results": []}' > "\$out"
 EOF
 cat > "$SB/govulncheck" <<'EOF'
 #!/usr/bin/env bash
-echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.9.0","db":"https://vuln.go.dev","db_last_modified":"2026-10-27T21:16:18Z"}}'
+echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.1.4","db":"https://vuln.go.dev","db_last_modified":"2026-10-27T21:16:18Z"}}'
 grep -qs 'golang.org/x/text v0.3.0' go.mod || exit 0
 echo '{"osv":{"id":"GO-2021-0113","aliases":["CVE-2021-38561","GHSA-ppp9-7jff-5vj2"],"summary":"Out-of-bounds read in golang.org/x/text/language"}}'
 echo '{"finding":{"osv":"GO-2021-0113","fixed_version":"v0.3.7","trace":[{"module":"golang.org/x/text","version":"v0.3.0","package":"golang.org/x/text/language","function":"Parse"},{"module":"example.com/demo","package":"example.com/demo","function":"main"}]}}'
@@ -572,6 +572,15 @@ for l in '  needs: [{job: gates, artifacts: true}]' '  when: on_failure' '    BU
   grep -qxF -- "$l" "$TMP/gates-failed.yml" || fail "the gates-failed job lacks '$l': $(cat "$TMP/gates-failed.yml")"
 done
 grep -q '^    BUILD_NO_VERDICT: ".*runner_system_failure' "$TMP/gates-failed.yml" || fail "no text for a gates job with no verdict: $(cat "$TMP/gates-failed.yml")"
+# A failed security job's verdict, the gates green, is the commit's status too (looper#144); never a nightly's.
+sed -n '/^security-failed:$/,/^[^ ]/p' "$y" > "$TMP/security-failed.yml"
+for l in '  image: "ghcr.io/tacplus-dev/looper:main"' '  needs: [{job: gates, artifacts: true}, {job: "security-demo", artifacts: true}]' \
+         '  when: on_failure' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' '    BUILD_STATUS_OF: security' \
+         '    - looper-build status failure'; do
+  grep -qxF -- "$l" "$TMP/security-failed.yml" || fail "the security-failed job lacks '$l': $(cat "$TMP/security-failed.yml")"
+done
+grep -q '^    BUILD_NO_VERDICT: "no security verdict: .*runner_system_failure' "$TMP/security-failed.yml" ||
+  fail "no text for a security job with no verdict: $(cat "$TMP/security-failed.yml")"
 grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"},"repositories":["demo"]}' "$TMP/api.log" ||
   fail "the plan's token is not contents read-only on the repository: $(cat "$TMP/api.log")"
 [[ ! -e "$OUT/plan-src" ]] || fail "the plan left its checkout behind"
@@ -676,6 +685,11 @@ if build BUILD_SHA="${SHA[fail]}" -- gates 2>"$TMP/err"; then fail "a failing ga
 verdict_is "fail: just gates exited 3"; v1="$(cat "$OUT/build-verdict")"
 if build BUILD_SHA="${SHA[fail]}" -- gates 2>"$TMP/err"; then fail "a failing gate passed"; fi
 [[ "$(cat "$OUT/build-verdict")" == "$v1" ]] || fail "second verdict $(cat "$OUT/build-verdict")"
+pass
+
+NAME="gates: a red gate's verdict ends with the log's last lines, which a report can read (looper#144)"
+verdict_is "fail: just gates exited 3: a gate fails; error: "
+[[ "$(wc -l < "$OUT/build-verdict")" == 1 ]] || fail "not one line: $(cat "$OUT/build-verdict")"
 pass
 
 NAME="gates: a change to a tracked file fails the build"
@@ -831,6 +845,38 @@ grep -q '^statuses ' "$TMP/api.log" || fail "the statuses were not read: $(cat "
 ! grep -q '^status ' "$TMP/api.log" || fail "overwrote the gates' reason: $(cat "$TMP/api.log")"
 grep -q "already" "$TMP/err" || fail "$(cat "$TMP/err")"
 rm "$TMP/statuses"
+pass
+
+NAME="plan: a nightly's security findings set no commit status (looper#144)"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+grep -q '^security-demo:' "$OUT/build-gates.yml" || fail "no security job: $(cat "$OUT/build-gates.yml")"
+! grep -q '^security-failed:' "$OUT/build-gates.yml" || fail "a nightly's security checks set a commit status"
+pass
+
+NAME="status: the security-failed job reports the security checks' verdict when the gates passed, and only then (looper#144)"
+OUT="$TMP/out-status-security"; mkdir -p "$OUT/security"; : > "$TMP/api.log"
+SF=(env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION"
+    TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" BUILD_STATUS_OF=security
+    CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/2 BUILD_STATUS_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1
+    BUILD_NO_VERDICT="no security verdict: the security job's runner was lost")
+echo pass > "$OUT/build-verdict"
+echo "fail: govulncheck: loading packages: file requires newer Go version go1.27" > "$OUT/security/verdict"
+"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description + "|" + .target_url')" == \
+   "failure|security: govulncheck: loading packages: file requires newer Go version go1.27|https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] ||
+  fail "$(cat "$TMP/api.log")"
+rm "$OUT/security/verdict"; : > "$TMP/api.log"   # its runner lost, its retries too: no artifact
+"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == \
+   "failure|no security verdict: the security job's runner was lost" ]] || fail "$(cat "$TMP/api.log")"
+# Red gates: their reason is gates-failed's, which this job leaves be.
+echo "fail: just gates exited 127: sh: 1: trivy: not found" > "$OUT/build-verdict"
+echo "fail: no gates artifacts" > "$OUT/security/verdict"; : > "$TMP/api.log"
+"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+! grep -q '^status ' "$TMP/api.log" || fail "overwrote the gates' reason: $(cat "$TMP/api.log")"
+rm -f "$OUT/build-verdict"; : > "$TMP/api.log"   # the gates' runner lost: gates-failed's too
+"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
+! grep -q '^status ' "$TMP/api.log" || fail "overwrote the gates' reason: $(cat "$TMP/api.log")"
 pass
 
 # --- publish --------------------------------------------------------------------

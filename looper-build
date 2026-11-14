@@ -79,6 +79,13 @@ EOF
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
+# A log's last two lines, one line with no colour, for a red verdict a report
+# can read: the commit status shows it, the land's comment quotes it (looper#144).
+log_tail() { # file
+  sed 's/\x1b\[[0-9;]*[A-Za-z]//g; s/[[:cntrl:]]//g; s/^[[:space:]]*//; s/[[:space:]]*$//' "$1" 2>/dev/null | grep -v '^$' | tail -n 2 |
+    awk '{ printf "%s%s", (NR > 1 ? "; " : ""), substr($0, 1, 200) } END { print "" }' || true
+}
+
 # The verdict, one line in $BUILD_OUT/build-verdict: "pass" or "fail: <why>".
 # fail ends the job.
 verdict() { # pass | fail <why>
@@ -392,6 +399,27 @@ security-report:
   script:
     - looper-scan report
 EOF
+  # A failed security job's verdict, the gates green, as gates-failed sets
+  # theirs (looper#144): report-fail cannot read it either. Not a nightly's:
+  # its findings are filed, the commit is main's.
+  [[ "${BUILD_NIGHTLY:-}" == true ]] || cat <<EOF
+security-failed:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: gates, artifacts: true}, {job: "security-$BUILD_REPO", artifacts: true}]
+  when: on_failure
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_TAG: "${BUILD_TAG:-}"
+    BUILD_ORG: "$BUILD_ORG"
+    BUILD_STATUS_URL: "${CI_PIPELINE_URL:-}"
+    BUILD_STATUS_OF: security
+    BUILD_NO_VERDICT: "no security verdict: the security job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
+  script:
+    - looper-build status failure
+EOF
 }
 
 # The formal verification (looper#74): its job in the pinned image (the
@@ -512,7 +540,7 @@ cmd_gates() {
   changed="$(git -C "$src" status --porcelain --untracked-files=no)"
   [[ -z "$changed" ]] || verdict fail "the build changed tracked files: $(echo "$changed" | head -20 | tr '\n' ' ')"
   [[ "$(git -C "$src" rev-parse HEAD)" == "$BUILD_SHA" ]] || verdict fail "the build moved HEAD off $BUILD_SHA"
-  ((rc == 0)) || verdict fail "$what exited $rc (gates.log)"
+  ((rc == 0)) || verdict fail "$what exited $rc: $(log_tail "$BUILD_OUT/gates.log")"
   built "$src"
   generated "$src"
   verdict pass
@@ -591,7 +619,7 @@ generated() { # src
   mkdir -p "$out"
   log "gates: $BUILD_REPO: just generated (for the security checks)"
   (cd "$1" && just generated "$out") 2>&1 | tee -a "$BUILD_OUT/gates.log" >&2 || rc="${PIPESTATUS[0]}"
-  ((rc == 0)) || verdict fail "just generated exited $rc (gates.log)"
+  ((rc == 0)) || verdict fail "just generated exited $rc: $(log_tail "$BUILD_OUT/gates.log")"
   [[ -z "$(git -C "$1" status --porcelain --untracked-files=no)" ]] || verdict fail "just generated changed tracked files"
 }
 
@@ -699,7 +727,15 @@ cmd_status() { # state [description]
     success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}" ;;
     # No build-verdict here when the gates' child pipeline failed (the plan passed): sed exits 2 on the missing file.
     # A gates-failed job's (BUILD_NO_VERDICT) when the gates job left none (looper#148).
-    *) text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null || true)"; text="${text:-${BUILD_NO_VERDICT:-the build failed}}" ;;
+    # The security-failed job's (BUILD_STATUS_OF=security) only when the gates passed: red gates are gates-failed's (looper#144).
+    *) if [[ "${BUILD_STATUS_OF:-}" == security ]]; then
+         [[ "$(head -n 1 "$BUILD_OUT/build-verdict" 2>/dev/null)" == pass ]] ||
+           { log "status: the gates failed: their reason is gates-failed's, not the security checks'"; return 0; }
+         text="$(sed -n '1s/^fail: /security: /p' "$BUILD_OUT/security/verdict" 2>/dev/null || true)"
+       else
+         text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null || true)"
+       fi
+       text="${text:-${BUILD_NO_VERDICT:-the build failed}}" ;;
   esac
   local token body url="${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" set
   token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" || { log "no token for the commit status"; exit 1; }
