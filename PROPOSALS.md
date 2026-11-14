@@ -9,6 +9,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   but looper-trace's `output_dirs` still prunes the bare `output-dir`: operator's `output-dir: .` prunes nothing
   (its `tacplus/` is left to the `Code generated` header check). Why: one reading of the tree for both tools; low
   stakes while every generated file carries the header. Its test: operator's layout in `tests/looper-trace.test.sh`.
+- **Trivy in the tacplus build image, or stratum's `audit-jar` out of `just gates`** (2026-11-13, #144): stratum's
+  full gates pass Maven, then `audit-jar` fails `sh: 1: trivy: not found`: the pinned `build:2.6.1` has no trivy.
+  The looper image's `security-<repo>` job already scans with trivy, so the choice is tacplus's (trivy in the build
+  image, then re-pinned) or stratum's (the recipe out of `gates`). Not this repository's to settle.
+- **The red-build reruns, once the image carries #137 and #109** (2026-11-13, #144): eventbus's `generate` failed on
+  `tools/tacplus.sh`'s `docker run` (#137's `TACPLUS_BIN=tacplus` fixes it) and deploymentproxy's `security` job on
+  govulncheck built with go1.26 (#109); neither is verified until a build runs on an image with both, and
+  deploymentproxy then still fails the policy on gosec G404 (deploymentproxy#20, needs-decision).
 - **The logs unioned on a report's resume too** (2026-11-07, #105): the manager's rebase now unions PROPOSALS.md
   and HISTORY.md (`LOG_ATTRS`), but a report resuming from its branch (`resume`) still rebases it on main
   with plain git: a branch whose only conflict is a PROPOSALS.md append falls back to main merged in, its conflict
@@ -66,9 +74,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   writes `abandoned` and runs no gates, but the child pipeline's `security-<repo>` job (`needs: gates`, `when:
   always`) still runs the scanners on the commit nobody waits for; `looper-scan run` could read the gates' artifact
   `build-verdict` and end at once on `fail: abandoned:`, saving the runner the scan as well.
-- **The child pipeline's verdict as the commit status' description** (2026-11-11, #130; gates done 2026-11-13, #148):
-  the child's `gates-failed` job now sets a failed gates job's reason; a failure of the child's security job (the
-  gates green) is still "the build failed" from `report-fail`, which cannot read the child's artifacts.
 - **A gates job dropped as stale** (2026-11-13, #148): the build's jobs are retried on `runner_system_failure`, but
   not on `stuck_or_timeout_failure`, which GitLab also gives a running job whose runner manager went away without a
   word (no update for an hour): retrying on it would retry the gates' own 11h timeout twice too (33h of a manager's

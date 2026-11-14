@@ -763,7 +763,8 @@ jobs run `looper-build`, from this image.
   sets `gates` names (its full when none), in turn, with `LOOPER_GATES_BASE` the `base` (fetched too). It fails if
   a set is not in the map, if the commit has no `gates` recipe where `just gates` runs,
   if a gate fails, or if the build changed a tracked file (`git status --porcelain --untracked-files=no`) or moved
-  HEAD. Its log is the artifact `gates.log`, and the job's log.
+  HEAD. Its log is the artifact `gates.log`, and the job's log; a red gate's verdict ends with the log's last two
+  lines (`just gates exited 127: sh: 1: trivy: not found; error: ...`, looper#144).
 - **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the
   code its gates generated, which fail the build as a gate does ([Security checks](#security-checks), looper#49).
 - **A job whose runner is lost runs again** (looper#148): the build's VMs are spot, and a preempted one ends its job
@@ -775,8 +776,10 @@ jobs run `looper-build`, from this image.
   the pipeline, with the failure's reason as its description. A failed `gates` job's reason is set by the child's
   **`gates-failed`** job (looper#148), which reads its artifact `build-verdict`: the gates' own reason, or, with
   none, that its runner was lost on every try (or it timed out); `report-fail`, which cannot read the child's
-  artifacts, then leaves that status be. The manager's "not merged" line quotes it, so it says which failed. This
-  is the only thing a build writes to GitHub.
+  artifacts, then leaves that status be. The manager's "not merged" line quotes it, so it says which failed. A
+  failed `security-<repo>` job's, the gates green, is set likewise by **`security-failed`** (looper#144): `security:
+  <why>` from its artifact `security/verdict`, or that its runner was lost; never a nightly's. This is the only
+  thing a build writes to GitHub.
 - **`publish`**, on a release (below), once the gates passed: `docker buildx build` of the repository's
   `Dockerfile` for `linux/amd64` and `linux/arm64`, pushed as `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z`
   (tacplus-dev/tacplus#223), its digest recorded in the artifact `image`.
