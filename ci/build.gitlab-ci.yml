@@ -200,6 +200,12 @@ gates:
       - artifact: build-gates.yml
         job: plan
     strategy: depend
+    # The child's jobs carry every variable they read, the commit the plan
+    # resolved among them: the parent's would override them, and a nightly's
+    # or a verify run's BUILD_SHA is empty there (looper#138).
+    forward:
+      yaml_variables: false
+      pipeline_variables: false
 
 # A release, once the gates and the security checks passed: the image, pushed
 # through Workload Identity Federation (GCP_WIF_PROVIDER, a project variable;

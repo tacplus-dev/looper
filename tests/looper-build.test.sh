@@ -1173,6 +1173,17 @@ if build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true BUILD_TAG=v1.2.3 -- plan 2>
 verdict_is "fail: a nightly build is not a release"
 pass
 
+# GitLab passes a trigger job's variables, the pipeline's global ones among
+# them, to the child pipeline, over the child's own: a nightly's BUILD_SHA, ""
+# in the parent, would undo the sha the plan wrote (looper#138).
+NAME="pipeline: the child pipeline runs on the commit the plan resolved, not the parent's empty sha"
+g="$(sed -n '/^gates:$/,/^[^ ]/p' "$ROOT/ci/build.gitlab-ci.yml" | sed '$d')"
+grep -qxF '        job: plan' <<<"$g" || fail "no gates trigger job: $g"
+grep -qxF '    forward:' <<<"$g" || fail "the gates trigger forwards the parent's variables: $g"
+grep -qxF '      yaml_variables: false' <<<"$g" || fail "the gates trigger forwards the parent's BUILD_SHA: $g"
+grep -qxF '      pipeline_variables: false' <<<"$g" || fail "the gates trigger forwards the parent's pipeline variables: $g"
+pass
+
 NAME="gates: the code a generated recipe writes, and the release jars, are the gates' artifact, for the security checks"
 build BUILD_SHA="${SHA[generated]}" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
 [[ "$(cat "$OUT/generated/model/model.go")" == "package model" ]] || fail "no generated code: $(ls -R "$OUT")"
