@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by looper (#108).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by looper (#147).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper:main` is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
@@ -94,7 +94,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-13 by lo
   code a `generated` recipe writes (cargo-deny on a service that path-depends on crates its gates generate: with
   them, laid over the checkout or the gates' `generated/` at its tacplus.yaml `output-dir`, else on its Cargo.lock's
   crates alone, which the summary says, #126; the SAST findings and secrets in each tacplus.yaml's `output-dir`,
-  through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149), a nightly (input `nightly: true`, main's head, no commit status) and a release add
+  through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149) and
+  Trivy on the release jars the gates keep (`trivy rootfs`: the dependencies they shade, #147), a nightly (input
+  `nightly: true`, main's head, no commit status) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it; a service's generated tree (its root `tacplus.yaml`'s
   `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
