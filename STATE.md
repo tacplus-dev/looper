@@ -92,14 +92,15 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-14 by lo
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
   clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it and on the
   code a `generated` recipe writes (cargo-deny on a service that path-depends on crates its gates generate: with
-  them, laid over the checkout or the gates' `generated/` at its tacplus.yaml `output-dir`, else on its Cargo.lock's
-  crates alone, which the summary says, #126; the SAST findings and secrets in each tacplus.yaml's `output-dir`,
+  them, laid over the checkout or the gates' `generated/` at its tacplus.yaml's generated tree, else on its Cargo.lock's
+  crates alone, which the summary says, #126; the SAST findings and secrets in each tacplus.yaml's generated tree
+  (its `output-name`, default `model`, in its `output-dir`, as tacplus writes it: operator's `.` is `tacplus/`, #152),
   through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149) and
   Trivy on the release jars the gates keep (`trivy rootfs`: the dependencies they shade, #147), a nightly (input
   `nightly: true`, main's head, no commit status) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it; a service's generated tree (its root `tacplus.yaml`'s
-  `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
+  `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
   counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
