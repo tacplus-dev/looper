@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#113).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#86).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -19,14 +19,16 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   its container goes on) checkpoints and stops within one poll, pushing and commenting nothing, so it cannot race
   its retry (#21); **managers and direct reports** (#70): a report (`repo-looper --issue N`) works its one issue
   in its own clone and branch and never touches main (its pushes to main refused); its `--land` queues its commits
-  on its branch (`.looper/land`, the issue `looper:landing` until the verdict) and waits for the manager's verdict
-  comment; the manager (`repo-looper --manage`, `resource_group: looper-<repo>-main`) merges the queued branches
-  by their issue's priority (`priority:high`, unlabelled, `priority:low`), then oldest first (#121): rebased on main, a conflict only in files `generated.yaml` maps resolved by regenerating them (never
+  on its branch (`.looper/land`, the issue `looper:landing` until the verdict) and returns at once: the run ends
+  `land-pending`, and the issue's next run, after the verdict, closes it or fixes what came back (#86; `--wait`
+  waits for the verdict comment, for tests and runs by hand); the manager (`repo-looper --manage`, `resource_group: looper-<repo>-main`) lands the queued branches
+  **in batches, a merge train** (#86, `tacplus-dev/roadmap:decisions/merge-train-2026-11-04.md`): every queued branch at once,
+  by their issue's priority (`priority:high`, unlabelled, `priority:low`), then oldest first (#121), each rebased onto a candidate from main (`refs/looper/staging`, never main): a conflict only in files `generated.yaml` maps resolved by regenerating them (never
   a hand merge), `PROPOSALS.md`'s and `HISTORY.md`'s appends unioned (git's union merge, #105), a report's last commit touching STATE.md alone whose only conflict is STATE.md dropped, main's kept and
   the rest landed, the dropped diff on the issue for a docs-only land again (#131; `--land` puts the STATE.md change in
-  that last commit), any other sent back with the files named, the gates its diff calls for (in a scratch worktree under its work directory,
-  which the host shares, so the tacplus compiler's sibling container sees it: not the job's /tmp, #79), pushed only on green, the
-  merged branch deleted, every merge, resolution and send-back a comment on the issue with the gate verdict; it adds
+  that last commit), any other sent back at once with the files named, that branch alone dropped from the batch; one build of the candidate, on the gate set the batch's combined diff calls for (a build job in a pinned repository, else the gates in the manager's job, in a scratch worktree under its work directory,
+  which the host shares, so the tacplus compiler's sibling container sees it: not the job's /tmp, #79); green, main fast-forwarded to the candidate (nothing reaches main without a green build of exactly that commit), the
+  merged branches deleted; red, the batch bisected on its prefixes (about log2(n) builds), the breaking land sent back with the failure (its issue stays `approved`), the green prefix landed, the rest queued for the next batch; a batch of one red just sent back; every merge, resolution and send-back a comment on the issue with the gate verdict and the batch; the recap reports per manager its batch sizes, builds per landed change, bisections and queued-to-landed time; it adds
   the planning files and `HISTORY.md`'s lines (closed issues', queued by their reports, and releases'); a land still
   queued when its report's time runs out is merged after it; a land its job has no time for (the last land's time
   on its gate set, #38) waits for the next manager; a manager or verdict job in the looper image ends between lands, exit 0, once
