@@ -4,6 +4,20 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A started build whose gates never get a slot** (2026-11-10, updated 2026-11-15, #113): `--build` and the manager
+  tell "no runner" only from a build with no status at all within `LOOPER_BUILD_START` (its `pending` job never ran).
+  A build whose `pending` job ran but whose plan or child gates job then waits for a slot (operator#26's pipeline
+  3048020460, llmproxy#25's 3047711242, opa#9's 3052481439, gateway#29's 3052487181: pending at once, then nothing
+  for 3h) is waited for until its gate set's wait from its start (#158), then red. A status the gates job's pipeline
+  sets when its gates start (from a job in the looper image beside them, never from the gates job, which runs the
+  repository's code and must hold no `statuses: write` token) would let the looper tell that case too, and bound it
+  the same way.
+- **A build the looper stops waiting for, cancelled** (2026-11-10, #113): a pipeline no runner took stays queued in
+  tacplus-dev/build when its requester is gone for good (a land sent back for conflicts, its commit superseded; a
+  report whose run ended), and runs when a runner comes, setting statuses no one reads (a build of the same key is
+  taken up again, #134, #128, so only a dead key's build is waste). The trigger token cannot cancel a pipeline, and
+  the looper has no other access to that project; a token that may (the reader app's side, or a project token with
+  `api` on it alone) would let the looper cancel the one it leaves for good.
 - **What a crate `include_str!`s outside a tacplus tree** (2026-11-14, #155): the gates' `built/` now keeps each
   tacplus.yaml's generated tree whole, so gateway's `registry.json` and `AGENT.md` reach the security job's clippy;
   everything else untracked is still kept by extension (sources, manifests, bytecode, release jars). A crate that

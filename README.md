@@ -395,12 +395,22 @@ pin issue (filed by the hub) commits one.
 - **A report requests a build** with `repo-looper --repo R --issue N --build`: it checkpoints (the commit is then on
   GitHub, under the issue's branch), asks for the gate set its diff since main calls for, prints the build's link
   and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (its gate set's wait, at least
-  `LOOPER_BUILD_WAIT`, 3 hours, from the build's start), 3 with none by its job's end. The
+  `LOOPER_BUILD_WAIT`, 3 hours, from the build's start), 3 with none by its job's end, 4 when no runner took the
+  build within `LOOPER_BUILD_START` (below). The
   model never holds the trigger: its request is a file in its run directory, which its report's looper, holding
   `BUILD_TRIGGER_TOKEN`, checks (a full hash, a gate set, a base; at most `LOOPER_BUILD_MAX`, 30, a run) and starts.
 - **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the
   build's `tacplus-reader` app set (creator `tacplus-reader[bot]`: the looper's own `GH_TOKEN` could set one too)
   linking the pipeline that was started, once it is no longer pending.
+- **No runner** (looper#113): a build's first job sets its `pending` status at once, so a build with no status at all
+  from that app within `LOOPER_BUILD_START` (15 minutes) of its trigger has not started: no runner took its jobs
+  (none matches, or the pool is full). That is no verdict, and no red, and no wait without a bound: `--build` says so
+  and exits 4 (the build stays queued, and a later `--build` of the same commit takes it up by its key); the manager
+  merges nothing, gives no verdict, leaves the land queued with the pipeline recorded on its build branch (as a build
+  left at the job's end is, looper#128) and stops, and says so once on the issue, which the report's `--land`, still
+  waiting for the verdict, prints. The kicker's next manager takes that pipeline up, triggering none: still not
+  started, it stops again and says nothing new; run since, it merges on its verdict. A build that started is waited
+  for from its start, as above.
 - **A build runs once per repository, commit, gate set and base** (looper#134): a request for a key that has a green
   build reuses its verdict, and one for a key whose build is queued or running waits on that build, whoever asked for it
   (the report's model twice, its retried run, the manager after the report): both see its one verdict. A pending or
@@ -428,7 +438,7 @@ pin issue (filed by the hub) commits one.
   BuildKit, without the host's Docker.
 
 ```sh
-tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
 tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin
 ```
 

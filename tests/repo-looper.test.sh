@@ -3209,6 +3209,10 @@ has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, notes.md, m
 pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$pr" "Verify with a build job: "; has "$pr" "have no container runtime (no \`docker\`, so no \`tacplus\` here either)"; has "$pr" "\`tacplus\` runs in the build job only"
 lacks "$pr" "limited to 2048m of memory"
+# Rule 4's lines, each once and in order, into "Long builds" (looper#113).
+[[ "$pr" == *"1 on a failure, 2 with none
+   within its wait, 3 with none by this job's end, 4 when no runner took it within 15m: no verdict yet, and a later --build of the same commit takes it up). You
+   have no container runtime"*"you may run yourself. The full gates are "*". Long builds: "* ]] || fail "rule 4: $(grep -A7 '^4\. ' <<<"$pr")"
 pass
 
 # A build is keyed by (repo, commit, gate set, base) (looper#134). Two requests
@@ -3314,6 +3318,71 @@ has "$(cat "$FIX/land-4")" "rc 0"; [[ ! -e "$FIX/builds" ]] || fail "built: $(ca
 [[ "$(cat "$FIX/gates-ran")" == "docs here $(origin rev-parse main~1)" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
 has "$OUT$(cat "$FIX/manager.log")" "this job holds no BUILD_TRIGGER_TOKEN"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Verify with the full gates"
+pass
+
+# A build no runner takes (looper#113) sets no commit status, not even its
+# pending: within LOOPER_BUILD_START of its trigger it is "no runner", not red,
+# and no wait without a bound. --build says so and exits 4, and the run is
+# watched for idleness again (the build no longer pending for it); the manager
+# merges nothing, gives no verdict and stops, the land still queued for the
+# next manager with the build recorded on its branch, and says so on the issue
+# once, which the report's --land, still waiting, prints. The manager's build is
+# the report's, reused by its key (looper#134): one pipeline. The next manager
+# takes that pipeline up, says nothing new, and stops again while no runner has
+# it; once it has run, the one after merges on its verdict.
+scenario build-job-no-runner
+pin_seed; echo queued > "$FIX/build-hold"
+cat >> "$FIX/claude.sh" <<'EOS'
+echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+timeout 20 "$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run "${BUILDS[@]}" LOOPER_BUILD_START=2
+b="$(cat "$FIX/build-4")"
+has "$b" "no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 has not started within 1m (no tacplus-dev/build status on"; has "$b" "rc 4"
+lacks "$b" "verdict:"
+m="$(cat "$FIX/manager.log")"
+has "$m" "#4: left queued: no runner took its build job; no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 has not started within 1m"
+has "$m" "the manager stops: no runner takes build jobs"; has "$m" "#4: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$m" " s, not started"
+lacks "$m" "not merged"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued: $(origin show looper/alpha-4:.looper/land)"
+c="$(cat "$FIX/comments")"
+has "$c" "No runner has taken the build job of"; has "$c" "the land stays queued; the next manager takes the build's verdict up"; lacks "$c" "looper-land id="
+has "$(cat "$FIX/land-4")" "no runner has taken the manager's build job"
+has "$OUT" "#4: land-pending"; has "$(labels alpha 4)" "looper:landing"
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+s="$(cut -d' ' -f3 "$FIX/builds")"
+has "$(origin log -1 --format=%B looper/build-alpha-4)" "pipeline=901"; [[ "$(origin rev-parse looper/build-alpha-4^)" == "$s" ]] || fail "the build's branch: $(origin log --oneline -2 looper/build-alpha-4)"
+# The next manager takes the same pipeline up, still not started: nothing new.
+manage "${BUILDS[@]}" LOOPER_BUILD_START=2
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "built again: $(cat "$FIX/builds")"
+has "$OUT" "#4: left queued: no runner took its build job"; has "$OUT" "the manager stops: no runner takes build jobs"
+[[ "$(grep -c 'No runner has taken' "$FIX/comments")" == 1 ]] || fail "said more than once: $(cat "$FIX/comments")"
+grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued"
+# A runner took it since; the manager after merges on its verdict.
+rm "$FIX/build-hold"
+jq -n --arg t0 "$(date -u -d '1 minute ago' +%FT%TZ)" --arg t1 "$(date -u +%FT%TZ)" --arg u https://gitlab.com/tacplus-dev/build/-/pipelines/901 \
+  '[{state: "success", context: "tacplus-dev/build", description: "pass: gates docs", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t1},
+    {state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t0}]' > "$FIX/statuses/$s.json"
+manage "${BUILDS[@]}" LOOPER_BUILD_START=2
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "built again: $(cat "$FIX/builds")"
+[[ "$(landed notes.md)" == "the docs" && "$(origin rev-parse main)" == "$s" ]] || fail "main: $(origin log --oneline main)"
+has "$(cat "$FIX/comments")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901): green"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+pass
+
+# A build that started (its pending status) is never "no runner", however short
+# LOOPER_BUILD_START: it is waited for, its wait from its start (looper#128).
+scenario build-job-slow
+pin_seed; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold"
+cat >> "$FIX/claude.sh" <<'EOS'
+echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+EOS
+run "${BUILDS[@]}" LOOPER_BUILD_START=1 LOOPER_BUILD_WAIT=4
+b="$(cat "$FIX/build-4")"
+has "$b" "no verdict within 1m of its start"; has "$b" "rc 2"; lacks "$b" "no runner"
 pass
 
 # Builds run on spot, a few at a time (looper#128): a build still queued for a
