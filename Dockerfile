@@ -43,17 +43,19 @@ RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 # glab: the model's way to GitLab issues on a GitLab-hosted instance (SeaBeam's,
 # looper#29), as gh is on GitHub; the looper itself calls GitLab's API with curl.
-# The release's archive, checked against its checksums.txt.
-ARG GLAB_VERSION=1.126.0
-RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a}.tar.gz"; \
-    u="https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads"; d="$(mktemp -d)"; \
-    curl -fsSL -o "$d/$f" "$u/$f"; curl -fsSL -o "$d/checksums.txt" "$u/checksums.txt"; \
-    (cd "$d" && grep " $f\$" checksums.txt | sha256sum -c -); \
-    tar -xzf "$d/$f" -C "$d" bin/glab; install -m 0755 "$d/bin/glab" /usr/local/bin/glab; rm -rf "$d"; glab --version
+# Built here with GO_TOOLCHAIN (below) by its module checksum, as the scanners
+# are: the release binary is built with go1.27.3, whose net/http has GO-2026-6859
+# (looper#159). Its version as the release sets it (.goreleaser.yml; glab prints
+# it without the v), its symbol table kept as Trivy's.
+ARG GO_TOOLCHAIN=go1.27.4 GLAB_VERSION=1.130.0
+RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
+      -ldflags "-w -X main.version=v$GLAB_VERSION" "gitlab.com/gitlab-org/cli/cmd/glab@v$GLAB_VERSION"; \
+    go clean -cache -modcache; glab --version | grep -q "^glab $GLAB_VERSION "; \
+    go version /usr/local/bin/glab | grep -qx "/usr/local/bin/glab: $GO_TOOLCHAIN"
 # The build pipeline's security checks (looper-scan, looper#49): every scanner
 # pinned, each release archive checked against its sha256 here (linux/arm64,
-# as the image), govulncheck, OSV-Scanner and Trivy by their module checksums (go
-# install, sum.golang.org). OSV-Scanner's and Trivy's release binaries carry
+# as the image), govulncheck, OSV-Scanner, Trivy and gosec by their module checksums
+# (go install, sum.golang.org). OSV-Scanner's and Trivy's release binaries carry
 # reachable vulnerabilities (looper#63: its Go's stdlib; looper#64: x/net
 # GO-2026-6860/6866, x/crypto's openpgp GO-2026-5932): they are built here with
 # GO_TOOLCHAIN, a Go release the go command fetches and checks by its own checksum,
@@ -66,6 +68,8 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # net/http beside x/text v0.3.0 and must report the call to its GO-2021-0113,
 # so the image build fails when a govulncheck cannot build go1.27's call graph.
 # GO_TOOLCHAIN is the newest Go release: bump it when one lands.
+# gosec too (looper#159: its 2.30.0 release binary, go1.27.3, has GO-2026-6859, and
+# upstream has not released since), its version as the release sets it (.goreleaser.yml).
 # gitleaks too (looper#65: its 8.30.1 release binary, go1.24.11, has 70 reachable
 # vulnerabilities, and upstream has not released since): built in a module made
 # here, its go.sum from sum.golang.org, which replaces github.com/ulikunitz/xz
@@ -85,7 +89,7 @@ RUN set -eu; a="$(dpkg --print-architecture)"; f="glab_${GLAB_VERSION}_linux_${a
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
-ARG GO_TOOLCHAIN=go1.27.4 TRIVY_VERSION=0.76.1
+ARG TRIVY_VERSION=0.76.1
 RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
       -ldflags "-w -X github.com/aquasecurity/trivy/pkg/version/app.ver=$TRIVY_VERSION" \
       "github.com/aquasecurity/trivy/cmd/trivy@v$TRIVY_VERSION"; \
@@ -95,7 +99,7 @@ ARG OSV_SCANNER_VERSION=2.7.0
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
 ARG SYFT_VERSION=1.56.0 SYFT_XNET_VERSION=0.62.0
 ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15
-ARG GOSEC_VERSION=2.30.0 GOSEC_SHA256=0867994920453070a5d6a713e35921a3058473e5c3bf777fdd5a2d6f95313fda
+ARG GOSEC_VERSION=2.30.0
 ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc47824faf662f4fad005343d96007e
 ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8
 ARG GOVULNCHECK_VERSION=1.9.0
@@ -103,8 +107,6 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
     get deny.tgz "$gh/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl.tar.gz" "$CARGO_DENY_SHA256"; \
     tar -xzf "$d/deny.tgz" -C "$d"; install -m 0755 "$d/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny; \
-    get gosec.tgz "$gh/securego/gosec/releases/download/v$GOSEC_VERSION/gosec_${GOSEC_VERSION}_linux_arm64.tar.gz" "$GOSEC_SHA256"; \
-    tar -xzf "$d/gosec.tgz" -C "$d" gosec; install -m 0755 "$d/gosec" /usr/local/bin/gosec; \
     get spotbugs.tgz "$gh/spotbugs/spotbugs/releases/download/$SPOTBUGS_VERSION/spotbugs-$SPOTBUGS_VERSION.tgz" "$SPOTBUGS_SHA256"; \
     mkdir -p /opt/scanners; tar -xzf "$d/spotbugs.tgz" -C /opt/scanners; ln -s "/opt/scanners/spotbugs-$SPOTBUGS_VERSION/bin/spotbugs" /usr/local/bin/spotbugs; \
     get findsecbugs-plugin.jar "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/$FINDSECBUGS_VERSION/findsecbugs-plugin-$FINDSECBUGS_VERSION.jar" "$FINDSECBUGS_SHA256"; \
@@ -117,6 +119,9 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
       { echo "govulncheck: a go 1.27 module importing net/http does not scan" >&2; exit 1; }; \
     jq -s -e --arg go "$GO_TOOLCHAIN" '[.[] | .config? // empty | .go_version] == [$go]' "$d/govulncheck.json" >/dev/null; \
     jq -s -e '[.[] | .finding? // empty | select(.trace[0].function == "Parse") | .osv] | index("GO-2021-0113")' "$d/govulncheck.json" >/dev/null; \
+    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
+      -ldflags "-w -X main.Version=$GOSEC_VERSION -X main.GitTag=v$GOSEC_VERSION" "github.com/securego/gosec/v2/cmd/gosec@v$GOSEC_VERSION"; \
+    gosec -version | grep -qx "Version: $GOSEC_VERSION"; \
     GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
     mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
       go mod init looper.local/gitleaks 2>/dev/null; \
@@ -129,7 +134,7 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
       go mod tidy; go build -ldflags "-w -X main.version=$SYFT_VERSION" -o /usr/local/bin/syft "$sy"); \
     syft --version | grep -qx "syft $SYFT_VERSION"; \
     go version -m /usr/local/bin/syft | grep -q "golang.org/x/net[[:space:]]*v$SYFT_XNET_VERSION[[:space:]]"; \
-    for b in osv-scanner gitleaks syft; do go version "/usr/local/bin/$b" | grep -qx "/usr/local/bin/$b: $GO_TOOLCHAIN"; done; \
+    for b in gosec osv-scanner gitleaks syft; do go version "/usr/local/bin/$b" | grep -qx "/usr/local/bin/$b: $GO_TOOLCHAIN"; done; \
     go clean -cache -modcache; \
     rm -rf "$d"
 # clippy, of the image's Rust toolchain.

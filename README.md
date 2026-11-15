@@ -1006,7 +1006,7 @@ status. A release's `publish` makes the SBOM of the image it pushed.
 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) | 0.20.2 | release sha256 | each Cargo workspace: advisories, licenses, sources, bans |
 | [Semgrep CE](https://github.com/semgrep/semgrep) | 1.183.0 | every wheel's hash (`scanners/requirements.txt`; mcp and OpenTelemetry overridden to fixed versions, #53, smoke-scanned at the image build) | the tree, rules `p/default` |
 | [gitleaks](https://github.com/gitleaks/gitleaks) | 8.30.1 | module checksums (a build module, its go.sum from sum.golang.org), built with Go 1.27.4 and `github.com/ulikunitz/xz` replaced with v0.5.15 (GO-2025-3922): the release binary (go1.24.11) has 70 reachable vulnerabilities, and upstream has not released since March (looper#65); smoke-tested at the image build (a planted secret, its exit codes) | the tree's files (its `.gitleaks.toml`, `.gitleaksignore`) |
-| [gosec](https://github.com/securego/gosec) | 2.30.0 | release sha256 | each Go module |
+| [gosec](https://github.com/securego/gosec) | 2.30.0 | module checksum (`go install`, sum.golang.org), built with Go 1.27.4: the release binary is built with go1.27.3, whose net/http has GO-2026-6859, and upstream has not released since (looper#159) | each Go module |
 | clippy | the image's Rust | the build image | each Cargo workspace: `-A clippy::all -D clippy::correctness -D clippy::suspicious` |
 | [Bandit](https://github.com/PyCQA/bandit) | 1.9.4 | wheel hashes (`scanners/requirements.txt`) | Python files |
 | [SpotBugs](https://github.com/spotbugs/spotbugs) + [FindSecBugs](https://github.com/find-sec-bugs/find-sec-bugs) | 4.10.5 + 1.14.0 | release sha256, Maven Central sha256 | the bytecode the gates compiled (`target/classes`) |
@@ -1017,7 +1017,9 @@ status. A release's `publish` makes the SBOM of the image it pushed.
 The vulnerability databases are fetched each run, and `security/databases.json` records what each result was checked
 against: OSV's API and the query time, govulncheck's `db_last_modified`, cargo-deny's advisory-db commit and time,
 Trivy's database `UpdatedAt`/`DownloadedAt`, its Java database's `UpdatedAt` and its check bundle, the Semgrep rules and the fetch time. The tools'
-versions as run are `security/tools.json`. To move a tool, change its version and checksum in the `Dockerfile` (the
+versions as run are `security/tools.json`. glab (1.130.0, the model's GitLab CLI, not a scanner) is built the same way, by its
+module checksum with Go 1.27.4, its symbol table kept: its release binary is built with go1.27.3, whose net/http has
+GO-2026-6859 (looper#159). To move a tool, change its version and checksum in the `Dockerfile` (the
 Python ones: regenerate `scanners/requirements.txt` as its header says; CodeQL: `CODEQL_VERSION`/`CODEQL_SHA256` in
 `looper-scan`).
 
@@ -1882,7 +1884,7 @@ roadmap (`LOOPER_ROADMAP_REPO`, default `roadmap`); clone, and git's credentials
 - **Git**: on GitLab the looper's git gets a credential helper for `LOOPER_FORGE_URL` alone that answers from
   `$LOOPER_FORGE_TOKEN` when git asks (user `oauth2`), as `gh auth setup-git` does on GitHub; the token is in no file.
   The GitLab API calls send it from a file descriptor, never on a command line.
-- **The model** reaches GitHub with `gh`; on GitLab with `glab` (in the image), its prompt naming `glab` commands, its
+- **The model** reaches GitHub with `gh`; on GitLab with `glab` (in the image, built from source: Security checks), its prompt naming `glab` commands, its
   `GITLAB_TOKEN` the forge's token and `GITLAB_HOST` the forge, never the job's GitLab token.
 - **The pipeline** is GitLab's on both: the kicker, the plan and the jobs read the pipeline project's jobs with
   `GITLAB_TOKEN` as before. `looper-dispatch plan` writes the child jobs, so an instance's pipeline file
