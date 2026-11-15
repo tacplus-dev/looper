@@ -110,3 +110,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue A weekly usage limit marks every issue looper:stuck: hold until the reset instead (#157, fd35dd5; gates: docs)
 - 2026-11-15 looper issue A build nobody waits for any more does not run its gates (#130)
 - 2026-11-15 looper issue looper-scan baseline: a gosec finding over a line range keeps the range in its file, so it is not line-independent (#156)
+- 2026-11-15 looper issue The manager's 3h build wait ignores the gate set's declared minutes: tacplus's full gates (2h55m) plus the scan got a verdict at 3h21m, after the land was red (#158, c6894e2; gates: full)
