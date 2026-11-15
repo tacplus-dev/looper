@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The manager's `workflows: write` per batch** (2026-11-15, #112): the manager's token names `workflows: write`
+  only with `LOOPER_MANAGER_WORKFLOWS=write`, a project variable the hub sets once `tacplus-manager` holds the
+  permission (Jody's step); until then a land that changes `.github/workflows/` is refused by GitHub at the push.
+  The issue's other reading, asking for it only when the batch touches `.github/workflows/`, would need the token
+  minted per land rather than per job (the set is chosen at `looper-token start`, refreshed every 45 minutes), and
+  would still be a 422 while the app lacks it: not worth it until the grant exists, and then the variable is simpler.
 - **A started build whose gates never get a slot** (2026-11-10, updated 2026-11-15, #113): `--build` and the manager
   tell "no runner" only from a build with no status at all within `LOOPER_BUILD_START` (its `pending` job never ran).
   A build whose `pending` job ran but whose plan or child gates job then waits for a slot (operator#26's pipeline

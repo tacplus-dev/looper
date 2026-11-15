@@ -20,9 +20,10 @@
 #            someone with write access (looper#115): GitHub runs a pushed
 #            branch's own copy of a workflow.
 #   manager  tacplus-manager: contents and issues write, the ruleset's bypass
-#            actor, and workflows: write. The managers, and the commits to main
-#            of the scans (their planning files, the roadmap's suggestions)
-#            once their model is done.
+#            actor; workflows: write only with LOOPER_MANAGER_WORKFLOWS=write,
+#            set once the app holds it (looper#112). The managers, and the
+#            commits to main of the scans (their planning files, the roadmap's
+#            suggestions) once their model is done.
 #
 #   looper-token start ROLE DIR [PID [ISSUE]]
 #                                 mints ROLE's token (for a report, ISSUE's:
@@ -60,8 +61,9 @@
 # LOOPER_KMS_KEYRING (projects/P/locations/L/keyRings/R), LOOPER_REPORT_APP_ID,
 # LOOPER_REPORT_INSTALLATION_ID, LOOPER_MANAGER_APP_ID,
 # LOOPER_MANAGER_INSTALLATION_ID; GCP_ID_TOKEN (the job's id_tokens, audience
-# https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_GITHUB_API (default
-# https://api.github.com).
+# https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_MANAGER_WORKFLOWS;
+# LOOPER_GITHUB_API (default https://api.github.com); LOOPER_NET_TIMEOUT (a
+# call to GitHub's bound, seconds, default 300).
 set -euo pipefail
 
 GITHUB_API="${LOOPER_GITHUB_API:-https://api.github.com}"
@@ -71,6 +73,10 @@ ORG="${LOOPER_ORG:-tacplus-dev}"
 # .github/workflows/ (looper#115; looper-lib.sh's LABEL_WORKFLOWS).
 LABEL_WORKFLOWS="looper:workflows"
 REFRESH="${LOOPER_TOKEN_REFRESH:-2700}"
+# No call to GitHub without an end (looper#112): each of curl's attempts is
+# bounded (30 seconds to connect, LOOPER_NET_TIMEOUT in all), as looper-lib.sh
+# bounds the looper's own.
+curl() { command curl --connect-timeout 30 --max-time "${LOOPER_NET_TIMEOUT:-300}" "$@"; }
 
 usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
 # The log is stderr: stdout carries what a command returns.
@@ -91,8 +97,10 @@ role_app() { # role
     manager)
       : "${LOOPER_MANAGER_APP_ID:?the project variable LOOPER_MANAGER_APP_ID is not set (README, Only the manager writes main)}"
       : "${LOOPER_MANAGER_INSTALLATION_ID:?the project variable LOOPER_MANAGER_INSTALLATION_ID is not set}"
+      # workflows: write only once the app holds it (LOOPER_MANAGER_WORKFLOWS=write,
+      # looper#112): GitHub refuses a set that names a permission it lacks.
       echo "tacplus-manager $LOOPER_MANAGER_APP_ID $LOOPER_MANAGER_INSTALLATION_ID" \
-        '"contents":"write","issues":"write","workflows":"write","metadata":"read"' ;;
+        "\"contents\":\"write\",\"issues\":\"write\",${LOOPER_MANAGER_WORKFLOWS:+\"workflows\":\"write\",}\"metadata\":\"read\"" ;;
     *) fail "no role '$1': report or manager" ;;
   esac
 }

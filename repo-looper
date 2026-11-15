@@ -998,7 +998,9 @@ land_work() {
       if build_jobs HEAD .; then
         # A pinned repository's gates are a build job's verdict (looper#71).
         log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
-        build_gates "$before" "$queued" > "$out/gates.log" 2>&1 || grc=$?
+        # What it waits for on stderr, this land's log and the manager's job log (judge_land, looper#112);
+        # the build's record in gates.log.
+        build_gates "$before" "$queued" 2>&1 > "$out/gates.log" || grc=$?
         if (( grc == 3 )); then
           { log "nothing landed yet: its build has no verdict and this job's end is near; the land stays queued, and the next manager takes the build's verdict up:"; tail -n 3 "$out/gates.log"; } >&2
           exit "$BUILD_LEFT"
@@ -1015,8 +1017,9 @@ land_work() {
           log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: the gates run here, not as a build job (looper#71)"
         log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
         # A verdict job's gates hold none of the job's credentials: no id_token (looper#90).
+        # Nor the landing lock (fd 8): a process they leave behind would hold it (looper#112).
         if [[ "$MODE" == verdict ]]; then mapfile -t wh < <(model_env); else wh=(); fi
-        env "${wh[@]+"${wh[@]}"}" LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 || grc=$?
+        env "${wh[@]+"${wh[@]}"}" LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 8>&- || grc=$?
       fi
       (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
       if (( grc != 0 )) && build_jobs HEAD .; then
@@ -1205,6 +1208,8 @@ queue_history() { # issue line...
 # with none within LOOPER_BUILD_START (default 900) of its trigger, or of the
 # wait's start, has no runner taking its jobs (looper#113): no verdict, and no
 # red, but "no runner", told then; the build is left queued, and taken up again.
+# While it waits, it says on stderr what for, every LOOPER_BUILD_SAY (default
+# 600): six managers once waited hours in silence after "merging #N" (looper#112).
 BUILD_API="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}"
 BUILD_PROJECT="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}"
 BUILD_CONTEXT="${LOOPER_BUILD_CONTEXT:-tacplus-dev/build}"
@@ -1213,6 +1218,7 @@ BUILD_WAIT="${LOOPER_BUILD_WAIT:-10800}"
 BUILD_MARGIN="${LOOPER_BUILD_MARGIN:-1800}"
 BUILD_POLL="${LOOPER_BUILD_POLL:-30}"
 BUILD_START="${LOOPER_BUILD_START:-900}"
+BUILD_SAY="${LOOPER_BUILD_SAY:-600}"   # between build_verdict's lines on what it waits for (looper#112)
 BUILD_NO_RUNNER=4   # build_verdict's exit when no runner took the build within BUILD_START (looper#113)
 LAND_NO_RUNNER=76   # a land whose build no runner took (looper#113): it stays queued
 BUILD_MAX="${LOOPER_BUILD_MAX:-30}"   # a report run's builds, at most
@@ -1342,14 +1348,16 @@ reused_what() { if [[ "$1" == green ]]; then echo green; else echo "queued or ru
 # jobs (looper#113): "no runner", BUILD_NO_RUNNER, at once rather than a wait
 # with no bound; the build is left queued, and a later wait takes it up.
 # In a GitLab job, a build with no verdict when the job's end is LAND_MARGIN
-# away is left to run: the next manager takes its verdict up. Prints the
-# verdict ("success: <description>", "failure: <why>") and the build's times
-# ("build times: <url>: queued <s> s, ran <s> s"); 0 on success, 1 on a
-# failure, 2 when none came within its wait of its start, 3 when left,
-# BUILD_NO_RUNNER when no runner took it.
+# away is left to run: the next manager takes its verdict up. While it waits
+# it says so on stderr every BUILD_SAY (looper#112: a manager's land said
+# nothing for hours after "merging #N"). Prints the verdict ("success:
+# <description>", "failure: <why>") and the build's times ("build times:
+# <url>: queued <s> s, ran <s> s"); 0 on success, 1 on a failure, 2 when none
+# came within its wait of its start, 3 when left, BUILD_NO_RUNNER when no
+# runner took it.
 build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds] [wait, seconds]
-  local t0="${4:-$(date +%s)}" wait="${5:-$BUILD_WAIT}" end s v started="" fin now
-  end="$(job_end)"
+  local t0="${4:-$(date +%s)}" wait="${5:-$BUILD_WAIT}" end s v started="" fin now said
+  end="$(job_end)"; said="$(date +%s)"
   while :; do
     s="$(build_statuses "$1" "$2")" || s=""
     v="$(build_said "$s")" || v=""
@@ -1370,6 +1378,10 @@ build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds] [wait, seco
     if [[ -n "$end" ]] && (( now >= end - LAND_MARGIN )); then
       echo "no verdict yet, $(if [[ -n "$started" ]]; then echo "running since $(hours "$(( now - started ))")"; else echo "queued for $(hours "$(( now - t0 ))"), not started"; fi), and this job ends in $(hours "$(( end - now ))"): the build is left to run"
       build_times "$t0" "$started" "$now" running "${3:-$2}"; return 3
+    fi
+    if (( now - said >= BUILD_SAY )); then
+      log "waiting for the verdict of the build job ${3:-$2} on ${1:0:7}: $(if [[ -n "$started" ]]; then echo "running since $(hours "$(( now - started ))")"; else echo "queued for $(hours "$(( now - t0 ))"), not started"; fi)" >&2
+      said="$now"
     fi
     sleep "$BUILD_POLL"
   done
@@ -1921,7 +1933,8 @@ batch_gates() { # main count
   t=$SECONDS
   if build_jobs HEAD "$wt"; then
     log "the candidate ${cand:0:7} of $count land$(plural "$count"): a build job of the gates $GATES_SET ($GATES_WHY), on main ${main:0:7}"
-    ( cd "$wt" && ISSUE=train build_gates "$main" "$queued" ) > "$BATCH_OUT/gates.log" 2>&1 || grc=$?
+    # What it waits for on stderr, this job's log (looper#112); the build's record in gates.log.
+    ( cd "$wt" && ISSUE=train build_gates "$main" "$queued" ) 2>&1 > "$BATCH_OUT/gates.log" || grc=$?
     local bt; bt="$(sed -n 's/^build times: //p' "$BATCH_OUT/gates.log" | tail -n 1)"
     if [[ -n "$bt" ]]; then log "batch: its build $bt"; for (( i = 0; i < count; i++ )); do log "#${TR_N[i]}: its build $bt"; done; fi
     if (( grc == 3 )); then
@@ -2036,7 +2049,12 @@ judge_land() { # issue id sha rec-dir
   fi
   log "merging #$n ($b, queued $(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^queued=//p'))"
   if [[ "$ahead" == 0 ]]; then log "nothing to land: $b has no commit that main lacks" > "$rec/out"
-  else ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; ROADMAP_OK="$roadmap"; land_work ) > "$rec/out" 2>&1 || JUDGE_RC=$?; fi
+  else
+    # Its log lines in the job's log too (looper#112): what a land waits for is seen while it waits.
+    { ( CHECKOUT="$wt"; BRANCH="$b"; ISSUE="$n"; LAND_GATES="$gates"; LOOPER_RUN="$rec"; ROADMAP_OK="$roadmap"; land_work ) 2>&1 && echo 0 > "$rec/rc" || echo "$?" > "$rec/rc"; } |
+      tee "$rec/out" | while IFS= read -r l; do [[ "$l" != \[* ]] || redact <<<"$l" >&2; done
+    JUDGE_RC="$(cat "$rec/rc")"
+  fi
   git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
   # The build's queue time apart from its run time, for the recap (looper#128).
   sed -n 's/^build times: /#'"$n"': its build /p' "$rec/gates.log" 2>/dev/null | tail -n 1 | while IFS= read -r t; do log "$t"; done
