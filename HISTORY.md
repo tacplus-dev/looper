@@ -106,3 +106,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue looper-scan: a recorded security baseline per repository (line-independent), so only findings new against it are reported and filed (#146, 6033db3; gates: docs)
 - 2026-11-15 looper issue The looper image is not published: the image workflow fails on main (#154)
 - 2026-11-15 looper issue Security: a report's branch can publish the looper image every manager runs (workflows: write since #106) (#115, 1480a4d; gates: docs)
+- 2026-11-15 looper issue Security job's clippy fails every gateway build: built/ drops the generated non-.rs files src/registry.rs include_str!s (3 compile errors) (#155, 087f27d; gates: docs+build, docs)
