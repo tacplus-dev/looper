@@ -1,10 +1,10 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#112).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#102).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
-  `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
+  `build:2.6` environment (#1, #26, #102); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
 - **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a
   pass every 3 minutes that reads GitHub for the whole org in four requests, never two kicker jobs at once and only the newest (a kick stops once a newer one is queued, #104), nothing on
   the Mac (#24); it starts the pipeline for a ready issue with no report job, or a
