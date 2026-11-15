@@ -1192,15 +1192,16 @@ build_jobs() { # rev [dir]
 # reads a set's + as a space (looper#118). No input is sent empty: GitLab
 # refused gateway's empty gates with a 422 (looper#127), so an empty set is
 # asked for as full (without a gates.yaml looper-build runs `just gates` for
-# it), and an empty base is left out (the input's default). A refusal keeps GitLab's
-# response, redacted: it says why.
+# it), and an empty base is left out (the input's default). It passes the wait
+# for its verdict too, LOOPER_BUILD_WAIT: a build whose gates would start later
+# runs none (looper#130). A refusal keeps GitLab's response, redacted: it says why.
 start_build() { # sha gates base
   local r id url base=()
   [[ -z "$3" ]] || base=(--data-urlencode "inputs%5Bbase%5D=$3")
   r="$(printf '%s' "$BUILD_TRIGGER_TOKEN" |
        curl -sS --fail-with-body --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data-urlencode token@- \
          --data-urlencode ref=main --data-urlencode "inputs%5Brepo%5D=$REPO" --data-urlencode "inputs%5Bsha%5D=$1" \
-         --data-urlencode "inputs%5Bgates%5D=${2:-full}" "${base[@]}" 2>&1)" ||
+         --data-urlencode "inputs%5Bgates%5D=${2:-full}" "${base[@]}" --data-urlencode "inputs%5Bwait%5D=$BUILD_WAIT" 2>&1)" ||
     { echo "GitLab refused to start the build: $(redact <<<"$r" | tr -s '\n' ' ' | head -c 600)"; return 1; }
   id="$(jq -r '.id // empty' <<<"$r" 2>/dev/null)"; url="$(jq -r '.web_url // empty' <<<"$r" 2>/dev/null)"
   [[ "$id" =~ ^[0-9]+$ ]] || { echo "GitLab started no pipeline: $(redact <<<"$r" | head -c 300)"; return 1; }
