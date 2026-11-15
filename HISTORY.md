@@ -118,3 +118,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue Manager lands in batches (merge train): one build per batch on a staging candidate, fast-forward main on green, bisect and send back on red (#86, a57d81c; gates: full)
 - 2026-11-15 looper issue Scanner binaries in the image carry fixable Go advisories: klauspost/compress GO-2026-6865 (osv-scanner, trivy, gitleaks), brotli GO-2026-6888 (gitleaks, syft) (#101, 2cecad8; gates: full)
 - 2026-11-15 looper issue --checkpoint says 'pushed' when GitHub rejected the push (a .github/workflows change without the App's workflows permission) (#99, 7667274; gates: full)
+- 2026-11-15 looper issue Manager jobs hang after 'merging #N' for hours (6 at once, 2026-11-09 from 00:57), while looper-token's workflows:write mint is refused (422) and falls back (#112)
