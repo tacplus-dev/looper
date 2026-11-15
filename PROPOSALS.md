@@ -698,7 +698,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   trivy, gitleaks, syft, govulncheck, glab). The nightly scan found GO-2026-6865 and GO-2026-6888 in them only with
   `govulncheck -mode=binary` by hand (#101, #47). Running govulncheck in binary mode on each Go binary of the image
   `publish` pushes, under the same policy (a fixed version HIGH fails), would put a deterministic floor under
-  that check as well, and catch an override (looper#65, #88) that stopped working.
+  that check as well, and catch an override (looper#65, #88) that stopped working. Again by hand on 2026-11-15:
+  gosec and glab, the two release binaries left, still call net/http's GO-2026-6859 two days after #124 fixed the
+  source-built four (#159); the base image's docker CLI (go1.26.10) too, which such a step would name as the base
+  image's.
 - **A secret's identity that survives a moved line** (2026-11-12, #120, #129): a gitleaks finding's id is
   `<path>:<rule>:<line>` (looper-scan, README: Security checks), both for `new` and for an exception's `id`. So an
   unchanged fixture that moves is a new finding: #120's withheld `GITLAB_TOKEN` fixture at
