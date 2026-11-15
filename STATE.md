@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#86).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#112).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -176,7 +176,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   may use; its key's version named whole since #95: the first cutover's `--key=... --version=1` was refused by
   gcloud itself, before any call to GCP; a refusal now logs gcloud's error, its class and the id_token's claims, and
   the CI file's manual `looper-token-diagnose` gives each environment's claims and each key's answer, the cutover not
-  yet retried; the manager's token names `workflows: write` since #106, minted without it, logged, where the installation does not grant it; a report's only when its issue carries `looper:workflows`, set by someone with write access, #115; `image.yml` builds only on main and attests what it pushes, and the plan's jobs run the looper image by digest, the attested build of main's head, `ci/`'s files a pinned digest, and the recap compares `:main`'s digest with it, #115) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
+  yet retried; the manager's token names `workflows: write` since #106, only with `LOOPER_MANAGER_WORKFLOWS=write` since #112 (the app does not hold it yet; asked for without the grant, GitHub refuses it with 422 and the token is minted without it, logged), and every call looper-token makes to GitHub has an end (#112); a report's names it only when its issue carries `looper:workflows`, set by someone with write access, #115; `image.yml` builds only on main and attests what it pushes, and the plan's jobs run the looper image by digest, the attested build of main's head, `ci/`'s files a pinned digest, and the recap compares `:main`'s digest with it, #115) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
   scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;
   a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan` and leaves
   its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes
@@ -246,7 +246,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   until the hub copies `ci/tacplus-dev.gitlab-ci.yml` (#56); the reports
   and managers (#70) are tested against a stub forge and GitLab but not yet seen end to end: they run once the image
   from main is published and the hub copies `ci/tacplus-dev.gitlab-ci.yml` (its jobs are named by the plan);
-  build jobs (#71, README: Build jobs) are built and tested against stubs but run nowhere yet: they take effect for
+  build jobs (#71, README: Build jobs) are started by the managers of pinned repositories (2026-11-09: blobstore,
+  opa and four others), but those builds set no status for hours, no runner took their jobs, and the managers waited
+  on them in silence until cancelled; since #113 such a build is "no runner" within `LOOPER_BUILD_START` (15 minutes),
+  the land left queued, and since #112 every gh, curl and git call has an end, a land's log lines reach the manager's
+  job log as they come, and a build waited for is said so every `LOOPER_BUILD_SAY` (10 minutes); they take effect for
   a repository once its commit is pinned (only this one is: `build.lock`; the hub files the others' pin issues) and
   the report and manager jobs hold `BUILD_TRIGGER_TOKEN` (not yet set in tacplus-dev/looper), and need the hub's copy
   of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
