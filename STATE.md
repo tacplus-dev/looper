@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#157).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#113).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -97,7 +97,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   its gate set's wait from the build's start, never its trigger: the sum of its sets' `minutes` in the commit's
   `gates.yaml` and `LOOPER_BUILD_MARGIN` (30m), at least `LOOPER_BUILD_WAIT` (3h), #158; a build with no verdict by its job's end leaves the
   land queued and its pipeline, on the build's branch, for the next manager to take up; the recap has each manager's
-  build queue time apart from its run time, #128; a pending or green status names its key, gate set and base: a build
+  build queue time apart from its run time, #128; a build with no status at all, not even pending, within
+  `LOOPER_BUILD_START` (15m) of its trigger is "no runner", never red and no wait without a bound: `--build` says so and
+  exits 4, a land stays queued with no verdict, its pipeline recorded for the next manager as #128's, and its issue is
+  told once, #113; a pending or green status names its key, gate set and base: a build
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
   linking it; the nightly recap counts builds against the commits they built, #134), and on a release
