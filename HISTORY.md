@@ -109,3 +109,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue Security job's clippy fails every gateway build: built/ drops the generated non-.rs files src/registry.rs include_str!s (3 compile errors) (#155, 087f27d; gates: docs+build, docs)
 - 2026-11-15 looper issue A weekly usage limit marks every issue looper:stuck: hold until the reset instead (#157, fd35dd5; gates: docs)
 - 2026-11-15 looper issue A build nobody waits for any more does not run its gates (#130)
+- 2026-11-15 looper issue looper-scan baseline: a gosec finding over a line range keeps the range in its file, so it is not line-independent (#156)
