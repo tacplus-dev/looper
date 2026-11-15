@@ -115,3 +115,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue tests/repo-looper.test.sh fails on a loaded runner: timeout-outcome and idle bound the whole run to 20s and the stub's --checkpoint to a 3s budget (#160, 5fe8718; gates: full)
 - 2026-11-15 looper issue looper-recap marks a failed Actions run recovered by a success on any ref: broken release-line images read as recovered (#116, c4dfd19; gates: recap)
 - 2026-11-15 looper issue Triggered tacplus-dev/build pipelines never report: no commit status, not even pending, and --build waits 3h for nothing (website 325305c, launcher 88cfeae) (#113, e6ab309; gates: full)
+- 2026-11-15 looper issue Manager lands in batches (merge train): one build per batch on a staging candidate, fast-forward main on green, bisect and send back on red (#86, a57d81c; gates: full)
