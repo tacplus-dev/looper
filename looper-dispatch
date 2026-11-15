@@ -219,11 +219,8 @@ pass() {
 # first (looper#75): a pool's runner starts
 # its pending jobs in id order, the plan's, and a manager behind its own reports
 # waits for every one of them to get a VM while their work stays unmerged and the
-# later ones start from a stale main. LOOPER_JOB_IMAGE and LOOPER_JOB_TAGS (comma-separated) are the
-# jobs' image and runner tags; LOOPER_JOB_TAGS_<repo> (`-` as `_`) overrides the
-# tags for one repository's reports (looper#55: tacplus's on the 16-CPU pool),
-# LOOPER_MANAGER_TAGS_<repo> for its manager and LOOPER_SCAN_TAGS_<repo> for its
-# scan (looper#91: tacplus's off that pool's one VM, not behind its reports). The
+# later ones start from a stale main. LOOPER_JOB_IMAGE is the jobs' image; their
+# runner tags and requests are where_it_runs's (looper#84, below). The
 # plan's GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL, those it has, are
 # the jobs' too. With none to plan, one job that says so: a child pipeline has
 # at least one.
@@ -243,7 +240,7 @@ plan() {
     if hold="$(held)"; then
       log "$hold; nothing planned" >&2
       hold="${hold#*; }"; hold="${hold%%: no report*}"   # `the looper holds until T (page)`: no `: ` in a YAML plain scalar
-      printf 'looper-held:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "%s (looper#157)"\n' "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}" "$hold"
+      printf 'looper-held:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "%s (looper#157)"\n' "$image" "$(plain_tags)" "$hold"
       return 0
     fi
     if statuses="$(active_job_statuses)"; then jobs="$(cut -d' ' -f1 <<<"$statuses")"
@@ -281,7 +278,7 @@ plan() {
     printf '%s' "$reports"
   fi
   [[ -n "$any" ]] || printf 'looper-none:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "no repository with a ready issue is free"\n' \
-    "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}"
+    "$image" "$(plain_tags)"
 }
 
 # The image the plan's jobs run (looper#115): the looper image by digest,
@@ -335,22 +332,92 @@ job_environment() { # --repo REPO args...
 # the manager's token: the one manager, as before.
 verdict_job() { echo "looper-$1-verdict"; } # repo
 split_manager() { # repo
-  local f
-  apps || return 1
-  [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] || return 0
-  for f in tacplus.lock build.lock; do
-    gh api "repos/$LOOPER_ORG/$1/contents/$f" --silent >/dev/null 2>&1 && return 1
-  done
-  return 0
+  apps && ! build_jobs_repo "$1"
+}
+
+# A repository whose gates are build jobs (looper#71): the project has the apps
+# and the build trigger, and the repository's main pins its build image
+# (tacplus.lock, or build.lock when it is no tacplus project). None of its jobs
+# runs Docker: its reports build with --build, its one manager merges on a
+# build job's verdict and runs no repository code. Read once a plan per
+# repository.
+declare -A BUILD_JOBS_REPO=()
+build_jobs_repo() { # repo
+  local r="$1" f
+  if [[ -z "${BUILD_JOBS_REPO[$r]:-}" ]]; then
+    BUILD_JOBS_REPO[$r]=no
+    if apps && [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]]; then
+      for f in tacplus.lock build.lock; do
+        gh api "repos/$LOOPER_ORG/$r/contents/$f" --silent >/dev/null 2>&1 && { BUILD_JOBS_REPO[$r]=yes; break; }
+      done
+    fi
+  fi
+  [[ "${BUILD_JOBS_REPO[$r]}" == yes ]]
+}
+
+# Where a job runs (looper#84; README, Infrastructure; tacplus-dev/roadmap
+# decisions/only-vms-are-k8s-nodes-2026-11-04.md): every CI job is a pod of the
+# in-cluster GitLab runners, with requests and limits; builds on the spot pool
+# (tacplus-dev/build's jobs, `arm64, build`), control work on the normal pool.
+# A report or manager of a repository whose gates are build jobs (above) runs
+# on the control runner, LOOPER_CONTROL_TAGS (default `arm64, control`,
+# tacplus-dev/cluster#13), with the requests of its kind (requests below); a
+# repository moves the day its pin lands, with no change here, and its
+# per-repository tag override is not read then. A job that would hold
+# looper-docker (an unpinned repository's reports, verdict and manager, every
+# scan: its model runs the gates on main) stays on the VM runners' tags until
+# it needs no Docker: LOOPER_JOB_TAGS_<repo> (`-` as `_`) for a repository's
+# reports (looper#55: tacplus's on the 16-CPU pool), LOOPER_MANAGER_TAGS_<repo>
+# for its manager and LOOPER_SCAN_TAGS_<repo> for its scan (looper#91), else
+# LOOPER_JOB_TAGS, else `arm64, autoscale`. Prints "<tags>" and, on the control
+# runner, the job's kind on a second line.
+CONTROL_TAGS="${LOOPER_CONTROL_TAGS:-arm64, control}"
+VM_TAGS="${LOOPER_JOB_TAGS:-arm64, autoscale}"
+where_it_runs() { # repo repo-looper-args...
+  local repo="$1" v kind=""; shift
+  case " $* " in
+    *" --manage "*) v=LOOPER_MANAGER_TAGS; kind=manager ;;
+    *" --scan "*) v=LOOPER_SCAN_TAGS ;;
+    *" --verdict "*|*" --merge "*) v=LOOPER_JOB_TAGS ;;   # a split batch's jobs (looper#90): never a build-jobs repository's
+    *) v=LOOPER_JOB_TAGS; kind=report ;;
+  esac
+  if [[ -n "$kind" ]] && build_jobs_repo "$repo"; then printf '%s\n%s\n' "$CONTROL_TAGS" "$kind"; return 0; fi
+  v="${v}_${repo//[^A-Za-z0-9_]/_}"; echo "${!v:-$VM_TAGS}"
+}
+# The tags of a job that runs no looper (looper-none, looper-held): the
+# instance's LOOPER_JOB_TAGS, else the control runner's once the project has
+# the trigger (something of its runs there), else the VM default.
+plain_tags() {
+  if [[ -n "${LOOPER_JOB_TAGS:-}" ]]; then echo "$LOOPER_JOB_TAGS"
+  elif apps && [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]]; then echo "$CONTROL_TAGS"
+  else echo "$VM_TAGS"; fi
+}
+
+# A control pod's requests and limits (looper#84): CPU and memory, as GitLab's
+# KUBERNETES_* job variables, within the control runner's ceilings (1500m and
+# 4Gi: tacplus-dev/cluster gitlab-runner/runners/control.yaml). An agent
+# mostly waits on the model's API (Jody, 2026-11-07: small requests, never the
+# 4 CPU/14 GB a gate needs), so a report asks 500m and 1Gi, a limit of the
+# ceilings; a manager (git and the forge's API, no model step yet) the runner's
+# defaults, 250m and 512Mi, limits 1 and 2Gi. LOOPER_REQUESTS_<kind> ("<cpu>
+# <memory> <cpu limit> <memory limit>") sets one kind's. The kicker's and the
+# plan's are ci/tacplus-dev.gitlab-ci.yml's (.control).
+requests() { # kind
+  local v="LOOPER_REQUESTS_$1" d r
+  case "$1" in report) d="500m 1Gi 1500m 4Gi" ;; *) d="250m 512Mi 1 2Gi" ;; esac
+  read -r -a r <<<"${!v:-$d}"
+  (( ${#r[@]} == 4 )) || die "$v is not \"<cpu> <memory> <cpu limit> <memory limit>\": ${!v}"
+  printf '    KUBERNETES_CPU_REQUEST: %s\n    KUBERNETES_MEMORY_REQUEST: %s\n    KUBERNETES_CPU_LIMIT: %s\n    KUBERNETES_MEMORY_LIMIT: %s\n' "${r[@]}"
 }
 
 # One job of the plan, its repository's; repo-looper's arguments are names and
 # numbers, unquoted in its script.
 plan_job() { # name timeout resource-group --repo REPO repo-looper-args...
-  local name="$1" t="$2" group="$3" repo="$5" v tags; shift 3
-  case " $* " in *" --manage "*) v=LOOPER_MANAGER_TAGS ;; *" --scan "*) v=LOOPER_SCAN_TAGS ;; *) v=LOOPER_JOB_TAGS ;; esac
-  v="${v}_${repo//[^A-Za-z0-9_]/_}"; tags="${!v:-${LOOPER_JOB_TAGS:-arm64, autoscale}}"
+  local name="$1" t="$2" group="$3" repo="$5" where tags kind; shift 3
+  where="$(where_it_runs "$repo" "$@")"; tags="${where%%$'\n'*}"; kind="${where#*$'\n'}"; [[ "$kind" != "$where" ]] || kind=""
   log "planned $name ($t, tags $tags, resource_group $group)" >&2
+  # A control job's retry is on its runner lost, never its own timeout: it
+  # resumes from its checkpoint (looper#20, looper#84).
   cat <<YML
 $name:
   image: $image
@@ -375,6 +442,9 @@ YML
   cat <<YML
   variables:
     LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs
+YML
+  [[ -z "$kind" ]] || requests "$kind"
+  cat <<YML
   script:
     - repo-looper $*
   artifacts:

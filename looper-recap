@@ -45,8 +45,14 @@
 #       capacity lines, in all and per repository: how many reports were active
 #       and running at once (peak and mean), the hours ready issues waited with
 #       no report job, and the merge backlog. The capacity: the
-#       queue p90 of every job, the issues whose report waited for a VM and
-#       one more VM's cost a day, the numbers for a manual scale-up. The
+#       queue p90 of every job; the issues whose report waited for room
+#       (looper#84), in all, per repository and each: for a VM, or on the
+#       in-cluster runners for the runner to take its pod and for a node with
+#       room (its queue and its pod's Pending time, read from its log); how
+#       often the normal pool was full (the pods no node had room for); and
+#       one more VM's and one more node's cost a day, the numbers for a manual
+#       scale-up (merge-train-2026-11-04.md's addendum: a 4th node is Jody's
+#       call from them). The
 #       control jobs' queues (looper#104): looper-plan's and looper-kick's,
 #       created to started (to canceled for one canceled before it started),
 #       each its own line of the report. The
@@ -55,9 +61,11 @@
 #       commits of main not in it and the latest image workflow run; stale for
 #       LOOPER_RECAP_IMAGE_HOURS (2) is over. It compares digests too: at
 #       main's head it is current only as main-<sha7>'s build, the attested
-#       build the pipelines run by digest (looper#115). Per runner: the VMs its jobs
-#       ran on, the jobs that failed before one was ready, the prepare times
-#       (boot to ready: every job has a fresh VM, looper#42) and the disk use the
+#       build the pipelines run by digest (looper#115). Per runner: its executor,
+#       the VMs (or pods) its jobs ran on, the jobs that failed before one was
+#       ready, the prepare times (boot to ready: every job has a fresh VM,
+#       looper#42; a pod's wait to be scheduled and its containers to start),
+#       the pods that waited Pending and those no node had room for, and the disk use the
 #       jobs logged at their end. GitHub Actions runs of the workflows named like
 #       LOOPER_RECAP_WORKFLOWS (default nightly|release|image) in every
 #       repository of LOOPER_ORG, each run with its ref (head_branch): a failed
@@ -89,12 +97,14 @@
 # LOOPER_RECAP_MERGE_MINUTES (120: a manager's report to merge p90),
 # LOOPER_RECAP_WAIT_HOURS (1: ready issues waiting with no report job),
 # LOOPER_RECAP_BACKLOG (3: lands queued, p90 of the passes: the manager behind),
-# LOOPER_RECAP_VM_WAIT (300 s: a report's wait for a VM that counts),
+# LOOPER_RECAP_VM_WAIT (300 s: a report's wait for room, a VM or a pod's, that counts),
 # LOOPER_RECAP_VM_WAIT_HOURS (1), LOOPER_RECAP_CONTROL_QUEUE (600 s: a
 # control job's queue, its longest, looper#104), LOOPER_RECAP_BUILD_RATIO (1.1:
 # builds of the build project a commit, looper#134). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
-# price; set it from the billing). LOOPER_RECAP_PASS (180 s, the kicker's
+# price; set it from the billing); one more node of the normal pool (looper#84):
+# LOOPER_RECAP_NODE_MACHINE (c4a-standard-2) at LOOPER_RECAP_NODE_USD_HOUR
+# (0.089). LOOPER_RECAP_PASS (180 s, the kicker's
 # LOOPER_INTERVAL), LOOPER_RECAP_BUILD_CONTEXT (tacplus-dev/build).
 # Environment: GITLAB_TOKEN (read_api; sent on stdin, never on a command line),
 # LOOPER_BUILD_API (https://gitlab.com/api/v4), LOOPER_RECAP_PAGES (10 pages of
@@ -152,6 +162,10 @@ PASS_GAP = 600
 # One more VM, for the manual scale-up (Jody, 2026-11-03: "somebody tells me and
 # we spin up more vms"): its machine and on-demand price an hour.
 VM = {"machine": ENV.get("LOOPER_RECAP_VM_MACHINE", "t2a-standard-8"), "usd_hour": num("LOOPER_RECAP_VM_USD_HOUR", 0.308)}
+# One more node of the normal pool (looper#84; merge-train-2026-11-04.md's addendum: a 4th c4a-standard-2 is
+# Jody's call from the recap's numbers): its machine and on-demand price an hour (about $65 a month; set it
+# from the billing).
+NODE = {"machine": ENV.get("LOOPER_RECAP_NODE_MACHINE", "c4a-standard-2"), "usd_hour": num("LOOPER_RECAP_NODE_USD_HOUR", 0.089)}
 
 
 def die(msg, code=2):
@@ -326,6 +340,12 @@ M_BATCH_GATES = re.compile(r"\] the batch's gates ran (\d+) s")
 M_BISECT = re.compile(r"\] the batch is red: bisecting the batch of (\d+)")
 CAPACITY = re.compile(r"\] capacity: (.*)$")
 CAP_REPO = re.compile(r"(\S+) reports=(\d+)(?: running=(\d+))?(?: cap=\d+)? waiting=([\d,]*) landing=(\d+|\?)")
+# The job's executor (looper#84: the in-cluster runners' is "kubernetes", the VM runners' "docker-autoscaler"),
+# and its pod waiting to be scheduled; the scheduler's reason when no node had room for it (the pod's
+# condition, or its FailedScheduling event with FF_PRINT_POD_EVENTS): the pool was full.
+EXECUTOR = re.compile(r'Preparing the "([^"]+)" executor')
+POD_PENDING = re.compile(r"Waiting for pod \S+ to be running, status is Pending", re.I)
+POD_FULL = re.compile(r"Unschedulable|FailedScheduling|Insufficient (cpu|memory)")
 
 
 def held_reason(r):
@@ -351,9 +371,11 @@ PARALLEL = {
 
 
 def read_log(text, started, finished):
-    """What a job's log says: its prepare time and VM, a pull or gate failure,
-    and for a looper job its plans, holds, lands and disk."""
-    out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False,
+    """What a job's log says: its prepare time and VM (its pod, on the in-cluster
+    runners: the executor, whether the pod waited Pending and whether no node had
+    room for it, looper#84), a pull or gate failure, and for a looper job its
+    plans, holds, lands and disk."""
+    out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False, "executor": None, "pod_pending": False, "pod_full": False,
            "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}}
     now = started
     waiting = {}   # issue -> (reason, since)
@@ -384,6 +406,13 @@ def read_log(text, started, finished):
         m = re.search(r"Running on (\S+)", line)
         if m and out["host"] is None:
             out["host"] = m.group(1)
+        m = EXECUTOR.search(line)
+        if m and out["executor"] is None:
+            out["executor"] = m.group(1)
+        if out["prepare_at"] is None and POD_PENDING.search(line):
+            out["pod_pending"] = True
+        if out["prepare_at"] is None and POD_FULL.search(line):
+            out["pod_full"] = True
         if PULL.search(line):
             out["pull"] = True
         if "nothing landed: the gates failed" in line or "verdict: FAIL" in line:
@@ -618,7 +647,9 @@ def collect(until):
             st = j.get("status") or "?"
             p["status"][st] = p["status"].get(st, 0) + 1
             q, pr, rn = secs(c, s), secs(s, lg["prepare_at"]), secs(s, f)
-            qs.append(q); ps.append(pr); rs.append(rn)
+            # A pod's wait for a node with room (looper#84) is the capacity's (capacity_of), not a slow
+            # preparation: its prepare time stays its pool's boot_to_ready_s below.
+            qs.append(q); ps.append(None if lg["pod_pending"] else pr); rs.append(rn)
             url = j.get("web_url") or ""
             if q is not None:
                 queues.append({"project": project, "job": j.get("name"), "s": q, "url": url})
@@ -630,13 +661,18 @@ def collect(until):
             # A job no runner took (canceled while pending) is in no pool.
             if j.get("runner"):
                 runner = j["runner"].get("description") or str(j["runner"].get("id"))
-                pool = out["runner_pools"].setdefault(runner, {"jobs": 0, "vms": set(), "failed_before_ready": 0, "prepare": [], "disk": []})
+                pool = out["runner_pools"].setdefault(runner, {"jobs": 0, "vms": set(), "failed_before_ready": 0, "prepare": [], "disk": [],
+                                                               "executor": {}, "pods_pending": 0, "pool_full": 0})
                 pool["jobs"] += 1
                 if lg["host"]:
                     pool["vms"].add(lg["host"])
                 if lg["prepare_at"] is None and st == "failed":
                     pool["failed_before_ready"] += 1
                 pool["prepare"].append(pr)
+                if lg["executor"]:
+                    pool["executor"][lg["executor"]] = pool["executor"].get(lg["executor"], 0) + 1
+                pool["pods_pending"] += lg["pod_pending"]
+                pool["pool_full"] += lg["pod_full"]
                 if lg["disk_pct"] is not None:
                     pool["disk"].append(lg["disk_pct"])
             if st == "failed":
@@ -683,7 +719,9 @@ def collect(until):
             if kind == "work" and pool:
                 lp["pools"][pool] = lp["pools"].get(pool, 0) + 1
             if kind == "work" and q is not None:
-                lp["queued"].append((int(m.group(1)), j.get("name"), c, s, url, pool))
+                # A pod's wait for a node with room (looper#84) is its executor's preparation, when it waited Pending.
+                lp["queued"].append((int(m.group(1)), j.get("name"), c, s, url, pool,
+                                     "pod" if lg["executor"] == "kubernetes" else "vm", (pr or 0) if lg["pod_pending"] else 0, lg["pod_full"]))
             lp["plans"] += lg["plans"]
             for ov, ns in lg["overlaps"].items():
                 lp["overlaps"].setdefault(ov, set()).update(ns)
@@ -727,7 +765,7 @@ def collect(until):
         # held it only in the scan's resource group (GitLab runs one job of a
         # group at a time; since looper#70 a report has its own, looper#92).
         runs, held = lp.pop("scan_runs"), {}
-        for n, name, c, s, url, pool in lp.pop("queued"):
+        for n, name, c, s, url, pool, kind, pending, full in lp.pop("queued"):
             scan = 0
             for a, b, sn in runs:
                 if resource_group(sn, groups) != resource_group(name, groups):
@@ -737,9 +775,11 @@ def collect(until):
                     scan += o
                     held[n] = held.get(n, 0) + o
                     holdl.append({"repo": repo, "issue": n, "reason": "scan_holds_repo", "s": o, "url": url})
-            # The rest of its queue it waited for a runner's VM (looper#72).
-            if secs(c, s) - scan >= T["vm_wait_s"]:
-                vmwait.append({"repo": repo, "issue": n, "s": secs(c, s) - scan, "url": url, "pool": pool})
+            # The rest of its queue it waited for a runner's VM (looper#72); a pod (looper#84) waited for the
+            # runner to take it (its concurrent limit) and then, Pending, for a node with room: both count.
+            wait = secs(c, s) - scan + pending
+            if wait >= T["vm_wait_s"]:
+                vmwait.append({"repo": repo, "issue": n, "s": wait, "url": url, "pool": pool, "kind": kind, "pending_s": pending, "full": full})
         if held:
             lp["holds"]["scan_holds_repo"] = {"count": len(held), "issues": set(held), "s": [held[n] for n in sorted(held)]}
         plans = lp.pop("plans")
@@ -794,7 +834,13 @@ def collect(until):
 
     for runner, pool in sorted(out["runner_pools"].items()):
         disk = pool.pop("disk")
+        ex = pool.pop("executor")
+        # boot_to_ready_s is the executor's preparation: a VM's boot to ready, a pod's wait to be scheduled and
+        # its containers to start (looper#84); pods_pending the pods that waited Pending, pool_full those no
+        # node had room for.
         out["runner_pools"][runner] = {"jobs": pool["jobs"], "vms": len(pool["vms"]), "failed_before_ready": pool["failed_before_ready"],
+                                       "executor": min(ex, key=lambda x: (-ex[x], x)) if ex else None,
+                                       "pods_pending": pool["pods_pending"], "pool_full": pool["pool_full"],
                                        "boot_to_ready_s": dist(pool["prepare"]),
                                        "disk_pct": None if not disk else {"jobs": len(disk), "max": max(disk), "p50": pct(disk, 50)}}
         if disk and max(disk) >= T["disk_pct"]:
@@ -813,7 +859,7 @@ def collect(until):
 
     out["managers"] = managers_of(managers, start, until, sources, items)
     out["concurrency"] = concurrency_of(passes, out["managers"], items, pools)
-    out["capacity"] = capacity_of(queues, vmwait, items)
+    out["capacity"] = capacity_of(queues, vmwait, out["runner_pools"], items)
     out["control"] = control_of(control, items)
     out["actions"] = actions(start, until, sources, items)
     out["image"] = image_check(until, sources, items)
@@ -1038,28 +1084,56 @@ def concurrency_of(passes, managers, items, pools):
     return out
 
 
-def capacity_of(queues, vmwait, items):
+def capacity_of(queues, waits, pools, items):
     """The numbers the hub brings Jody for a manual scale-up (looper#72;
-    decisions/looper-job-per-issue-2026-11-03.md: "Capacity is manual"): the
-    queue p90 of every job, the issues whose report waited for a VM (its queue
-    less a scan's, LOOPER_RECAP_VM_WAIT or more) and what one more VM costs a
-    day (LOOPER_RECAP_VM_MACHINE at LOOPER_RECAP_VM_USD_HOUR)."""
+    decisions/looper-job-per-issue-2026-11-03.md: "Capacity is manual";
+    merge-train-2026-11-04.md's addendum): the queue p90 of every job; the
+    issues whose report waited for room (LOOPER_RECAP_VM_WAIT or more), in all,
+    per repository and each: for a VM (its queue less a scan's, looper#72), or,
+    on the in-cluster runners (looper#84), for the runner to take its pod and
+    then for a node with room (its queue and its pod's Pending time); how often
+    the normal pool was full (the pods no node had room for, of the pods that
+    ran); and what one more VM (LOOPER_RECAP_VM_MACHINE at
+    LOOPER_RECAP_VM_USD_HOUR) or one more node (LOOPER_RECAP_NODE_MACHINE at
+    LOOPER_RECAP_NODE_USD_HOUR) costs a day."""
     q = dist([x["s"] for x in queues])
-    wh = sum(x["s"] for x in vmwait)
+    wh = sum(x["s"] for x in waits)
+    by_repo = {}
+    for x in waits:
+        by_repo[x["repo"]] = by_repo.get(x["repo"], 0) + x["s"]
     vm = dict(VM, usd_hour=whole(VM["usd_hour"]), usd_day=whole(round(VM["usd_hour"] * 24, 2)))
+    node = dict(NODE, usd_hour=whole(NODE["usd_hour"]), usd_day=whole(round(NODE["usd_hour"] * 24, 2)))
+    k8s = [p for p in pools.values() if p["executor"] == "kubernetes"]
+    full = {"pods": sum(p["jobs"] for p in k8s), "pending": sum(p["pods_pending"] for p in k8s), "full": sum(p["pool_full"] for p in k8s)}
     out = {"queue_minutes": q and {k: minutes(v) if k != "n" else v for k, v in q.items()},
-           "waiting_for_vm": {"issues": len(vmwait), "hours": hours(wh),
-                              "jobs": [{"repo": x["repo"], "issue": x["issue"], "minutes": minutes(x["s"]), "url": x["url"], "pool": x["pool"]}
-                                       for x in sorted(vmwait, key=lambda x: (-x["s"], x["url"]))]},
-           "one_more_vm": vm}
-    if vmwait:
-        items.append({"key": "capacity/vm", "count": len(vmwait), "over": wh >= T["vm_wait_hours"] * 3600, "recovered": False,
-                      "wait_hours": hours(wh),
-                      "summary": f"{len(vmwait)} issue{'s' * (len(vmwait) != 1)} waited {hours(wh)} h for a VM "
-                                 f"({', '.join('%s#%d %s min' % (x['repo'], x['issue'], minutes(x['s'])) for x in sorted(vmwait, key=lambda x: -x['s']))}); "
+           "waiting_for_room": {"issues": len(waits), "hours": hours(wh), "by_repo": {r: hours(v) for r, v in sorted(by_repo.items())},
+                                "jobs": [{"repo": x["repo"], "issue": x["issue"], "kind": x["kind"], "minutes": minutes(x["s"]),
+                                          "pending_minutes": minutes(x["pending_s"]), "pool_full": x["full"], "url": x["url"], "pool": x["pool"]}
+                                         for x in sorted(waits, key=lambda x: (-x["s"], x["url"]))]},
+           "pool_full": full, "one_more_vm": vm, "one_more_node": node}
+
+    def waited(xs):
+        return ", ".join("%s#%d %s min" % (x["repo"], x["issue"], minutes(x["s"])) for x in sorted(xs, key=lambda x: (-x["s"], x["url"])))
+    vms = [x for x in waits if x["kind"] == "vm"]
+    if vms:
+        h = sum(x["s"] for x in vms)
+        items.append({"key": "capacity/vm", "count": len(vms), "over": h >= T["vm_wait_hours"] * 3600, "recovered": False,
+                      "wait_hours": hours(h),
+                      "summary": f"{len(vms)} issue{'s' * (len(vms) != 1)} waited {hours(h)} h for a VM ({waited(vms)}); "
                                  f"queue p90 {minutes(q['p90']) if q else '-'} min; one more {vm['machine']} is about ${vm['usd_day']} a day "
                                  f"(threshold {whole(T['vm_wait_hours'])} h; the scale-up is Jody's call)",
-                      "evidence": sorted(x["url"] for x in vmwait)[:5]})
+                      "evidence": sorted(x["url"] for x in vms)[:5]})
+    pods = [x for x in waits if x["kind"] == "pod"]
+    if pods:
+        h = sum(x["s"] for x in pods)
+        items.append({"key": "capacity/pods", "count": len(pods), "over": h >= T["vm_wait_hours"] * 3600, "recovered": False,
+                      "wait_hours": hours(h),
+                      "summary": f"{len(pods)} issue{'s' * (len(pods) != 1)} waited {hours(h)} h for room on the normal pool ({waited(pods)}; "
+                                 f"{', '.join('%s %s h' % (r, hours(v)) for r, v in sorted(by_repo.items()) if any(x['repo'] == r for x in pods))}); "
+                                 f"the pool was full for {full['full']} of {full['pods']} pods; queue p90 {minutes(q['p90']) if q else '-'} min; "
+                                 f"one more {node['machine']} node is about ${node['usd_day']} a day "
+                                 f"(threshold {whole(T['vm_wait_hours'])} h; the scale-up is Jody's call)",
+                      "evidence": sorted(x["url"] for x in pods)[:5]})
     return out
 
 
@@ -1367,11 +1441,15 @@ def report(night, classes, sdir, cov):
                  + (f", {b['unread']} pipeline{'s' * (b['unread'] != 1)} not read" if b["unread"] else "") + trend + ".")
     cp = night.get("capacity")
     if cp:
-        w, vm = cp["waiting_for_vm"], cp["one_more_vm"]
+        w, vm, node, full = cp["waiting_for_room"], cp["one_more_vm"], cp["one_more_node"], cp["pool_full"]
         L.append(f"Capacity: queue p90 {(cp['queue_minutes'] or {}).get('p90', '-')} min over {(cp['queue_minutes'] or {}).get('n', 0)} jobs; "
-                 f"{w['issues']} issue{'s' * (w['issues'] != 1)} waited {w['hours']} h for a VM"
-                 + (" (" + ", ".join(f"[{x['repo']}#{x['issue']}]({x['url']}) {x['minutes']} min" for x in w["jobs"][:3]) + ")" if w["jobs"] else "")
-                 + f"; one more {vm['machine']} is about ${vm['usd_day']} a day (${vm['usd_hour']} an hour).")
+                 f"{w['issues']} issue{'s' * (w['issues'] != 1)} waited {w['hours']} h for room"
+                 + (" (" + ", ".join(f"[{x['repo']}#{x['issue']}]({x['url']}) {x['minutes']} min"
+                                     + (f" ({x['pending_minutes']} pending)" if x["kind"] == "pod" else " for a VM") for x in w["jobs"][:3])
+                    + (f"; by repository: {', '.join(f'{r} {h} h' for r, h in w['by_repo'].items())}" if len(w["by_repo"]) > 1 else "") + ")" if w["jobs"] else "")
+                 + (f"; the normal pool was full for {full['full']} of {full['pods']} pods ({full['pending']} waited pending)" if full["pods"] else "")
+                 + f"; one more {vm['machine']} VM is about ${vm['usd_day']} a day (${vm['usd_hour']} an hour), "
+                 f"one more {node['machine']} node about ${node['usd_day']} a day (${node['usd_hour']} an hour).")
     for name, what in (("looper-plan", "Plan"), ("looper-kick", "Kick")):
         c = (night.get("control") or {}).get(name)
         if c is None:

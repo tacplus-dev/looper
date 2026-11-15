@@ -116,7 +116,7 @@ q() { jq -r "$1" "$J"; }
 # LOOPER_SUGGEST_PROJECTS' default plus tacplus-dev/cluster, which cannot be read: named, not guessed.
 [[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
   fail "sources: $(q .sources)"
-[[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "24 8 6 1 1" ]] ||
+[[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "25 8 6 1 1" ]] ||
   fail "looper's jobs: $(q '.projects["tacplus-dev/looper"]')"
 # tacplus-dev/build's jobs, read with its own token: counted, with their failures, queue and run times.
 [[ "$(q '.projects["tacplus-dev/build"] | "\(.jobs) \(.status.failed) \(.failures.gate_failure) \(.queue_s.n) \(.run_s.n)"')" == "2 1 1 2 2" ]] ||
@@ -127,7 +127,7 @@ lacks "$(q 'keys | join(" ")')" cloud
 # behind the scan, looper-kernel-4 50 minutes, looper-tacplus-12 20 minutes, prepared in 2.
 [[ "$(q '[.longest.queues[0:3][] | "\(.job) \(.minutes)"] | join(", ")')" == "looper-tacplus-16 97, looper-kernel-4 50, looper-tacplus-12 20" ]] || fail "longest queue: $(q .longest.queues)"
 [[ "$(q '.projects["tacplus-dev/looper"].queue_s | "\(.max) \(.p90)"')" == "5820 1200" ]] || fail "queue: $(q '.projects["tacplus-dev/looper"].queue_s')"
-has "$(q '.items[] | select(.key == "queue/tacplus-dev/looper") | .summary')" "queue time p90 20 min over 23 jobs (p50 1, max 97; threshold 15 min)"
+has "$(q '.items[] | select(.key == "queue/tacplus-dev/looper") | .summary')" "queue time p90 20 min over 24 jobs (p50 1, max 97; threshold 15 min)"
 # The control jobs' queues, each its own (looper#104): the kicks' 30 s; the plan canceled before it started, after a minute.
 [[ "$(q '.control["looper-kick"] | "\(.jobs) \(.unstarted) \(.queue_minutes.p90) \(.longest.url)"')" == "2 0 0.5 https://gitlab.com/tacplus-dev/looper/-/jobs/1500" ]] || fail "kick: $(q .control)"
 [[ "$(q '.control["looper-plan"] | "\(.jobs) \(.unstarted) \(.queue_minutes.max)"')" == "1 1 1" ]] || fail "plan: $(q .control)"
@@ -228,15 +228,24 @@ has "$(q '.items[] | select(.key == "wait/tacplus") | "\(.over) \(.wait_hours) \
 has "$(q '.items[] | select(.key == "manager/kernel/backlog") | "\(.running) \(.summary)"')" "2 kernel: its manager behind: merge backlog p90 3, max 3 lands; 1 reports at once at most (mean 0.64), 1 running (mean 0.64) over the kicker's 39 passes (threshold 3)"
 lacks "$(q '.items[].key')" "cap/"; lacks "$(q '.items[].key')" "wait/alpha"; lacks "$(q '.items[].key')" "manager/alpha/backlog"
 lacks "$(q '.items[].evidence[]')" "caps.yaml"
-# Capacity: the queue p90 of every job, the issues whose report waited for a VM (tacplus#16 97
-# minutes, the scan holding nothing; kernel#4 50), one more VM a day.
-[[ "$(q '.capacity | "\(.queue_minutes.p90) \(.waiting_for_vm.issues) \(.waiting_for_vm.hours) \(.one_more_vm.machine) \(.one_more_vm.usd_day)"')" == "20 3 2.78 t2a-standard-8 7.39" ]] ||
+# Capacity: the queue p90 of every job, the issues whose report waited for room (looper#84): for a VM
+# (tacplus#16 97 minutes, the scan holding nothing; kernel#4 50) or, on the in-cluster control runner, for the
+# runner to take its pod and for a node with room (kernel#5: a minute's queue and 20 minutes Pending, the pool
+# full: no node had the memory), in all and per repository; how often the normal pool was full; one more VM
+# and one more node a day.
+[[ "$(q '.capacity | "\(.queue_minutes.p90) \(.waiting_for_room.issues) \(.waiting_for_room.hours) \(.one_more_vm.machine) \(.one_more_vm.usd_day) \(.one_more_node.machine) \(.one_more_node.usd_day)"')" == "20 4 3.13 t2a-standard-8 7.39 c4a-standard-2 2.14" ]] ||
   fail "capacity: $(q .capacity)"
+[[ "$(q '.capacity.waiting_for_room.by_repo | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "kernel=1.18 tacplus=1.95" ]] || fail "by repository: $(q .capacity.waiting_for_room.by_repo)"
+[[ "$(q '[.capacity.waiting_for_room.jobs[] | "\(.repo)#\(.issue) \(.kind) \(.minutes) \(.pending_minutes) \(.pool_full) \(.pool)"] | join(", ")')" == "tacplus#16 vm 97 0 false tacplus-dev arm64 autoscale-16, kernel#4 vm 50 0 false tacplus-dev arm64 autoscaler, kernel#5 pod 21 20 true tacplus-dev control (cluster, ci, normal pool), tacplus#12 vm 20 0 false tacplus-dev arm64 autoscale-16" ]] ||
+  fail "the waits for room: $(q .capacity.waiting_for_room)"
+[[ "$(q '.capacity.pool_full | "\(.pods) \(.pending) \(.full)"')" == "1 1 1" ]] || fail "the pool full: $(q .capacity.pool_full)"
 has "$(q '.items[] | select(.key == "capacity/vm") | "\(.over) \(.summary)"')" "true 3 issues waited 2.78 h for a VM (tacplus#16 97 min, kernel#4 50 min, tacplus#12 20 min); queue p90 20 min; one more t2a-standard-8 is about \$7.39 a day"
-[[ "$(q '[.capacity.waiting_for_vm.jobs[] | "\(.repo)#\(.issue) \(.pool)"] | join(", ")')" == "tacplus#16 tacplus-dev arm64 autoscale-16, kernel#4 tacplus-dev arm64 autoscaler, tacplus#12 tacplus-dev arm64 autoscale-16" ]] ||
-  fail "the VM waits' pools: $(q .capacity.waiting_for_vm)"
+has "$(q '.items[] | select(.key == "capacity/pods") | "\(.over) \(.summary)"')" "false 1 issue waited 0.35 h for room on the normal pool (kernel#5 21 min; kernel 1.18 h); the pool was full for 1 of 1 pods; queue p90 20 min; one more c4a-standard-2 node is about \$2.14 a day"
+# The control runner's pool: its executor, the pods that waited Pending and those no node had room for.
+[[ "$(q '.runner_pools["tacplus-dev control (cluster, ci, normal pool)"] | "\(.executor) \(.jobs) \(.vms) \(.pods_pending) \(.pool_full) \(.boot_to_ready_s.max)"')" == "kubernetes 1 1 1 1 1200" ]] || fail "the control pool: $(q .runner_pools)"
+[[ "$(q '.runner_pools["tacplus-dev arm64 autoscaler"] | "\(.executor) \(.pods_pending) \(.pool_full)"')" == "docker-autoscaler 0 0" ]] || fail "the VM pool: $(q .runner_pools)"
 lacks "$(q '.items[].key')" "capacity/tacplus-dev"
-[[ "$(LOOPER_RECAP_VM_USD_HOUR=1.5 LOOPER_RECAP_VM_MACHINE=t2a-standard-16 recap collect --until "$UNTIL" 2>/dev/null | jq -r '.capacity.one_more_vm | "\(.machine) \(.usd_day)"')" == "t2a-standard-16 36" ]] ||
+[[ "$(LOOPER_RECAP_VM_USD_HOUR=1.5 LOOPER_RECAP_VM_MACHINE=t2a-standard-16 LOOPER_RECAP_NODE_USD_HOUR=0.2 LOOPER_RECAP_NODE_MACHINE=c4a-standard-4 recap collect --until "$UNTIL" 2>/dev/null | jq -r '.capacity | "\(.one_more_vm.machine) \(.one_more_vm.usd_day) \(.one_more_node.machine) \(.one_more_node.usd_day)"')" == "t2a-standard-16 36 c4a-standard-4 4.8" ]] ||
   fail "the VM's price"
 pass
 
@@ -254,8 +263,8 @@ done
 # The send-back its report redid too.
 # A model the account refused once (looper#136) is transient too: its runs fell back.
 [[ "$(c '.transient | map(.key) | join(" ")')" == "actions/tacplus/nightly failures/tacplus-dev/looper/timeout manager/tacplus/sent-back model_refused/claude-fable-5-1" ]] || fail "transient: $(c .transient)"
-# Seen once, not recovered: noted, no advice.
-[[ "$(c '.once | map(.key) | join(" ")')" == "failures/tacplus-dev/build/gate_failure manager/kernel/backlog" ]] || fail "once: $(c .once)"
+# Seen once, not recovered: noted, no advice (the pod that waited for room under its threshold too, looper#84).
+[[ "$(c '.once | map(.key) | join(" ")')" == "capacity/pods failures/tacplus-dev/build/gate_failure manager/kernel/backlog" ]] || fail "once: $(c .once)"
 lacks "$(c '.recurring[].key')" "timeout"
 # A merge backlog is advised after two nights running over its threshold (looper#72): not kernel's,
 # over tonight and the night before last only; a wait with no report job tonight (looper#107).
@@ -289,7 +298,7 @@ printf 'held/tacplus/limit_outlasts_job tacplus-dev/looper#33 the job sizing\nno
 recap report "$J" "$TMP/classes.json" --suggestions "$TMP/s" --covered "$TMP/covered" > "$TMP/r.md" || fail "report"
 R="$(cat "$TMP/r.md")"
 has "$R" "# Recap of 2026-11-02"
-has "$R" "| tacplus-dev/looper | 24 | 8 |"
+has "$R" "| tacplus-dev/looper | 25 | 8 |"
 has "$R" "Failures by class: image_pull 6, gate_failure 1,"
 has "$R" "Slot use: tacplus peak 1 of 1 (mean use 0.67, 3 plans)."
 has "$R" "Hours ready issues waited: tacplus 17.32 h (conflict 7.2, no_free_slot 7.2, limit_outlasts_job 2.42, behind_a_land 0.5)."
@@ -307,7 +316,7 @@ has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at mos
 lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 # The runs and tokens per model (looper#136), the most runs first.
 has "$R" "Models: claude-opus-5-5 2 runs, 3,657,700 tokens (input 1,700, output 46,000, cache read 3,400,000, cache write 210,000); claude-fable-5-1 1 run, 1,911,800 tokens (input 800, output 21,000, cache read 1,800,000, cache write 90,000), refused 1; claude-haiku-5-5 0 runs, 1,200 tokens"
-has "$R" "Capacity: queue p90 20 min over 25 jobs; 3 issues waited 2.78 h for a VM ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min, [tacplus#12](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 20 min); one more t2a-standard-8 is about \$7.39 a day (\$0.308 an hour)."
+has "$R" "Capacity: queue p90 20 min over 26 jobs; 4 issues waited 3.13 h for room ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min for a VM, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min for a VM, [kernel#5](https://gitlab.com/tacplus-dev/looper/-/jobs/1800) 21 min (20 pending); by repository: kernel 1.18 h, tacplus 1.95 h); the normal pool was full for 1 of 1 pods (1 waited pending); one more t2a-standard-8 VM is about \$7.39 a day (\$0.308 an hour), one more c4a-standard-2 node about \$2.14 a day (\$0.089 an hour)."
 has "$R" "- \`wait/tacplus\`: tacplus: ready issues waited 2.25 h with no report job "; has "$R" "(2 of 7 nights, over its threshold tonight, 2.25 h of waiting). No advice tonight."
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`manager/kernel/backlog\`: kernel: its manager behind: "
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "(1 night running; advice after 2)."
@@ -351,7 +360,7 @@ printf '[2026-11-01T23:00:00Z] planned looper-tacplus-16 (5h, tags arm64, autosc
 FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
 [[ "$(v '.loopers.tacplus.waits.by_issue["16"].why.scan_holds_repo')" == 1.6 ]] || fail "waits: $(v .loopers.tacplus.waits)"
 has "$(v '.items[] | select(.key == "held/tacplus/scan_holds_repo") | .parallel')" "a scan in its own resource group"
-lacks "$(v '.capacity.waiting_for_vm.jobs[] | "\(.repo)#\(.issue)"')" "tacplus#16"
+lacks "$(v '.capacity.waiting_for_room.jobs[] | "\(.repo)#\(.issue)"')" "tacplus#16"
 pass
 
 # A scan on another pool, in its own resource group, holds nothing (looper#91, looper#92): #16's queue
@@ -359,7 +368,7 @@ pass
 NAME=scan-on-another-pool
 variant 1300 "" 'map(if .name == "looper-scan-tacplus" then .runner.description = "tacplus-dev arm64 autoscaler" else . end)'
 lacks "$(v '.items[].key')" "scan_holds_repo"
-[[ "$(v '.capacity.waiting_for_vm.jobs[] | select(.issue == 16) | "\(.minutes) \(.pool)"')" == "97 tacplus-dev arm64 autoscale-16" ]] || fail "VM waits: $(v .capacity.waiting_for_vm)"
+[[ "$(v '.capacity.waiting_for_room.jobs[] | select(.issue == 16) | "\(.minutes) \(.kind) \(.pool)"')" == "97 vm tacplus-dev arm64 autoscale-16" ]] || fail "VM waits: $(v .capacity.waiting_for_room)"
 pass
 
 # An Actions failure is recovered only by a later success of the same workflow on the same ref

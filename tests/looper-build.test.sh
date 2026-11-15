@@ -605,9 +605,14 @@ grep -qxF "    BUILD_SHA: \"${SHA[pass]}\"" "$y" || fail "not the commit"
 sed -n '/^gates:$/,/^security-demo:$/p' "$y" > "$TMP/gates.yml"
 grep -qxF '  timeout: 11h' "$TMP/gates.yml" || fail "the gates job sets no 11h timeout: $(head -8 "$TMP/gates.yml")"
 # A job whose runner is lost (a spot VM preempted) runs again (looper#148): the
-# parent's default retry does not reach its child pipeline's jobs.
+# parent's default retry does not reach its child pipeline's jobs. Not on its
+# own timeout: the gates' 11h is their own.
 grep -A3 -xF 'default:' "$y" | paste -sd'|' - | grep -qxF 'default:|  retry:|    max: 2|    when: [runner_system_failure, scheduler_failure, unknown_failure]' ||
   fail "the child pipeline's jobs are not retried when their runner is lost: $(head -12 "$y")"
+# The build pipeline's own jobs (ci/build.gitlab-ci.yml), pods on the spot pool (looper#84): retried the GitLab
+# way on a preemption, runner_system_failure and stuck_or_timeout_failure, twice, on the build runner's tags.
+grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml" | paste -sd'|' - | grep -qF '|  tags: [arm64, build]|  retry:|    max: 2|    when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure, unknown_failure]' ||
+  fail "ci/build.gitlab-ci.yml's default is not the build runner with a spot retry: $(grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml")"
 # A failed gates job's verdict, the gates' own or none (its runner lost), is the commit's status, linking this pipeline.
 sed -n '/^gates-failed:$/,/^[^ ]/p' "$y" > "$TMP/gates-failed.yml"
 for l in '  needs: [{job: gates, artifacts: true}]' '  when: on_failure' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' \

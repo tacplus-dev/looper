@@ -4,6 +4,31 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The nightly scan without Docker, so it runs on the control runner** (2026-11-15, #84): every scan still runs on
+  the interim VM runners, since its model holds `looper-docker` to run the repository's gates on main (its checklist's
+  item 3) and the ecosystem's auditors through `tacplus`. In a pinned repository the nightly build of tacplus-dev/build
+  (cloud#26's schedule) runs the full gates on main already: the scan's item 3 could read that build's verdict (its
+  commit status, or the pipeline's record) instead of running the gates, and its model would then have no container
+  runtime, as a pinned report has (`BUILD_JOBS`). Then `looper-dispatch plan`'s `where_it_runs` moves the scans by the
+  same pin rule (one line), and nothing is left on the VM runners once tacplus and fleet-seatrials are pinned, so the hub
+  can remove the pools (the hub's step after #84).
+- **The gates job retried on `stuck_or_timeout_failure` too** (2026-11-15, #84): the issue asks every build job for
+  `retry: {max: 2, when: [runner_system_failure, stuck_or_timeout_failure]}`; the build pipeline's own jobs have it,
+  the child pipeline's gates job keeps #148's choice (its runner lost alone), since its 11h timeout is its own and a
+  retry of a real timeout would run up to 22 more hours on the spot pool. A spot preemption reaches the runner as
+  `runner_system_failure`, which is retried. If a build is ever lost to a stuck gates job (a node that never came past
+  the runner's `poll_timeout`), add it there with a shorter timeout for the wait.
+- **The control runner's `concurrent` as the cap** (2026-11-15, #84): tacplus-dev/cluster's `control` runner takes 8
+  jobs at once (`gitlab-runner/runners/control.yaml`), the kicker among them for 57 minutes of every hour, so 7
+  reports and managers run at once across all repositories whatever the nodes have room for; a 9th waits in GitLab's
+  queue, which the recap reports as its queue time, not a pending pod. With requests of 500m/1Gi a report, the 3
+  nodes fit more than that beside the platform: raise `concurrent` (and the ceilings) with the recap's numbers, or
+  the pods' requests are not what bounds concurrency.
+- **The pod's Pending time from timestamps, not the preparation** (2026-11-15, #84): the recap reads a pod's wait for
+  room as its executor's preparation (started to its script) when its log says `status is Pending`, which includes
+  the image pull and the containers' start. GitLab Runner's timestamped logs (`FF_TIMESTAMPS`) would give the Pending
+  lines their own times; with them, read the wait between the first `Pending` line and `Running on`, and keep the
+  pull apart.
 - **The manager's `workflows: write` per batch** (2026-11-15, #112): the manager's token names `workflows: write`
   only with `LOOPER_MANAGER_WORKFLOWS=write`, a project variable the hub sets once `tacplus-manager` holds the
   permission (Jody's step); until then a land that changes `.github/workflows/` is refused by GitHub at the push.

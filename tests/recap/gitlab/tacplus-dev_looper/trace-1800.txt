@@ -1,0 +1,13 @@
+[0Ksection_start:1793534460:prepare_executor[0KPreparing the "kubernetes" executor
+Using Kubernetes namespace: ci
+Using Kubernetes executor with image ghcr.io/tacplus-dev/looper@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd ...
+Using attach strategy to execute scripts...
+Preparing environment
+Waiting for pod ci/runner-x3k9q-project-58307470-concurrent-0-7h2m to be running, status is Pending
+	Unschedulable: "0/3 nodes are available: 3 Insufficient memory. preemption: 0/3 nodes are available: 3 No preemption victims found for incoming pod."
+Waiting for pod ci/runner-x3k9q-project-58307470-concurrent-0-7h2m to be running, status is Pending
+	ContainersNotReady: "containers with unready status: [build helper]"
+Running on runner-x3k9q-project-58307470-concurrent-0-7h2m via gitlab-runner-control-7d9f6c4b8-k2xq7...
+[0Ksection_end:1793535660:prepare_executor[0Ksection_start:1793535660:prepare_script[0KGetting source from Git repository
+[2026-11-01T12:21:00Z] work
+[2026-11-01T12:59:00Z] disk at the end: 12% used of 50G (/builds)

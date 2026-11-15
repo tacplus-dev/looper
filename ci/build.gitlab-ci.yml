@@ -32,8 +32,13 @@
 # "tag": "vX.Y.Z" and the commit the repository's tag vX.Y.Z names; only there
 # does the publish job get its GCP identity (tacplus-dev/tacplus#223).
 #
-# Every job runs on the build runner (tags arm64, build): a fresh VM per job,
-# never one an agent's job ran on (Jody, 2026-10-29). plan, status and publish
+# Every job runs on the build runner (tags arm64, build): a pod on the spot
+# pool (tacplus-dev/cluster#13; before it, a fresh VM per job), never one an
+# agent's job ran on (Jody, 2026-10-29). Spot preemption is retried the GitLab
+# way (looper#84; tacplus-dev/roadmap decisions/only-vms-are-k8s-nodes-2026-11-04.md):
+# retry: on runner_system_failure and stuck_or_timeout_failure, twice. The
+# child pipeline's gates job keeps its own retry (looper-build: its 11h timeout
+# is its own, looper#148). plan, status and publish
 # run in the looper image, for looper-build; the gates run in the repository's
 # pinned build image, as the child pipeline plan writes.
 #
@@ -158,7 +163,7 @@ default:
   tags: [arm64, build]
   retry:
     max: 2
-    when: [runner_system_failure, scheduler_failure, unknown_failure]
+    when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure, unknown_failure]
 
 # The build's jobs, never in a smoke or runner image pipeline.
 .build-run:

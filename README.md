@@ -7,8 +7,9 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
 ## Shape (Jody, 2026-10-26)
 
 - **Nothing runs on the Mac** (Jody, 2026-10-29, looper#24). All looper work, the kicker included, runs
-  in this image as jobs of the GitLab pipeline `tacplus-dev/looper`, on the autoscaled GCE runner (see
-  [Infrastructure](#infrastructure)).
+  in this image as jobs of the GitLab pipeline `tacplus-dev/looper`, each a pod of the in-cluster runners (the
+  control runner, `arm64, control`, for the agents; the build runner, `arm64, build`, for the builds; looper#84), or
+  of the interim VM runners for a job that still needs Docker (see [Infrastructure](#infrastructure)).
 - **The kicker** (`looper-dispatch`) does no work itself: every 3 minutes, when a ready issue has no report
   job of its own created, pending, waiting for its `resource_group` or running (however many reports its
   repository has: there are no caps, looper#107), or commits are queued to land and the repository has no manager job, it starts that pipeline
@@ -285,8 +286,9 @@ lander are gone. One job per issue needs none of them.
   active reports, how many of them are running (the rest created or pending, waiting for a VM, looper#92), its ready
   issues with no report job yet and its lands queued (`alpha reports=3 running=2 waiting=5 landing=1; ...`); the
   [Nightly recap](#nightly-recap) turns them into how many reports ran at once and how long ready issues waited, so a
-  real problem shows up as a number. Kicker and planner keep their roles; they are the control jobs, for the always-on VM of
-  tacplus-dev/cloud's pools (whose containers share VMs) once it exists: until then their runner tags are as before.
+  real problem shows up as a number. Kicker and planner keep their roles; they are the control jobs, pods on the
+  in-cluster control runner with the reports and managers of every pinned repository ([Infrastructure](#infrastructure),
+  looper#84).
 - **A report** works its issue alone, in its own clone (`LOOPER_WORK/<repo>/issues/<n>`) on its own branch
   (`looper/<repo>-<n>`), as its own unprivileged user (looper#68), with the per-issue flow below unchanged:
   checkpoints and resume, time limit, idle and done, outcomes. **It never touches main**: a push to main from its
@@ -378,7 +380,7 @@ lander are gone. One job per issue needs none of them.
     it out (PROPOSALS.md: the revision baked into the image would tell).
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
+tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): a build-jobs repository's reports and manager on `arm64, control` with their kind's requests, a repository moving on its pin with its VM override unread, an unpinned one's jobs and every scan on the VM tags, the pipeline file's control jobs on `.control`; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
 tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-bisects (one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch)
 ```
 
@@ -444,8 +446,9 @@ pin issue (filed by the hub) commits one.
 - **No container runtime in the report**: its model's `docker` refuses, saying to use `--build` (so `tacplus`,
   which runs through docker, is the build job's alone); no `looper-docker`, no broker, no `DOCKER_HOST`. Its prompt's
   rule 4 says so. Since looper#68 the model runs as a user outside the socket's group, so it cannot reach the host's
-  socket either way. Taking the socket's mount out of the job's container is the runner's configuration
-  (tacplus-dev/cloud).
+  socket either way. **Its job is a pod of the in-cluster control runner** (looper#84, [Infrastructure](#infrastructure)),
+  which mounts no socket: `looper-dispatch plan` puts the reports and the manager of every repository whose gates are
+  build jobs there, with small requests, and a repository moves the day its pin lands.
 - **The trigger** is `BUILD_TRIGGER_TOKEN`, a pipeline trigger token of tacplus-dev/build owned by its bot user (as
   the [looper identity](#looper-identity)'s), a protected, masked CI variable of tacplus-dev/looper that the report and
   manager jobs read ([Credentials](#credentials)). A job without it builds as before, even in a pinned repository,
@@ -803,11 +806,21 @@ login; a secret it cannot read is named in `sources` and the project is not read
   `LOOPER_RECAP_BACKLOG` (3) or more, the manager behind, advised only after **two nights running** over it
   (classify's `running`). A report's own wait for a VM is the capacity's, below. A kicker's line from before looper#107
   (its `cap=`, its `waiting=` only the issues at that cap) is read with the cap left out.
-- **Capacity** (`capacity`), the numbers the hub brings Jody for a manual scale-up: the queue p90 of every job, the
-  issues whose report waited for a VM, and on which pool (its queue less a scan's that held it, `LOOPER_RECAP_VM_WAIT` 300 seconds or more; an
-  item over `LOOPER_RECAP_VM_WAIT_HOURS`, 1) and one more VM's cost a day (`LOOPER_RECAP_VM_MACHINE`, t2a-standard-8,
-  at `LOOPER_RECAP_VM_USD_HOUR`, 0.308, its on-demand list price: set it from the billing). Capacity is manual: the
-  advice is a scale-up for Jody to decide, never an autoscaling change.
+- **Capacity** (`capacity`), the numbers the hub brings Jody for a manual scale-up: the queue p90 of every job; the
+  issues whose report **waited for room** (`waiting_for_room`: in all, per repository and each, with its pool), on
+  which pool and of which kind: for a VM (its queue less a scan's that held it) or, on the in-cluster control runner
+  (looper#84), for the runner to take its pod (its queue: the runner's `concurrent` limit) and then, Pending, for a
+  node with room (its pod's wait, read from its job's log: `Waiting for pod ... status is Pending`, the executor's
+  preparation until its script ran), `LOOPER_RECAP_VM_WAIT` 300 seconds or more in all, an item (`capacity/vm`,
+  `capacity/pods`) over `LOOPER_RECAP_VM_WAIT_HOURS` (1); **how often the normal pool was full** (`pool_full`: of the
+  pods that ran there, those that waited Pending and those the scheduler found no node with room for, `Unschedulable`
+  in the log); and what one more VM (`one_more_vm`: `LOOPER_RECAP_VM_MACHINE`, t2a-standard-8, at
+  `LOOPER_RECAP_VM_USD_HOUR`, 0.308) or **one more node** of the normal pool (`one_more_node`: `LOOPER_RECAP_NODE_MACHINE`,
+  c4a-standard-2, at `LOOPER_RECAP_NODE_USD_HOUR`, 0.089, about $65 a month; set both from the billing) costs a day,
+  so a 4th node is Jody's call from the numbers (`decisions/merge-train-2026-11-04.md`, addendum). A pod's wait for
+  room is not a slow preparation: it is left out of the project's prepare time and kept in its pool's
+  (`runner_pools`, each with its `executor`, `pods_pending` and `pool_full`). Capacity is manual: the advice is a
+  scale-up for Jody to decide, never an autoscaling change.
 - **The control jobs' queues** (`control`, looper#104): `looper-plan`'s and `looper-kick`'s, created to started (to
   canceled, for one canceled before it started), each its own line of the report (`Plan queue: ...`, `Kick queue:
   ...`), and an item, `control-queue/<job>`, when the longest is `LOOPER_RECAP_CONTROL_QUEUE` (600 seconds) or more:
@@ -833,7 +846,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for a VM, one more VM's cost); the runs and tokens per model, a refused model transient (#136); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
 ```
 
 ## Build pipeline
@@ -1684,7 +1697,45 @@ steps 2 and 3 below are what it applies, for reference, all but the keys' import
 
 ## Infrastructure
 
-The pipeline is gitlab.com/tacplus-dev/looper. Its jobs run on the group runner 57939705
+The pipeline is gitlab.com/tacplus-dev/looper. **Its jobs are pods of the in-cluster GitLab runners** (looper#84;
+Jody, 2026-11-04, `tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`: the only VMs are Kubernetes
+nodes; every CI job is a pod of the GitLab Kubernetes executor with requests and limits, and the scheduler packs pods
+onto nodes), registered to the tacplus-dev group by tacplus-dev/cluster (`gitlab-runner/runners/`, cluster#13,
+cluster#18):
+
+| Runner | Tags | Its jobs | Pods | A job's requests and limits |
+|---|---|---|---|---|
+| `control` (58541761, *tacplus-dev control (cluster, ci, normal pool)*) | `arm64, control` | the kicker, the plan and the hub's probes ([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml)'s `.control`); the reports and the manager of every repository whose gates are build jobs (its main pins its build image and the project holds the trigger, [Build jobs](#build-jobs)) | the normal pool (3 × c4a-standard-2, always on), no spot node, no Docker socket, 8 at once (`concurrent`) | the runner's defaults 250m / 1 CPU, 512Mi / 2Gi; a job raises its own with GitLab's `KUBERNETES_CPU_REQUEST`, `KUBERNETES_MEMORY_REQUEST`, `KUBERNETES_CPU_LIMIT`, `KUBERNETES_MEMORY_LIMIT`, up to 1500m and 4Gi |
+| `build` (58541760) | `arm64, build` | tacplus-dev/build's jobs ([Build pipeline](#build-pipeline)) | the spot pool (0 to 3, tainted), rootless BuildKit in the pod (tacplus#315) | 1 / 3 CPU, 4Gi / 8Gi; up to 3500m and 12Gi |
+
+**Requests per job type** (Jody, 2026-11-07: every looper runs at once on the 3 always-on nodes, with small requests,
+since an agent mostly waits on the model's API; never the 4 CPU/14 GB a gate needs, which is a build job's). The
+plan (`looper-dispatch plan`) gives each control pod its kind's, as the job's variables: a **report** 500m and 1Gi,
+limits the ceilings (1500m, 4Gi); a **manager** (git and the forge's API, no model step yet) the runner's defaults,
+250m and 512Mi, limits 1 and 2Gi; `LOOPER_REQUESTS_report` and `LOOPER_REQUESTS_manager` (`"<cpu> <memory> <cpu
+limit> <memory limit>"`) set them. The **kicker and the plan** ask 100m and 256Mi, limits 1 and 1Gi (`.control`).
+Requests and the pool's size bound how many run at once (no `caps.yaml`, looper#107): the rest wait as pending pods,
+which the [nightly recap](#nightly-recap) reports as waits for room, per repository, with how often the pool was full
+and what a 4th node costs, for Jody to decide.
+
+**Retries the GitLab way.** A control job retries twice on `runner_system_failure`, `scheduler_failure` and
+`unknown_failure` (its runner lost), never on its own timeout: a retried report or manager resumes from its checkpoint
+([A run's work is never lost](#a-runs-work-is-never-lost)). The build pipeline's jobs, on the spot pool, retry twice on
+`runner_system_failure` and `stuck_or_timeout_failure` too (a preemption, a node that never came), its child
+pipeline's gates job on its runner lost alone (its 11h timeout is its own, looper#148; `looper-build`).
+
+**What still runs on the interim VM runners** (below), until it needs no Docker: the reports, verdict and manager of a
+repository that does not yet pin its build image (tacplus, tacplus#340; fleet-seatrials, fleet-seatrials#42: their jobs
+move the day the pin lands, by `looper-dispatch plan`'s read of the pin, with no change here), and **every nightly
+scan**, whose model runs the repository's gates on main through `looper-docker` (PROPOSALS.md: the scan reading the
+nightly build's verdict instead). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those jobs'
+alone; no job of `ci/tacplus-dev.gitlab-ci.yml` asks for them (`tests/looper-dispatch.test.sh`: ci-control), and
+`LOOPER_CONTROL_TAGS` names the control runner's (default `arm64, control`). The hub unpauses `control` once this is on
+main, then removes the VM pools through tacplus-dev/cloud when nothing is left on them.
+
+### The interim VM runners
+
+The VM runners: the group runner 57939705
 *tacplus-dev arm64 autoscaler*, whose manager is the GCE VM `gitlab-runner-mgr` (us-central1-b,
 project jody1-328023). The manager runs the docker-autoscaler executor with the googlecloud fleeting
 plugin, driving its own managed instance group `runner-arm64-tacplus` (template
@@ -1701,9 +1752,9 @@ manager waited for the VM and the 2-hour scan held it while reports queued:
 | every repository but tacplus, and tacplus's manager and scan | 57939705 *tacplus-dev arm64 autoscaler* | `arm64, autoscale` | `runner-arm64-tacplus`, `runner-arm64-t2a8-v*` (t2a-standard-8, 31 GB) | up to 5 workers |
 | tacplus's reports | 58307468 (group runner, protected refs only) | `arm64, autoscale-16` | `runner-arm64-tacplus-big`, `runner-arm64-t2a16-v7` (t2a-standard-16, 64 GB, `looper-runner`, 400 GB pd-standard) | up to 2 VMs; 5 children a job (64 GB / 12; the CPUs allow 8) |
 
-`looper-dispatch plan` gives a repository's report the tags of `LOOPER_JOB_TAGS_<repo>` (its name, `-` as `_`), its
-manager those of `LOOPER_MANAGER_TAGS_<repo>` and its scan those of `LOOPER_SCAN_TAGS_<repo>`, each else
-`LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper
+`looper-dispatch plan` gives a job that still needs Docker (above) the tags of `LOOPER_JOB_TAGS_<repo>` (the
+repository's name, `-` as `_`) for a report, `LOOPER_MANAGER_TAGS_<repo>` for its manager and `LOOPER_SCAN_TAGS_<repo>`
+for its scan, each else `LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper
 ([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml), copied there by the hub) sets, among `looper-plan`'s `variables`:
 
 ```yaml

@@ -429,5 +429,22 @@
   },
   "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/900",
   "failure_reason": "script_failure"
+ },
+ {
+  "id": 1800,
+  "name": "looper-kernel-5",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T12:00:00.000Z",
+  "started_at": "2026-11-01T12:01:00.000Z",
+  "finished_at": "2026-11-01T13:00:00.000Z",
+  "pipeline": {
+   "id": 880
+  },
+  "runner": {
+   "id": 58541761,
+   "description": "tacplus-dev control (cluster, ci, normal pool)"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1800"
  }
 ]

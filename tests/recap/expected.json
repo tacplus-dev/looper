@@ -42,39 +42,72 @@
   "unread": 0
  },
  "capacity": {
+  "one_more_node": {
+   "machine": "c4a-standard-2",
+   "usd_day": 2.14,
+   "usd_hour": 0.089
+  },
   "one_more_vm": {
    "machine": "t2a-standard-8",
    "usd_day": 7.39,
    "usd_hour": 0.308
   },
+  "pool_full": {
+   "full": 1,
+   "pending": 1,
+   "pods": 1
+  },
   "queue_minutes": {
    "max": 97,
-   "n": 25,
+   "n": 26,
    "p50": 1,
    "p90": 20
   },
-  "waiting_for_vm": {
-   "hours": 2.78,
-   "issues": 3,
+  "waiting_for_room": {
+   "by_repo": {
+    "kernel": 1.18,
+    "tacplus": 1.95
+   },
+   "hours": 3.13,
+   "issues": 4,
    "jobs": [
     {
      "issue": 16,
+     "kind": "vm",
      "minutes": 97,
+     "pending_minutes": 0,
      "pool": "tacplus-dev arm64 autoscale-16",
+     "pool_full": false,
      "repo": "tacplus",
      "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1310"
     },
     {
      "issue": 4,
+     "kind": "vm",
      "minutes": 50,
+     "pending_minutes": 0,
      "pool": "tacplus-dev arm64 autoscaler",
+     "pool_full": false,
      "repo": "kernel",
      "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1702"
     },
     {
+     "issue": 5,
+     "kind": "pod",
+     "minutes": 21,
+     "pending_minutes": 20,
+     "pool": "tacplus-dev control (cluster, ci, normal pool)",
+     "pool_full": true,
+     "repo": "kernel",
+     "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1800"
+    },
+    {
      "issue": 12,
+     "kind": "vm",
      "minutes": 20,
+     "pending_minutes": 0,
      "pool": "tacplus-dev arm64 autoscale-16",
+     "pool_full": false,
      "repo": "tacplus",
      "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1200"
     }
@@ -311,6 +344,17 @@
    "summary": "GitHub Actions tacplus/nightly: 1 of 2 runs failed, a later run on the same ref succeeded"
   },
   {
+   "count": 1,
+   "evidence": [
+    "https://gitlab.com/tacplus-dev/looper/-/jobs/1800"
+   ],
+   "key": "capacity/pods",
+   "over": false,
+   "recovered": false,
+   "summary": "1 issue waited 0.35 h for room on the normal pool (kernel#5 21 min; kernel 1.18 h); the pool was full for 1 of 1 pods; queue p90 20 min; one more c4a-standard-2 node is about $2.14 a day (threshold 1 h; the scale-up is Jody's call)",
+   "wait_hours": 0.35
+  },
+  {
    "count": 3,
    "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1200",
@@ -504,14 +548,14 @@
    "summary": "the account refused claude-fable-5-1 1 time: those runs fell back to the default model"
   },
   {
-   "count": 23,
+   "count": 24,
    "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs"
    ],
    "key": "queue/tacplus-dev/looper",
    "over": true,
    "recovered": false,
-   "summary": "gitlab.com/tacplus-dev/looper: queue time p90 20 min over 23 jobs (p50 1, max 97; threshold 15 min)"
+   "summary": "gitlab.com/tacplus-dev/looper: queue time p90 20 min over 24 jobs (p50 1, max 97; threshold 15 min)"
   },
   {
    "count": 1,
@@ -645,7 +689,7 @@
   "kernel": {
    "deferred_lands": 0,
    "holds": {},
-   "jobs": 3,
+   "jobs": 4,
    "lands": {},
    "scan_minutes": [],
    "slots": null,
@@ -997,7 +1041,7 @@
     "runner_system_failure": 1,
     "timeout": 1
    },
-   "jobs": 24,
+   "jobs": 25,
    "prepare_s": {
     "max": 29600,
     "n": 17,
@@ -1006,20 +1050,20 @@
    },
    "queue_s": {
     "max": 5820,
-    "n": 23,
+    "n": 24,
     "p50": 60,
     "p90": 1200
    },
    "run_s": {
     "max": 34800,
-    "n": 23,
+    "n": 24,
     "p50": 2100,
     "p90": 11700
    },
    "status": {
     "canceled": 1,
     "failed": 8,
-    "success": 15
+    "success": 16
    }
   }
  },
@@ -1036,8 +1080,11 @@
     "max": 72,
     "p50": 55
    },
+   "executor": "docker-autoscaler",
    "failed_before_ready": 0,
    "jobs": 4,
+   "pods_pending": 0,
+   "pool_full": 0,
    "vms": 4
   },
   "tacplus-dev arm64 autoscaler": {
@@ -1052,9 +1099,31 @@
     "max": 45,
     "p50": 33
    },
+   "executor": "docker-autoscaler",
    "failed_before_ready": 6,
    "jobs": 21,
+   "pods_pending": 0,
+   "pool_full": 0,
    "vms": 15
+  },
+  "tacplus-dev control (cluster, ci, normal pool)": {
+   "boot_to_ready_s": {
+    "max": 1200,
+    "n": 1,
+    "p50": 1200,
+    "p90": 1200
+   },
+   "disk_pct": {
+    "jobs": 1,
+    "max": 12,
+    "p50": 12
+   },
+   "executor": "kubernetes",
+   "failed_before_ready": 0,
+   "jobs": 1,
+   "pods_pending": 1,
+   "pool_full": 1,
+   "vms": 1
   }
  },
  "sources": {

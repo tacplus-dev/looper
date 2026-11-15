@@ -794,6 +794,82 @@ for j in "looper-alpha-verdict running" "looper-alpha-manager created"; do
 done
 pass
 
+# The in-cluster runners (looper#84; tacplus-dev/roadmap decisions/only-vms-are-k8s-nodes-2026-11-04.md): a
+# repository whose gates are build jobs (its main pinned, the project holding the trigger and the apps: none of
+# its jobs runs Docker) has its reports and manager on the control runner, `arm64, control`, each pod with its
+# kind's requests and limits (GitLab's KUBERNETES_* variables, within that runner's ceilings); its per-repository
+# tag override is not read, so a repository moves the day its pin lands, with nothing changed here. A job that
+# would hold looper-docker stays on the VM runners' tags: an unpinned repository's reports, verdict and manager,
+# and every scan (its model runs the gates on main). A control job's retry: is as before: it resumes from its
+# checkpoint. The plan's one job with nothing to plan takes the control tags once the project has the trigger.
+scenario plan-control
+issue tacplus 5 OPEN "Go." approved
+issue alpha 6 OPEN "Land it." looper:landing
+mkdir -p "$FIX/contents"; echo "build: x" > "$FIX/contents/alpha-build.lock"
+control_plan() { PLAN="$(env -u CI_PIPELINE_SOURCE -u GH_TOKEN -u LOOPER_JOB_TAGS -u BUILD_TRIGGER_TOKEN "${APPS[@]}" LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" "$@" \
+  LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
+vars_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  variables:/ {v=1; next} f && /^  [a-z]/ {v=0} f && v {sub(/^    /, ""); print}' <<<"$PLAN" | paste -sd' '; }
+control_plan BUILD_TRIGGER_TOKEN=glptt-x
+[[ "$(tags_of alpha-4)" == "[arm64, control]" ]] || fail "alpha's report: $(tags_of alpha-4): $PLAN"
+[[ "$(vars_of looper-alpha-4)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 500m KUBERNETES_MEMORY_REQUEST: 1Gi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
+  || fail "alpha's report's requests: $(vars_of looper-alpha-4)"
+[[ "$(tags_of alpha-manager)" == "[arm64, control]" ]] || fail "alpha's manager: $(tags_of alpha-manager)"
+[[ "$(vars_of looper-alpha-manager)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 250m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1 KUBERNETES_MEMORY_LIMIT: 2Gi' ]] \
+  || fail "alpha's manager's requests: $(vars_of looper-alpha-manager)"
+grep -qx '    - repo-looper --repo alpha --manage' <<<"$(job_of looper-alpha-manager)" || fail "alpha's manager: $(job_of looper-alpha-manager)"
+# tacplus, unpinned: its reports on their VM override, its split batch's jobs as before (the verdict runs its
+# gates, on the reports' pool), no requests.
+[[ "$(tags_of tacplus-5)" == "[arm64, autoscale-16]" ]] || fail "tacplus's report: $(tags_of tacplus-5)"
+[[ "$(tags_of tacplus-verdict)" == "[arm64, autoscale-16]" && "$(tags_of tacplus-manager)" == "[arm64, autoscale-16]" ]] || fail "tacplus's batch: $(tags_of tacplus-verdict) $(tags_of tacplus-manager)"
+! grep -q KUBERNETES_ <<<"$(job_of looper-tacplus-5)$(job_of looper-tacplus-verdict)$(job_of looper-tacplus-manager)" || fail "requests on a VM job: $PLAN"
+# A control job's retry is a control job's: it resumes from its checkpoint; no job asks for a VM tag it is not given.
+grep -qx '    when: \[runner_system_failure, scheduler_failure, unknown_failure\]' <<<"$(job_of looper-alpha-4)" || fail "alpha's retry: $(job_of looper-alpha-4)"
+! grep -q stuck_or_timeout <<<"$PLAN" || fail "a control job retried on its own timeout: $PLAN"
+grep -qF 'planned looper-alpha-4 (5h, tags arm64, control, resource_group looper-alpha-4)' "$FIX/err" || fail "the plan's log: $(cat "$FIX/err")"
+# tacplus pinned: its jobs move, its override unread, nothing else changed.
+echo "tacplus: x" > "$FIX/contents/tacplus-tacplus.lock"
+control_plan BUILD_TRIGGER_TOKEN=glptt-x
+[[ "$(tags_of tacplus-5)" == "[arm64, control]" && "$(tags_of tacplus-manager)" == "[arm64, control]" ]] || fail "tacplus pinned: $(tags_of tacplus-5) $(tags_of tacplus-manager)"
+! grep -q 'looper-tacplus-verdict:' <<<"$PLAN" || fail "tacplus pinned, still split: $(grep '^looper-' <<<"$PLAN")"
+rm "$FIX/contents/tacplus-tacplus.lock"
+# The control tags and a kind's requests are the instance's to set.
+control_plan BUILD_TRIGGER_TOKEN=glptt-x LOOPER_CONTROL_TAGS="arm64, ctl" LOOPER_REQUESTS_report="1 2Gi 1500m 4Gi"
+[[ "$(tags_of alpha-4)" == "[arm64, ctl]" && "$(tags_of alpha-manager)" == "[arm64, ctl]" ]] || fail "LOOPER_CONTROL_TAGS: $(tags_of alpha-4)"
+[[ "$(vars_of looper-alpha-4)" == *'KUBERNETES_CPU_REQUEST: 1 KUBERNETES_MEMORY_REQUEST: 2Gi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] || fail "LOOPER_REQUESTS_report: $(vars_of looper-alpha-4)"
+# Without the trigger a pinned repository's jobs hold looper-docker (looper#71): the VM tags, no requests.
+control_plan
+[[ "$(tags_of alpha-4)" == "[arm64, autoscale]" && "$(tags_of alpha-manager)" == "[arm64, autoscale]" ]] || fail "without the trigger: $(tags_of alpha-4) $(tags_of alpha-manager)"
+! grep -q KUBERNETES_ <<<"$PLAN" || fail "requests without the trigger: $PLAN"
+# Every scan stays on the VM tags: its model runs the gates on main with looper-docker.
+printf '%s\n' alpha tacplus > "$FIX/repos"
+control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule
+[[ "$(tags_of scan-alpha)" == "[arm64, autoscale]" && "$(tags_of scan-tacplus)" == "[arm64, autoscale]" ]] || fail "the scans: $(tags_of scan-alpha) $(tags_of scan-tacplus)"
+! grep -q KUBERNETES_ <<<"$PLAN" || fail "requests on a scan: $PLAN"
+# Nothing to plan: the one job that says so runs on the control runner with the trigger, else on the VM tags.
+rm "$FIX/issues/tacplus-5.json" "$FIX/issues/alpha-6.json"; jobs "looper-alpha-4 running"
+control_plan BUILD_TRIGGER_TOKEN=glptt-x
+[[ "$(tags_of none)" == "[arm64, control]" ]] || fail "looper-none: $(tags_of none): $PLAN"
+control_plan
+[[ "$(tags_of none)" == "[arm64, autoscale]" ]] || fail "looper-none without the trigger: $(tags_of none)"
+pass
+
+# The control jobs of tacplus-dev's own pipeline file (looper#84): the kicker, the plan and the hub's probes on
+# the control runner with the control kind's requests, and no job of the file on a VM runner's tag (autoscale,
+# autoscale-16, gce): only tacplus's per-repository override names one, for its reports until its pin lands.
+scenario ci-control
+f="$ROOT/ci/tacplus-dev.gitlab-ci.yml"
+for j in looper-plan looper-kick looper-ruleset-probe looper-token-diagnose; do
+  awk -v j="$j:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f' "$f" | grep -qx '  extends: \[.looper-identity, .control\]' || fail "$j is not a control job"
+done
+awk '$0 == ".control:" {f=1; next} /^[^ ]/ {f=0} f' "$f" > "$FIX/control"
+grep -qx '  tags: \[arm64, control\]' "$FIX/control" || fail ".control's tags: $(cat "$FIX/control")"
+for v in 'KUBERNETES_CPU_REQUEST: 100m' 'KUBERNETES_MEMORY_REQUEST: 256Mi' 'KUBERNETES_CPU_LIMIT: 1' 'KUBERNETES_MEMORY_LIMIT: 1Gi'; do
+  grep -qx "    $v" "$FIX/control" || fail ".control's requests lack $v: $(cat "$FIX/control")"
+done
+! grep -nE '^\s*tags:.*(autoscale|gce)' "$f" || fail "a job of $f asks for a VM runner's tag"
+[[ "$(grep -cE 'autoscale|gce' "$f")" == "$(grep -cE '^\s*LOOPER_JOB_TAGS_tacplus: |^\s*#.*(autoscale|gce)' "$f")" ]] || fail "a VM runner's tag outside tacplus's override and the comments: $(grep -nE 'autoscale|gce' "$f")"
+pass
+
 scenario apps-no-pat
 # Fake personal tokens, built at run time: no literal for the secret scan (looper#117).
 FAKE=0123456789abcdef
