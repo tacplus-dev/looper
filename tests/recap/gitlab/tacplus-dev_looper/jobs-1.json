@@ -1,5 +1,22 @@
 [
  {
+  "id": 1703,
+  "name": "looper-gamma-manager",
+  "stage": "run",
+  "status": "success",
+  "created_at": "2026-11-01T21:58:00.000Z",
+  "started_at": "2026-11-01T22:00:00.000Z",
+  "finished_at": "2026-11-02T01:15:00.000Z",
+  "pipeline": {
+   "id": 502
+  },
+  "runner": {
+   "id": 57939705,
+   "description": "tacplus-dev arm64 autoscaler"
+  },
+  "web_url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1703"
+ },
+ {
   "id": 1702,
   "name": "looper-kernel-4",
   "stage": "run",

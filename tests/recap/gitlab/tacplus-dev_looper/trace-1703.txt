@@ -1,0 +1,36 @@
+[0Ksection_start:1793600000:prepare_script[0KRunning on runner-vm-1703 via gitlab-runner-mgr...
+[2026-11-01T23:00:00Z] the manager of gamma: merging its reports' queued branches, in batches: one build a batch (looper#86)
+[2026-11-01T23:00:10Z] merging #30 (looper/gamma-30, queued 2026-11-01T22:10:00Z)
+[2026-11-01T23:00:10Z] #30: staged: 7777771..7777772 on the candidate
+[2026-11-01T23:00:11Z] merging #31 (looper/gamma-31, queued 2026-11-01T22:20:00Z)
+[2026-11-01T23:00:11Z] #31: staged: 7777772..7777773 on the candidate
+[2026-11-01T23:00:12Z] merging #32 (looper/gamma-32, queued 2026-11-01T22:30:00Z)
+[2026-11-01T23:00:12Z] #32: staged: 7777773..7777774 on the candidate
+[2026-11-01T23:00:12Z] a batch of 3 lands (#30, #31, #32) on main 7777771: one build of the candidate 7777774
+[2026-11-01T23:00:12Z] the candidate 7777774 of 3 lands: a build job of the gates full (src/lib.rs matches no gate set), on main 7777771
+[2026-11-01T23:40:00Z] batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/50: queued 600 s, ran 1800 s
+[2026-11-01T23:40:00Z] the candidate 7777774 is red
+[2026-11-01T23:40:00Z] the batch is red: bisecting the batch of 3 (the candidate after its first half is built next; about 2 builds find the land that breaks it)
+[2026-11-01T23:40:01Z] the candidate 7777772 of 1 land: a build job of the gates full (src/lib.rs matches no gate set), on main 7777771
+[2026-11-02T00:10:00Z] batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/51: queued 300 s, ran 1500 s
+[2026-11-02T00:10:00Z] the candidate 7777772 is green
+[2026-11-02T00:10:00Z] bisecting: the first 1 of 3 are green
+[2026-11-02T00:10:01Z] the candidate 7777773 of 2 lands: a build job of the gates full (src/lib.rs matches no gate set), on main 7777771
+[2026-11-02T00:40:00Z] batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/52: queued 300 s, ran 1500 s
+[2026-11-02T00:40:00Z] the candidate 7777773 is red
+[2026-11-02T00:40:00Z] bisecting: the first 2 of 3 are red
+[2026-11-02T00:40:01Z] main fast-forwarded: 7777771..7777772, on the gates full (src/lib.rs matches no gate set): a batch of 1 land, one build
+[2026-11-02T00:40:01Z] #30: landed on main: 7777771..7777772, on the gates full (src/lib.rs matches no gate set)
+[2026-11-02T00:40:02Z] #30: deleted looper/gamma-30
+[2026-11-02T00:40:02Z] #31: the land that breaks the batch: sent back with the failure; 1 land after it (#32) stay queued for the next batch
+[2026-11-02T00:40:02Z] #31: not merged (exit 4)
+[2026-11-02T00:40:30Z] merging #32 (looper/gamma-32, queued 2026-11-01T22:30:00Z)
+[2026-11-02T00:40:30Z] #32: staged: 7777772..7777775 on the candidate
+[2026-11-02T00:40:30Z] a batch of 1 land (#32) on main 7777772: one build of the candidate 7777775
+[2026-11-02T01:10:00Z] batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/53: queued 300 s, ran 1200 s
+[2026-11-02T01:10:00Z] the candidate 7777775 is green
+[2026-11-02T01:10:00Z] main fast-forwarded: 7777772..7777775, on the gates full (src/lib.rs matches no gate set): a batch of 1 land, one build
+[2026-11-02T01:10:00Z] #32: landed on main: 7777772..7777775, on the gates full (src/lib.rs matches no gate set)
+[2026-11-02T01:10:01Z] #32: deleted looper/gamma-32
+[2026-11-02T01:15:00Z] no report at work and no land queued; the manager ends
+[2026-11-02T01:15:00Z] disk at the end: 30% used of 100G (/builds)

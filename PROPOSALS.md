@@ -764,3 +764,28 @@ the looper then marks it `promoted` or `declined` here with the date.
   "no verdict within 3h", and `--land`'s wait for the manager's verdict comment fed the error object to jq
   (`object ({"message":...) and string ... cannot have their containment checked`). Both should tell an API error
   (rate limit: wait for its reset; else say so) from an absent verdict. A `bug` to file once confirmed.
+- **The split manager's verdict job as a train** (2026-11-15, #86): the merge train is the one manager's
+  (`repo-looper --manage`). The manager split in two (#90: `--verdict` and `--merge`, for a repository whose gates
+  would run beside the manager's token) still judges its lands one at a time onto `looper/staging`, each on its own
+  gates. Its verdict job could stage the batch and run one gates command on the candidate as `batch_gates` does, and
+  bisect in the same job, so an unpinned repository with the apps gets one build a batch too; or every repository
+  pins its build image (its pin issue) and the split retires, as #90 foresaw.
+- **The manager's own commits reach main without a build** (2026-11-15, #86): the train lands nothing on main
+  without a green build of exactly that commit, but the manager's planning-file commits (`HISTORY.md: #N`, the
+  templates) go to main by `land()`, docs only, unbuilt, as before. A docs-only build is cheap; if "main stays
+  green" is to mean every commit, the HISTORY.md lines could ride on the next candidate instead (appended to the
+  staging ref before its build), which also removes a push between batches.
+- **A land staged twice counts from its second staging in the recap** (2026-11-15, #86): a land after a batch's
+  culprit is staged again in the next batch, and `looper-recap` keeps the last `merging #N (..., queued T)` as its
+  start, so the hours it waited for the manager (`waited_hours`) miss its first wait; its queued-to-landed time is
+  right (from `queued=`). Keeping the first `merging` would count the wait whole.
+- **Bisection builds the prefixes, not the halves** (2026-11-15, #86): the decision says "build the first half and
+  the second half"; the train builds the candidate after the first half (a prefix of the batch, so its green lands
+  as it is), and on green the candidate after the first half of the rest, and so on: ceil(log2 n) builds, each a
+  commit main can fast-forward to. Building the second half alone (the later lands rebased without the first) would
+  need another rebase and could land out of queue order; it is not done.
+- **Reports' `--wait` is for tests and hands only** (2026-11-15, #86): a report's `--land` queues and returns, and
+  the issue's next run, a whole model run, closes the issue once the verdict is in. That run costs a start (the
+  clone, the prompt) for a comment and a close; a cheaper closer (the manager posting the report's closing comment
+  from its last checkpoint and closing a `closes-on-green` issue itself) would save it, but changes who closes
+  issues (the report's model does today, rule 8) and so is Jody's call.

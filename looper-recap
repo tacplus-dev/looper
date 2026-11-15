@@ -318,8 +318,12 @@ MODEL_RUN = re.compile(r"\] model: (\S+) for ")
 MODEL_REFUSED = re.compile(r"\] model: (\S+) refused ")
 TOKENS = re.compile(r"\] tokens: (\S+) input=(\d+) output=(\d+) cache_read=(\d+) cache_write=(\d+)")
 TOKEN_KINDS = ("input", "output", "cache_read", "cache_write")
-# A land's build (looper#128): its queue time apart from its run time.
-M_BUILD = re.compile(r"\] #(\d+): its build (\S+): queued (\d+) s, (?:(?:ran|running) (\d+) s|not started)")
+# A land's build (looper#128): its queue time apart from its run time; a batch's, the merge train's (looper#86).
+M_BUILD = re.compile(r"\] (?:#(\d+)|batch): its build (\S+): queued (\d+) s, (?:(?:ran|running) (\d+) s|not started)")
+# The merge train (looper#86): each batch's size, its gates run in the manager's job (no build job), and a bisection.
+M_BATCH = re.compile(r"\] a batch of (\d+) lands? \(")
+M_BATCH_GATES = re.compile(r"\] the batch's gates ran (\d+) s")
+M_BISECT = re.compile(r"\] the batch is red: bisecting the batch of (\d+)")
 CAPACITY = re.compile(r"\] capacity: (.*)$")
 CAP_REPO = re.compile(r"(\S+) reports=(\d+)(?: running=(\d+))?(?: cap=\d+)? waiting=([\d,]*) landing=(\d+|\?)")
 
@@ -460,14 +464,29 @@ def read_manager(text):
     """A manager's log (looper#70): each land it judged, from `merging #N
     (..., queued T)` to its verdict (merged, sent back on exit 3, red on 4,
     else failed), with the conflicts it resolved by regenerating; the lands
-    it left queued for the next manager; and each land's build, its queue
-    time (trigger to start) apart from its run time (looper#128)."""
-    out = {"lands": [], "deferred": [], "builds": []}
+    it left queued for the next manager; each land's or batch's build, its
+    queue time (trigger to start) apart from its run time (looper#128); and
+    the merge train's batches (looper#86): each batch's size, the gates it ran
+    in the job (a build all the same, for the builds per landed change) and
+    each bisection. A land staged again in a later batch keeps its queued time."""
+    out = {"lands": [], "deferred": [], "builds": [], "batches": [], "gates_runs": 0, "bisections": 0}
     cur, resolved = {}, {}
     for now, line in lines_at(text):
         m = MERGING.search(line)
         if m:
             cur[m.group(1)] = {"issue": int(m.group(1)), "queued": when(m.group(2)), "start": now}
+            continue
+        m = M_BATCH.search(line)
+        if m:
+            out["batches"].append(int(m.group(1)))
+            continue
+        m = M_BATCH_GATES.search(line)
+        if m:
+            out["gates_runs"] += 1
+            continue
+        m = M_BISECT.search(line)
+        if m:
+            out["bisections"] += 1
             continue
         m = M_RESOLVED.search(line)
         if m:
@@ -492,8 +511,8 @@ def read_manager(text):
             continue
         m = M_BUILD.search(line)
         if m:
-            out["builds"].append({"issue": int(m.group(1)), "url": m.group(2), "queue_s": int(m.group(3)),
-                                  "run_s": None if m.group(4) is None else int(m.group(4))})
+            out["builds"].append({"issue": None if m.group(1) is None else int(m.group(1)), "url": m.group(2),
+                                  "queue_s": int(m.group(3)), "run_s": None if m.group(4) is None else int(m.group(4))})
     return out
 
 
@@ -645,11 +664,15 @@ def collect(until):
                                                   "scans": [], "scan_runs": [], "queued": [], "pools": {}})
             lp["jobs"] += 1
             if kind == "manager":
-                mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "builds": [], "urls": []})
+                mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "builds": [], "urls": [],
+                                                "batches": [], "gates_runs": 0, "bisections": 0})
                 mg["jobs"] += 1
                 mg["lands"] += [dict(x, url=url) for x in lg["manager"]["lands"]]
                 mg["deferred"] += lg["manager"]["deferred"]
                 mg["builds"] += lg["manager"]["builds"]
+                mg["batches"] += lg["manager"]["batches"]
+                mg["gates_runs"] += lg["manager"]["gates_runs"]
+                mg["bisections"] += lg["manager"]["bisections"]
                 mg["urls"].append(url)
             if kind == "scan" and rn is not None:
                 lp["scans"].append(rn)
@@ -862,9 +885,12 @@ def managers_of(managers, start, until, sources, items):
     it left for the next manager, the work redone (a land of an issue again
     after it was sent back or red), its builds' queue time apart from their
     run time (looper#128: a build is the latest line of its pipeline, a later
-    manager's taking it up), and from GitHub its merges' build status
-    (LOOPER_RECAP_BUILD_CONTEXT, tacplus-dev/build: a red main after its merge)
-    and the reverts on its main."""
+    manager's taking it up), the merge train's numbers (looper#86: its batch
+    sizes, its builds per landed change, the build jobs and the gates runs in
+    its job against the lands merged, the target well under 1, and its
+    bisections; the report-to-merge time is a land's queued to landed), and
+    from GitHub its merges' build status (LOOPER_RECAP_BUILD_CONTEXT,
+    tacplus-dev/build: a red main after its merge) and the reverts on its main."""
     org = ENV.get("LOOPER_ORG", "tacplus-dev")
     ctx = ENV.get("LOOPER_RECAP_BUILD_CONTEXT", "tacplus-dev/build")
     out, bad = {}, []
@@ -901,7 +927,11 @@ def managers_of(managers, start, until, sources, items):
         d = dist(r2m)
         builds = list({b["url"]: b for b in mg["builds"]}.values())
         bq, br = dist([b["queue_s"] for b in builds]), dist([b["run_s"] for b in builds])
+        nb = len(builds) + mg.get("gates_runs", 0)
+        bs = dist(mg.get("batches") or [])
         sc = out[repo] = {
+            "batches": len(mg.get("batches") or []), "batch_size": bs or None,
+            "builds_per_land": whole(round(nb / len(merged), 2)) if merged else None, "bisections": mg.get("bisections", 0),
             "jobs": mg["jobs"], "lands": len(lands), "merged": len(merged), "sent_back": len(by("sent_back")),
             "resolved": sum(1 for x in lands if x["resolved"]), "red_gates": len(by("red")), "failed": len(by("failed")),
             "deferred": len(mg["deferred"]), "redone": sorted(redone),
@@ -1301,7 +1331,11 @@ def report(night, classes, sdir, cov):
     mgs = []
     for r, m in sorted((night.get("managers") or {}).items()):
         r2m = m["report_to_merge_minutes"]
-        mgs.append(f"{r} {m['merged']} merged" + (f" (report to merge p50 {r2m['p50']}, p90 {r2m['p90']} min)" if r2m else "")
+        bs = m.get("batch_size")
+        mgs.append(f"{r} {m['merged']} merged" + (f" (queued to landed p50 {r2m['p50']}, p90 {r2m['p90']} min)" if r2m else "")
+                   + (f" in {m['batches']} batch{'es' * (m['batches'] != 1)} (sizes p50 {bs['p50']}, max {bs['max']})" if bs else "")
+                   + (f", {m['builds_per_land']} builds a landed change" if m.get("builds_per_land") is not None else "")
+                   + (f", {m['bisections']} bisection{'s' * (m['bisections'] != 1)}" if m.get("bisections") else "")
                    + f", conflicts resolved {m['resolved']} against {m['sent_back']} sent back, red gates {m['red_gates']}"
                    + f", main red after {len(m['red_main'])}" + (f" ({', '.join(m['red_main'])})" if m["red_main"] else "")
                    + f", reverts {'?' if m['reverts'] is None else len(m['reverts'])}"

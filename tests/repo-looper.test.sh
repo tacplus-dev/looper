@@ -306,7 +306,7 @@ scenario() { # name: a fresh origin with one commit and an approved issue alpha#
   git -C "$FIX/seed" commit -q --allow-empty -m init && git -C "$FIX/seed" push -q origin main
   issue alpha 4 OPEN approved,bug "Fix it."
 }
-LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true'   # a claude.sh command: land the commits (looper#32)
+LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait --gates true'   # a claude.sh command: land the commits (looper#32)
 push_fix() { # a claude.sh line: commit and land a fix
   echo "git commit -q --allow-empty -m fix && $LAND" >> "$FIX/claude.sh"
 }
@@ -895,7 +895,7 @@ pass
 # commit's "Fixes #N" closes it on GitHub): closed is not done. The done-grace
 # starts at the run's closing report, written after the land, so the model is
 # not stopped before it. The stub land's gates close the issue, as the push would.
-CLOSING_LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates "bash \"\$FIX/close.sh\""'
+CLOSING_LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait --gates "bash \"\$FIX/close.sh\""'
 closing_land() { # a claude.sh line: commit and land a fix that closes the issue
   echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' > "$FIX/close.sh"
   echo "git commit -q --allow-empty -m fix && $CLOSING_LAND" >> "$FIX/claude.sh"
@@ -1075,7 +1075,7 @@ platform "- Elsewhere (tacplus-dev/beta#4, alpha#40)"
 push_fix; close_it
 cat > "$FIX/propose.sh" <<'EOS'
 gh issue comment 4 --repo tacplus-dev/alpha --body "Design: do it this way."
-echo "- **A thing** (#4)" >> PROPOSALS.md && git commit -qam "PROPOSALS.md: #4" && "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
+echo "- **A thing** (#4)" >> PROPOSALS.md && git commit -qam "PROPOSALS.md: #4" && "$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true
 EOS
 run
 p="$(prompts)"; has "$p" "proposing a design for issue #4"; lacks "$p" "working issue"
@@ -1708,7 +1708,7 @@ branch || fail "no checkpoint before the kill"
 : > "$FIX/prompts"
 cat > "$FIX/claude.sh" <<'EOS'
 cat a.txt > "$FIX/checkout"
-git add -A && git commit -q -m fix && "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
+git add -A && git commit -q -m fix && "$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true
 jq '.state = "CLOSED"' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
 EOS
 jobs "looper-alpha-4 failed 77" "looper-alpha-4 running 78" "looper-beta-7 running 79"
@@ -1775,7 +1775,7 @@ echo x > a.txt
 echo y > b.txt; sleep 2
 $1
 sleep $BOUND
-git add -A && git commit -q -m "the orphan's fix" && "\$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
+git add -A && git commit -q -m "the orphan's fix" && "\$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true
 gh issue comment 4 --repo tacplus-dev/alpha --body "the orphan's comment"
 EOS
 }
@@ -1801,7 +1801,7 @@ has "$(cat "$FIX/gitlab")" "PRIVATE-TOKEN https://gl.test/api/v4/projects/42/job
 : > "$FIX/prompts"
 cat > "$FIX/claude.sh" <<'EOS'
 cat a.txt b.txt > "$FIX/checkout"
-git add -A && git commit -q -m fix && "$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
+git add -A && git commit -q -m fix && "$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true
 jq '.state = "CLOSED"' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
 EOS
 jobs "looper-alpha-4 failed 77" "looper-alpha-4 running 78"
@@ -1986,7 +1986,7 @@ for i in $(seq 150); do ls "$FIX"/running-* | grep -qv "running-$ISSUE\$" && { e
 { pwd; git rev-parse --abbrev-ref HEAD; } > "$FIX/where-$ISSUE"
 echo "$ISSUE" > "file-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE"
 ! git push -q origin HEAD:main 2> "$FIX/push-$ISSUE" || echo "pushed to main" >> "$FIX/push-$ISSUE"
-"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true > "$FIX/land-$ISSUE" 2>&1
+"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait --gates true > "$FIX/land-$ISSUE" 2>&1
 echo "rc $?" >> "$FIX/land-$ISSUE"
 EOS
 close_all
@@ -2059,7 +2059,7 @@ scenario labels-missing
 cat > "$FIX/claude.sh" <<'EOS'
 jq -r '[.labels[].name] | join(",")' "$FIX/issues/alpha-4.json" > "$FIX/labels-working"
 echo 4 > four.txt && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1 &
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true > "$FIX/land-4" 2>&1 &
 for _ in $(seq 100); do grep -q looper:landing "$FIX/issues/alpha-4.json" && break; sleep 0.1; done
 jq -r '[.labels[].name] | join(",")' "$FIX/issues/alpha-4.json" > "$FIX/labels-landing"
 wait $!; echo "rc $?" >> "$FIX/land-4"
@@ -2130,7 +2130,7 @@ scenario manager-sends-back
 cat > "$FIX/claude.sh" <<'EOS'
 echo mine > a.txt && git add -A && git commit -qm "fix 4"
 printf 'theirs\n' > "$FIX/seed/a.txt"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm "main: a.txt"; git -C "$FIX/seed" push -q origin main
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run
 has "$(cat "$FIX/land-4")" "The manager sent [\`looper/alpha-4\`]"; has "$(cat "$FIX/land-4")" "conflicts in \`a.txt\`"; has "$(cat "$FIX/land-4")" "rc 3"
@@ -2152,7 +2152,7 @@ cat > "$FIX/claude.sh" <<'EOS'
 printf -- '- mine\n' >> PROPOSALS.md && git add -A && git commit -qm "fix 4: a proposal"
 printf -- '- mine\n' >> HISTORY.md && echo x > x.txt && git add -A && git commit -qm "fix 4: history"
 (cd "$FIX/seed" && git pull -q && printf -- '- theirs\n' >> PROPOSALS.md && printf -- '- theirs\n' >> HISTORY.md && git add -A && git commit -qm "main: logs" && git push -q origin main)
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run
 has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0"
@@ -2169,7 +2169,7 @@ printf -- '- base\n' > "$FIX/seed/PROPOSALS.md"; git -C "$FIX/seed" add -A; git 
 cat > "$FIX/claude.sh" <<'EOS'
 printf -- '- mine\n' >> PROPOSALS.md && echo mine > a.txt && git add -A && git commit -qm "fix 4"
 (cd "$FIX/seed" && git pull -q && printf -- '- theirs\n' >> PROPOSALS.md && echo theirs > a.txt && git add -A && git commit -qm "main" && git push -q origin main)
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run
 has "$(cat "$FIX/land-4")" "The manager sent [\`looper/alpha-4\`]"; has "$(cat "$FIX/land-4")" "conflicts in \`a.txt\`"; has "$(cat "$FIX/land-4")" "rc 3"
@@ -2189,7 +2189,7 @@ printf '# The generated files.\napp-lock:\n  run: ./gen.sh\n  paths: [app.lock]\
 cat > "$FIX/claude.sh" <<'EOS'
 echo x > deps/mine && ./gen.sh && git add -A && git commit -qm "fix 4"
 (cd "$FIX/seed" && git pull -q && echo y > deps/theirs && ./gen.sh && git add -A && git commit -qm "main: theirs" && git push -q origin main)
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'test -f deps/mine && test -f deps/theirs && diff <(ls deps | sort) app.lock' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates 'test -f deps/mine && test -f deps/theirs && diff <(ls deps | sort) app.lock' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run
 has "$(cat "$FIX/land-4")" "rc 0"; has "$(cat "$FIX/land-4")" "by regenerating them, never by hand: \`app.lock (./gen.sh)\`"
@@ -2218,12 +2218,12 @@ cat > "$FIX/claude.sh" <<'EOS'
 git -C "$FIX/q-5" push -q origin looper/alpha-5
 for _ in $(seq 100); do git -C "$FIX/origin.git" show main:five.txt >/dev/null 2>&1 && break; sleep 0.1; done
 echo 4 > four.txt && printf '# State\n\nfour\n' > STATE.md && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 git -C "$FIX/origin.git" show main:STATE.md > "$FIX/state-1"; git -C "$FIX/origin.git" log --format=%s main > "$FIX/log-1"
 git ls-remote origin refs/heads/looper/alpha-4 > "$FIX/branch-1"
 git fetch -q origin && ! git rebase -q origin/main >/dev/null 2>&1 && printf '# State\n\nfive\nfour\n' > STATE.md && git add STATE.md && GIT_EDITOR=true git rebase --continue >/dev/null 2>&1
 git log --format=%s origin/main..HEAD > "$FIX/relanding"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4b" 2>&1; echo "rc $?" >> "$FIX/land-4b"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true > "$FIX/land-4b" 2>&1; echo "rc $?" >> "$FIX/land-4b"
 EOS
 close_all
 run
@@ -2277,7 +2277,7 @@ pass
 scenario manager-red
 cat > "$FIX/claude.sh" <<'EOS'
 echo x > x.txt && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'echo the-gates-say-no; false' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates 'echo the-gates-say-no; false' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run
 main_unchanged
@@ -2292,7 +2292,7 @@ pass
 scenario land-after-report-ended
 echo 'echo x > x.txt && git add -A && git commit -qm "fix 4"' > "$FIX/claude.sh"
 step "x.txt fixed; left: comment and close"
-echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true' >> "$FIX/claude.sh"
 OUT="$(looper LOOPER_TIMEOUT=20 LOOPER_STOP_EARLY=0 -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "the report exited non-zero"; }
 main_unchanged
 has "$(labels alpha 4)" "looper:landing"
@@ -2304,6 +2304,30 @@ manage
 [[ "$(landed x.txt)" == x ]] || fail "main: $(origin log --oneline main)"
 has "$(grep -A4 '^alpha#4 The manager merged' "$FIX/comments")" "Its report's last checkpoint"
 has "$(grep -A4 '^alpha#4 The manager merged' "$FIX/comments")" "> x.txt fixed; left: comment and close"
+lacks "$(labels alpha 4)" "looper:landing"
+branch && fail "the merged branch is left"
+pass
+
+# A report queues its land and ends (looper#86: reports never wait for, or run,
+# a build): --land returns at once, queued, its run ends land-pending with the
+# issue looper:landing, and the manager lands it after the run; the next run
+# closes the issue. --wait (the tests above, a run by hand) waits as before.
+scenario land-queues-and-ends
+cat > "$FIX/claude.sh" <<'EOS'
+echo x > x.txt && git add -A && git commit -qm "fix 4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run_alone
+l="$(cat "$FIX/land-4")"
+has "$l" "queued: the manager of alpha lands looper/alpha-4 in its next batch"; has "$l" "Your run ends here"; has "$l" "rc 0"
+lacks "$l" "The manager merged"; lacks "$l" "waiting for its verdict"
+has "$OUT" "#4: land-pending"; has "$(labels alpha 4)" "looper:landing"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "The run queued its land and ended, as the merge train asks (looper#86"
+main_unchanged
+has "$(origin show looper/alpha-4:.looper/land)" "state=queued"
+manage
+[[ "$(landed x.txt)" == x ]] || fail "main: $(origin log --oneline main)"
+has "$(grep '^alpha#4 The manager merged' "$FIX/comments")" "on main"
 lacks "$(labels alpha 4)" "looper:landing"
 branch && fail "the merged branch is left"
 pass
@@ -2322,7 +2346,7 @@ scenario blocked-land-pending
 issue alpha 3 OPEN "" "Another."
 echo 'echo x > x.txt && git add -A && git commit -qm "fix 4"' > "$FIX/claude.sh"
 echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
-echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true' >> "$FIX/claude.sh"
 OUT="$(looper LOOPER_TIMEOUT=20 LOOPER_STOP_EARLY=0 -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "the report exited non-zero"; }
 main_unchanged
 has "$(labels alpha 4)" "looper:landing"; has "$(body alpha 4)" "Blocked-by: #3"
@@ -2387,28 +2411,32 @@ pass
 # the digest its job's image tag names (LOOPER_JOB_IMAGE, the plan's); when it
 # differs from the one it started on, it finishes no further land and ends,
 # exit 0, naming both digests: the kicker starts the next manager on the new
-# image. Here #4's gates publish the new image mid-land: #4 lands, #5 stays
-# queued, looper:landing, for the next manager.
+# image. The check is before each batch, never mid-batch (looper#86): here the
+# batch's gates (#4's and #5's, one build) publish the new image and queue #6;
+# #4 and #5 land, #6 stays queued, looper:landing, for the next manager.
 OLD_IMAGE="sha256:$(printf '%064d' 0 | tr 0 a)"; NEW_IMAGE="sha256:$(printf '%064d' 0 | tr 0 b)"
-image_scenario() { # name: #4 queued with gates that publish the new image, #5 queued after it
+image_scenario() { # name: #4 queued with gates that publish the new image and queue #6, #5 queued after it
   scenario "$1"
-  issue alpha 5 OPEN approved,bug "Fix that."
+  issue alpha 5 OPEN approved,bug "Fix that."; issue alpha 6 OPEN approved,bug "And that."
   echo "$OLD_IMAGE" > "$FIX/image-digest"
-  queue 4 2026-11-03T10:00:00Z four.txt 4 "echo $NEW_IMAGE > \"\$FIX/image-digest\""
+  # #6's branch and label, as its report's --land sets them, come from the batch's gates.
+  queue 6 2026-11-03T12:00:00Z six.txt 6; origin update-ref -d refs/heads/looper/alpha-6
+  jq '.labels |= map(select(.name != "looper:landing"))' "$FIX/issues/alpha-6.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-6.json"
+  queue 4 2026-11-03T10:00:00Z four.txt 4 "echo $NEW_IMAGE > \"\$FIX/image-digest\" && git -C \"\$FIX/q-6\" push -q origin looper/alpha-6 && gh issue edit 6 --repo tacplus-dev/alpha --add-label looper:landing"
   queue 5 2026-11-03T11:00:00Z five.txt 5
 }
 image_scenario manager-new-image
 manage LOOPER_IMAGE=1
-[[ "$(landed four.txt)" == 4 ]] || fail "#4 not landed: $(origin log --oneline main)"
-[[ -z "$(landed five.txt)" ]] || fail "#5 landed on the stale image: $(origin log --oneline main)"
+[[ "$(landed four.txt)" == 4 && "$(landed five.txt)" == 5 ]] || fail "the batch not landed: $(origin log --oneline main)"
+[[ -z "$(landed six.txt)" ]] || fail "#6 landed on the stale image: $(origin log --oneline main)"
 has "$OUT" "this job runs on ghcr.io/tacplus-dev/looper:main at $OLD_IMAGE"
 has "$OUT" "ghcr.io/tacplus-dev/looper:main is now $NEW_IMAGE; this job started on $OLD_IMAGE"
 has "$OUT" "the manager ends: the kicker starts the next"
-lacks "$OUT" "merging #5"
-has "$(grep '^alpha#4 ' "$FIX/comments")" "The manager merged"
-! grep -q '^alpha#5 ' "$FIX/comments" || fail "#5 got a verdict: $(cat "$FIX/comments")"
-has "$(labels alpha 5)" "looper:landing"
-origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
+lacks "$OUT" "merging #6"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "The manager merged"; has "$(grep '^alpha#5 ' "$FIX/comments")" "The manager merged"
+! grep -q '^alpha#6 ' "$FIX/comments" || fail "#6 got a verdict: $(cat "$FIX/comments")"
+has "$(labels alpha 6)" "looper:landing"
+origin rev-parse -q --verify refs/heads/looper/alpha-6 >/dev/null || fail "#6's branch is gone"
 # Every read was the tag's manifest, with the registry's own anonymous token.
 grep -q 'manifests/main ' "$FIX/image-reads" || fail "no manifest read: $(cat "$FIX/image-reads" 2>/dev/null)"
 pass
@@ -2447,7 +2475,7 @@ kill -0 "$MANAGER" 2>/dev/null && { kill "$MANAGER"; cat "$FIX/manager.log"; fai
 manager_wait
 has "$(cat "$FIX/manager.log")" "no report at work and no land queued; the manager ends"
 echo 'echo x > x.txt && git add -A && git commit -qm "fix 4"' > "$FIX/claude.sh"
-echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true' >> "$FIX/claude.sh"
 issue alpha 4 OPEN approved,bug "Fix it."; rm -f "$FIX/jobs.json"
 OUT="$(looper LOOPER_TIMEOUT=20 LOOPER_STOP_EARLY=0 -- --repo alpha --issue 4 2>&1)" || { echo "$OUT"; fail "the report exited non-zero"; }
 has "$OUT" "#4: land-pending"; has "$(labels alpha 4)" "looper:landing"
@@ -2802,7 +2830,7 @@ for i in $(seq 300); do [[ -e "$FIX/probed-$o" ]] && break; sleep 0.1; done
 kill "$(cat "$FIX/pid-$ISSUE")" || echo "could not stop its own process" >> "$p"
 echo "$ISSUE" > "f-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" &&
   "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --checkpoint "committed" &&
-  "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --gates true || echo "land failed" >> "$p"
+  "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait --gates true || echo "land failed" >> "$p"
 jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "$FIX/x-$ISSUE" && mv "$FIX/x-$ISSUE" "$FIX/issues/alpha-$ISSUE.json"
 EOS
   git -C "$FIX/origin.git" config core.sharedRepository 0777; chmod -R a+rwX "$FIX"
@@ -2848,7 +2876,7 @@ fi
 scenario land-wait-not-idle
 cat > "$FIX/claude.sh" <<'EOS'
 echo x > x.txt && git add -A && git commit -qm "fix 4"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land --gates 'sleep 6' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates 'sleep 6' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
 has "$(cat "$FIX/land-4")" "rc 0"
@@ -3178,7 +3206,7 @@ build_model() { # file content
 { readlink -f "\$(command -v docker)"; docker ps; echo "docker rc \$?"; env | grep -E '^(DOCKER_HOST|BUILD_TRIGGER_TOKEN|LOOPER_DOCKER_BROKER|LOOPER_REAL_DOCKER)=' ; } > "\$FIX/probe" 2>&1
 echo "$2" > $1 && git add -A && git commit -qm "change $1" && git rev-parse HEAD > "\$FIX/head"
 "\$ROOT/repo-looper" --repo alpha --issue 4 --build > "\$FIX/build-4" 2>&1; echo "rc \$?" >> "\$FIX/build-4"
-"\$ROOT/repo-looper" --repo alpha --issue 4 --land > "\$FIX/land-4" 2>&1; echo "rc \$?" >> "\$FIX/land-4"
+"\$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "\$FIX/land-4" 2>&1; echo "rc \$?" >> "\$FIX/land-4"
 EOS
 }
 BUILDS=(BUILD_TRIGGER_TOKEN=glptt-build LOOPER_BUILD_POLL=1 LOOPER_BUILD_WAIT=7200 LOOPER_CHILD_MEMORY_GB=2)
@@ -3204,7 +3232,7 @@ has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "built again: $(cat "$FIX/builds")"
 has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, notes.md, maps to docs), a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901), reused: the green build of $(cut -c1-7 "$FIX/head"), the same tree on the same base: green"
 [[ "$(sort -u "$FIX/gates-ran")" == "docs build $main0" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
-[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 ! grep -q glptt-build "$FIX/curl-argv" || fail "the trigger token was on a command line"
 pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$pr" "Verify with a build job: "; has "$pr" "have no container runtime (no \`docker\`, so no \`tacplus\` here either)"; has "$pr" "\`tacplus\` runs in the build job only"
@@ -3227,7 +3255,7 @@ git checkout -q -b side && echo "the docs" > notes.md && git add -A && git commi
 git rev-parse HEAD > "$FIX/head"
 for i in 1 2; do "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-$i" 2>&1 & done; wait
 "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-3" 2>&1; echo "rc $?" >> "$FIX/build-3"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 main0="$(origin rev-parse main)"
 run "${BUILDS[@]}"
@@ -3242,7 +3270,7 @@ has "$(cat "$FIX/build-3")" "reused: green"; has "$(cat "$FIX/build-3")" "rc 0"
 [[ "$(origin rev-parse main)" != "$(cat "$FIX/head")" && "$(origin rev-parse main^{tree})" == "$(git -C "$FIX/origin.git" rev-parse "$(cat "$FIX/head")^{tree}")" ]] ||
   fail "not a rewritten commit of the same tree: $(origin log --oneline main)"
 has "$(cat "$FIX/land-4")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901), reused: the green build of $(cut -c1-7 "$FIX/head"), the same tree on the same base: green"
-[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 pass
 
 # A red build: --build says why and exits 1, and the manager merges nothing.
@@ -3258,7 +3286,7 @@ has "$(cat "$FIX/land-4")" "verdict: failure: the gates docs"
 # The manager's line says which failed, from the build's verdict (looper#148).
 has "$(cat "$FIX/land-4")" "nothing landed: its build job failed: the gates docs (gates.yaml) exited 1 (gates.log), on your commits"
 [[ -z "$(landed red.md)" ]] || fail "red merged"
-[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 lacks "$(cat "$FIX/gates-ran")" "here"
 pass
 
@@ -3335,7 +3363,7 @@ pin_seed; echo queued > "$FIX/build-hold"
 cat >> "$FIX/claude.sh" <<'EOS'
 echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
 "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
-timeout 20 "$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+timeout 20 "$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
 EOS
 run "${BUILDS[@]}" LOOPER_BUILD_START=2
 b="$(cat "$FIX/build-4")"
@@ -3353,7 +3381,7 @@ has "$(cat "$FIX/land-4")" "no runner has taken the manager's build job"
 has "$OUT" "#4: land-pending"; has "$(labels alpha 4)" "looper:landing"
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
 s="$(cut -d' ' -f3 "$FIX/builds")"
-has "$(origin log -1 --format=%B looper/build-alpha-4)" "pipeline=901"; [[ "$(origin rev-parse looper/build-alpha-4^)" == "$s" ]] || fail "the build's branch: $(origin log --oneline -2 looper/build-alpha-4)"
+has "$(origin log -1 --format=%B looper/build-alpha-train)" "pipeline=901"; [[ "$(origin rev-parse looper/build-alpha-train^)" == "$s" ]] || fail "the build's branch: $(origin log --oneline -2 looper/build-alpha-train)"
 # The next manager takes the same pipeline up, still not started: nothing new.
 manage "${BUILDS[@]}" LOOPER_BUILD_START=2
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "built again: $(cat "$FIX/builds")"
@@ -3369,7 +3397,7 @@ manage "${BUILDS[@]}" LOOPER_BUILD_START=2
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "built again: $(cat "$FIX/builds")"
 [[ "$(landed notes.md)" == "the docs" && "$(origin rev-parse main)" == "$s" ]] || fail "main: $(origin log --oneline main)"
 has "$(cat "$FIX/comments")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901): green"
-[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 pass
 
 # A build that started (its pending status) is never "no runner", however short
@@ -3395,14 +3423,14 @@ scenario build-queued
 pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo queued > "$FIX/build-hold"
 manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=1 LOOPER_LAND_MINUTES=0 LOOPER_LAND_MARGIN=15 CI_JOB_TIMEOUT=40 CI_JOB_STARTED_AT="$(date -u +%FT%TZ)"
 has "$OUT" "#4: left queued for the next manager: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901 has no verdict yet"
-has "$OUT" "#4: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$OUT" " s, not started"
+has "$OUT" "batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$OUT" " s, not started"
 lacks "$(cat "$FIX/comments")" "alpha#4 "; has "$(labels alpha 4)" "looper:landing"
 branch || fail "the land's branch is gone"
 [[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
 s="$(cut -d' ' -f3 "$FIX/builds")"
-rec="$(origin log -1 --format=%B looper/build-alpha-4)"
-has "$rec" "pipeline=901"; [[ "$(origin rev-parse looper/build-alpha-4^)" == "$s" ]] || fail "the build's branch: $(origin log --oneline -2 looper/build-alpha-4)"
+rec="$(origin log -1 --format=%B looper/build-alpha-train)"   # the batch's build branch (looper#86)
+has "$rec" "pipeline=901"; [[ "$(origin rev-parse looper/build-alpha-train^)" == "$s" ]] || fail "the build's branch: $(origin log --oneline -2 looper/build-alpha-train)"
 # The build ran since; the next manager has its verdict.
 rm "$FIX/build-hold"
 jq -n --arg t0 "$(date -u -d '1 minute ago' +%FT%TZ)" --arg t1 "$(date -u +%FT%TZ)" --arg u https://gitlab.com/tacplus-dev/build/-/pipelines/901 \
@@ -3412,8 +3440,8 @@ manage "${BUILDS[@]}"
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "the next manager built again: $(cat "$FIX/builds")"
 [[ "$(landed notes.md)" == "the docs" && "$(origin rev-parse main)" == "$s" ]] || fail "main: $(origin log --oneline main)"
 has "$(cat "$FIX/comments")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/901): green"
-has "$OUT" "#4: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$OUT" " s, ran 60 s"
-[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-4)" ]] || fail "the build's branch is left"
+has "$OUT" "batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued "; has "$OUT" " s, ran 60 s"
+[[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 pass
 
 # A build that has run past LOOPER_BUILD_WAIT since its start is red.
@@ -3505,6 +3533,118 @@ c="$(cat "$FIX/comments")"
 has "$c" "had no verdict within"; has "$c" "stays approved"; lacks "$c" "Marked looper:stuck"
 pass
 
+# --- the merge train (looper#86) ------------------------------------------------------
+# The manager lands in batches (tacplus-dev/roadmap decisions/merge-train-2026-11-04.md):
+# every queued land at once, in queue order, onto a candidate from main; one
+# build of the candidate (the stub build, on a pinned seed: $FIX/builds counts
+# them); green, main fast-forwards to it; red, the batch is bisected on its
+# prefixes, the land that breaks it sent back, the green prefix landed and the
+# rest landed as a new batch; a conflict drops only that branch.
+train_seed() { # alpha's main: pinned, its full gates red on any *.txt holding "red"
+  printf 'build_image: ghcr.io/tacplus-dev/looper:main@sha256:%s\n' "$(printf 'a%.0s' {1..64})" > "$FIX/seed/build.lock"
+  cat > "$FIX/seed/gates.yaml" <<'EOF'
+full:
+  run: 'echo "full ${BUILD_STUB:-here} $(git rev-parse HEAD)" >> "$FIX/gates-ran" && ! grep -qs red -- *.txt'
+EOF
+  origin config core.logAllRefUpdates true   # main_green reads main's reflog
+  git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm pinned && git -C "$FIX/seed" push -q origin main
+}
+train_issues() { local n; for n in "$@"; do issue alpha "$n" OPEN approved,bug "Fix $n."; done; }
+builds_of() { wc -l < "$FIX/builds" 2>/dev/null || echo 0; } # the builds the stub ran
+# Every commit main pointed at had a green build of exactly that commit (the
+# stub build's success status on it); origin's reflog of main, which train_seed
+# turns on, lists them. The manager's own HISTORY.md lines are docs, not built.
+main_green() {
+  local c
+  for c in $(origin log -g --format=%H main); do
+    origin merge-base --is-ancestor "$c" "$(git -C "$FIX/seed" rev-parse HEAD)" && continue   # the scenario's own pushes
+    [[ "$(origin log -1 --format=%s "$c")" == HISTORY.md:* ]] && continue
+    jq -e --arg c "$c" 'map(select(.state == "success")) | length > 0' "$FIX/statuses/$c.json" >/dev/null 2>&1 ||
+      fail "main pointed at ${c:0:7} with no green build of it: $(origin log -g --oneline main)"
+  done
+}
+
+# A batch of 5 green lands with 1 build: all five on main, in queue order, each
+# with its verdict naming the batch, the branches deleted, the issues free.
+scenario train-five-green
+train_seed; train_issues 5 6 7 8
+for n in 4 5 6 7 8; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(origin log --format=%s main | head -n 5 | tac | paste -sd'|')" == "fix 4|fix 5|fix 6|fix 7|fix 8" ]] || fail "main: $(origin log --oneline main)"
+for n in 4 5 6 7 8; do
+  [[ "$(landed "f$n.txt")" == "$n" ]] || fail "main lacks f$n.txt: $(origin log --oneline main)"
+  has "$(grep "^alpha#$n " "$FIX/comments")" "The manager merged [\`looper/alpha-$n\`]"
+  has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 5 lands, with one build of their candidate"
+  [[ "$(labels alpha "$n")" == approved,bug ]] || fail "#$n's labels: $(labels alpha "$n")"
+done
+[[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
+has "$OUT" "a batch of 5 lands (#4, #5, #6, #7, #8) on main"; has "$OUT" "main fast-forwarded: "
+has "$OUT" "a batch of 5 lands, one build"; has "$OUT" "batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901: queued"
+# The one build was the candidate's: main's head, on the base the batch started from.
+[[ "$(cut -d' ' -f3,5 "$FIX/builds")" == "$(origin rev-parse main) $(git -C "$FIX/seed" rev-parse HEAD)" ]] || fail "the build: $(cat "$FIX/builds")"
+main_green
+pass
+
+# A batch of 5 with one bad change (the third) lands 4 and sends 1 back, with
+# the failure, in at most 1 + 2*log2(5) builds: the batch (red), the bisection
+# (the first 2: green; the first 3: red, the culprit), and the rest (#7, #8) as
+# a new batch on the new main. Main never points at a commit without a green
+# build of it.
+scenario train-bisects
+train_seed; train_issues 5 6 7 8
+for n in 4 5 6 7 8; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$( [[ "$n" == 6 ]] && echo red || echo "$n" )"; done
+manage "${BUILDS[@]}"
+b="$(builds_of)"; (( b <= 5 )) || fail "$b builds, more than 1 + 2*log2(5): $(cat "$FIX/builds")"
+[[ "$(origin log --format=%s main | grep -v '^HISTORY' | head -n 4 | tac | paste -sd'|')" == "fix 4|fix 5|fix 7|fix 8" ]] || fail "main: $(origin log --oneline main)"
+[[ -z "$(landed f6.txt)" ]] || fail "the red change landed"
+c="$(grep '^alpha#6 ' "$FIX/comments")"
+has "$c" "The manager did not merge [\`looper/alpha-6\`]"; has "$c" "red, nothing merges without green gates"; has "$c" "sent back with the failure"; has "$c" "stays approved"
+c="$(cat "$FIX/comments")"   # the failure, in the comment's quoted output
+has "$c" "the gates full (gates.yaml) exited 1"; has "$c" "found by bisecting a batch of 5 lands: the 2 before #6 are green without it, and the 2 after it are queued for the next batch"
+origin rev-parse -q --verify refs/heads/looper/alpha-6 >/dev/null || fail "#6's branch is gone"
+[[ "$(labels alpha 6)" == approved,bug ]] || fail "#6's labels: $(labels alpha 6)"
+for n in 4 5 7 8; do
+  has "$(grep "^alpha#$n " "$FIX/comments")" "The manager merged [\`looper/alpha-$n\`]"
+  ! origin rev-parse -q --verify "refs/heads/looper/alpha-$n" >/dev/null || fail "#$n's branch is left"
+done
+has "$(grep '^alpha#4 ' "$FIX/comments")" "in a batch of 2 lands"; has "$(grep '^alpha#7 ' "$FIX/comments")" "in a batch of 2 lands"
+has "$OUT" "the batch is red: bisecting the batch of 5"; has "$OUT" "bisecting: the first 2 of 5 are green"; has "$OUT" "bisecting: the first 3 of 5 are red"
+has "$OUT" "#6: the land that breaks the batch: sent back with the failure; 2 lands after it (#7, #8) stay queued for the next batch"
+has "$OUT" "a batch of 2 lands (#7, #8) on main"
+main_green
+pass
+
+# A batch of one that is red is just sent back: one build, no bisection.
+scenario train-one-red
+train_seed
+queue 4 2026-11-03T10:00:00Z f4.txt red
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+main_unchanged
+c="$(grep '^alpha#4 ' "$FIX/comments")"; has "$c" "The manager did not merge"; has "$c" "sent back with the failure"; lacks "$c" "bisecting"
+lacks "$OUT" "bisecting"; branch || fail "the branch is gone"
+pass
+
+# A conflict in the batch drops only that branch: #5's conflicts with main, is
+# sent back at once (no build of it), and #4 and #6 land as the batch, in one build.
+scenario train-conflict-drops-one
+train_seed; train_issues 5 6
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+queue 5 2026-11-03T11:00:00Z a.txt mine
+queue 6 2026-11-03T12:00:00Z f6.txt 6
+on_main a.txt theirs
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(landed f4.txt)" == 4 && "$(landed f6.txt)" == 6 && "$(landed a.txt)" == theirs ]] || fail "main: $(origin log --oneline main)"
+c="$(grep '^alpha#5 ' "$FIX/comments")"; has "$c" "The manager sent [\`looper/alpha-5\`]"; has "$c" "back to its report: rebasing it on main conflicts in \`a.txt\`"
+origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
+for n in 4 6; do has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 2 lands"; ! origin rev-parse -q --verify "refs/heads/looper/alpha-$n" >/dev/null || fail "#$n's branch is left"; done
+lacks "$(labels alpha 5)" "looper:landing"
+has "$OUT" "a batch of 2 lands (#4, #6) on main"
+main_green
+pass
+
 # --- gates scaled to the diff (looper#48) ------------------------------------------
 
 # The seed's gate map, pushed: each set records that it ran in $FIX/ran.
@@ -3528,7 +3668,7 @@ EOM
   git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "gate map" && git -C "$FIX/seed" push -q origin main
 }
 # A claude.sh line: commit what the scenario changed and land it, no --gates.
-land_map() { echo 'git add -A && git commit -qm change && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land > "$FIX/land-$ISSUE" 2>&1' >> "$FIX/claude.sh"; }
+land_map() { echo 'git add -A && git commit -qm change && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait > "$FIX/land-$ISSUE" 2>&1' >> "$FIX/claude.sh"; }
 
 # A docs-only diff runs only the docs gates, named in the land's output and in
 # the issue's HISTORY.md line. Patterns without a slash match at any depth.
@@ -3620,7 +3760,7 @@ git -C "$FIX/seed" tag v1.2.3 && git -C "$FIX/seed" push -q origin v1.2.3
 run
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$p" 'Verify with the full gates, `echo full >> "$FIX/ran"` (gates.yaml'"'"'s full)'
-has "$p" "--issue 4 --land\`."; has "$p" "the gate set the land ran"
+has "$p" "--issue 4 --land\`."; has "$p" "the gate set and batch the land ran in"
 has "$p" "a release never ships on"
 pass
 
@@ -3632,9 +3772,9 @@ cp "$ROOT/gates.yaml" "$ROOT/planning-files-check" "$ROOT"/*.md "$FIX/seed/"
 git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "this repository's map and docs" && git -C "$FIX/seed" push -q origin main
 cat > "$FIX/claude.sh" <<'EOS'
 echo more >> README.md && git commit -qam readme
-"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4" 2>&1
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1
 sed -i 1d HISTORY.md && git commit -qam "history edited"
-"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-4b" 2>&1
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4b" 2>&1
 EOS
 run
 has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, README.md, maps to docs)"

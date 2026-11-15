@@ -10,8 +10,9 @@
 #   repo-looper --repo NAME --issue N   the report of issue N (what the pipeline runs): works it, if
 #                                       it is still ready, on its own branch; never touches main
 #   repo-looper --repo NAME             the report of NAME's next ready issue (priority:high first)
-#   repo-looper --repo NAME --manage    the manager: merges the reports' queued branches on main, one
-#                                       at a time, while the repository has a report running or a land queued
+#   repo-looper --repo NAME --manage    the manager: lands the reports' queued branches on main in batches,
+#                                       one build a batch (the merge train, looper#86), while the repository
+#                                       has a report running or a land queued
 #   repo-looper --repo NAME --verdict DIR   the manager split in two (looper#90), its verdict job: the
 #                                       queued lands merged onto looper/staging, their gates run, staging
 #                                       pushed, the verdict written to DIR; never main
@@ -23,8 +24,9 @@
 #                                       has a report job queued, waiting or running there
 #   repo-looper --repo NAME --job-timeout N   the CI job timeout of issue N's report (its limit and an hour)
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
-#   repo-looper --repo NAME --issue N --land [--gates CMD]   queue the report's commits with the manager
-#                                       and wait for its verdict (the model's step)
+#   repo-looper --repo NAME --issue N --land [--gates CMD] [--wait]   queue the report's commits with the
+#                                       manager (the model's step; the merge train lands them, looper#86) and,
+#                                       with --wait, wait for its verdict
 #   repo-looper --repo NAME --issue N --build   a build job of the report's committed HEAD, in the build
 #                                       image it pins, and its verdict (the model's step, looper#71)
 #   repo-looper --repo NAME --issue N --think DIR   the think job of a looper with its own identity
@@ -38,20 +40,28 @@
 # branch looper/NAME-N, and never pushes to main: --land queues its commits
 # with the manager (the branch's last checkpoint carries .looper/land: the
 # land's id, its gates and when it was queued; the issue is labelled
-# looper:landing, which holds it from the plan) and waits for the manager's
-# verdict, a comment on the issue that carries the land's id. The manager
-# (--manage, one at a time per repository: resource_group looper-NAME-main)
-# takes the queued branches by their issue's priority, then oldest first
-# (looper#121), each under the landing lock: rebases it on main, runs the
-# gates its diff calls for (looper#48), pushes only on green, and deletes the
-# branch. A rebase that conflicts only in files the
+# looper:landing, which holds it from the plan) and ends: reports never wait
+# for, or run, a build (looper#86); the manager's verdict is a comment on the
+# issue that carries the land's id, and the issue's next run, after it,
+# finishes the issue (--wait, for a test or a run by hand, waits for it). The
+# manager (--manage, one at a time per repository: resource_group
+# looper-NAME-main) lands in batches, a merge train (looper#86, tacplus-dev/roadmap
+# decisions/merge-train-2026-11-04.md): it takes every queued branch at once,
+# by their issue's priority, then oldest first (looper#121), rebases each in
+# that order onto a candidate from main (refs/looper/staging), builds the
+# candidate once on the gate set the batch's combined diff calls for
+# (looper#48), fast-forwards main to it on green and deletes the branches; on
+# red it bisects the batch on its prefixes, sends the land that breaks it back
+# with the failure, lands the green prefix and leaves the rest for the next
+# batch. A rebase that conflicts only in files the
 # repository's generated.yaml maps it resolves by regenerating them (main's
 # side, then the set's command: never a hand merge); PROPOSALS.md and
 # HISTORY.md, append-only, it unions (git's union merge, looper#105); a
 # report's last commit, touching STATE.md alone, whose only conflict is
 # STATE.md, it drops, main's STATE.md kept, and lands the rest, the branch
 # kept for that commit's land again (looper#131); any other conflict it sends
-# back to the report, the files named. Every merge, resolution and
+# back to the report at once, the files named, and that branch alone leaves the
+# batch. Every merge, resolution and
 # send-back is a comment on the issue, with the gate verdict. A report that
 # ended while its land was queued is landed all the same; the verdict frees
 # the issue, and its next report finishes it from the branch. The manager adds
@@ -62,7 +72,7 @@
 # report job running: not one waiting for the VM the manager holds, looper#82;
 # elsewhere, an issue looper:in-progress), or was within
 # LOOPER_MANAGER_LINGER seconds (default 300), and while its job's image is
-# the one its tag names (looper#153: before each land it reads the digest of
+# the one its tag names (looper#153: before each batch it reads the digest of
 # LOOPER_JOB_IMAGE, and ends, exit 0, when it is not the one it started on,
 # so the next manager runs the new image). Each container a report's model
 # starts (docker run, tacplus) is limited to the report's memory, without swap
@@ -241,6 +251,7 @@ while [[ $# -gt 0 ]]; do
     --issue) ISSUE="$2"; [[ "$MODE" == next ]] && MODE=one; shift 2 ;;
     --checkpoint) STEP="$2"; MODE=checkpoint; shift 2 ;;
     --land) MODE=land; shift ;;
+    --wait) LAND_WAIT=1; shift ;;
     --build) MODE=build; shift ;;
     --gates) LAND_GATES="$2"; shift 2 ;;
     --manage) MODE=manage; shift ;;
@@ -1041,15 +1052,20 @@ land_work() {
 }
 
 # --land from a report (looper#70): queues its commits with the repository's
-# manager and waits for the verdict. The run's `land` file (id=, gates=,
+# manager, and ends (looper#86: reports never wait for, or run, a build; the
+# merge train lands the queue in batches, and the report's run ends with its
+# land queued, land-pending, which its next run finishes once the verdict is
+# in). The run's `land` file (id=, gates=,
 # state=queued, queued=) rides on the checkpoint it pushes, as the branch's
 # .looper/land, which is the manager's queue; the issue is labelled
 # looper:landing until the verdict, so no other report takes it. The verdict
 # is the manager's comment on the issue, which carries the land's id (a line
-# `<!-- looper-land id=... rc=... -->`): --land prints it and exits with its
-# code, and records a landing in the run's `landed` file. A land still queued
-# when the report's run ends is the manager's all the same.
+# `<!-- looper-land id=... rc=... -->`): with --wait (a test, a run by hand),
+# --land waits for it, prints it and exits with its code, and records a
+# landing in the run's `landed` file. A land still queued when the report's
+# run ends is the manager's all the same.
 LAND_POLL="${LOOPER_LAND_POLL:-30}"
+LAND_WAIT="${LAND_WAIT:-}"   # --wait: --land waits for the verdict (a test's, a run by hand); a report's queues and ends (looper#86)
 land_pending() { [[ -f "$1/land" ]] && grep -qx state=queued "$1/land"; } # run-dir
 land_marker() { echo "<!-- looper-land id=$1 rc=$2${3:+ landed=$3}${4:+ set=$4} -->"; } # id rc [before..after] [gate set]
 
@@ -1089,8 +1105,14 @@ land_request() {
     # Labelled once the branch carries it (looper#93): a manager clears a
     # looper:landing whose issue has no land queued.
     forge_issue_edit "$REPO" "$n" --add-label "$LABEL_LANDING" >/dev/null || true
-    log "queued: the manager of $REPO merges $BRANCH after the lands queued before it, one at a time, and says on the issue what came of it; waiting for its verdict. If your time runs out first, it still lands it after you."
+    log "queued: the manager of $REPO lands $BRANCH in its next batch, with the lands queued before it (the merge train, looper#86), and says on the issue what came of it."
   fi
+  if [[ -z "$LAND_WAIT" ]]; then
+    log "Your run ends here: do not wait, comment or close; the issue is $LABEL_LANDING until the manager's verdict, and the next run of this issue, after it, closes it or fixes what came back."
+    [[ -z "${LOOPER_RUN:-}" ]] || checkpoint "$n" "land queued" "$run"
+    return 0
+  fi
+  log "waiting for its verdict (--wait). If your time runs out first, it still lands it after you."
   local said=""
   until v="$(land_verdict "$n" "$id")"; do
     # No runner for the manager's build (looper#113): said, and still waited for.
@@ -1646,7 +1668,11 @@ verdict_comment() { # issue id rc record-dir sha
     # One that had built this tree already (looper#134): reused, not built again.
     reused="$(sed -n 's/^the build job [^ ]* of .*: reused, \(.*\)$/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}"
-    what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green."
+    # Landed in a batch (looper#86): the candidate's one build is every member's.
+    local batch; batch="$(cat "$rec/batch" 2>/dev/null || true)"
+    [[ -z "$batch" || "$batch" == 1 ]] || batch=" It landed in a batch of $batch lands, with one build of their candidate (the merge train, looper#86)."
+    [[ "$batch" != 1 ]] || batch=""
+    what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green.$batch"
     [[ -z "$regen" ]] || what+=" It resolved the rebase's conflicts by regenerating them, never by hand: $(sed 's/.*/`&`/' <<<"$regen" | paste -sd, - | sed 's/,/, /g')."
     # A STATE.md commit dropped (looper#131): its diff, to land again.
     if [[ -n "$dropped" ]]; then
@@ -1670,7 +1696,7 @@ $(sed 's/^/> /' <<<"$step")"
   elif [[ "$rc" == "$ROADMAP_RC" ]]; then
     what="The manager refused [\`$b\`]($url): it changes ROADMAP.md, which is Jody's, changed only by an agent at his request, and $(cat "$rec/roadmap" 2>/dev/null || echo "this land is not"). A land may change ROADMAP.md only when its issue carries \`$LABEL_APPROVED\` from a member and its own text, a member's, says it is at Jody's request (looper#123). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. If Jody asked for it, say so in the issue's text, then remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise drop the ROADMAP.md change and propose it in PROPOSALS.md."
   elif [[ "$rc" == 4 ]]; then
-    what="The manager did not merge [\`$b\`]($url): red, nothing merges without green gates. Nothing is merged; the branch stays. The end of its output:
+    what="The manager did not merge [\`$b\`]($url): red, nothing merges without green gates. Nothing of it is merged; the branch stays, and it is sent back with the failure: this issue stays $LABEL_APPROVED, and its next report fixes it (the merge train, looper#86). The end of its output:
 
 $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$rec/out" | redact)")"
   else
@@ -1684,20 +1710,281 @@ $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$rec/out" | redact)")"
 $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 }
 
-# Merges one queued land (looper#70): judge_land, then post_land. Fails when
-# it could not judge it; LAND_DEFERRED, untouched, when the land would not
-# finish before the manager's job ends; LAND_NO_RUNNER, with no verdict and
-# still queued, when no runner took its build job (looper#113), said once on
-# its issue.
-merge_report() { # issue id sha
-  local rec="$MANAGER_RUN/$1-$2"
-  judge_land "$1" "$2" "$3" "$rec" || return
-  if (( JUDGE_RC == LAND_NO_RUNNER )); then
-    log "#$1: left queued: no runner took its build job; $(grep -o 'no runner: .*' "$rec/gates.log" | tail -n 1)"
-    no_runner_comment "$1" "$2" "$rec"
-    return "$LAND_NO_RUNNER"
+# --- the merge train (looper#86) -------------------------------------------------
+#
+# The manager lands in batches (tacplus-dev/roadmap
+# decisions/merge-train-2026-11-04.md; Jody: "changes and builds are different
+# things"). A batch is every land queued when the train starts, in queue order
+# (queued_lands: priority, then oldest first), each rebased onto a candidate,
+# the staging ref, which starts at main (stage_land: a conflict it does not
+# resolve sends that land back at once, as before, and the rest go on; a
+# refused ROADMAP.md change and a land with nothing to land get their verdicts
+# at once too). The candidate gets one build (batch_gates: a build job in a
+# pinned repository, else the gates in this job), on the gate set its combined
+# diff since main calls for. Green: main fast-forwards to the candidate
+# (batch_land: nothing reaches main without a green build of exactly that
+# commit), and each land gets its verdict, its branch deleted, its HISTORY.md
+# line. Red: the batch is bisected on its prefixes (batch_judge: the candidate
+# after the first half of the batch is built; green, the breaking change is in
+# the second half, red, in the first; and so on, about log2(n) builds): the
+# land that breaks it is sent back with the failure (exit 4: the issue stays
+# approved, and its next report fixes it), the green prefix before it lands as
+# a batch of its own, and the lands after it stay queued: the next batch, from
+# the new main, takes them. A batch of one that is red is just sent back. A
+# batch whose build would outlast the job, or whose build has no verdict by the
+# job's end, leaves its lands queued (LAND_DEFERRED): the next manager takes
+# them, and a build left to run is taken up by its tree (build_gates).
+#
+# Its log, for the recap (looper#72): `a batch of K lands (#a, #b): one build
+# of ...`, `batch: its build <url>: queued S s, ran S s` (or `the batch's gates
+# ran S s` in this job), `bisecting the batch of K: ...`, and each land's
+# `merging #N (..., queued T)` when staged and `#N: landed on main: ...` when
+# main has it, as before.
+TR_N=(); TR_ID=(); TR_SHA=(); TR_BEFORE=(); TR_AFTER=(); TR_REC=(); TR_GATES=(); TR_ROADMAP=()
+declare -A GREEN_SET=() GREEN_WHY=() GREEN_MAPPED=() GREEN_OUT=()   # a green candidate's gate set, why, and record, by its count of lands
+
+drop_worktree() { git -C "$CHECKOUT" worktree remove -f "$1" 2>/dev/null || rm -rf "$1"; git -C "$CHECKOUT" worktree prune; }
+
+# One batch of the queued lands given (queued_lands' lines): staged, built once,
+# landed, bisected. LAND_DEFERRED when its build would outlast the job or has no
+# verdict by its end; 1 when it could not be judged (nothing posted either way).
+train() { # queued lands
+  local q="$1" n id sha rc=0 main
+  TR_N=(); TR_ID=(); TR_SHA=(); TR_BEFORE=(); TR_AFTER=(); TR_REC=(); TR_GATES=(); TR_ROADMAP=()
+  GREEN_SET=(); GREEN_WHY=(); GREEN_MAPPED=(); GREEN_OUT=()
+  fetch "$CHECKOUT" main || { log "could not fetch main; nothing landed"; return 1; }
+  main="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  git -C "$CHECKOUT" update-ref "$STAGING_REF" "$main"
+  ONTO="$STAGING_REF"
+  while read -r _ _ n id sha; do
+    [[ -n "$n" ]] || continue
+    stage_land "$n" "$id" "$sha" "$MANAGER_RUN/$n-$id" || true
+  done <<<"$q"
+  ONTO=origin/main
+  (( ${#TR_N[@]} > 0 )) || return 0
+  batch_judge "$main" || rc=$?
+  git -C "$CHECKOUT" update-ref -d "$STAGING_REF" 2>/dev/null || true
+  return "$rc"
+}
+
+# Stages one queued land on the candidate: its commits (the parent of the
+# branch's checkpoint), in a scratch worktree, rebased onto ONTO (the staging
+# ref) by rebase_on_main: generated files regenerated, the logs unioned, a
+# STATE.md commit dropped (looper#131). A change to ROADMAP.md not at Jody's
+# request is refused first (looper#123); a conflict it does not resolve is
+# sent back (exit 3), a land with nothing to land gets its verdict (its
+# HISTORY.md line, say): each at once, with no build. Staged, it is a member
+# of the batch (TR_*), and the staging ref moves to it. Fails when it could not
+# be judged.
+stage_land() { # issue id sha rec-dir
+  local n="$1" id="$2" sha="$3" rec="$4" b gates wt ahead rr roadmap="" before after rc=0
+  b="$(wip_branch "$n")"
+  gates="$(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^gates=//p')"
+  mkdir -p "$rec"
+  wt="$(scratch_dir)"; rm -rf "$wt"
+  git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$sha^" || { log "#$n: cannot check out $b's commits"; return 1; }
+  ahead="$(git -C "$wt" rev-list --count "$ONTO..HEAD")"
+  # A change to ROADMAP.md lands only at Jody's request; any other is refused
+  # here, before any build, with a verdict, never pushed to be refused again (looper#123).
+  if [[ "$ahead" != 0 && -n "$(git -C "$wt" rev-list -n 1 "$ONTO..HEAD" -- ROADMAP.md)" ]]; then
+    rr=0; roadmap_request "$n" || rr=$?
+    if (( rr != 0 )); then
+      drop_worktree "$wt"
+      (( rr == 1 )) || { log "#$n: cannot read the issue, to tell whether its change to ROADMAP.md is at Jody's request"; return 1; }
+      echo "$ROADMAP_WHY" > "$rec/roadmap"
+      log "nothing landed: $b changes ROADMAP.md, and $ROADMAP_WHY" > "$rec/out"
+      post_land "$n" "$id" "$sha" "$ROADMAP_RC" "$rec"; return 0
+    fi
+    roadmap=1
   fi
-  post_land "$1" "$2" "$3" "$JUDGE_RC" "$rec"
+  log "merging #$n ($b, queued $(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^queued=//p'))"
+  if [[ "$ahead" == 0 ]]; then
+    log "nothing to land: $b has no commit that main lacks" > "$rec/out"
+    drop_worktree "$wt"; post_land "$n" "$id" "$sha" 0 "$rec"; return 0
+  fi
+  before="$(git -C "$CHECKOUT" rev-parse "$ONTO")"
+  pushd "$wt" >/dev/null || return 1
+  rebase_on_main || rc=$?
+  after="$(git rev-parse HEAD)"
+  popd >/dev/null
+  if (( rc != 0 )); then
+    drop_worktree "$wt"
+    printf '%s\n' "$CONFLICTS" > "$rec/conflicts"
+    log "nothing landed: rebasing $b onto main conflicts in: $CONFLICTS. Rebase it yourself (git fetch origin && git rebase origin/main), resolve them, verify, and land again." > "$rec/out"
+    post_land "$n" "$id" "$sha" 3 "$rec"; return 0
+  fi
+  if [[ -n "$DROPPED" ]]; then
+    printf '%s' "$DROPPED" > "$rec/dropped"
+    log "dropped its STATE.md commit, whose only conflict is STATE.md: main's STATE.md is kept, the rest lands (looper#131): $(sed -n 's/^commit //p' <<<"$DROPPED" | paste -sd, - | sed 's/,/, /g')" >> "$rec/out"
+  fi
+  if [[ -n "$REGENERATED" ]]; then
+    printf '%s' "$REGENERATED" > "$rec/regenerated"
+    log "resolved the rebase's conflicts by regenerating: $(paste -sd, - <<<"${REGENERATED%$'\n'}" | sed 's/,/, /g')" >> "$rec/out"
+  fi
+  drop_worktree "$wt"
+  git -C "$CHECKOUT" update-ref "$STAGING_REF" "$after" "$before" || { log "#$n: the staging ref moved under it; not staged"; return 1; }
+  TR_N+=("$n"); TR_ID+=("$id"); TR_SHA+=("$sha"); TR_BEFORE+=("$before"); TR_AFTER+=("$after"); TR_REC+=("$rec"); TR_GATES+=("$gates"); TR_ROADMAP+=("$roadmap")
+  log "#$n: staged: ${before:0:7}..${after:0:7} on the candidate"
+}
+
+batch_names() { local i s=""; for (( i = 0; i < $1; i++ )); do s+="${s:+, }#${TR_N[i]}"; done; echo "$s"; } # count
+plural() { (( $1 == 1 )) || echo s; } # count
+
+# Judges the batch (TR_*, on main): one build of the whole candidate, landed
+# on green; on red, bisected on its prefixes until the land that breaks it is
+# found, the green prefix before it landed, that land sent back, the rest left
+# queued for the next batch. LAND_DEFERRED when no prefix's build fits the job
+# or a build has no verdict by its end (a green prefix found by then lands
+# first); 1 when a build could not be had.
+BATCH_OVER=8   # batch_gates: the candidate's gates would outlast the job (looper#38): a shorter batch is tried
+batch_judge() { # main
+  local main="$1" n=${#TR_N[@]} k=${#TR_N[@]} lo=0 hi rc=0 mid c red
+  # The budget is the batch's gate set's (looper#38): one that would outlast the
+  # job shrinks to the longest prefix that fits, and the rest wait for the next manager.
+  while (( k > 0 )); do rc=0; batch_gates "$main" "$k" || rc=$?; (( rc == BATCH_OVER )) || break; k=$(( k - 1 )); done
+  (( rc != LAND_NO_RUNNER )) || return "$LAND_NO_RUNNER"
+  for (( c = k; c < n; c++ )); do
+    log "#${TR_N[c]}: left queued for the next manager: this job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $OVER_SET takes about $(hours "$(land_estimate "$OVER_SET")")"
+  done
+  (( k > 0 )) || return "$LAND_DEFERRED"
+  hi=$k
+  log "a batch of $k land$(plural "$k") ($(batch_names "$k")) on main ${main:0:7}: one build of the candidate ${TR_AFTER[k-1]:0:7}$( (( k == n )) || echo " (the $(( n - k )) after it wait for the next manager)")"
+  if (( rc == 0 )); then batch_land "$main" "$k"; return; fi
+  if (( rc == 6 )); then
+    for (( c = 0; c < k; c++ )); do cp "$BATCH_OUT/out" "${TR_REC[c]}/out"; post_land "${TR_N[c]}" "${TR_ID[c]}" "${TR_SHA[c]}" 6 "${TR_REC[c]}"; done
+    return 0
+  fi
+  (( rc == 4 )) || return "$rc"
+  red="$BATCH_OUT"
+  if (( k > 1 )); then
+    log "the batch is red: bisecting the batch of $k (the candidate after its first half is built next; about $(bisect_builds "$k") build$(plural "$(bisect_builds "$k")") find the land that breaks it)"
+    while (( hi - lo > 1 )); do
+      mid=$(( (lo + hi) / 2 ))
+      rc=0; batch_gates "$main" "$mid" || rc=$?
+      case "$rc" in
+        0) lo=$mid; log "bisecting: the first $mid of $k are green" ;;
+        4) hi=$mid; red="$BATCH_OUT"; log "bisecting: the first $mid of $k are red" ;;
+        *) (( lo == 0 )) || batch_land "$main" "$lo"; (( rc != BATCH_OVER )) || rc=$LAND_DEFERRED; return "$rc" ;;
+      esac
+    done
+    (( lo == 0 )) || batch_land "$main" "$lo" || return 1
+  fi
+  c=$(( hi - 1 ))
+  cp "$red/gates.log" "${TR_REC[c]}/gates.log" 2>/dev/null || true
+  { cat "$red/out"
+    if (( k > 1 )); then log "found by bisecting a batch of $k lands: the $lo before #${TR_N[c]} are green without it, and the $(( k - hi )) after it are queued for the next batch"; fi
+  } > "${TR_REC[c]}/out"
+  log "#${TR_N[c]}: the land that breaks the batch: sent back with the failure$( (( k - hi > 0 )) && echo "; $(( k - hi )) land$(plural "$(( k - hi ))") after it ($(for (( mid = hi; mid < k; mid++ )); do printf '%s#%s' "$( (( mid > hi )) && echo ', ')" "${TR_N[mid]}"; done)) stay queued for the next batch")"
+  post_land "${TR_N[c]}" "${TR_ID[c]}" "${TR_SHA[c]}" 4 "${TR_REC[c]}"
+}
+bisect_builds() { local n=$1 b=0; while (( n > 1 )); do n=$(( (n + 1) / 2 )); b=$(( b + 1 )); done; echo "$b"; } # count: ceil(log2)
+
+# The gate set of the first count lands' candidate (TR_AFTER[count-1]) since
+# main: GATES_* from its combined diff (choose_gates; without a gate map, the
+# lands' own gates commands, each once). BATCH_GATES_WHY says the chosen set.
+batch_choose() { # dir main count
+  local i fb="" g
+  for (( i = 0; i < $3; i++ )); do
+    g="${TR_GATES[i]}"; [[ -n "$g" && "$fb" != *"( $g )"* ]] || continue
+    fb+="${fb:+ && }( $g )"
+  done
+  [[ -n "$fb" || -f "$1/$GATE_MAP" ]] || { GATES_WHY="no gates to run: $REPO has no $GATE_MAP and the lands name none"; GATES_RUN=""; return 1; }
+  choose_gates "$1" "$2" "$fb" HEAD
+}
+
+# The gates of the first count lands' candidate: a build job in a pinned
+# repository (build_gates, on the branch looper/build-NAME-train), else the
+# gates in this job, in a scratch worktree at the candidate. Its record is
+# BATCH_OUT (gates.log, out: the lines a red verdict quotes). 0 green, 4 red,
+# 6 when the gates would run beside the manager's token (looper#90),
+# BATCH_OVER when its gates would outlast the job (OVER_SET: the set),
+# LAND_DEFERRED when the build has no verdict by the job's end, LAND_NO_RUNNER
+# when no runner took it (looper#113: told once on each land's issue), 1 when
+# none could be had.
+batch_gates() { # main count
+  local main="$1" count="$2" cand wt grc=0 t rc=0 queued="" i
+  cand="${TR_AFTER[count-1]}"
+  BATCH_OUT="$MANAGER_RUN/batch-$(date -u +%Y%m%dT%H%M%SZ)-$count"; mkdir -p "$BATCH_OUT"
+  wt="$(scratch_dir)"; rm -rf "$wt"
+  git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$cand" || { log "cannot check out the candidate ${cand:0:7}"; return 1; }
+  # A gate map that cannot be read is red (as a land's was): bisected, it names the land that broke it.
+  if ! batch_choose "$wt" "$main" "$count"; then
+    log "nothing landed: $GATES_WHY. Fix it, commit, and land again." | tee "$BATCH_OUT/out"; : > "$BATCH_OUT/gates.log"
+    drop_worktree "$wt"; log "the candidate ${cand:0:7} is red: its gates cannot be chosen"; return 4
+  fi
+  if ! land_fits "$GATES_SET"; then
+    log "the candidate ${cand:0:7} of $count land$(plural "$count"), on the gates $GATES_SET, would outlast this job: it ends in $(hours "$(( $(job_end) - $(date +%s) ))"), and a land on those gates takes about $(hours "$(land_estimate "$GATES_SET")")$( (( count == 1 )) || echo "; the batch shrinks")"
+    OVER_SET="$GATES_SET"; drop_worktree "$wt"; return "$BATCH_OVER"
+  fi
+  # A batch of one whose rebase left its tree as queued reuses its report's build (looper#134).
+  (( count != 1 )) || queued="$(git -C "$CHECKOUT" rev-parse "${TR_SHA[0]}^")"
+  t=$SECONDS
+  if build_jobs HEAD "$wt"; then
+    log "the candidate ${cand:0:7} of $count land$(plural "$count"): a build job of the gates $GATES_SET ($GATES_WHY), on main ${main:0:7}"
+    ( cd "$wt" && ISSUE=train build_gates "$main" "$queued" ) > "$BATCH_OUT/gates.log" 2>&1 || grc=$?
+    local bt; bt="$(sed -n 's/^build times: //p' "$BATCH_OUT/gates.log" | tail -n 1)"
+    if [[ -n "$bt" ]]; then log "batch: its build $bt"; for (( i = 0; i < count; i++ )); do log "#${TR_N[i]}: its build $bt"; done; fi
+    if (( grc == 3 )); then
+      { log "nothing landed yet: the batch's build has no verdict and this job's end is near; the lands stay queued, and the next manager takes the build's verdict up:"; tail -n 3 "$BATCH_OUT/gates.log"; } | tee "$BATCH_OUT/out"
+      local u; u="$(sed -n 's/^the build job \([^ ]*\) of .*/\1/p' "$BATCH_OUT/gates.log" | tail -n 1)"
+      for (( i = 0; i < count; i++ )); do log "#${TR_N[i]}: left queued for the next manager: its build $u has no verdict yet, and this job ends in $(hours "$(( $(job_end) - $(date +%s) ))")"; done
+      drop_worktree "$wt"; return "$LAND_DEFERRED"
+    elif (( grc == BUILD_NO_RUNNER )); then
+      # No runner took the batch's build (looper#113): no verdict, each land's issue told once, the lands stay queued.
+      log "nothing landed, and no verdict: $(grep '^no runner: ' "$BATCH_OUT/gates.log" | tail -n 1); the lands stay queued, and the next manager takes the build's verdict up" | tee "$BATCH_OUT/out"
+      for (( i = 0; i < count; i++ )); do
+        cp "$BATCH_OUT/gates.log" "${TR_REC[i]}/gates.log" 2>/dev/null || true
+        log "#${TR_N[i]}: left queued: no runner took its build job; $(grep -o 'no runner: .*' "$BATCH_OUT/gates.log" | tail -n 1)"
+        no_runner_comment "${TR_N[i]}" "${TR_ID[i]}" "${TR_REC[i]}"
+      done
+      drop_worktree "$wt"; return "$LAND_NO_RUNNER"
+    fi
+    (( grc == 0 )) || { log "nothing landed: its build job failed: $(grep -m 1 -E '^(verdict: failure: |no verdict )' "$BATCH_OUT/gates.log" | sed 's/^verdict: failure: //'), on your commits rebased on main; its end:"; tail -n 30 "$BATCH_OUT/gates.log"; } > "$BATCH_OUT/out"
+  elif [[ -n "$MANAGER_TOKEN" ]]; then
+    log "nothing landed: this manager holds the manager's token and runs no repository code; the gates $GATES_SET would run in its job, not as a build job ($REPO pins no build image, or the job holds no BUILD_TRIGGER_TOKEN). The next batch's verdict job runs them (looper#90)." | tee "$BATCH_OUT/out"
+    drop_worktree "$wt"; return 6
+  else
+    [[ "$LOOPER_FORGE" != github ]] || ! pinned HEAD "$wt" || [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] ||
+      log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: the gates run here, not as a build job (looper#71)"
+    log "the candidate ${cand:0:7} of $count land$(plural "$count"): the gates $GATES_SET ($GATES_WHY: $GATES_RUN), on main ${main:0:7}"
+    ( cd "$wt" && LOOPER_GATES_BASE="$main" bash -c "$GATES_RUN" ) > "$BATCH_OUT/gates.log" 2>&1 || grc=$?
+    log "the batch's gates ran $(( SECONDS - t )) s (exit $grc)"
+    if (( grc == 0 )) && [[ -n "$(git -C "$wt" status --porcelain --untracked-files=no)" ]]; then
+      grc=4; log "the gates changed tracked files ($(git -C "$wt" status --porcelain --untracked-files=no | awk '{ print $2 }' | paste -sd' ' -)): it is not the tested tree" >> "$BATCH_OUT/gates.log"
+    fi
+    (( grc == 0 )) || { log "nothing landed: the gates failed (exit $grc), on your commits rebased on main; their end:"; tail -n 30 "$BATCH_OUT/gates.log"; } > "$BATCH_OUT/out"
+  fi
+  drop_worktree "$wt"
+  if (( grc == 0 )); then
+    echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
+    GREEN_SET[$count]="$GATES_SET"; GREEN_WHY[$count]="$GATES_WHY"; GREEN_MAPPED[$count]="$GATES_MAPPED"; GREEN_OUT[$count]="$BATCH_OUT"
+    log "the candidate ${cand:0:7} is green"; return 0
+  fi
+  log "the candidate ${cand:0:7} is red"
+  return 4
+}
+
+# Main fast-forwards to the first count lands' candidate (green: its build is
+# BATCH_OUT's), and each of them gets its record and its verdict (post_land:
+# the comment, the HISTORY.md line, the branch deleted). Fails when main moved
+# (nothing posted: the lands stay queued).
+batch_land() { # main count
+  local main="$1" count="$2" cand i rec ok="" set why mapped out
+  cand="${TR_AFTER[count-1]}"
+  set="${GREEN_SET[$count]}"; why="${GREEN_WHY[$count]}"; mapped="${GREEN_MAPPED[$count]}"; out="${GREEN_OUT[$count]}"
+  for (( i = 0; i < count; i++ )); do [[ -z "${TR_ROADMAP[i]}" ]] || ok+="${ok:+ }$(git -C "$CHECKOUT" rev-list "${TR_BEFORE[i]}..${TR_AFTER[i]}" -- ROADMAP.md | paste -sd' ' -)"; done
+  ( flock 8; LOOPER_LANDING=1 LOOPER_ROADMAP_OK="$ok" git -C "$CHECKOUT" push -q origin "$cand:refs/heads/main" ) 8>"$LAND_LOCK" ||
+    { log "main did not fast-forward to the candidate ${cand:0:7} (it moved); the lands stay queued for the next batch"; return 1; }
+  log "main fast-forwarded: ${main:0:7}..${cand:0:7}, on the gates $set ($why): a batch of $count land$(plural "$count"), one build"
+  for (( i = 0; i < count; i++ )); do
+    rec="${TR_REC[i]}"
+    echo "${TR_BEFORE[i]} ${TR_AFTER[i]}${mapped:+ $set}" >> "$rec/landed"
+    printf '%s: %s\n' "$set" "$why" >> "$rec/gate-sets"
+    cp "$out/gates.log" "$rec/gates.log" 2>/dev/null || true
+    echo "$count" > "$rec/batch"
+    log "landed on main: ${TR_BEFORE[i]:0:7}..${TR_AFTER[i]:0:7}, on the gates $set ($why)" >> "$rec/out"
+    post_land "${TR_N[i]}" "${TR_ID[i]}" "${TR_SHA[i]}" 0 "$rec"
+  done
 }
 
 # A land whose build no runner took (looper#113): its issue is told, once a
@@ -1821,9 +2108,9 @@ append_history_new() { # lines (one string)
 # new one: until the job happened to end, a fixed fault still turned lands red
 # (looper#153: #118's fix, on main since 01:08Z, reached no land until 06:30Z,
 # and the stale manager refused the lands of #115, #138 and #130 on the fault
-# it fixed). So the job watches its image's tag: before each land (never
-# mid-land) it reads the digest the tag names now, and when that differs from
-# the one the tag named at its start, it starts no further land and ends, exit
+# it fixed). So the job watches its image's tag: before each batch (never
+# mid-batch, looper#86) it reads the digest the tag names now, and when that differs from
+# the one the tag named at its start, it starts no further batch and ends, exit
 # 0, logging both digests; the kicker starts the next job, which pulls the new
 # image. What is queued is that job's.
 #
@@ -1906,18 +2193,18 @@ manage() {
   land "Planning files from the template (looper; tacplus-dev/roadmap decisions/repo-roadmap-files-2026-10-27.md)" add_planning_files
   sync_checkout
   tags_seen="$(release_tags)"; idle_since="$(date +%s)"
-  log "the manager of $REPO: merging its reports' queued branches, one at a time"
+  log "the manager of $REPO: merging its reports' queued branches, in batches: one build a batch (looper#86)"
   image_start
   while :; do
     labelled="$(landing_issues)" || labelled=""
     if ! q="$(queued_lands)"; then log "could not read $REPO's branches"; q=""; labelled=""; fi
-    while read -r _ _ n id sha; do
-      [[ -n "$n" ]] || continue
+    if [[ -n "$q" ]]; then
+      # Never mid-batch: a newer image ends the manager between batches (looper#153).
       if image_moved; then log "the manager ends: the kicker starts the next, on the new image, and what is queued is its"; return 0; fi
-      rc=0; merge_report "$n" "$id" "$sha" || rc=$?
+      rc=0; train "$q" || rc=$?
       (( rc != LAND_DEFERRED )) || { log "the manager stops: its job's time is short; the next manager merges what is queued"; return 0; }
       (( rc != LAND_NO_RUNNER )) || { log "the manager stops: no runner takes build jobs; the lands stay queued for the next manager"; return 0; }
-    done <<<"$q"
+    fi
     clear_stale_landing "$labelled" "$q"
     new=()
     for t in $(release_tags | grep -vxF -f <(printf '%s\n' "$tags_seen") || true); do
@@ -3151,20 +3438,21 @@ Rules:
    run on this machine too, and a pattern stops theirs (looper#61); \`pkill\` here signals only your run's own.$(memory_rule)
 5. Commit on $BRANCH with a message that says why and ends with
    \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
-   It queues your commits with the repository's manager, which alone merges to main, one branch at a time: it
-   rebases them onto the current main, re-runs the gates, pushes only on green and deletes your branch; the
-   command waits for its verdict (a comment on this issue) and prints it, which can take long (the queue, then
-   the gates): run it detached and poll its output (rule 4).
-   With a $GATE_MAP, the gates it runs are the set your diff calls for, full for any path the map does not name
-   or a change to the map itself, and its verdict names the set and why.
-   Checkpoint before you land (rule 10): if your time runs out while your land is queued, the manager still
-   lands it after you and says so on the issue, and the next run finishes the issue.
+   It queues your commits with the repository's manager, which alone merges to main, and returns at once:
+   reports never wait for, or run, a build (the merge train, looper#86). The manager lands the queue in
+   batches: it rebases every queued branch, in order, onto a candidate from the current main, builds the
+   candidate once (with a $GATE_MAP, the gate set the batch's combined diff calls for, full for any path the
+   map does not name or a change to the map itself), fast-forwards main on green and deletes the branches;
+   on red it bisects the batch and sends the change that breaks it back, with the failure. Its verdict on
+   your land is a comment on this issue, and names the batch and the gate set.
+   Once your land is queued, your run is done: end it (rule 8). If something you must still do waits on the
+   verdict, say so in your last checkpoint (rule 10): the next run of this issue, after the verdict, does it.
    A push to main any other way is refused. When it merges nothing it says why: the rebase conflicts in files
    it does not regenerate (it regenerates only the generated and lock files the repository's $GEN_MAP maps;
-   rebase onto origin/main yourself, resolve, verify again, and land again), or the gates fail (fix them and
-   land again). When STATE.md is its only conflict, it lands the rest and drops your STATE.md commit
-   (looper#131): its verdict quotes it; rebase on origin/main, redo it on main's STATE.md in a commit of its
-   own, and land again before you close the issue. Never force-push. Never commit secrets.
+   the next run rebases onto origin/main, resolves, verifies and lands again), or the build is red (the next
+   run fixes it and lands again). When STATE.md is its only conflict, it lands the rest and drops your
+   STATE.md commit (looper#131): its verdict quotes it; the next run redoes it on main's STATE.md in a commit
+   of its own and lands again. Never force-push. Never commit secrets.
 6. The planning files: update STATE.md when your change changes what it states (version, what works,
    gaps, blockers), in your last commit, of its own, touching STATE.md alone (\`--land\` makes it so: looper#131).
    Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
@@ -3173,9 +3461,14 @@ Rules:
    member's, says it is at Jody's request (then only do what it asks of ROADMAP.md). HISTORY.md is append-only and not yours: the looper adds
    the line for this issue and for any release.
 $(kind_rule "$kind")
-8. When it is landed, comment on the issue with what changed (commit hashes), the gates you ran and their
-   last lines, the gate set the land ran (its output names it), and anything you could not verify; then, as your last step (any patch tagged and any backport
-   pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it ends your run.
+8. When your land is queued, end your run with a checkpoint (rule 10) that says what is done and what is
+   left: do not close the issue, which is $LABEL_LANDING until the manager's verdict and is worked again
+   after it. When you start a run whose land the manager has merged (its verdict is on the issue: \`The
+   manager merged\`), comment on the issue with what changed (commit hashes), the gates you ran and their
+   last lines, the gate set and batch the land ran in (the verdict names them), and anything you could not
+   verify; then, as your last step (any patch tagged and any backport
+   pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it ends your run. A
+   land the manager sent back (a conflict, or red: its verdict says) you fix and land again.
 9. If the fix is landed but the gates cannot run until another open issue is done (a compiler floor that
    does not exist yet, say), or there is rightly nothing to change here until another open issue is done,
    do not close this issue: comment what you pushed (if anything) and why it waits, and write the line
@@ -3338,6 +3631,7 @@ $(sed 's/^/> /' "$run/step")"
   elif [[ "$stopped" == idle && -n "$head_after" && -n "$progress" ]]; then
     ended="The run went idle after its fix landed: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ "$stopped" == idle ]]; then ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
+  elif [[ -n "$pending" && "$rc" == 0 ]]; then ended="The run queued its land and ended, as the merge train asks (looper#86: reports never wait for a build)."
   else ended="The run ended before finishing (exit $rc)."; fi
   if [[ -n "$pending" ]]; then
     report "$n" land-pending

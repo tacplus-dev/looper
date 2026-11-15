@@ -298,9 +298,13 @@ lander are gone. One job per issue needs none of them.
   builds with build jobs ([Build jobs](#build-jobs), looper#71).
 - **Landing is queuing.** The model's `repo-looper --repo R --issue N --land` (`--gates CMD` where the repository
   has no `gates.yaml` and no justfile) pushes a checkpoint whose `.looper/land` names the land (its id, gates and
-  when it was queued), then labels the issue `looper:landing` (a hold: no other report takes it) and waits for the
-  manager's verdict, which it prints, exiting with its code: 0 merged, 3 sent back, 4 red. A land still queued when
-  the report's time runs out is the manager's all the same; the report says so on the issue.
+  when it was queued), then labels the issue `looper:landing` (a hold: no other report takes it) and **returns at
+  once**: reports queue their branch and end, and never wait for, or run, a build (looper#86, the merge train:
+  the decision's "Reports don't wait for builds"; a report pod waiting hours for a build held a slot). The run
+  ends `land-pending` ([Outcomes](#outcomes)): the issue stays `looper:landing` until the manager's verdict, then
+  its next report closes it, or fixes what the manager sent back. With `--wait` (the tests, a run by hand) it
+  waits for the verdict instead, prints it and exits with its code: 0 merged, 3 sent back, 4 red. A land still
+  queued when the report's time runs out is the manager's all the same; the report says so on the issue.
 - **The manager**, one job per repository with work to merge (`looper-<repo>-manager`, `repo-looper --repo R
   --manage`, `resource_group: looper-<repo>-main`), is **the only merger** of the repository's main. The planner
   adds it beside the reports it starts (unless one already waits to start) and for any queued land, **ahead of
@@ -310,15 +314,28 @@ lander are gone. One job per issue needs none of them.
   only its own jobs: a report pending from an earlier pipeline has a lower id still. So a report that starts while
   its manager waits for a runner (created or pending, not waiting for main's resource behind a manager that merges)
   **yields** at once: it takes nothing and leaves its issue ready, its slot goes to the manager, and the kicker
-  plans the issue again, after it. It takes the
-  queued branches by [priority](#priority), then oldest first (looper#121), one at a time under the landing lock: it rebases each on main, runs the gates its
-  diff calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)), pushes **only on green**, and **deletes
-  the merged branch**. In a repository that pins its build image the gates are a **build job's verdict** on the
-  rebased commit ([Build jobs](#build-jobs), looper#71); in any other, they run in the manager's job.
+  plans the issue again, after it. It lands **in batches: a merge train** (looper#86;
+  `tacplus-dev/roadmap:decisions/merge-train-2026-11-04.md`; Jody: "changes and builds are different things. If 5
+  loopers are working in parallel then I think 5 builds is a waste"). It takes every queued branch at once, by
+  [priority](#priority), then oldest first (looper#121), and rebases each in that order onto a **candidate** (the
+  staging ref `refs/looper/staging`, fresh from main; never main): one build of the candidate, on the gate set the
+  batch's combined diff since main calls for ([Gates scaled to the diff](#gates-scaled-to-the-diff)), a **build job's
+  verdict** in a repository that pins its build image ([Build jobs](#build-jobs), looper#71), the gates in the
+  manager's job in any other. **Green:** main fast-forwards to the candidate (nothing reaches main without a green
+  build of exactly that commit), each land gets its verdict (naming the batch), its branch is deleted and its
+  HISTORY.md line added. **Red:** the batch is **bisected** on its prefixes (the candidate after its first half is
+  built: green, the breaking change is in the second half, red, in the first; about log2(n) builds), the land that
+  breaks it is **sent back with the failure** (its issue stays `approved`, the branch stays, and its next report
+  fixes it), the green prefix before it lands as a batch of its own, and the lands after it stay queued: the next
+  batch, from the new main, takes them. A batch of one that is red is just sent back. A batch of 5 green lands is 1
+  build; one with one bad change lands 4, sends 1 back and builds at most 1 + 2·log2(5) times. The candidate's
+  build runs on the build pool like any other, so a batch whose build would outlast the manager's job, or has no
+  verdict by its end, leaves its lands queued for the next manager, which takes a build left running up by its tree.
   - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
     (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
     resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
-    and the gates judge the result. `PROPOSALS.md` and `HISTORY.md`, the append-only logs loopers write, it
+    and the gates judge the result. A conflict in the batch drops only that branch: it is sent back at once, with
+    no build of it, and the rest of the batch goes on. `PROPOSALS.md` and `HISTORY.md`, the append-only logs loopers write, it
     resolves with git's union merge (main's lines, then the branch's; from attributes of its own, so no repository
     carries a `.gitattributes`, looper#105): the nightly scan's append on main never blocks a land. A report's last
     commit, touching `STATE.md` alone (its `--land` makes the
@@ -351,10 +368,10 @@ lander are gone. One job per issue needs none of them.
     land until 06:30Z, and the stale manager refused #115, #138 and #130 on the fault it fixed). In the looper
     image (`LOOPER_IMAGE`, the Dockerfile's), a manager or verdict job reads at its start the digest its jobs'
     image tag names (`LOOPER_JOB_IMAGE`, the plan's, default `ghcr.io/tacplus-dev/looper:main`: the registry's
-    manifest HEAD, anonymous) and reads it again before each land (a verdict job, before each batch member):
-    another digest, and it starts no further land and ends, exit 0, its log naming both (`<image> is now <new>;
+    manifest HEAD, anonymous) and reads it again before each batch (a verdict job, before each batch member):
+    another digest, and it starts no further batch and ends, exit 0, its log naming both (`<image> is now <new>;
     this job started on <old>`); the kicker starts the next job, which pulls the new image, and what is queued is
-    its. Never mid-land, never a land sent back or left red. An image the plan pinned by digest is not watched
+    its. Never mid-batch, never a land sent back or left red. An image the plan pinned by digest is not watched
     (it moves nowhere), nor is anything outside the looper image (a manager run by hand), and a registry it
     cannot read is no change: the job says so once and goes on as it is. The digest read at the start stands
     for the image the runner pulled moments before; one published between the two is missed, and that job runs
@@ -362,7 +379,7 @@ lander are gone. One job per issue needs none of them.
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-bisects (one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch)
 ```
 
 ### Build jobs
@@ -375,11 +392,13 @@ hub's decision on looper#71): a repository whose commit has a `tacplus.lock`, or
 project, builds in build jobs; one with neither keeps the gates in the manager's job and `looper-docker`, until its
 pin issue (filed by the hub) commits one.
 
-- **The manager's gates are a build job's verdict** on the rebased commit: it pushes that commit to a branch of its
-  own (`looper/build-<repo>-<n>`, deleted after; never the issue's branch, which is the report's queue), starts the
-  build with the gate set its diff calls for (input `gates`, from the commit's own `gates.yaml`, and `base`, the main
-  it is rebased on: the build runs exactly what [Gates scaled to the diff](#gates-scaled-to-the-diff) would) and
-  merges on its pass alone. Its verdict comment carries the build's link and verdict line.
+- **The manager's gates are a build job's verdict** on the batch's candidate ([the merge
+  train](#managers-and-direct-reports), looper#86: the queued lands rebased onto it in order, one build for all of
+  them): it pushes that commit to a branch of its own (`looper/build-<repo>-train`, deleted after; never an issue's
+  branch, which is the report's queue), starts the build with the gate set the batch's combined diff calls for
+  (input `gates`, from the commit's own `gates.yaml`, and `base`, the main it is rebased on: the build runs exactly
+  what [Gates scaled to the diff](#gates-scaled-to-the-diff) would) and fast-forwards main on its pass alone. Each
+  land's verdict comment carries the build's link and verdict line, and the batch it landed in.
 - **A queued build is no red land** (looper#128): builds run on tacplus-dev/build's spot pool, a few at a time, so
   its wait counts from the build's start (its first commit status, the `pending` its first job sets), never its
   trigger: one past it since its start is red. The wait covers the gate set the build runs (looper#158): the sum
@@ -551,7 +570,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | asked a question | `needs-decision` |
 | found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. A land of its still queued stays queued, and the issue `looper:landing` until the manager's verdict; with none, it is no longer `looper:landing` (looper#93), as after every outcome but a land queued. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
-| ended (its limit, or earlier) with its land queued and no verdict yet (looper#70) | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it |
+| ended with its land queued and no verdict yet (looper#70): every report that lands, since `--land` queues and returns (the merge train, looper#86), or one its limit stopped | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it (comments and closes, or fixes what came back) |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |
 | went idle after its fix landed: waiting on a land that was done (looper#37) | as an early end with progress: a comment with main's range and its last checkpoint; it stays `approved` and the next run comments and closes |
 | went idle after its build had no verdict within `LOOPER_BUILD_WAIT` of its start (looper#133) | a retry: a comment saying so with its last checkpoint; it stays `approved`, never `looper:stuck`, and the next run resumes |
@@ -590,7 +609,7 @@ the labels (looper#157). A usage-limit refusal is no stuck issue: nothing about 
 ```sh
 tests/looper-docker.test.sh                # a child's docker: the limit added, a lower one kept, a higher one or none refused, the image's own arguments left alone, other commands passed through; with a docker daemon, a container over its limit OOM-killed alone while the one beside it carries on (#41)
 tests/looper-pkill.test.sh                 # a model's pkill: its run's own processes signalled, another run's and the lander's spared and named, pkill's signal and -e options, the real pkill outside a run (#61)
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle, nor one waiting on its queued build, and one idle after its build had no verdict within the wait of its start retried, not stuck (#133); an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68); the model per run (#136: a `priority:high` issue's report and a scan on the high model, probed, any other on the default, unprobed, `LOOPER_MODEL` over both, each default its own variable, a refused high model falling back and recorded, the start comment naming the model, its tokens in the job's log); the usage limit's hold (#157: a run the weekly limit refuses, with empty usage, keeps its issue's labels and posts no comment, records the reset on the hub's one pinned hold issue with one comment per hold, a second run adding none and a later reset moving it, falls back from a high model mid-run and holds only when the default refuses too, holds a default when the reset cannot be read, and the reset times a refusal names) (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a report's `--land` queuing and returning at once, its run `land-pending` and landed by the manager after it (#86); a land the manager's job has no time for left queued; a model waiting on its land not idle, nor one waiting on its queued build, and one idle after its build had no verdict within the wait of its start retried, not stuck (#133); an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68); the model per run (#136: a `priority:high` issue's report and a scan on the high model, probed, any other on the default, unprobed, `LOOPER_MODEL` over both, each default its own variable, a refused high model falling back and recorded, the start comment naming the model, its tokens in the job's log); the usage limit's hold (#157: a run the weekly limit refuses, with empty usage, keeps its issue's labels and posts no comment, records the reset on the hub's one pinned hold issue with one comment per hold, a second run adding none and a later reset moving it, falls back from a high model mid-run and holds only when the default refuses too, holds a default when the reset cannot be read, and the reset times a refusal names) (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -760,8 +779,14 @@ login; a secret it cannot read is named in `sources` and the project is not read
   waited for it, the conflicts it resolved by regenerating (`#N: resolved its conflicts by regenerating: ...`)
   against those it sent back, red gates, lands left for the next manager, redone work (a land of an issue again after
   a send-back or red), and from GitHub each merge's build status (`LOOPER_RECAP_BUILD_CONTEXT`, `tacplus-dev/build`:
-  failure or error is a red main after it) and the reverts on main (`Revert "...`, `This reverts commit ...`). Items:
-  a red main and a revert always; a report-to-merge p90 over `LOOPER_RECAP_MERGE_MINUTES` (120); 3 send-backs.
+  failure or error is a red main after it) and the reverts on main (`Revert "...`, `This reverts commit ...`). The
+  [merge train](#managers-and-direct-reports)'s numbers (looper#86), from its log: the **batch sizes** (`batches`,
+  `batch_size`: `a batch of K lands (...)`), the **builds per landed change** (`builds_per_land`: its build jobs,
+  `batch: its build <url>: queued S s, ran S s`, and the gates runs in its job, `the batch's gates ran S s`,
+  against the lands merged; the target is well under 1), the **bisections** (`bisections`: `the batch is red:
+  bisecting the batch of K`) and the time from **queued to landed** (`report_to_merge_minutes`, a land's `merging
+  #N (..., queued T)` to its `landed on main` line). Items:
+  a red main and a revert always; a queued-to-landed p90 over `LOOPER_RECAP_MERGE_MINUTES` (120); 3 send-backs.
 - **Concurrency** (`concurrency`, looper#107, from the kicker's `capacity:` lines, each standing for the time to the
   next pass of its job, `LOOPER_RECAP_PASS` 180 seconds for the last). There is no cap to adjust (`caps.yaml` is
   gone: loopers are never blocked), so the recap reports what a real problem would show up as: in all and per
@@ -803,7 +828,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, report to merge, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for a VM, one more VM's cost); the runs and tokens per model, a refused model transient (#136); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for a VM, one more VM's cost); the runs and tokens per model, a refused model transient (#136); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
 ```
 
 ## Build pipeline

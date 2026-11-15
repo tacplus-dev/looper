@@ -116,7 +116,7 @@ q() { jq -r "$1" "$J"; }
 # LOOPER_SUGGEST_PROJECTS' default plus tacplus-dev/cluster, which cannot be read: named, not guessed.
 [[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
   fail "sources: $(q .sources)"
-[[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "23 8 6 1 1" ]] ||
+[[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "24 8 6 1 1" ]] ||
   fail "looper's jobs: $(q '.projects["tacplus-dev/looper"]')"
 # tacplus-dev/build's jobs, read with its own token: counted, with their failures, queue and run times.
 [[ "$(q '.projects["tacplus-dev/build"] | "\(.jobs) \(.status.failed) \(.failures.gate_failure) \(.queue_s.n) \(.run_s.n)"')" == "2 1 1 2 2" ]] ||
@@ -127,7 +127,7 @@ lacks "$(q 'keys | join(" ")')" cloud
 # behind the scan, looper-kernel-4 50 minutes, looper-tacplus-12 20 minutes, prepared in 2.
 [[ "$(q '[.longest.queues[0:3][] | "\(.job) \(.minutes)"] | join(", ")')" == "looper-tacplus-16 97, looper-kernel-4 50, looper-tacplus-12 20" ]] || fail "longest queue: $(q .longest.queues)"
 [[ "$(q '.projects["tacplus-dev/looper"].queue_s | "\(.max) \(.p90)"')" == "5820 1200" ]] || fail "queue: $(q '.projects["tacplus-dev/looper"].queue_s')"
-has "$(q '.items[] | select(.key == "queue/tacplus-dev/looper") | .summary')" "queue time p90 20 min over 22 jobs (p50 1, max 97; threshold 15 min)"
+has "$(q '.items[] | select(.key == "queue/tacplus-dev/looper") | .summary')" "queue time p90 20 min over 23 jobs (p50 1, max 97; threshold 15 min)"
 # The control jobs' queues, each its own (looper#104): the kicks' 30 s; the plan canceled before it started, after a minute.
 [[ "$(q '.control["looper-kick"] | "\(.jobs) \(.unstarted) \(.queue_minutes.p90) \(.longest.url)"')" == "2 0 0.5 https://gitlab.com/tacplus-dev/looper/-/jobs/1500" ]] || fail "kick: $(q .control)"
 [[ "$(q '.control["looper-plan"] | "\(.jobs) \(.unstarted) \(.queue_minutes.max)"')" == "1 1 1" ]] || fail "plan: $(q .control)"
@@ -161,7 +161,7 @@ has "$(q '.items[] | select(.key == "land/tacplus/full") | .summary')" "tacplus:
 [[ "$(q '.loopers.tacplus.scan_minutes | join(",")')" == 125 ]] || fail "scan: $(q .loopers.tacplus)"
 has "$(q '.items[].key')" "scan/tacplus"
 # Runner pools: the VMs, the jobs that failed before one was ready, the disk at a job's end.
-[[ "$(q '.runner_pools["tacplus-dev arm64 autoscaler"] | "\(.vms) \(.failed_before_ready) \(.disk_pct.max)"')" == "14 6 45" ]] || fail "pool: $(q .runner_pools)"
+[[ "$(q '.runner_pools["tacplus-dev arm64 autoscaler"] | "\(.vms) \(.failed_before_ready) \(.disk_pct.max)"')" == "15 6 45" ]] || fail "pool: $(q .runner_pools)"
 [[ "$(q '.runner_pools["tacplus-dev arm64 autoscale-16"].disk_pct.max')" == 72 ]] || fail "pool: $(q .runner_pools)"
 # GitHub Actions (nightly, release, images only).
 [[ "$(q '.actions.by_workflow | keys | join(",")')" == tacplus/nightly ]] || fail "actions: $(q .actions)"
@@ -209,6 +209,11 @@ for k in manager/tacplus/red-main manager/tacplus/reverts manager/tacplus/merge-
 done
 has "$(q '.items[] | select(.key == "manager/tacplus/sent-back") | "\(.over) \(.recovered) \(.summary)"')" "false true tacplus: the manager sent 1 branch back on a conflict, resolved 1 by regenerating; redone: #21"
 lacks "$(q '.items[].key')" "manager/alpha"
+# The merge train's numbers (looper#86): gamma's manager landed 2 of 3 lands in 2 batches (of 3, then 1),
+# red on the first, bisected (2 builds) to #31, sent back; 4 builds for 2 landed changes.
+[[ "$(q '.managers.gamma | "\(.batches) \(.batch_size.p50) \(.batch_size.max) \(.bisections) \(.builds) \(.merged) \(.builds_per_land) \(.red_gates) \(.report_to_merge_minutes.p50)"')" == "2 1 3 1 4 2 2 1 150" ]] ||
+  fail "gamma's train: $(q .managers.gamma)"
+[[ "$(q '.managers.tacplus | "\(.batches) \(.batch_size) \(.bisections) \(.builds_per_land)"')" == "0 null 0 1" ]] || fail "tacplus's train numbers: $(q .managers.tacplus)"
 # The concurrency (looper#107: no caps), from the kicker's 39 passes, 3 minutes each: trace-1500's
 # 25 (the kicker's before looper#107, its cap= not read), tacplus's 6 reports with 6 running in 20 and
 # 2 in 5, alpha's and kernel's 1; trace-1501's 14 (pre-looper#92: no running=, every report running),
@@ -284,7 +289,7 @@ printf 'held/tacplus/limit_outlasts_job tacplus-dev/looper#33 the job sizing\nno
 recap report "$J" "$TMP/classes.json" --suggestions "$TMP/s" --covered "$TMP/covered" > "$TMP/r.md" || fail "report"
 R="$(cat "$TMP/r.md")"
 has "$R" "# Recap of 2026-11-02"
-has "$R" "| tacplus-dev/looper | 23 | 8 |"
+has "$R" "| tacplus-dev/looper | 24 | 8 |"
 has "$R" "Failures by class: image_pull 6, gate_failure 1,"
 has "$R" "Slot use: tacplus peak 1 of 1 (mean use 0.67, 3 plans)."
 has "$R" "Hours ready issues waited: tacplus 17.32 h (conflict 7.2, no_free_slot 7.2, limit_outlasts_job 2.42, behind_a_land 0.5)."
@@ -297,12 +302,12 @@ has "$R" "Not read: gitlab:tacplus-dev/cluster"
 [[ "$(c '[.builds_per_commit[] | "\(.night) \(.per_commit)"] | join(", ")')" == "2026-10-31 2.5, 2026-11-01 1.8, 2026-11-02 1" ]] || fail "trend: $(c .builds_per_commit)"
 has "$R" "Builds (looper#134): 1 of 1 commits, 1 a commit (0 built a commit again); the nights before: 2026-11-01 1.8, 2026-10-31 2.5: falling."
 # The managers' scores, the concurrency and the capacity numbers (looper#72, looper#107).
-has "$R" "Managers: alpha 1 merged (report to merge p50 7, p90 7 min), conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; tacplus 3 merged (report to merge p50 80, p90 240 min), conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
+has "$R" "Managers: alpha 1 merged (queued to landed p50 7, p90 7 min), 1 builds a landed change, conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; gamma 2 merged (queued to landed p50 150, p90 160 min) in 2 batches (sizes p50 1, max 3), 2 builds a landed change, 1 bisection, conflicts resolved 0 against 0 sent back, red gates 1, main red after 0, reverts 0, redone 0, 4 builds queued p50 5, p90 10 min, ran p50 25, p90 30 min; tacplus 3 merged (queued to landed p50 80, p90 240 min), 1 builds a landed change, conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
 has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
 lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 # The runs and tokens per model (looper#136), the most runs first.
 has "$R" "Models: claude-opus-5-5 2 runs, 3,657,700 tokens (input 1,700, output 46,000, cache read 3,400,000, cache write 210,000); claude-fable-5-1 1 run, 1,911,800 tokens (input 800, output 21,000, cache read 1,800,000, cache write 90,000), refused 1; claude-haiku-5-5 0 runs, 1,200 tokens"
-has "$R" "Capacity: queue p90 20 min over 24 jobs; 3 issues waited 2.78 h for a VM ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min, [tacplus#12](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 20 min); one more t2a-standard-8 is about \$7.39 a day (\$0.308 an hour)."
+has "$R" "Capacity: queue p90 20 min over 25 jobs; 3 issues waited 2.78 h for a VM ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min, [tacplus#12](https://gitlab.com/tacplus-dev/looper/-/jobs/1200) 20 min); one more t2a-standard-8 is about \$7.39 a day (\$0.308 an hour)."
 has "$R" "- \`wait/tacplus\`: tacplus: ready issues waited 2.25 h with no report job "; has "$R" "(2 of 7 nights, over its threshold tonight, 2.25 h of waiting). No advice tonight."
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`manager/kernel/backlog\`: kernel: its manager behind: "
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "(1 night running; advice after 2)."
