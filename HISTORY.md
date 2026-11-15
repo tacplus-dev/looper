@@ -105,3 +105,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-14 looper issue Build once per (repo, commit, gate set): reuse a green or in-flight build instead of building the same commit again (112 builds of 86 commits in 24 h) (#134, 56fd579; gates: full, docs)
 - 2026-11-14 looper issue looper-scan: a recorded security baseline per repository (line-independent), so only findings new against it are reported and filed (#146, 6033db3; gates: docs)
 - 2026-11-15 looper issue The looper image is not published: the image workflow fails on main (#154)
+- 2026-11-15 looper issue Security: a report's branch can publish the looper image every manager runs (workflows: write since #106) (#115, 1480a4d; gates: docs)
