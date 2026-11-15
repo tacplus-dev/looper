@@ -1281,6 +1281,39 @@ blocking | grep -q '^gitleaks deploy/env.txt:aws-access-token:1 deploy/env.txt:1
   fail "a report holds the secret"
 pass
 
+# looper-scan local on a checkout, by hand (looper#161): each scanner is
+# wrapped to record whether the checkout held the run's reports when it ran.
+NAME="security: looper-scan local . scans the checkout, never its own reports, and leaves it as it was"
+CO="$TMP/local-co"; git clone -q -b scansecret "$work" "$CO"
+REC="$TMP/rec"; mkdir -p "$REC"
+for t in osv-scanner govulncheck semgrep gitleaks gosec syft; do
+  printf '#!/usr/bin/env bash\n[[ -e "%s/security" ]] && echo %s >> "%s/saw-reports"\nPATH="${PATH#*:}" exec %s "$@"\n' "$CO" "$t" "$TMP" "$t" > "$REC/$t"
+  chmod +x "$REC/$t"
+done
+local_scan() { # [VAR=value...]
+  local p="$TMP/bin:$SB:$PATH"; ((REAL_SCAN)) && p="$TMP/bin:$PATH"
+  rm -f "$TMP/saw-reports"
+  (cd "$CO" && env -i PATH="$REC:$p" HOME="$TMP/home" TMPDIR="$TMP" "$@" "$ROOT/looper-scan" local .)
+}
+found() { jq -r '[.[] | .tool + " " + .id + " " + .where] | sort | join("\n")' "$1/findings.json"; }
+if local_scan BUILD_OUT="$TMP/local-out" 2>"$TMP/err"; then fail "the planted secret passed"; fi
+OUTSIDE="$(found "$TMP/local-out/security")"
+grep -q '^gitleaks deploy/env.txt:aws-access-token:1 ' <<<"$OUTSIDE" || fail "no secret: $OUTSIDE"
+if local_scan 2>"$TMP/err"; then fail "the planted secret passed"; fi
+[[ ! -e "$TMP/saw-reports" ]] || fail "scanned with the reports in the checkout: $(sort -u "$TMP/saw-reports" | paste -sd' ')"
+[[ -z "$(git -C "$CO" status --porcelain --ignored)" ]] || fail "the checkout changed: $(git -C "$CO" status --porcelain --ignored)"
+r="$(sed -n 's/^Reports: //p' "$TMP/err")"
+[[ -n "$r" && "$r" != "$CO"* && -f "$r/findings.json" ]] || fail "where the reports went: '$r': $(tail -5 "$TMP/err")"
+grep -qxF "Reports: $r" "$r/summary.md" || fail "the summary does not say where the reports went: $(cat "$r/summary.md")"
+[[ "$(found "$r")" == "$OUTSIDE" ]] || fail "findings: $(found "$r") (with the reports outside: $OUTSIDE)"
+# A BUILD_OUT inside the checkout, given: the reports go there once the scan is done.
+if local_scan BUILD_OUT="$CO" 2>"$TMP/err"; then fail "the planted secret passed"; fi
+[[ ! -e "$TMP/saw-reports" ]] || fail "scanned with the reports in the checkout: $(sort -u "$TMP/saw-reports" | paste -sd' ')"
+[[ "$(found "$CO/security")" == "$OUTSIDE" ]] || fail "findings: $(found "$CO/security") (with the reports outside: $OUTSIDE)"
+grep -qxF "Reports: $CO/security" "$CO/security/summary.md" || fail "$(cat "$CO/security/summary.md")"
+grep -q '^fail: ' "$CO/security/verdict" || fail "verdict: $(cat "$CO/security/verdict")"
+pass
+
 NAME="security: code the gates generated is scanned too"
 mkdir -p "$TMP/out-$((n + 1))/generated/model"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/model/keys.txt"
 if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi

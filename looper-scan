@@ -39,6 +39,9 @@
 set -euo pipefail
 
 SCAN_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Whether BUILD_OUT was given (looper-build's default is here): local's reports
+# go to a directory of their own without it (looper#161).
+SCAN_OUT_GIVEN="${BUILD_OUT:+1}"
 # shellcheck source=looper-build
 source "${LOOPER_BUILD:-$SCAN_SELF_DIR/looper-build}"
 
@@ -78,7 +81,8 @@ usage: looper-scan run               the security checks of BUILD_REPO at BUILD_
        looper-scan report            the run's findings, published as the repository's latest (what the next run compares with)
        looper-scan baseline FINDINGS a run's findings.json as a security-baseline.json (MEDIUM, LOW and UNKNOWN only)
        looper-scan sbom SOURCE DIR   a CycloneDX and an SPDX SBOM of SOURCE (dir:..., oci-archive:...) in DIR
-Reports go to BUILD_OUT/security (default: ./security).
+Reports go to BUILD_OUT/security (default: ./security; local: a new temporary directory, which its
+summary names). local never scans its own reports: a BUILD_OUT/security inside DIR is written once the scan is done.
 EOF
 }
 
@@ -795,10 +799,22 @@ cmd_local() { # dir
   BUILD_REPO="${BUILD_REPO:-$(basename "$dir")}"
   BUILD_SHA="${BUILD_SHA:-$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo local)}"
   SCAN_PUBLIC="${BUILD_SCAN_PUBLIC:-unknown}"   # true: CodeQL may run (an open-source repository)
-  rm -rf "$SCAN_OUT"; mkdir -p "$SCAN_OUT/raw" "$SCAN_OUT/norm"
+  # The reports are never in the tree while it is scanned (looper#161): its
+  # scanners would read them (gitleaks: govulncheck's commit hashes as
+  # tokens). Without a BUILD_OUT they go to a directory of their own; a
+  # BUILD_OUT/security inside DIR gets them once the scan is done.
+  local reports="$SCAN_OUT" scratch=""
+  [[ -n "$SCAN_OUT_GIVEN" ]] || reports="$(mktemp -d)/security"
+  rm -rf "$reports"; mkdir -p "$reports"; SCAN_REPORTS="$(cd "$reports" && pwd)"
+  SCAN_OUT="$SCAN_REPORTS"
+  case "$(cd "$reports" && pwd -P)/" in
+    "$(cd "$dir" && pwd -P)"/*) rmdir "$reports"; scratch="$(mktemp -d)"; SCAN_OUT="$scratch/security" ;;
+  esac
+  mkdir -p "$SCAN_OUT/raw" "$SCAN_OUT/norm"
   SCAN_WORK="$(mktemp -d)"
-  # shellcheck disable=SC2064  # this run's directory
-  trap "rm -rf '$SCAN_WORK'" EXIT
+  # shellcheck disable=SC2064  # this run's directories
+  if [[ -n "$scratch" ]]; then trap "rm -rf '$SCAN_WORK'; mv '$SCAN_OUT' '$SCAN_REPORTS'; rmdir '$scratch'" EXIT
+  else trap "rm -rf '$SCAN_WORK'" EXIT; fi
   scan_tree "$dir" /nonexistent "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
@@ -827,6 +843,7 @@ write_summary() { # blocking
   echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
   echo
   jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception."' "$f"
+  [[ -z "${SCAN_REPORTS:-}" ]] || { echo; echo "Reports: $SCAN_REPORTS"; }
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi

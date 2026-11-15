@@ -1189,9 +1189,9 @@ its title the cause; the other new ones are one issue. A cause another repositor
 are filed the same way; a baselined finding is never new. An issue's run is handed the same report in its run directory, its prompt pointing at it.
 
 ```sh
-looper-scan run | report | local DIR | sbom SOURCE DIR   # the jobs; local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them)
+looper-scan run | report | local DIR | sbom SOURCE DIR   # the jobs; local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them), its reports in a temporary directory its summary names (or BUILD_OUT/security, written once the scan is done): never in the tree it scans (looper#161)
 looper-scan baseline FINDINGS > security-baseline.json  # a run's findings as the repository's recorded baseline
-tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM
+tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was)
 tests/repo-looper.test.sh    # scan-security-report: the scan reads the report; scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes; issue-security-report: an issue's run is handed it
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)
 ```
