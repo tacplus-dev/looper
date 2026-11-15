@@ -172,6 +172,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   can fail only in a job, or send the job's token to a stub. Sourcing the helper in every test file (and a
   planning-files check that each does) would close it; the tests that drive a real docker (looper-docker,
   runner-image, looper-build) need checking for what they read from the job first (`DOCKER_HOST`, the broker).
+- **The scanners' dependency overrides found before the nightly scan** (2026-11-06, #101): the image build pins
+  overrides per tool (`*_XZ_VERSION`, `*_XNET_VERSION`, `*_COMPRESS_VERSION`, `*_BROTLI_VERSION`) that each go when
+  an upstream release requires the fixed version, and only the nightly scan's govulncheck of the built binaries
+  finds a new one. The image build could run `govulncheck -mode=binary` on the Go scanners it builds and fail on a
+  fixable finding, and tell when an override has become redundant.
 - **A closed issue's HISTORY.md line beside its queued land** (2026-11-05, #93): a run that closes its issue while
   its land is still queued (no verdict yet) has its report queue the issue's HISTORY.md line with `queue_history`,
   which force-pushes the branch afresh at main: the queued land's commits leave the branch, and the manager merges
@@ -753,7 +758,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   runner before tacplus#195's `swift:` and darwin/arm64 `rust:` recipes rely on it. Approved, but no ROADMAP.md
   links it (tacplus's lists #195 only); the design and Jody's questions are on the issue.
   **Promoted** (2026-10-30, ROADMAP.md Next; built 2026-10-31, #36).
-- **Syft 1.57.1, and drop `SYFT_XNET_VERSION`** (2026-11-13, #142): Syft v1.57.1 requires `golang.org/x/net v0.62.0`,
+- **Syft 1.57.1, and drop `SYFT_XNET_VERSION`** (2026-11-13, #142; **done** 2026-11-15, #101, with OSV-Scanner 2.7.1): Syft v1.57.1 requires `golang.org/x/net v0.62.0`,
   the Dockerfile's own condition for dropping `SYFT_XNET_VERSION` and its replace. A mechanical bump, verified by the
   image's smoke and a `govulncheck -mode binary /usr/local/bin/syft`; it does not fix GO-2026-6905
   (github.com/blakesmith/ar, accepted in `security-exceptions.yaml` until 2026-12-13): v1.57.1 still requires it.
