@@ -97,10 +97,13 @@ case "$cmd" in
   "issue list")
     # The priority labels unreadable, for the manager's order (looper#121).
     [[ ! -e "$FIX/gh-priority-fails" || " ${labels[*]-} " != *" priority:"* ]] || { echo "stub gh: HTTP 502" >&2; exit 1; }
+    # A repository with no issue yet (the hub's hold, looper#157) lists none.
+    shopt -s nullglob; files=("$FIX/issues/$repo"-*.json); shopt -u nullglob
     jq -s --arg s "$state" '[.[] | select(($s == "all" or .state == ($s | ascii_upcase)) and ([.labels[].name] | contains($ARGS.positional)))] | sort_by(-.number)' \
-      "$FIX/issues/$repo"-*.json --args "${labels[@]+"${labels[@]}"}" | jq -r "$q" ;;
+      "${files[@]+"${files[@]}"}" --args "${labels[@]+"${labels[@]}"}" < /dev/null | jq -r "$q" ;;
   "issue create")
-    n="$(( $(jq -s 'map(.number) | max // 0' "$FIX/issues/$repo"-*.json) + 1 ))"
+    shopt -s nullglob; files=("$FIX/issues/$repo"-*.json); shopt -u nullglob
+    n="$(( $(jq -s 'map(.number) | max // 0' "${files[@]+"${files[@]}"}" < /dev/null) + 1 ))"
     jq -n --argjson n "$n" --arg t "$title" --arg b "$body" \
       '{number: $n, title: $t, state: "OPEN", labels: ($ARGS.positional | map({name: .})), body: $b, comments: [], createdAt: "2026-10-28T00:00:00Z"}' \
       --args "${labels[@]+"${labels[@]}"}" > "$FIX/x-new-$$" && mv "$FIX/x-new-$$" "$FIX/issues/$repo-$n.json"
@@ -130,7 +133,10 @@ EOF
 # areas file as $AREAS. The model of each run (--model, looper#136) is
 # appended to $FIX/models; a model probe's to $FIX/probes, refused (an error
 # result, as the account's) when $FIX/refused names it. With $FIX/usage, the
-# run ends with a result event carrying it as its modelUsage.
+# run ends with a result event carrying it as its modelUsage. A run on a model
+# $FIX/limited names ends at once as the account's usage limit ended every run
+# of 2026-11-14 (looper#157): the refusal $FIX/limit holds (default the weekly
+# limit's text) as the model's text and as an error result with no usage.
 cat > "$TMP/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 model=""; while [[ $# -gt 0 ]]; do [[ "$1" != --model ]] || model="$2"; shift; done
@@ -144,6 +150,12 @@ if [[ "$first" == *"model probe"* ]]; then
 fi
 echo "$model" >> "$FIX/models"
 printf '%s\n' "$first" >> "$FIX/prompts"
+if grep -qxF -- "$model" "$FIX/limited" 2>/dev/null; then
+  l="$(cat "$FIX/limit" 2>/dev/null || echo "You've hit your weekly limit · resets 3am (UTC)")"
+  echo '{"type":"system","subtype":"init"}'
+  jq -nc --arg l "$l" '{type: "assistant", message: {content: [{type: "text", text: $l}]}}'
+  jq -nc --arg l "$l" '{type: "result", subtype: "success", is_error: true, result: $l, modelUsage: {}}'; exit 1
+fi
 [[ ! -f "$FIX/usage" ]] || trap 'jq -nc --argjson u "$(cat "$FIX/usage")" "{type: \"result\", subtype: \"success\", result: \"done\", modelUsage: \$u}"' EXIT
 case "$first" in
   *classifying*) s=classify.sh ;; *"proposing a design"*) s=propose.sh ;; *scanner*) s=scan.sh ;; *"parent looper"*) s=plan.sh ;; *) s=claude.sh ;;
@@ -2907,6 +2919,129 @@ has "$c" "you may not have access to it"
 has "$(record_model)" "model=claude-opus-5-5"; has "$(record_model)" "refused=claude-fable-5-1"
 has "$OUT" "model: claude-fable-5-1 refused"
 [[ "$(labels alpha 4)" == "approved,bug,priority:high" ]] || fail "labels $(labels alpha 4)"
+pass
+
+# --- the account's usage limit holds the looper (looper#157) ------------------------
+# On 2026-11-14 the weekly limit ("You've hit your weekly limit · resets 3am
+# (UTC)") ended every run in seconds, and each marked its issue looper:stuck. A
+# run whose reply is that refusal, on every model it may fall back to, ends as a
+# hold instead: the issue keeps its labels and gets no comment, and the reset
+# time the refusal names is recorded on the hub's one hold issue (looper:hold,
+# pinned), which the kicker reads (tests/looper-dispatch.test.sh: hold) and which
+# gets one comment per hold, not one per issue.
+LIMIT="You've hit your weekly limit · resets 3am (UTC)"
+next_3am() { local d t; d="$(date -u -d "@$1" +%F)"; t="$(TZ=UTC date -d "$d 03:00" +%s)"; (( t > $1 )) || t="$(TZ=UTC date -d "$(date -u -d "$d +1 day" +%F) 03:00" +%s)"; echo "$t"; } # epoch: the next 03:00Z after it
+hold_file() { ls "$FIX"/issues/looper-*.json 2>/dev/null | head -n 1; }
+hold_marker() { jq -r .body "$(hold_file)" | grep -oE 'looper-hold until=[0-9]+' | tr -dc 0-9; }
+hold_comments() { jq -r '.comments[].body' "$(hold_file)"; }
+lib() { env -u GH_TOKEN PATH="$TMP/bin:$PATH" FIX="$FIX" bash -c "set -euo pipefail; source '$ROOT/looper-lib.sh'; $1"; } # a looper-lib.sh snippet, against the stub gh
+iso() { date -u -d "@$1" +%FT%TZ; }
+on_alpha() { others | grep '^alpha#' || true; } # the comments on alpha's issues but the runs' start
+
+scenario limit-hold
+echo claude-opus-5-5 > "$FIX/limited"
+push_fix; report "Fixed."; close_it   # never reached: the model's reply is the refusal
+t0=$(date +%s); run_alone; t1=$(date +%s)
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+[[ -z "$(on_alpha)" ]] || fail "commented on the issue: $(on_alpha)"
+main_unchanged; ! branch || fail "a branch for a run that did nothing"
+has "$OUT" "#4: held"; has "$OUT" "$LIMIT"; lacks "$OUT" "stuck"
+[[ -n "$(hold_file)" ]] || fail "no hold issue in looper: $(ls "$FIX/issues")"
+[[ "$(labels looper 1)" == looper:hold ]] || fail "the hold issue's labels: $(labels looper 1)"
+[[ "$(jq -r .title "$(hold_file)")" == *"usage limit"* ]] || fail "title: $(jq -r .title "$(hold_file)")"
+u="$(hold_marker)"; [[ "$u" == "$(next_3am "$t0")" || "$u" == "$(next_3am "$t1")" ]] || fail "the hold's until: $u, not $(next_3am "$t0")"
+has "$OUT" "the looper holds until $(iso "$u")"
+c="$(hold_comments)"; [[ "$(jq '.comments | length' "$(hold_file)")" == 1 ]] || fail "comments on the hold: $c"
+has "$c" "alpha#4"; has "$c" "$LIMIT"; has "$c" "\`claude-opus-5-5\`"; has "$c" "holds until $(iso "$u")"; has "$c" "https://gl.test/jobs/77"
+has "$c" "keep their labels"
+grep -q pinIssue "$FIX/graphql" || fail "not pinned: $(cat "$FIX/graphql" 2>/dev/null)"
+has "$(cat "$FIX/labels-created")" "looper looper:hold"
+# The kicker's read of it (looper-lib.sh): the hold in force, until that time.
+[[ "$(lib hold_until)" == "$u 1" ]] || fail "hold_until: $(lib hold_until)"
+# A second run ended by the same limit records nothing more: one comment per hold.
+issue alpha 5 OPEN approved,bug "Fix it too."
+OUT="$(looper -- --repo alpha --issue 5 2>&1)" || fail "repo-looper exited $?: $OUT"
+has "$OUT" "#5: held"; has "$OUT" "the hold until $(iso "$u") stands"
+[[ "$(labels alpha 5)" == approved,bug ]] || fail "labels $(labels alpha 5)"
+[[ "$(jq '.comments | length' "$(hold_file)")" == 1 ]] || fail "comments on the hold: $(hold_comments)"
+[[ -z "$(on_alpha)" ]] || fail "commented on the issues: $(on_alpha)"
+# A later reset moves the hold: the marker (one) and one more comment.
+echo "You've hit your limit · resets $(date -u -d "@$(( u + 86400 ))" +%F) at 3am (UTC)" > "$FIX/limit"
+issue alpha 6 OPEN approved,bug "And this."
+OUT="$(looper -- --repo alpha --issue 6 2>&1)" || fail "repo-looper exited $?: $OUT"
+[[ "$(hold_marker)" == "$(( u + 86400 ))" ]] || fail "the hold not moved: $(hold_marker), the body: $(jq -r .body "$(hold_file)")"
+[[ "$(jq '.comments | length' "$(hold_file)")" == 2 ]] || fail "comments on the hold: $(hold_comments)"
+[[ "$(lib hold_until)" == "$(( u + 86400 )) 1" ]] || fail "hold_until: $(lib hold_until)"
+[[ "$(ls "$FIX"/issues/looper-*.json | wc -l)" == 1 ]] || fail "hold issues: $(ls "$FIX"/issues/looper-*.json)"
+pass
+
+# No fallback from LOOPER_MODEL: a run it refuses holds at once.
+scenario limit-hold-override
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+echo claude-sonnet-5-5 > "$FIX/limited"
+run_alone LOOPER_MODEL=claude-sonnet-5-5
+has "$OUT" "#4: held"; [[ "$(cat "$FIX/models")" == claude-sonnet-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ "$(labels alpha 4)" == "approved,bug,priority:high" ]] || fail "labels $(labels alpha 4)"
+has "$(hold_comments)" "\`claude-sonnet-5-5\`"
+pass
+
+# A high model whose run the limit refuses (its probe passed: the limit came
+# between, or is that model's alone) falls back to the default, whose run goes
+# on, as a probe's refusal does (looper#136); the record and the log say so.
+scenario limit-fallback
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+echo claude-fable-5-1 > "$FIX/limited"
+push_fix; report "Fixed."; close_it
+run
+[[ "$(paste -sd, "$FIX/models")" == claude-fable-5-1,claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+has "$OUT" "model: claude-fable-5-1 refused ($LIMIT): falling back to claude-opus-5-5"
+has "$(record_model)" "model=claude-opus-5-5"; has "$(record_model)" "refused=claude-fable-5-1"; has "$(record_model)" "reason=$LIMIT"
+closed 4
+[[ -z "$(hold_file)" ]] || fail "a hold recorded: $(hold_comments)"
+ls "$FIX"/project/looper-runs/*-issue-4/claude.claude-fable-5-1.log >/dev/null || fail "the refused run's log not kept: $(ls "$FIX"/project/looper-runs/*-issue-4/)"
+pass
+
+# Refused on both: the hold, naming both models.
+scenario limit-hold-both
+issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+printf 'claude-fable-5-1\nclaude-opus-5-5\n' > "$FIX/limited"
+run_alone
+has "$OUT" "#4: held"; [[ "$(paste -sd, "$FIX/models")" == claude-fable-5-1,claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+c="$(hold_comments)"; has "$c" "from \`claude-opus-5-5\`, after \`claude-fable-5-1\` refused it the same way"
+[[ "$(labels alpha 4)" == "approved,bug,priority:high" ]] || fail "labels $(labels alpha 4)"
+pass
+
+# A refusal naming no reset the looper can read holds LOOPER_HOLD_DEFAULT, and says so.
+scenario limit-hold-unreadable
+echo claude-opus-5-5 > "$FIX/limited"; echo "You've hit your limit · resets soon" > "$FIX/limit"
+t0=$(date +%s); run_alone LOOPER_HOLD_DEFAULT=1800; t1=$(date +%s)
+u="$(hold_marker)"; (( u >= t0 + 1800 && u <= t1 + 1800 )) || fail "until $u, not about $(( t0 + 1800 ))"
+has "$(hold_comments)" "names no reset time the looper can read, so it holds 30m"
+pass
+
+# A run the limit did not end is as before: an error result with usage, or a
+# refusal that is no limit's, is no hold.
+scenario limit-not-a-limit
+echo claude-opus-5-5 > "$FIX/limited"; echo "There is an issue with the selected model: you may not have access to it." > "$FIX/limit"
+run_alone
+[[ -z "$(hold_file)" ]] || fail "a hold recorded: $(hold_comments)"
+has "$(labels alpha 4)" looper:stuck
+pass
+
+# The reset time a refusal names (looper-lib.sh hold_reset_time), read at
+# 2026-11-14T10:07Z: a time of day is the next such time in its zone, a date
+# is taken as it is, none readable or past is the default hold.
+NAME=limit-reset-time
+NOW="$(date -u -d 2026-11-14T10:07:00Z +%s)"
+reset() { local t rc=0; t="$(lib "hold_reset_time \"$1\" $NOW")" || rc=$?; echo "$rc $(iso "$t")"; }
+[[ "$(reset "$LIMIT")" == "0 2026-11-15T03:00:00Z" ]] || fail "weekly: $(reset "$LIMIT")"
+[[ "$(reset "You've hit your limit · resets 3:30pm (America/New_York)")" == "0 2026-11-14T20:30:00Z" ]] || fail "a zone: $(reset "resets 3:30pm (America/New_York)")"
+[[ "$(reset "resets Nov 20 at 3am (UTC)")" == "0 2026-11-20T03:00:00Z" ]] || fail "a date: $(reset "resets Nov 20 at 3am (UTC)")"
+[[ "$(reset "resets 15:00")" == "0 2026-11-14T15:00:00Z" ]] || fail "no zone: $(reset "resets 15:00")"
+[[ "$(reset "nothing about a reset")" == "1 2026-11-14T11:07:00Z" ]] || fail "none: $(reset "nothing about a reset")"
+[[ "$(reset "resets Nov 1 at 3am (UTC)")" == "1 2026-11-14T11:07:00Z" ]] || fail "past: $(reset "resets Nov 1 at 3am (UTC)")"
+NOW="$(date -u -d 2026-11-14T02:00:00Z +%s)"
+[[ "$(reset "$LIMIT")" == "0 2026-11-14T03:00:00Z" ]] || fail "today's: $(reset "$LIMIT")"
 pass
 
 # --- a ROADMAP.md change at Jody's request (looper#123) ----------------------------

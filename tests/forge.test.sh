@@ -57,7 +57,7 @@ case "$cmd" in
                | sed -E 's/^([a-z0-9_]+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3 \4/')
     jq -c '{data: .}' <<<"$data"; exit "$rc" ;;
 esac
-repo=""; n=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; limit=30; owner=""
+repo=""; n=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; limit=30; owner=""; title=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) [[ "${2%%/*}" == "$ORG" ]] || { echo "stub gh: not $ORG: $2" >&2; exit 1; }; repo="${2#*/}"; shift 2 ;;
@@ -69,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --label) labels+=("$2"); shift 2 ;;
     --state) state="$2"; shift 2 ;;
     --limit) limit="$2"; shift 2 ;;
+    --title) title="$2"; shift 2 ;;
     --json|--color|--description|-H) shift 2 ;;
     --paginate|--no-archived) shift ;;
     *) n="$1"; shift ;;
@@ -78,6 +79,16 @@ f="$(file "$repo" "$n")"
 all() { jq -s --arg s "$state" '[.[] | select(($s == "all" or .state == ($s | ascii_upcase)) and ([.labels[].name] | contains($ARGS.positional)))] | sort_by(-.number)' \
           "$FIX"/issues/*.json --args "${labels[@]+"${labels[@]}"}"; }
 case "$cmd" in
+  # A new issue: the next number of the store, its labels as given (gh refuses one the repository lacks); its URL.
+  "issue create")
+    for l in "${labels[@]+"${labels[@]}"}"; do
+      grep -qxF -- "$l" "$FIX/labels/${repo//\//__}" 2>/dev/null || { echo "could not add label: '$l' not found" >&2; exit 1; }
+    done
+    n="$(( $(jq -s 'map(.number) | max // 0' "$FIX"/issues/*.json) + 1 ))"
+    jq -n --arg r "$repo" --argjson n "$n" --arg t "$title" --arg b "$body" '$ARGS.positional as $l |
+      {repo: $r, number: $n, title: $t, state: "OPEN", labels: [$l[] | {name: .}], body: $b, createdAt: "2026-11-14T10:07:00Z", comments: []}' \
+      --args "${labels[@]+"${labels[@]}"}" > "$(file "$repo" "$n")"
+    echo "https://github.com/$ORG/$repo/issues/$n"; exit 0 ;;
   api\ repos/*/contents/*)
     p="${cmd#api repos/}"; [[ "${p%%/*}" == "$ORG" ]] || exit 1; p="${p#*/}"
     t="$FIX/files/${p%%/contents/*}/${p#*/contents/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t" ;;
@@ -178,7 +189,16 @@ case "$rest" in
     [[ "$m" == POST ]] || reply 404 '{}'
     ! grep -qxF -- "$(datum name)" "$lf" 2>/dev/null || reply 409 '{"message":"Label already exists"}'
     datum name >> "$lf"; echo >> "$lf"; echo "${rest%/labels} $(datum name)" >> "$FIX/labels-created"; reply 201 '{}' ;;
-  */issues) reply 200 "$(list "${rest%/issues}")" ;;
+  */issues)
+    [[ "$m" == POST ]] || reply 200 "$(list "${rest%/issues}")"
+    # A new issue (GitLab creates the labels the project lacks): its iid is the store's next number.
+    r="${rest%/issues}"; n="$(( $(jq -s 'map(.number) | max // 0' "$FIX"/issues/*.json) + 1 ))"
+    ls="$(for kv in "${data[@]+"${data[@]}"}"; do [[ "${kv%%=*}" != labels ]] || printf '%s\n' "${kv#*=}"; done)"
+    while IFS= read -r l; do [[ -z "$l" ]] || grep -qxF -- "$l" "$FIX/labels/${r//\//__}" 2>/dev/null || echo "$l" >> "$FIX/labels/${r//\//__}"; done <<<"$ls"
+    jq -n --arg r "$r" --argjson n "$n" --arg t "$(datum title)" --arg b "$(datum description)" --arg l "$ls" \
+      '{repo: $r, number: $n, title: $t, state: "OPEN", labels: [$l | split("\n")[] | select(. != "") | {name: .}], body: $b, createdAt: "2026-11-14T10:07:00Z", comments: []}' \
+      > "$FIX/issues/${r//\//__}-$n.json"
+    reply 201 "$(jq --arg org "$ORG" "$GL" "$FIX/issues/${r//\//__}-$n.json")" ;;
 esac
 repo="$(sed -E 's#/issues/[0-9]+(/notes)?$##' <<<"$rest")"; n="$(grep -oE '/issues/[0-9]+' <<<"$rest" | tr -dc 0-9)"
 file="$FIX/issues/${repo//\//__}-$n.json"
@@ -336,7 +356,7 @@ for FORGE in github gitlab; do
   issue alpha 1 OPEN "Body." approved
   lib 'forge_issue_edit alpha 1 --add-label looper:in-progress --add-label bug' || fail "edit add"
   if [[ "$FORGE" == github ]]; then
-    want="alpha bug,alpha feature,alpha looper:in-progress,alpha looper:landing,alpha looper:stuck,alpha looper:workflows,alpha needs-decision,alpha priority:high,alpha priority:low"
+    want="alpha bug,alpha feature,alpha looper:hold,alpha looper:in-progress,alpha looper:landing,alpha looper:stuck,alpha looper:workflows,alpha needs-decision,alpha priority:high,alpha priority:low"
     [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "$want" ]] || fail "labels created: $(cat "$FIX/labels-created")"
   fi
   [[ "$(store alpha 1 '[.labels[].name] | sort | join(",")')" == "approved,bug,looper:in-progress" ]] || fail "labels: $(store alpha 1 '[.labels[].name] | join(",")')"
@@ -357,7 +377,7 @@ Blocked-by: #2"' || fail "edit body"
   # repository in a process; one already there is left as it is.
   : > "$FIX/labels-created"; printf 'approved\nbug\nlooper:stuck\n' > "$FIX/labels/beta"
   lib 'ensure_labels beta; ensure_labels beta'
-  want="beta feature,beta looper:in-progress,beta looper:landing,beta looper:workflows,beta needs-decision,beta priority:high,beta priority:low"
+  want="beta feature,beta looper:hold,beta looper:in-progress,beta looper:landing,beta looper:workflows,beta needs-decision,beta priority:high,beta priority:low"
   [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "$want" ]] || fail "labels created: $(cat "$FIX/labels-created")"
   : > "$FIX/labels-created"; lib 'ensure_labels beta'
   [[ ! -s "$FIX/labels-created" ]] || fail "labels created again: $(cat "$FIX/labels-created")"
@@ -409,6 +429,37 @@ Blocked-by: #2"' || fail "edit body"
   cmd="$(lib 'forge_cmd close alpha 3')"
   if [[ "$FORGE" == github ]]; then [[ "$cmd" == "gh issue close 3 --repo tacplus-dev/alpha" ]] || fail "cmd: $cmd"
   else [[ "$cmd" == "glab issue close 3 --repo seabeam/alpha" ]] || fail "cmd: $cmd"; fi
+  pass
+
+  # The looper's hold (looper#157): the hub's hold issue, made (labelled, on
+  # GitHub pinned) when there is none, read by the kicker, moved to a later
+  # reset with one more comment, left alone for an earlier one.
+  scenario hold "$FORGE"
+  [[ "$FORGE" == github ]] && HUB=looper || HUB="$SUB"
+  issue alpha 1 OPEN "Go." approved
+  now="$(date +%s)"; later=$(( now + 7200 ))
+  [[ -z "$(lib 'hold_until')" ]] || fail "a hold with no hold issue: $(lib hold_until)"
+  url="$(lib "LOOPER_HOLD_REPO=$HUB hold_record $later 'The account refused alpha#1.' >/dev/null; printf '%s' \"\$HOLD_PAGE\"")" || fail "hold_record"
+  n="$(lib "LOOPER_HOLD_REPO=$HUB hold_issue" | cut -d' ' -f1)"; [[ "$n" =~ ^[0-9]+$ ]] || fail "no hold issue: $(ls "$FIX/issues")"
+  [[ "$url" == "$(lib "forge_web $HUB issue $n")" ]] || fail "url: $url"
+  [[ "$(store "$HUB" "$n" '[.labels[].name] | join(",")')" == looper:hold ]] || fail "labels: $(store "$HUB" "$n" '[.labels[].name] | join(",")')"
+  [[ "$(store "$HUB" "$n" .body)" == *"<!-- looper-hold until=$later -->" ]] || fail "body: $(store "$HUB" "$n" .body)"
+  [[ "$(store "$HUB" "$n" '.comments | length')" == 1 ]] || fail "comments: $(store "$HUB" "$n" .comments)"
+  [[ "$(store "$HUB" "$n" '.comments[0].body')" == "The account refused alpha#1. The looper holds until $(date -u -d "@$later" +%FT%TZ):"* ]] || fail "comment: $(store "$HUB" "$n" '.comments[0].body')"
+  [[ "$FORGE" == gitlab ]] || grep -q 'gh api graphql.*pinIssue' "$FIX/calls" || fail "not pinned: $(grep graphql "$FIX/calls")"
+  [[ "$(lib "LOOPER_HOLD_REPO=$HUB hold_until")" == "$later $n" ]] || fail "hold_until: $(lib "LOOPER_HOLD_REPO=$HUB hold_until")"
+  # An earlier reset leaves it; a later one moves the marker, with one more comment, on the same issue.
+  lib "LOOPER_HOLD_REPO=$HUB hold_record $(( later - 60 )) 'Again.'" >/dev/null || fail "hold_record, earlier"
+  [[ "$(store "$HUB" "$n" '.comments | length')" == 1 ]] || fail "an earlier hold commented: $(store "$HUB" "$n" .comments)"
+  lib "LOOPER_HOLD_REPO=$HUB hold_record $(( later + 60 )) 'Later.'" >/dev/null || fail "hold_record, later"
+  [[ "$(store "$HUB" "$n" '.comments | length')" == 2 ]] || fail "comments: $(store "$HUB" "$n" .comments)"
+  [[ "$(store "$HUB" "$n" .body | grep -c 'looper-hold until=')" == 1 ]] || fail "markers: $(store "$HUB" "$n" .body)"
+  [[ "$(lib "LOOPER_HOLD_REPO=$HUB hold_until")" == "$(( later + 60 )) $n" ]] || fail "hold_until after the move: $(lib "LOOPER_HOLD_REPO=$HUB hold_until")"
+  [[ "$(ls "$FIX"/issues/ | grep -c "^${HUB//\//__}-")" == 1 ]] || fail "hold issues: $(ls "$FIX/issues")"
+  # A reset already past holds nothing.
+  t="$(jq --arg b "<!-- looper-hold until=$(( now - 1 )) -->" '.body = $b' "$FIX/issues/${HUB//\//__}-$n.json")"; printf '%s\n' "$t" > "$FIX/issues/${HUB//\//__}-$n.json"
+  [[ -z "$(lib "LOOPER_HOLD_REPO=$HUB hold_until")" ]] || fail "a past hold in force: $(lib "LOOPER_HOLD_REPO=$HUB hold_until")"
+  no_token_in_argv
   pass
 
   # looper-dispatch: the plan (a report per ready issue with none active, and its manager ahead of the reports, looper#70, looper#75) and the orphan release.

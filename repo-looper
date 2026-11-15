@@ -2246,26 +2246,47 @@ broker_start() { # dir
 # writes the run's record's `model` file and logs the choice, which the
 # nightly recap counts per model (`model: M for W (why)`).
 choose_model() { # run-dir [issue]
-  local why said refused="" reason
+  local said reason
+  MODEL_REFUSED=""; MODEL_REASON=""
   if [[ -n "${LOOPER_MODEL:-}" ]]; then
-    MODEL="$LOOPER_MODEL"; why="LOOPER_MODEL"; said="which LOOPER_MODEL sets"
+    MODEL="$LOOPER_MODEL"; MODEL_WHY="LOOPER_MODEL"; said="which LOOPER_MODEL sets"
   elif [[ "$MODE" =~ ^(scan|manage|verdict|merge)$ ]]; then
-    MODEL="$MODEL_HIGH"; why="a $MODE job's step"; said="the model of a $MODE job's step"
+    MODEL="$MODEL_HIGH"; MODEL_WHY="a $MODE job's step"; said="the model of a $MODE job's step"
   elif [[ -n "${2:-}" ]] && forge_issue_view "$REPO" "$2" labels '.labels[].name' 2>/dev/null | grep -qx "$LABEL_PRIORITY_HIGH"; then
-    MODEL="$MODEL_HIGH"; why="$LABEL_PRIORITY_HIGH"; said="the model of a \`$LABEL_PRIORITY_HIGH\` issue"
+    MODEL="$MODEL_HIGH"; MODEL_WHY="$LABEL_PRIORITY_HIGH"; said="the model of a \`$LABEL_PRIORITY_HIGH\` issue"
   else
-    MODEL="$MODEL_DEFAULT"; why="the default"; said="the default model"
+    MODEL="$MODEL_DEFAULT"; MODEL_WHY="the default"; said="the default model"
   fi
-  if [[ -z "${LOOPER_MODEL:-}" && "$MODEL" != "$MODEL_DEFAULT" ]] && ! reason="$(model_probe "$MODEL")"; then
-    log "model: $MODEL refused ($reason): falling back to $MODEL_DEFAULT"
-    refused="$MODEL"; said="the default model: \`$MODEL\`, $said, was refused ($reason), so it falls back"
-    MODEL="$MODEL_DEFAULT"; why="$why; $refused refused"
+  if model_can_fall_back && ! reason="$(model_probe "$MODEL")"; then
+    said="the default model: \`$MODEL\`, $said, was refused ($reason), so it falls back"
+    model_fall_back "$1" "$reason"
   fi
   MODEL_SAID="on \`$MODEL\`, $said"
-  log "model: $MODEL for ${2:+#}${2:-the $MODE} ($why)"
-  printf 'model=%s\nwhy=%s\n%s' "$MODEL" "$why" "${refused:+refused=$refused
-reason=$reason
+  log "model: $MODEL for ${2:+#}${2:-the $MODE} ($MODEL_WHY)"
+  model_record "$1"
+}
+
+# The run's record of its model: the model, why, and any model refused with
+# the account's answer.
+model_record() { # run-dir
+  printf 'model=%s\nwhy=%s\n%s' "$MODEL" "$MODEL_WHY" "${MODEL_REFUSED:+refused=$MODEL_REFUSED
+reason=$MODEL_REASON
 }" > "$1/model"
+}
+
+# Whether the run may fall back from its model: one the rule chose above the
+# default, never LOOPER_MODEL's.
+model_can_fall_back() { [[ -z "${LOOPER_MODEL:-}" && "$MODEL" != "$MODEL_DEFAULT" ]]; }
+
+# Falls back to the default model, the account having refused this one
+# (reason: its probe's answer, looper#136, or its run's usage-limit refusal,
+# looper#157): the recap's line (`model: M refused (why): falling back to D`)
+# and the record.
+model_fall_back() { # run-dir reason
+  log "model: $MODEL refused ($2): falling back to $MODEL_DEFAULT"
+  MODEL_REFUSED="$MODEL"; MODEL_REASON="$2"; MODEL_WHY="$MODEL_WHY; $MODEL refused"
+  MODEL="$MODEL_DEFAULT"
+  model_record "$1"
 }
 
 # Whether the account serves a model: one turn, no tools, with the model's
@@ -2280,6 +2301,18 @@ model_probe() { # model
   out="$(jq -r '.result // empty' <<<"$out" 2>/dev/null || printf '%s' "$out")"
   printf '%s' "${out:-no answer}" | tr '\n' ' ' | redact | cut -c1-200 | sed 's/[[:space:]]*$//'
   return 1
+}
+
+# The run's reply when the account's usage limit refused it (looper#157), as
+# the CLI answers it: an error result whose text is the limit's (`You've hit
+# your weekly limit · resets 3am (UTC)`, 2026-11-14) and no usage (RENDER's
+# `= usage: {}`). Prints the text; fails on any other end of a run.
+limit_refusal() { # log-file
+  local u r
+  u="$(sed -n 's/^= usage: //p' "$1" 2>/dev/null | tail -n 1)"; [[ "$u" == "{}" ]] || return 1
+  r="$(grep -E '^= [a-z_]+: ' "$1" 2>/dev/null | grep -v '^= usage: ' | tail -n 1 | sed -E 's/^= [a-z_]+: //')" || true
+  grep -qiE "(hit|reached) your( [[:alnum:]-]+)* limit" <<<"$r" || return 1
+  printf '%s\n' "$r"
 }
 
 # The tokens of a model's run, each model's on a line of the job's log
@@ -2919,10 +2952,28 @@ tacplus_rule() {
 }
 
 # A report's outcome, for its job's log: closed, blocked,
-# needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), stuck or
-# job-gone.
+# needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), stuck,
+# held or job-gone.
 report() { # issue outcome
   log "#$1: $2"
+}
+
+# The run ends as a hold (looper#157): the account's usage limit refused it
+# on its model and on any it fell back from (also). Nothing about the issue
+# is wrong: it keeps its labels (no looper:stuck) and gets no comment; the
+# reset time the refusal names is recorded on the hub's hold issue
+# (hold_record, looper-lib.sh), one comment per hold, which the kicker reads:
+# no report and no manager starts until then, and the issue is worked again
+# after it with no person involved.
+limit_hold() { # issue run-dir refusal [also-refused-model]
+  local n="$1" run="$2" refusal="$3" until why default=""
+  until="$(hold_reset_time "$refusal")" || default=1
+  forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
+  why="The account's usage limit is reached: $REPO#$n's run ($(run_record "$run")) got \`$refusal\` from \`$MODEL\`${4:+, after \`$4\` refused it the same way}."
+  [[ -z "$default" ]] || why+=" The refusal names no reset time the looper can read, so it holds $(hours "$HOLD_DEFAULT")."
+  hold_record "$until" "$why" || log "#$n: the hold could not be recorded on $LOOPER_ORG/$LOOPER_HOLD_REPO: the kicker starts runs before the reset"
+  report "$n" held
+  log "#$n: held: the account's usage limit ($refusal); the looper holds until $(hold_iso "$until")${HOLD_PAGE:+ ($HOLD_PAGE)}: the issue keeps its labels, and the kicker starts it again after the reset"
 }
 
 # A report's run of an issue, in its clone (prepare_report made it).
@@ -3048,10 +3099,22 @@ The issue, #$n (its title and body, then each comment, oldest first):
 
 $(issue_texts "$n")
 PR
-  local rc=0 ticker
+  local rc=0 ticker refusal="" also="" t0 budget
   checkpoint_ticker "$n" "$run" & ticker=$!
   comments_mark "$n" "$run"
-  run_claude "$run/prompt.md" "$run/claude.log" "$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))" "$run" "$n" || rc=$?
+  t0=$(date +%s); budget=$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))
+  run_claude "$run/prompt.md" "$run/claude.log" "$budget" "$run" "$n" || rc=$?
+  # The account's usage limit (looper#157): a high model it refuses mid-run
+  # falls back to the default, as a probe's refusal does (looper#136), and the
+  # run goes on there, its refused log kept; refused on the default too (or on
+  # LOOPER_MODEL, which has no fallback), it is a hold, below.
+  if refusal="$(limit_refusal "$run/claude.log")" && model_can_fall_back; then
+    model_fall_back "$run" "$refusal"; also="$MODEL_REFUSED"
+    mv "$run/claude.log" "$run/claude.$also.log"
+    budget=$(( budget - ($(date +%s) - t0) )); (( budget > 60 )) || budget=60
+    rc=0; run_claude "$run/prompt.md" "$run/claude.log" "$budget" "$run" "$n" || rc=$?
+    refusal="$(limit_refusal "$run/claude.log")" || refusal=""
+  fi
   kill "$ticker" 2>/dev/null; wait "$ticker" 2>/dev/null || true
   local stopped=""; [[ -s "$run/stopped" ]] && stopped="$(cat "$run/stopped")"
   case "$stopped:$rc" in
@@ -3070,6 +3133,9 @@ PR
     report "$n" job-gone
     log "#$n left to the job's retry, from $(wip_branch "$n")"; exit 0
   fi
+  # The account's usage limit refused the run on every model it may use
+  # (looper#157): a hold, never a stuck issue; nothing changed, nothing to keep.
+  if [[ -n "$refusal" ]]; then limit_hold "$n" "$run" "$refusal" "$also"; return 0; fi
   # A land of its still queued, with no verdict (looper#70), is the manager's:
   # it merges it after the run and gives its verdict on the issue, which stays
   # looper:landing until then.

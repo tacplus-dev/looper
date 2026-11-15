@@ -20,7 +20,10 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`), and
   only the newest runs (looper#104): a kick stops before any pass once a newer one is created, pending, waiting or
   running (`a newer kick (job N) is queued; this one stops`), so kicks that waited for a runner no longer run their
-  hours back to back. Nothing else runs when there is no ready issue.
+  hours back to back. Nothing else runs when there is no ready issue. During [the looper's hold](#the-usage-limits-hold)
+  (the account's usage limit reached, looper#157) a pass starts nothing and says so in one line (`held: the account's
+  usage limit is reached; the looper holds until T (issue): no report and no manager starts before then`), and so
+  does the plan; the first pass after the reset starts the ready issues again.
 - **The pipeline** plans one job per ready issue (`looper-<repo>-<issue>`, its report), in
   [priority](#priority) order, every one of them (no per-repository cap, looper#107), and each such repository's manager
   (`looper-<repo>-manager`), the only job that merges to its main
@@ -92,6 +95,7 @@ tests/tacplus.test.sh                      # which tacplus: the pin, else the fl
 | `looper:in-progress` | a looper holds it |
 | `looper:landing` | its commits are queued with the manager, which merges them and gives its verdict on the issue (looper#70) |
 | `looper:stuck` | a run ended without finishing and without progress or a known reason; a person looks |
+| `looper:hold` | the looper's hold (one pinned issue of this repository, looper#157): the account's usage limit is reached, and nothing starts until the reset its body names |
 | `needs-decision` | the looper needs a decision it may not make |
 | `priority:high` | taken before the other ready issues (looper#31) |
 | `priority:low` | taken after every other ready issue |
@@ -160,7 +164,9 @@ our fable quota each week". `repo-looper` chooses each run's model (`choose_mode
 
 A high model is probed first (one turn, no tools, the model's environment): when the account refuses it (no access,
 the weekly quota spent) the run falls back to the default model and says so, in its start comment, its record and the
-job's log; it neither fails nor goes `looper:stuck`. Each report's start comment names its model (`The looper of R
+job's log; it neither fails nor goes `looper:stuck`. One the account's usage limit refuses mid-run, its probe passed,
+falls back the same way and the run goes on; refused on the default too, the run is a hold, not a stuck issue
+([The usage limit's hold](#the-usage-limits-hold), looper#157). Each report's start comment names its model (`The looper of R
 starts this issue on `M`, the model of a `priority:high` issue.`), its record's `model` file names it with why (and
 any model refused, with the account's answer), and the job's log has `model: M for #N (why)` and, when the model
 exits, `tokens: M input=N output=N cache_read=N cache_write=N` per model it used (sub-agents' too, from the
@@ -355,7 +361,7 @@ lander are gone. One job per issue needs none of them.
     it out (PROPOSALS.md: the revision baked into the image would tell).
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest
+tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
 tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running
 ```
 
@@ -537,12 +543,40 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | went idle after its build had no verdict within `LOOPER_BUILD_WAIT` of its start (looper#133) | a retry: a comment saying so with its last checkpoint; it stays `approved`, never `looper:stuck`, and the next run resumes |
 | went idle (nothing landed or queued) | `looper:stuck`, with a comment that it went idle, the tail of its log and a link to its branch |
 | lost its job (GitLab no longer runs it, looper#21) | nothing: its work is checkpointed and the job's retry resumes it |
+| was refused by the account's usage limit, on its model and any it may fall back to (looper#157) | nothing on the issue: it keeps its labels, no comment; the run is `held`, the reset time recorded on [the hold](#the-usage-limits-hold), and the kicker starts it again after it |
 | ended any other way (no progress) | `looper:stuck`, with a comment linking the job, its `claude.log` artifact and its branch, and the tail of its log |
+
+### The usage limit's hold
+
+On 2026-11-14 the account's weekly model limit was reached (`You've hit your weekly limit · resets 3am (UTC)`): every
+run after it ended in seconds with that text as its result and `usage: {}`, each marked its issue `looper:stuck`, 19
+issues across five repositories, and nothing ran for 17 hours, nor would have after the reset until someone removed
+the labels (looper#157). A usage-limit refusal is no stuck issue: nothing about the issue is wrong.
+
+- **The run** reads its result (`limit_refusal`: an error result whose text names the account's limit, with no
+  usage). On a high model the rule chose (`priority:high`, looper#136), it falls back to the default model at once,
+  as a probe's refusal does, and the run goes on there (`model: M refused (why): falling back to D` in the job's log,
+  the record's `model` file, the refused run's log kept as `claude.<model>.log`). Refused on the default too, or on
+  `LOOPER_MODEL` (which has no fallback), the run ends as a **hold** (`#N: held`): the issue keeps its labels (no
+  `looper:stuck`, `looper:in-progress` removed) and gets no comment beyond the start comment every run posts.
+- **The hold** is one issue of the hub repository (`LOOPER_HOLD_REPO`, default `looper`), labelled `looper:hold` and
+  pinned, made by the first run that needs it: its body carries the marker `<!-- looper-hold until=<epoch> -->`, the
+  reset time the refusal names (`hold_reset_time`, looper-lib.sh: `resets 3am (UTC)` is the next 03:00 in that zone,
+  `resets 3:30pm (America/New_York)` and `resets Nov 20 at 3am (UTC)` as written; one it cannot read, past, or more
+  than `LOOPER_HOLD_MAX_DAYS` (10) ahead holds `LOOPER_HOLD_DEFAULT` seconds (3600) and the comment says so). Each
+  hold gets **one comment**, not one per issue: which run, which model (and the one it fell back from), the refusal
+  and the time; a run ended by the same limit while the hold already reaches its reset records nothing (`the hold
+  until T stands`); a later reset moves the marker, with one more comment. Nothing to do on it: it stays open as the
+  hold's place.
+- **The kicker and the plan** read the marker each pass (one `gh issue list` of the hub repository, no search index)
+  and start no report and no manager until that time, one line in the kick log (and one job, `looper-held`, in a
+  plan that runs during it). After the reset, the next pass starts the ready issues again, each resuming from its
+  branch: no person involved.
 
 ```sh
 tests/looper-docker.test.sh                # a child's docker: the limit added, a lower one kept, a higher one or none refused, the image's own arguments left alone, other commands passed through; with a docker daemon, a container over its limit OOM-killed alone while the one beside it carries on (#41)
 tests/looper-pkill.test.sh                 # a model's pkill: its run's own processes signalled, another run's and the lander's spared and named, pkill's signal and -e options, the real pkill outside a run (#61)
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle, nor one waiting on its queued build, and one idle after its build had no verdict within the wait of its start retried, not stuck (#133); an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68); the model per run (#136: a `priority:high` issue's report and a scan on the high model, probed, any other on the default, unprobed, `LOOPER_MODEL` over both, each default its own variable, a refused high model falling back and recorded, the start comment naming the model, its tokens in the job's log) (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a land the manager's job has no time for left queued; a model waiting on its land not idle, nor one waiting on its queued build, and one idle after its build had no verdict within the wait of its start retried, not stuck (#133); an early end with progress resumable, without it stuck; a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68); the model per run (#136: a `priority:high` issue's report and a scan on the high model, probed, any other on the default, unprobed, `LOOPER_MODEL` over both, each default its own variable, a refused high model falling back and recorded, the start comment naming the model, its tokens in the job's log); the usage limit's hold (#157: a run the weekly limit refuses, with empty usage, keeps its issue's labels and posts no comment, records the reset on the hub's one pinned hold issue with one comment per hold, a second run adding none and a later reset moving it, falls back from a high model mid-run and holds only when the default refuses too, holds a default when the reset cannot be read, and the reset times a refusal names) (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -1281,7 +1315,7 @@ looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL 
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
 looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
-tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; no cap: a ready issue beside any number of reports starts the pipeline, ten ready issues in one repository plan ten reports, a stale caps file caps nothing (#107); a report per ready issue and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop (stub gh and curl)
+tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; no cap: a ready issue beside any number of reports starts the pipeline, ten ready issues in one repository plan ten reports, a stale caps file caps nothing (#107); a report per ready issue and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop; the looper's hold, a kick and a plan before the reset starting nothing and the first after it the issue (#157) (stub gh and curl)
 ```
 
 **The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is
@@ -1852,7 +1886,7 @@ roadmap (`LOOPER_ROADMAP_REPO`, default `roadmap`); clone, and git's credentials
 - **The think job** of the identity pilot ([Looper identity](#looper-identity)) is GitHub's only.
 
 ```sh
-tests/forge.test.sh   # both forges against a gh stub and a GitLab API stub: ready issues (one repository, the org, priority), Blocked-by within and across repositories, GitLab subgroups and another org (held, never read), labels, comments and body edits, the texts' authors, clone and push over HTTPS (stub git server), looper-dispatch's ready, plan and orphan release, and a SeaBeam issue worked end to end by repo-looper
+tests/forge.test.sh   # both forges against a gh stub and a GitLab API stub: ready issues (one repository, the org, priority), Blocked-by within and across repositories, GitLab subgroups and another org (held, never read), labels, comments and body edits, the texts' authors, clone and push over HTTPS (stub git server), the hold issue made, pinned, read, moved and left (#157), looper-dispatch's ready, plan and orphan release, and a SeaBeam issue worked end to end by repo-looper
 ```
 
 ## A SeaBeam instance

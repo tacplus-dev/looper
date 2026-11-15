@@ -156,15 +156,30 @@ capacity_line() { # jobs ready landing statuses
   log "capacity: ${l%; }"
 }
 
+# The looper's hold (looper#157): while the hub's hold issue names a reset of
+# the account's usage limit still ahead, nothing starts, and the pass or the
+# plan says so in one line. Prints that line; fails (nothing held) otherwise.
+# A forge that cannot be read fails the pass or the plan, as the ready issues
+# do.
+held() {
+  local h u n
+  h="$(hold_until)" || die "could not read the looper's hold ($LOOPER_ORG/$LOOPER_HOLD_REPO, $LABEL_HOLD)"
+  [[ -n "$h" ]] || return 1
+  read -r u n <<<"$h"
+  echo "held: the account's usage limit is reached; the looper holds until $(hold_iso "$u") ($(forge_web "$LOOPER_HOLD_REPO" issue "$n")): no report and no manager starts before then"
+}
+
 # One pass: release the orphans, then start the pipeline for the first
 # repository with a ready issue no report job holds, in the order of ready_all_by_repo (priority:high first,
 # looper#31), or with commits queued to land and no manager job (looper#70).
+# Nothing during the looper's hold (looper#157).
 pass() {
-  local statuses jobs ready repo n landing
+  local statuses jobs ready repo n landing hold
   statuses="$(active_job_statuses)"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
+  if hold="$(held)"; then log "$hold"; return 0; fi
   ready="$(ready_all_by_repo)"
   landing="$(forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name')" || landing="?"
   capacity_line "$jobs" "$ready" "$landing" "$statuses"
@@ -223,7 +238,14 @@ plan() {
     ready="$(forge_repos)"   # a forge it cannot read fails the plan: never an empty scan
     for repo in $ready; do plan_job "looper-scan-$repo" 5h "looper-$repo" --repo "$repo" --scan; any=1; done
   else
-    local statuses="" landing managed=" " reports=""
+    local statuses="" landing managed=" " reports="" hold
+    # The looper's hold (looper#157): no report and no manager until the reset.
+    if hold="$(held)"; then
+      log "$hold; nothing planned" >&2
+      hold="${hold#*; }"; hold="${hold%%: no report*}"   # `the looper holds until T (page)`: no `: ` in a YAML plain scalar
+      printf 'looper-held:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "%s (looper#157)"\n' "$image" "${LOOPER_JOB_TAGS:-arm64, autoscale}" "$hold"
+      return 0
+    fi
     if statuses="$(active_job_statuses)"; then jobs="$(cut -d' ' -f1 <<<"$statuses")"
     else log "could not read $PIPELINE's jobs; planning every ready issue" >&2; jobs=""; fi
     ready="$(ready_all_by_repo)"

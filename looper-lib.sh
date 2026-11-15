@@ -35,6 +35,9 @@ LABEL_LANDING="looper:landing"
 # A report whose token may push a change under .github/workflows/ (looper#115):
 # only someone with write access sets it, and looper-token reads who did.
 LABEL_WORKFLOWS="looper:workflows"
+# The looper's hold (looper#157): the one issue of the hub repository that
+# records the account's usage limit, read by the kicker (hold_until, below).
+LABEL_HOLD="looper:hold"
 
 # Every issue is a bug or a feature (tacplus-dev/roadmap
 # decisions/issue-flow-2026-10-27.md, looper#14). A bug is fixed and ships as a
@@ -61,6 +64,7 @@ LOOPER_LABELS=(
   "$LABEL_LANDING|fbca04|Its commits are queued with the manager, which merges them and gives its verdict here"
   "$LABEL_WORKFLOWS|5319e7|Its report's token may push a change under .github/workflows/ (set by someone with write access)"
   "$LABEL_STUCK|d93f0b|A run ended without finishing, for no known reason; a person looks"
+  "$LABEL_HOLD|ededed|The looper's hold: the account's usage limit is reached, and nothing starts until the reset its body names"
   "$LABEL_DECISION|5319e7|The looper needs a decision it may not make"
   "$LABEL_BUG|d73a4a|The code does not do what it already promises: fixed, and released as a patch"
   "$LABEL_FEATURE|a2eeef|New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor"
@@ -244,6 +248,31 @@ forge_issue_comment() { # repo n body
   case "$LOOPER_FORGE" in
     github) gh issue comment "$2" --repo "$LOOPER_ORG/$1" --body "$3" ;;
     gitlab) gl_api POST "$(gl_project "$1")/issues/$2/notes" --data-urlencode "body=$3" >/dev/null ;;
+  esac
+}
+
+# A new issue, with its labels; prints its number.
+forge_issue_create() { # repo title body [label...]
+  local r="$1" t="$2" b="$3" l a=() url i; shift 3
+  case "$LOOPER_FORGE" in
+    github) for l in "$@"; do a+=(--label "$l"); done
+            url="$(gh issue create --repo "$LOOPER_ORG/$r" --title "$t" --body "$b" "${a[@]+"${a[@]}"}")" || return 1
+            [[ "${url##*/}" =~ ^[0-9]+$ ]] || return 1
+            echo "${url##*/}" ;;
+    gitlab) for l in "$@"; do a+=(--data-urlencode "labels=$l"); done
+            i="$(gl_api POST "$(gl_project "$r")/issues" --data-urlencode "title=$t" --data-urlencode "description=$b" "${a[@]+"${a[@]}"}")" || return 1
+            jq -er '.iid' <<<"$i" ;;
+  esac
+}
+
+# Pins an issue to its repository's issues page (GitHub: at most three a
+# repository; GitLab has no pins, so nothing to do). Fails when it cannot.
+forge_pin_issue() { # repo n
+  local id
+  case "$LOOPER_FORGE" in
+    github) id="$(gh issue view "$2" --repo "$LOOPER_ORG/$1" --json id --jq .id)" && [[ -n "$id" ]] || return 1
+            gh api graphql -f query='mutation($id: ID!) { pinIssue(input: {issueId: $id}) { issue { number } } }' -f id="$id" >/dev/null ;;
+    gitlab) return 0 ;;
   esac
 }
 
@@ -551,6 +580,109 @@ ready_all_by_repo() {
          while read -r br bn; do grep -qxF "$br $bn CLOSED" <<<"$states" || exit 1; done
        }; then echo "$r $n"; fi
   done <<<"$issues"
+}
+
+# --- the hold (looper#157) ------------------------------------------------------
+#
+# The account's usage limit (`You've hit your weekly limit · resets 3am
+# (UTC)`, 2026-11-14: 19 issues looper:stuck, nothing run for 17 hours) is no
+# issue's fault. A run that every model it may fall back to refuses so ends as
+# a hold: its issue untouched (no looper:stuck, no comment), and the reset
+# time the refusal names recorded on one issue of the hub repository
+# (LOOPER_HOLD_REPO, default looper), labelled looper:hold and pinned: its
+# body's marker `<!-- looper-hold until=<epoch> -->`, and one comment per hold
+# time, not one per issue. The kicker and the plan read the marker and start
+# no report and no manager until then; after it, work resumes with no person
+# involved. A refusal naming no reset the looper can read holds
+# LOOPER_HOLD_DEFAULT seconds (3600).
+LOOPER_HOLD_REPO="${LOOPER_HOLD_REPO:-looper}"
+HOLD_DEFAULT="${LOOPER_HOLD_DEFAULT:-3600}"
+HOLD_MARK="<!-- looper-hold until="
+
+hold_iso() { date -u -d "@$1" +%FT%TZ; } # epoch
+
+# The hub's hold issue, "<number> <until>" (0 with no marker), the newest when
+# there are several; nothing when there is none. Fails when the forge cannot
+# be read.
+hold_issue() {
+  forge_issue_list "$LOOPER_HOLD_REPO" open 20 number,body \
+    '[.[] | "\(.number) \([.body // "" | match("<!-- looper-hold until=([0-9]+) -->"; "g") | .captures[0].string | tonumber] | max // 0)"] | first // empty' "$LABEL_HOLD"
+}
+
+# The hold in force: "<until> <number>" while the hold issue names a reset
+# still ahead, nothing otherwise. Fails when the forge cannot be read.
+hold_until() {
+  local h n u; h="$(hold_issue)" || return 1
+  [[ -n "$h" ]] || return 0
+  read -r n u <<<"$h"
+  (( u > $(date +%s) )) || return 0
+  echo "$u $n"
+}
+
+# The reset time a refusal names, as an epoch: `resets 3am (UTC)`, `resets
+# 3:30pm (America/New_York)`, `resets Nov 20 at 3am (UTC)`; a time of day
+# alone is the next such time in that zone (UTC when it names none). When it
+# names none the looper can read, one past, or one more than
+# LOOPER_HOLD_MAX_DAYS (10) ahead, prints now + HOLD_DEFAULT and fails.
+hold_reset_time() { # refusal-text [now]
+  local now="${2:-$(date +%s)}" when zone="UTC" day t=""
+  if [[ "$1" =~ [Rr]esets[[:space:]]+([^()]*[^()[:space:]])[[:space:]]*(\(([A-Za-z0-9_/+-]+)\))? ]]; then
+    when="${BASH_REMATCH[1]}"; [[ -z "${BASH_REMATCH[3]}" ]] || zone="${BASH_REMATCH[3]}"
+    when="$(sed -E 's/ ·.*//; s/\b(at|on)\b/ /g; s/,/ /g; s/[[:space:]]+/ /g; s/^ | $//g' <<<"$when")"
+    if [[ "$when" =~ ^[0-9]{1,2}(:[0-9]{2})?\ ?([AaPp][Mm])?$ ]]; then
+      # A time of day: today's in the zone when still ahead, else tomorrow's.
+      day="$(TZ="$zone" date -d "@$now" +%F 2>/dev/null)" || day=""
+      t="$(TZ="$zone" date -d "$day $when" +%s 2>/dev/null)" || t=""
+      if [[ "$t" =~ ^[0-9]+$ ]] && (( t <= now )); then
+        day="$(TZ="$zone" date -d "$day +1 day" +%F 2>/dev/null)" || day=""
+        t="$(TZ="$zone" date -d "$day $when" +%s 2>/dev/null)" || t=""
+      fi
+    else
+      t="$(TZ="$zone" date -d "$when" +%s 2>/dev/null)" || t=""
+    fi
+  fi
+  if [[ "$t" =~ ^[0-9]+$ ]] && (( t > now && t <= now + ${LOOPER_HOLD_MAX_DAYS:-10} * 86400 )); then echo "$t"; return 0; fi
+  echo $(( now + HOLD_DEFAULT )); return 1
+}
+
+# Records a hold until an epoch, with why (which run, which model, the
+# refusal), on the hub's hold issue: made, labelled and pinned when there is
+# none; its marker moved when the time is later than the one it holds; one
+# comment per hold time, none when the hold already reaches that time. Sets
+# HOLD_PAGE, the issue's web page. Fails when the forge cannot be read or
+# written.
+hold_record() { # until why
+  local until="$1" why="$2" h n u body iso; iso="$(hold_iso "$until")"
+  HOLD_PAGE=""
+  h="$(hold_issue)" || return 1
+  if [[ -n "$h" ]]; then
+    read -r n u <<<"$h"
+    HOLD_PAGE="$(forge_web "$LOOPER_HOLD_REPO" issue "$n")"
+    if (( u >= until )); then
+      log "the hold until $(hold_iso "$u") stands ($LOOPER_ORG/$LOOPER_HOLD_REPO#$n): nothing to record"; return 0
+    fi
+    body="$(forge_issue_view "$LOOPER_HOLD_REPO" "$n" body .body)" || return 1
+    body="$(grep -vF "$HOLD_MARK" <<<"$body")"; body="${body%"${body##*[![:space:]]}"}"
+    forge_issue_edit "$LOOPER_HOLD_REPO" "$n" --body "$body
+
+$HOLD_MARK$until -->" >/dev/null || return 1
+  else
+    ensure_labels "$LOOPER_HOLD_REPO"
+    n="$(forge_issue_create "$LOOPER_HOLD_REPO" "The looper's hold: the account's usage limit" "$(hold_body "$until")" "$LABEL_HOLD")" || return 1
+    HOLD_PAGE="$(forge_web "$LOOPER_HOLD_REPO" issue "$n")"
+    forge_pin_issue "$LOOPER_HOLD_REPO" "$n" || log "could not pin $LOOPER_ORG/$LOOPER_HOLD_REPO#$n, the hold issue"
+  fi
+  forge_issue_comment "$LOOPER_HOLD_REPO" "$n" "$why The looper holds until $iso: the kicker starts no report and no manager before then, and the issues whose runs this limit ended keep their labels (no \`$LABEL_STUCK\`, no comment). Work resumes by itself after that time." >/dev/null || return 1
+  log "the hold until $iso recorded on $LOOPER_ORG/$LOOPER_HOLD_REPO#$n"
+}
+hold_body() { # until
+  cat <<B
+The looper's hold (tacplus-dev/looper#157). A run whose model answers with the account's usage limit (\`You've hit your weekly limit · resets 3am (UTC)\`), on every model it may fall back to, ends as a hold: its issue keeps its labels and gets no comment, the reset time the refusal names is recorded here (the marker below, and a comment per hold), and the kicker starts no report and no manager until then. After the reset, work resumes with no person involved.
+
+Nothing to do here: this issue stays open as the hold's place. Closing it only makes the next hold open another.
+
+$HOLD_MARK$1 -->
+B
 }
 
 # A looper job holds its repository while it is created, pending, waiting for

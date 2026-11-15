@@ -83,7 +83,9 @@ case "$cmd" in
   "search issues") jq -s --arg l "$label" --arg vis "$vis" --arg priv "$(cat "$FIX/private" 2>/dev/null || true)" \
                      'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})
                       | map(select($vis != "public" or (.repo | IN($priv | split("\n")[]) | not)))' "$FIX"/issues/*.json | jq -r "$q" ;;
-  "issue list") jq -s 'map(select(.state == "OPEN" and any(.labels[]; .name == "approved")))' "$FIX/issues/$repo"-*.json | jq -r "$q" ;;
+  # A repository's open issues with the label (approved when none asked); one with no issue yet lists none.
+  "issue list") shopt -s nullglob; files=("$FIX/issues/$repo"-*.json); shopt -u nullglob
+    jq -s --arg l "${label:-approved}" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)))' "${files[@]+"${files[@]}"}" < /dev/null | jq -r "$q" ;;
   "issue view") jq -r "$q" "$f" ;;
   "repo list") jq -R '{name: .}' "$FIX/repos" | jq -s . | jq -r "$q" ;;   # $FIX/repos: the org's, one a line
   "issue edit") t="$(jq --arg l "$rm" '.labels |= map(select(.name != $l))' "$f")"; printf '%s\n' "$t" > "$f" ;;
@@ -281,6 +283,50 @@ dispatch run
 ! started || fail "started a pipeline while the manager runs: $OUT"
 pass
 
+# The looper's hold (looper#157): a run every model refused by the account's
+# usage limit records the reset time on the hub's hold issue (looper:hold, its
+# body's marker; tests/repo-looper.test.sh: limit-hold). Until then a kick
+# starts nothing, a ready issue or a queued land notwithstanding, and says so
+# in one line; the first kick after it starts the issue again. The plan honours
+# it too: one job that says so, no report and no manager.
+hold_issue() { # until: the hub's hold issue, as repo-looper leaves it
+  jq -n --argjson u "$1" '{repo: "looper", number: 9, state: "OPEN", labels: [{name: "looper:hold"}], createdAt: "2026-11-14T10:07:00Z",
+    body: "The looper'"'"'s hold.\n\n<!-- looper-hold until=\($u) -->"}' > "$FIX/issues/looper-9.json"
+}
+plan_held() { PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
+scenario hold
+issue alpha 5 OPEN "Done, its land queued." approved looper:landing
+RESET="$(date -u -d 2026-11-15T03:00:00Z +%s)"
+echo "$(( RESET - 75600 ))" > "$FIX/clock"   # 2026-11-14T06:00:00Z
+hold_issue "$RESET"
+dispatch run
+! started || fail "started a pipeline during the hold: $OUT"
+grep -q "held: the account's usage limit is reached; the looper holds until 2026-11-15T03:00:00Z (https://github.com/tacplus-dev/looper/issues/9): no report and no manager starts before then" <<<"$OUT" \
+  || fail "log: $OUT"
+[[ "$(grep -c 'held:' <<<"$OUT")" == 1 ]] || fail "more than one line: $OUT"
+[[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
+plan_held
+! grep -qE '^looper-alpha-' <<<"$PLAN" || fail "planned during the hold: $PLAN"
+grep -q 'the looper holds until 2026-11-15T03:00:00Z' <<<"$PLAN" || fail "the plan's job: $PLAN"
+grep -q 'holds until 2026-11-15T03:00:00Z' "$FIX/err" || fail "the plan's log: $(cat "$FIX/err")"
+# Still held a minute before the reset; the first kick at it starts the pipeline for alpha#4.
+echo "$(( RESET - 60 ))" > "$FIX/clock"; dispatch run
+! started || fail "started a pipeline a minute before the reset: $OUT"
+echo "$RESET" > "$FIX/clock"; dispatch run
+started || fail "no pipeline after the reset: $OUT"
+grep -q 'alpha#4 is ready' <<<"$OUT" || fail "log: $OUT"
+! grep -q 'held:' <<<"$OUT" || fail "held after the reset: $OUT"
+plan_held
+grep -q '^looper-alpha-4:' <<<"$PLAN" && grep -q '^looper-alpha-manager:' <<<"$PLAN" || fail "not planned after the reset: $PLAN"
+# A hold issue with no marker, or none at all, holds nothing.
+echo "$(( RESET - 75600 ))" > "$FIX/clock"; rm "$FIX/started"
+jq '.body = "No marker."' "$FIX/issues/looper-9.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/looper-9.json"
+dispatch run; started || fail "a hold issue without a marker held: $OUT"
+rm "$FIX/started" "$FIX/issues/looper-9.json"
+dispatch run; started || fail "no hold issue held: $OUT"
+pass
+
 # The plan (looper#70): a report job per ready issue, in order, every one of
 # them (no per-repository cap, looper#107), none for an issue whose report is
 # active, each one at a time per issue;
@@ -409,14 +455,16 @@ pass
 
 # A pass reads GitHub for the whole org at once: its cost does not grow with
 # the issues (a request per issue and per blocker came to about 270 a pass,
-# past GitHub's 5000 an hour at one every 3 minutes; looper#24).
+# past GitHub's 5000 an hour at one every 3 minutes; looper#24): the orphans'
+# search, the hold (one list of the hub's, looper#157), the ready issues'
+# search and their blockers' states, the lands' search.
 scenario cost
 for r in alpha beta gamma; do
   for n in 1 2 3 5 6 7; do issue "$r" "$n" OPEN "Blocked-by: #$((n + 1))" approved; done
 done
 issue gamma 8 OPEN "Not approved."
 dispatch run
-[[ "$(wc -l < "$FIX/gh")" -le 4 ]] || fail "$(wc -l < "$FIX/gh") GitHub calls: $(sort "$FIX/gh" | uniq -c)"
+[[ "$(wc -l < "$FIX/gh")" -le 5 ]] || fail "$(wc -l < "$FIX/gh") GitHub calls: $(sort "$FIX/gh" | uniq -c)"
 grep -q 'started the .* (alpha#4 is ready)' <<<"$OUT" || fail "log: $OUT"
 pass
 

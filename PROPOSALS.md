@@ -12,6 +12,20 @@ the looper then marks it `promoted` or `declined` here with the date.
   `target/(debug|release|deps|build)/` trees, the non-source files a crate can include (`.json`, `.md`, `.yaml`,
   `.proto`, `.bin`) would cover it; or `looper-build gates` could read the `include_str!`/`include_bytes!` paths of
   the checkout's `.rs` files and keep those files. Neither is a known failure today.
+- **The hold for the scan's and the manager's model steps** (2026-11-15, #157): a report the account's usage limit
+  refuses ends as a hold and the kicker starts nothing until the reset, but the nightly scan (a schedule, not the
+  kicker's) still runs its model steps during a hold and ends with the CLI's error, and a manager or verdict job
+  still probes the high model at its start. The scan could read the hold before its model steps (and record one when
+  its own run is refused), and a job's probe could be skipped while a hold stands.
+- **A hold that outlives a GitHub hiccup** (2026-11-15, #157): a kick whose read of the hub's hold issue fails fails
+  its pass, as an unreadable forge does, so nothing starts; a run whose record of the hold fails only logs it, and the
+  kicker then starts runs the limit ends again, each trying to record the hold once more (no comment while one
+  stands). Retrying the record from the next such run is what happens today; a retry within the run would make the
+  first one count.
+- **The start comment of a run the limit ends** (2026-11-15, #157): every report posts `The looper of R starts this
+  issue on M` before its model runs, so an issue a usage limit ends still gets that one comment per run, though no
+  outcome comment. Posting the start comment once the model has produced its first output (or editing it into the
+  hold's comment) would leave such an issue untouched, as the hold intends.
 - **The image's revision baked in, so a job knows the image it runs** (2026-11-14, #153): a manager or verdict job
   now ends between lands once `ghcr.io/tacplus-dev/looper:main` names another digest than it read at its start, but
   that first read stands for the image the runner pulled moments before: an image published between the pull and
@@ -59,12 +73,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"
   while the pipeline still runs. Sizing the wait per repository (as `land_wait` sizes a land's, from gates.yaml's
   `minutes` of the set) would keep it from giving up on a build that is still on time.
-- **A high model refused mid-run, retried on the default** (2026-11-13, #136): a report's high model
-  (`claude-fable-5-1`) is probed before the run and falls back to the default when refused; one whose weekly quota
-  runs out during the run ends with the CLI's error, its work checkpointed, and only the next run falls back. Reading
-  the run's last result (an `is_error` result naming the model's limit, before any progress) and resuming at once on
-  the default would spend no run on it. Also: the probe is one turn of the high model for every such run; a refusal
-  could be remembered for the job (or the night) instead of probed again.
+- **A high model refused mid-run, retried on the default** (2026-11-13, #136; **done** 2026-11-15, #157: a run whose
+  result is the usage limit's refusal with no usage falls back to the default at once, and holds when that refuses
+  too): a report's high model (`claude-fable-5-1`) is probed before the run and falls back to the default when
+  refused; one whose weekly quota runs out during the run ended with the CLI's error, and only the next run fell
+  back. Still open: the probe is one turn of the high model for every such run; a refusal could be remembered for
+  the job (or the night) instead of probed again.
 - **The managers' model steps** (2026-11-13, #136): the rule puts every model step of a manager or verdict job on the
   high model, but neither has one today (a conflict is resolved only by regenerating the files `generated.yaml`
   maps; any other is sent back). A model resolving a code conflict in the manager, on that model, would save the
