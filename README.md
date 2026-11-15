@@ -1119,8 +1119,8 @@ them new:
 artifact, or the repository's latest, which an issue's run is handed in its run directory: the model holds no GitLab
 credential), recording only what may be baselined: a MEDIUM, LOW or UNKNOWN finding no policy fails and no exception
 accepts. A secret, a HIGH or CRITICAL finding, one the policy fails or an exception accepts is never baselined, whatever
-the file says. A run takes, per tool, rule and file (`where` without its `:line`), up to `count` of its findings, in
-line order, as `baselined`: never `new`, a SARIF `note`; beyond the count they are compared with the previous run as
+the file says. A run takes, per tool, rule and file (`where` without its `:line`, or its `:first-last` line range as gosec reports a finding over several lines,
+looper#156), up to `count` of its findings, in line order, as `baselined`: never `new`, a SARIF `note`; beyond the count they are compared with the previous run as
 any other. A file that is not a list of exactly `{tool, id, file, count}` (a count of 1 or more) fails the run. To
 take a fixed finding out, or a new one in, record it again.
 

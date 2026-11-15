@@ -63,11 +63,12 @@ EXCEPTIONS_FILE=security-exceptions.yaml
 # The findings a repository accepts as its starting point, at its root (looper#146).
 BASELINE_FILE=security-baseline.json
 # What a baseline records and matches: a finding no policy fails, not a secret,
-# MEDIUM, LOW or UNKNOWN, no exception's; its file, its where without the line.
+# MEDIUM, LOW or UNKNOWN, no exception's; its file, its where without the line
+# or the line range (gosec's "669-684", looper#156), whose first line is its line.
 JQ_BASELINE='
 def baselinable: .excepted == null and (.blocking | not) and .kind != "secret" and (.severity | IN("MEDIUM", "LOW", "UNKNOWN"));
-def file_of: .where | sub(":[0-9]+$"; "");
-def line_of: (.where | capture(":(?<l>[0-9]+)$").l // "0") | tonumber;
+def file_of: .where | sub(":[0-9]+(-[0-9]+)?$"; "");
+def line_of: (.where | capture(":(?<l>[0-9]+)(-[0-9]+)?$").l // "0") | tonumber;
 '
 
 scan_usage() {

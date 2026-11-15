@@ -1535,6 +1535,12 @@ if ((!REAL_SCAN)); then
 fi
 jq -n '[{tool: "gitleaks", kind: "secret", id: "k", severity: "CRITICAL", where: "a:1", blocking: true, excepted: null}]' > "$TMP/secret.json"
 [[ "$("$ROOT/looper-scan" baseline "$TMP/secret.json")" == $'[\n]' ]] || fail "a secret was baselined"
+# gosec reports a finding over several lines with a range (looper#156): its file is without it too.
+jq -n '[{tool: "gosec", kind: "sast", id: "G104", severity: "LOW", where: "pkg/b.go:669-684", blocking: false, excepted: null},
+        {tool: "gosec", kind: "sast", id: "G104", severity: "LOW", where: "pkg/b.go:12", blocking: false, excepted: null}]' > "$TMP/range.json"
+[[ "$("$ROOT/looper-scan" baseline "$TMP/range.json")" == '[
+  {"count":2,"file":"pkg/b.go","id":"G104","tool":"gosec"}
+]' ]] || fail "the baseline of a range: $("$ROOT/looper-scan" baseline "$TMP/range.json")"
 if scan BUILD_SHA="${SHA[scanbadbase]}" -- run 2>"$TMP/err"; then fail "a baseline without counts passed"; fi
 scan_verdict_is "fail: security-baseline.json: not a list of {tool, id, file, count}"
 pass
