@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#102).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#161).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -128,7 +128,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   findings to record it from); SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
   release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
-  and run by hand (`looper-scan local`) on tacplus and kernel; this repository's own tree passes its gitleaks, a gate
+  and run by hand (`looper-scan local`: its reports in a directory its summary names, never in the tree it scans, #161) on
+  tacplus and kernel; this repository's own tree passes its gitleaks, a gate
   (`tests/looper-secrets.test.sh`: a test's fake token is built at run time, #117); formal verification out of the gates (#74,
   tacplus-dev/tacplus#275, README: Formal verification): every release runs `just verify` beside the gates, and a
   verify run (input `verify: true`, main's head, no commit status) runs it only when `just verify-changed <the last
