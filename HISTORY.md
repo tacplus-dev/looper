@@ -113,3 +113,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue The manager's 3h build wait ignores the gate set's declared minutes: tacplus's full gates (2h55m) plus the scan got a verdict at 3h21m, after the land was red (#158, c6894e2; gates: full)
 - 2026-11-15 looper issue gosec 2.30.0 and glab 1.126.0 release binaries in the image are built with go1.27.3: net/http's GO-2026-6859 (fixed in go1.27.4) stays after #124, and no upstream release fixes it (#159)
 - 2026-11-15 looper issue tests/repo-looper.test.sh fails on a loaded runner: timeout-outcome and idle bound the whole run to 20s and the stub's --checkpoint to a 3s budget (#160, 5fe8718; gates: full)
+- 2026-11-15 looper issue looper-recap marks a failed Actions run recovered by a success on any ref: broken release-line images read as recovered (#116, c4dfd19; gates: recap)
