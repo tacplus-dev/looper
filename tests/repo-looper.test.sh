@@ -316,6 +316,12 @@ report() { echo "gh issue comment 4 --repo tacplus-dev/alpha --body \"$1\"" >> "
 # process group, and exits 124 (bound_hit says so): a scenario fails rather
 # than hang the gates (looper#122).
 BOUND=300
+# A scenario that asserts the looper stopped its model gives the model a sleep
+# of BOUND (it would outlast any bound) and bounds the report, REPORT_SECONDS,
+# not the manager beside it, by STOPPED: far below the sleep, so it still fails
+# when the model is not stopped, and far above an unloaded run, so a loaded
+# runner does not fail it (looper#160).
+STOPPED=60
 bound_hit() { (( $1 != 124 )) || echo " (stopped after ${BOUND}s: a wait that never ended)"; } # rc
 looper() { # [VAR=value...] -- repo-looper args
   local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift
@@ -612,14 +618,15 @@ pass
 
 # The time limit: the model is stopped LOOPER_STOP_EARLY seconds before it, its
 # work is checkpointed, and the issue says what is done and what is left and
-# stays approved, not stuck, for the next run to resume.
+# stays approved, not stuck, for the next run to resume. The model's budget,
+# 15s, is the stub's --checkpoint's with margin on a loaded runner (looper#160).
 scenario timeout-outcome
 echo 'echo y > c.txt' >> "$FIX/claude.sh"
 step "c.txt written; left: the tests"
-echo 'echo z > d.txt; sleep 30' >> "$FIX/claude.sh"
-start=$SECONDS
-run LOOPER_TIMEOUT=6 LOOPER_STOP_EARLY=3
-(( SECONDS - start < 20 )) || fail "the model was not stopped"
+echo 'touch "$FIX/checkpointed"; echo z > d.txt; sleep 300' >> "$FIX/claude.sh"
+run LOOPER_TIMEOUT=30 LOOPER_STOP_EARLY=15
+[[ -e "$FIX/checkpointed" ]] || fail "the checkpoint did not finish in the budget"
+(( REPORT_SECONDS < STOPPED + 15 )) || fail "the model was not stopped (${REPORT_SECONDS}s)"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 c="$(cat "$FIX/comments")"
 has "$c" "time limit"
@@ -835,10 +842,9 @@ pass
 # Idle: no output and no change in the checkout for LOOPER_IDLE_MINUTES stops
 # the model; its work is checkpointed and the issue says so, with the log tail.
 scenario idle
-echo 'echo "last words"; echo x > e.txt; sleep 60' >> "$FIX/claude.sh"
-start=$SECONDS
+echo 'echo "last words"; echo x > e.txt; sleep 300' >> "$FIX/claude.sh"
 run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 20 )) || fail "the idle model was not stopped"
+(( REPORT_SECONDS < STOPPED )) || fail "the idle model was not stopped (${REPORT_SECONDS}s)"
 [[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 c="$(cat "$FIX/comments")"
 has "$c" "went idle"
@@ -847,12 +853,14 @@ has "$c" "https://github.com/tacplus-dev/alpha/tree/looper/alpha-4"
 has "$(origin ls-tree -r --name-only looper/alpha-4)" "e.txt"
 pass
 
-# Output or changes in the checkout are not idle, however long the run.
+# Output or changes in the checkout are not idle, however long the run: each
+# lasts longer than the idle limit (6s), its steps far shorter, so a loaded
+# runner's stall does not make them idle (looper#160).
 scenario busy
-echo 'for i in 1 2 3 4 5; do echo tick; sleep 1; done; for i in 1 2 3 4 5; do date +%N > f.txt; sleep 1; done' >> "$FIX/claude.sh"
+echo 'for i in $(seq 16); do echo tick; sleep 0.5; done; for i in $(seq 16); do date +%N > f.txt; sleep 0.5; done' >> "$FIX/claude.sh"
 push_fix
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
-run LOOPER_IDLE_MINUTES=0.05 LOOPER_WATCH_INTERVAL=1
+run LOOPER_IDLE_MINUTES=0.1 LOOPER_WATCH_INTERVAL=1
 [[ -z "$(others)" ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 pass
@@ -864,7 +872,7 @@ push_fix; report "Fixed."
 echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"' >> "$FIX/claude.sh"
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( REPORT_SECONDS < 15 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < STOPPED )) || fail "the finished run was not ended (${REPORT_SECONDS}s)"
 [[ "$(others)" == "alpha#4 Fixed." ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$OUT" "done"
@@ -899,7 +907,7 @@ echo 'for i in 1 2 3 4 5 6; do echo still verifying; sleep 1; done' >> "$FIX/cla
 report "Landed, the gates pass."
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( REPORT_SECONDS < 25 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < 2 * STOPPED )) || fail "the finished run was not ended (${REPORT_SECONDS}s)"
 [[ "$(jq -r .state "$FIX/issues/alpha-4.json")" == CLOSED ]] || fail "not closed"
 [[ "$(others)" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
 has "$OUT" "its run was done"
@@ -915,7 +923,7 @@ echo 'for i in 1 2 3 4 5 6; do echo still verifying; sleep 1; done' >> "$FIX/cla
 report "Landed, the gates pass."
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
 run LOOPER_LAND_POLL=4 LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( REPORT_SECONDS < 40 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < 2 * STOPPED )) || fail "the finished run was not ended (${REPORT_SECONDS}s)"
 [[ "$(others)" == $'alpha#4 Starting.\nalpha#4 Landed, the gates pass.' ]] || fail "comments: $(cat "$FIX/comments")"
 has "$OUT" "its run was done"
 pass
@@ -924,10 +932,9 @@ pass
 # own: the looper posts one, with the land, the HISTORY line and the log's end.
 scenario land-closes-no-report
 closing_land
-echo 'echo "last words"; sleep 60' >> "$FIX/claude.sh"
-start=$SECONDS
+echo 'echo "last words"; sleep 300' >> "$FIX/claude.sh"
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1 LOOPER_IDLE_MINUTES=0.1
-(( SECONDS - start < 40 )) || fail "the model was not stopped"
+(( REPORT_SECONDS < 2 * STOPPED )) || fail "the model was not stopped (${REPORT_SECONDS}s)"
 c="$(others)"
 [[ "$(grep -c '^alpha#4 ' <<<"$c")" == 1 ]] || fail "comments: $c"
 has "$c" "closed with no closing report from its run"
@@ -943,9 +950,8 @@ scenario done-blocked
 push_fix; echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue alpha 3 OPEN "" "First."
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
-start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 20 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < STOPPED )) || fail "the finished run was not ended (${REPORT_SECONDS}s)"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: #3"
 pass
@@ -955,9 +961,8 @@ scenario done-blocked-nothing-pushed
 echo 'echo "Blocked-by: #3" > "$OUTCOME"' >> "$FIX/claude.sh"
 issue alpha 3 OPEN "" "First."
 echo 'while :; do echo still here; sleep 1; done' >> "$FIX/claude.sh"
-start=$SECONDS
 run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
-(( SECONDS - start < 20 )) || fail "the finished run was not ended"
+(( REPORT_SECONDS < STOPPED )) || fail "the finished run was not ended (${REPORT_SECONDS}s)"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: #3"
 pass
@@ -1769,14 +1774,14 @@ echo x > a.txt
 "\$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "a.txt written; left: b.txt, close it"
 echo y > b.txt; sleep 2
 $1
-sleep 30
+sleep $BOUND
 git add -A && git commit -q -m "the orphan's fix" && "\$ROOT/repo-looper" --repo alpha --issue 4 --land --gates true
 gh issue comment 4 --repo tacplus-dev/alpha --body "the orphan's comment"
 EOS
 }
 fail_job() { echo "jq 'map(if .id == $1 then .status = \"failed\" else . end)' \"\$FIX/jobs.json\" > \"\$FIX/x\" && mv \"\$FIX/x\" \"\$FIX/jobs.json\""; } # job id
 orphan_stopped() { # elapsed seconds
-  (( $1 < 20 )) || fail "the orphaned run was not stopped"
+  (( $1 < STOPPED )) || fail "the orphaned run was not stopped (${1}s)"
   has "$OUT" "GitLab no longer runs this job"
   main_unchanged
   [[ -z "$(others)" ]] || fail "commented"
@@ -3689,8 +3694,9 @@ has "$(cat "$FIX/think/comment.md")" "no ROADMAP.md links"
 pass
 
 scenario think-time-limit
-says 'echo half > half.txt' '"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "half done; the rest left"' 'sleep 30'
-think LOOPER_TIMEOUT=6 LOOPER_STOP_EARLY=3
+says 'echo half > half.txt' '"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "half done; the rest left"' 'touch "$FIX/checkpointed"' 'sleep 300'
+think LOOPER_TIMEOUT=30 LOOPER_STOP_EARLY=15 # the stub's --checkpoint's budget, as timeout-outcome's
+[[ -e "$FIX/checkpointed" ]] || fail "the checkpoint did not finish in the budget"
 [[ "$(outcome)" == "type: timeout" ]] || fail "outcome: $(outcome)"
 has "$(cat "$FIX/think/comment.md")" "half done; the rest left"
 has "$(cat "$FIX/think/patch")" "+half"
