@@ -1,14 +1,14 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#155).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#157).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
   `build:2.5` environment (#1, #26); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
 - **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a
-  pass every 3 minutes that reads GitHub for the whole org in three requests, never two kicker jobs at once and only the newest (a kick stops once a newer one is queued, #104), nothing on
+  pass every 3 minutes that reads GitHub for the whole org in four requests, never two kicker jobs at once and only the newest (a kick stops once a newer one is queued, #104), nothing on
   the Mac (#24); it starts the pipeline for a ready issue with no report job, or a
-  queued land with no manager; the pipeline's plan (`looper-dispatch plan`) starts **one report job per ready
+  queued land with no manager, and nothing during the looper's hold (#157, below); the pipeline's plan (`looper-dispatch plan`) starts **one report job per ready
   issue**, every one of them (no per-repository cap: `caps.yaml` is gone, #107), never a second for an issue whose
   report is created, pending, waiting or running, and the repository's **manager** job, the only one that merges
   to its main, planned ahead of every report so the runner starts it first, and a report pending from an earlier pipeline yields to a manager waiting for a runner (#70, below; #16; #75); priority labels (#31): ready issues are taken `priority:high`, then unlabelled, then
@@ -50,7 +50,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   also from a run that pushed nothing because the issue waits on another, #22, a blocker closed by now dropped and one
   naming only closed ones resumed, #46; a run that ends with its land
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
-  that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one idle after its land
+  that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one the account's usage
+  limit refused (`You've hit your weekly limit · resets 3am (UTC)`, empty usage) on its model and any it may fall back to
+  is `held`, not stuck (#157: 19 issues stuck and 17 hours lost on 2026-11-14): its issue keeps its labels and gets no
+  comment, the reset time the refusal names is recorded on the hub's one pinned hold issue (`looper:hold`, one comment
+  per hold), and the kicker and the plan start no report and no manager until then, resuming by themselves after it; a
+  high model the limit refuses mid-run falls back to the default, as a probe's refusal does; one idle after its land
   landed reports `landed`, with main's range, and stays approved for the next run to close, #37; a run waiting on its
   build, pending or running in tacplus-dev/build, is not idle until its verdict or `LOOPER_BUILD_WAIT` from its start, and one idle after its
   build had no verdict within that wait is retried, not stuck, #133; one that ends with its land queued and no verdict is `land-pending`, held
