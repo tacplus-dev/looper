@@ -741,56 +741,9 @@ scan_tree() { # src previous-findings started
   scan_verdict pass
 }
 
-# A top-level scalar of a YAML file, unquoted, without its comment.
-yaml_scalar() { # file key
-  local v
-  v="$(sed -nE "s/^$2:[[:space:]]*//p" "$1" | head -1 | sed -E 's/(^|[[:space:]]+)#.*$//; s/[[:space:]]+$//')"
-  [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]] && v="${BASH_REMATCH[1]}"
-  printf '%s' "$v"
-}
-
-# A field a tacplus config names: its own, else that of the config it
-# imports, resolved relative to it (tacplus docs/USER.md: Config Composition).
-tacplus_field() { # config key
-  local f="$1" v i
-  for ((i = 0; i < 8; i++)); do
-    v="$(yaml_scalar "$f" "$2")"; [[ -z "$v" ]] || { printf '%s' "$v"; return 0; }
-    v="$(yaml_scalar "$f" import)"; [[ -n "$v" ]] || return 0
-    [[ "$v" == /* ]] || v="$(dirname "$f")/$v"
-    [[ -f "$v" ]] || return 0
-    f="$v"
-  done
-}
-
-# A path relative to a directory, without ./ or trailing /; fails when it is
-# not a directory inside it.
-inside_dir() { # path
-  local d="${1#./}"
-  while [[ "$d" == */ ]]; do d="${d%/}"; done
-  [[ -n "$d" && "$d" != . && "$d" != /* && "/$d/" != */../* ]] || return 1
-  printf '%s' "$d"
-}
-
-# The tree a tacplus config generates, relative to its project, as tacplus
-# writes it (its runner): the output-name (default model) in the output-dir,
-# unless the output-dir already ends in it (looper#152: operator's
-# `output-dir: .` with `output-name: tacplus` is tacplus/). Fails when the
-# config names no output-dir or the tree is not a directory inside its project.
-tacplus_generated_dir() { # config
-  local dir name
-  dir="$(tacplus_field "$1" output-dir)"; [[ -n "$dir" ]] || return 1
-  name="$(tacplus_field "$1" output-name)"; name="${name:-model}"
-  [[ "$name" != */* && "$name" != . && "$name" != .. ]] || return 1
-  if [[ "$dir" == . || "$dir" == ./ ]]; then dir=""
-  else dir="$(inside_dir "$dir")" || return 1
-  fi
-  [[ "${dir##*/}" == "$name" ]] || dir="${dir:+$dir/}$name"
-  printf '%s' "$dir"
-}
-# How a config names its tree, for a note.
-tacplus_output_spec() { # config
-  printf "output-dir '%s', output-name '%s'" "$(tacplus_field "$1" output-dir)" "$(tacplus_field "$1" output-name)"
-}
+# yaml_scalar, tacplus_field, inside_dir, tacplus_generated_dir and
+# tacplus_output_spec (a tacplus config's generated tree, as tacplus writes it)
+# are looper-build's (sourced above): the gates keep that tree whole (looper#155).
 
 # A service's generated trees (looper#108, looper#149, looper#152): the tree
 # every tacplus.yaml in the tree (a service's, a client subproject's)

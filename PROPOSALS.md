@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **What a crate `include_str!`s outside a tacplus tree** (2026-11-14, #155): the gates' `built/` now keeps each
+  tacplus.yaml's generated tree whole, so gateway's `registry.json` and `AGENT.md` reach the security job's clippy;
+  everything else untracked is still kept by extension (sources, manifests, bytecode, release jars). A crate that
+  `include_str!`s or `include_bytes!`s a file its gates write elsewhere (a `.json` a `build.rs` emits into the source
+  tree, a `.proto`, a `.bin`) would fail the security job's clippy the same way. Keeping, outside dependency and
+  `target/(debug|release|deps|build)/` trees, the non-source files a crate can include (`.json`, `.md`, `.yaml`,
+  `.proto`, `.bin`) would cover it; or `looper-build gates` could read the `include_str!`/`include_bytes!` paths of
+  the checkout's `.rs` files and keep those files. Neither is a known failure today.
 - **The image's revision baked in, so a job knows the image it runs** (2026-11-14, #153): a manager or verdict job
   now ends between lands once `ghcr.io/tacplus-dev/looper:main` names another digest than it read at its start, but
   that first read stands for the image the runner pulled moments before: an image published between the pull and
