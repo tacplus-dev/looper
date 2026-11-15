@@ -10,6 +10,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   The issue's other reading, asking for it only when the batch touches `.github/workflows/`, would need the token
   minted per land rather than per job (the set is chosen at `looper-token start`, refreshed every 45 minutes), and
   would still be a 422 while the app lacks it: not worth it until the grant exists, and then the variable is simpler.
+- **The prompt warns of `.github/workflows/` before the model changes it** (2026-11-06, #99): the report's App
+  cannot push a change under `.github/workflows/` (no `workflows` permission), so a run that changes one checkpoints
+  nothing from then on; #99 makes that failure loud, but only after the work is done. A prompt rule naming the limit
+  (a person applies a workflow change, or the issue asks for one) would steer the run sooner. Whether the App gets
+  the permission is Jody's decision (tacplus#315 asks; `looper/tacplus-283` pushed an `images.yml` change on
+  2026-11-06 at 02:07Z, so the permission or the credential differed then).
 - **A started build whose gates never get a slot** (2026-11-10, updated 2026-11-15, #113): `--build` and the manager
   tell "no runner" only from a build with no status at all within `LOOPER_BUILD_START` (its `pending` job never ran).
   A build whose `pending` job ran but whose plan or child gates job then waits for a slot (operator#26's pipeline
