@@ -72,7 +72,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   timeout, but `repo-looper --build` and a manager's merge wait for a verdict `LOOPER_BUILD_WAIT` (default 3h),
   and tacplus's full gates take about 3h15m before the security checks: such a build ends "no verdict within 3h"
   while the pipeline still runs. Sizing the wait per repository (as `land_wait` sizes a land's, from gates.yaml's
-  `minutes` of the set) would keep it from giving up on a build that is still on time.
+  `minutes` of the set) would keep it from giving up on a build that is still on time. Done: looper#158.
 - **A high model refused mid-run, retried on the default** (2026-11-13, #136; **done** 2026-11-15, #157: a run whose
   result is the usage limit's refusal with no usage falls back to the default at once, and holds when that refuses
   too): a report's high model (`claude-fable-5-1`) is probed before the run and falls back to the default when

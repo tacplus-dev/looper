@@ -23,8 +23,9 @@
 # gates.yaml), and "base": the commit their LOOPER_GATES_BASE names (the main
 # a manager's land is rebased on, or a report's branch point). A manager's
 # merge and a report's --build pass the set their diff calls for (repo-looper).
-# "wait" is the seconds the requester waits for its verdict (LOOPER_BUILD_WAIT,
-# looper#130; repo-looper passes it once this project's copy declares it): a gates job that starts later than that after the pipeline's
+# "wait" is the seconds the requester waits for its verdict (looper#130: its
+# gate set's minutes and a margin, at least LOOPER_BUILD_WAIT, looper#158;
+# repo-looper passes it once this project's copy declares it): a gates job that starts later than that after the pipeline's
 # creation writes the verdict "abandoned: no verdict wanted after Nh" and runs
 # no gates. A nightly, a release and a verify run pass none: never abandoned.
 # A release runs on this project's protected tag <repo>/vX.Y.Z, with

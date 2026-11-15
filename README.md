@@ -381,8 +381,12 @@ pin issue (filed by the hub) commits one.
   it is rebased on: the build runs exactly what [Gates scaled to the diff](#gates-scaled-to-the-diff) would) and
   merges on its pass alone. Its verdict comment carries the build's link and verdict line.
 - **A queued build is no red land** (looper#128): builds run on tacplus-dev/build's spot pool, a few at a time, so
-  `LOOPER_BUILD_WAIT` (3 hours) counts from the build's start (its first commit status, the `pending` its first
-  job sets), never its trigger: one past it since its start is red. A build with no verdict when the manager's job
+  its wait counts from the build's start (its first commit status, the `pending` its first job sets), never its
+  trigger: one past it since its start is red. The wait covers the gate set the build runs (looper#158): the sum
+  of its sets' `minutes` in the commit's `gates.yaml` (full's for a path the map does not name) and
+  `LOOPER_BUILD_MARGIN` (30 minutes) for the plan, the security checks and the status job, never less than
+  `LOOPER_BUILD_WAIT` (3 hours), which is the wait alone when none of its sets declares `minutes`; the build is
+  asked for with that wait (its `wait` input). A build with no verdict when the manager's job
   is `LOOPER_LAND_MARGIN` from its end leaves the land queued (no verdict, not sent back) and its pipeline recorded
   on top of the commit on its build branch, which stays; the next manager whose rebase gives the same tree on the
   same main and gate set takes that pipeline's verdict up instead of triggering another. The manager's log names
@@ -390,8 +394,8 @@ pin issue (filed by the hub) commits one.
   recap reports per manager.
 - **A report requests a build** with `repo-looper --repo R --issue N --build`: it checkpoints (the commit is then on
   GitHub, under the issue's branch), asks for the gate set its diff since main calls for, prints the build's link
-  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (`LOOPER_BUILD_WAIT`, 3 hours from the
-  build's start), 3 with none by its job's end. The
+  and its verdict, and exits 0 on a pass, 1 on a failure, 2 with no verdict (its gate set's wait, at least
+  `LOOPER_BUILD_WAIT`, 3 hours, from the build's start), 3 with none by its job's end. The
   model never holds the trigger: its request is a file in its run directory, which its report's looper, holding
   `BUILD_TRIGGER_TOKEN`, checks (a full hash, a gate set, a base; at most `LOOPER_BUILD_MAX`, 30, a run) and starts.
 - **The verdict** is the GitHub commit status the build sets (context `tacplus-dev/build`) and only the one the
@@ -514,7 +518,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 
 - **Idle:** no output, nothing changed in the checkout, no land of its queued or running and no build of
   its (`--build`) still pending or running in tacplus-dev/build (looper#133) for
-  `LOOPER_IDLE_MINUTES` (20): a build's wait ends at its verdict, or at `LOOPER_BUILD_WAIT` (3h) from its start
+  `LOOPER_IDLE_MINUTES` (20): a build's wait ends at its verdict, or at its gate set's wait (at least `LOOPER_BUILD_WAIT`, 3h) from its start
   with none, as `--build` counts it (looper#128), and its idle clock starts then; one never started is ended by
   the run's time limit. Its work is
   checkpointed and the issue gets a comment that the run went idle, with the tail of its log; it is
@@ -803,8 +807,8 @@ jobs run `looper-build`, from this image.
 - **Started** from the API or the web with **inputs** `repo`, `sha` and, for a release, `tag`; a manager's merge
   and a report's `--build` ([Build jobs](#build-jobs), looper#71) add `gates` (the commit's `gates.yaml` sets,
   joined by `+`; none: its full, or `just gates` without a `gates.yaml`), `base` (their `LOOPER_GATES_BASE`) and
-  `wait` (the seconds they wait for its verdict, `LOOPER_BUILD_WAIT`, once the project's CI file declares it,
-  looper#130; a nightly, a release and a verify run pass none). The project forbids
+  `wait` (the seconds they wait for its verdict, the gate set's wait, at least `LOOPER_BUILD_WAIT`, looper#158,
+  once the project's CI file declares it, looper#130; a nightly, a release and a verify run pass none). The project forbids
   pipeline variables (as this group does); inputs are typed and checked against their pattern before any job runs.
   A push to the project starts nothing.
 

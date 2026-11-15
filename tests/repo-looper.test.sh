@@ -3351,6 +3351,52 @@ has "$(cat "$FIX/comments")" "alpha#4 The manager did not merge"; has "$(cat "$F
 has "$OUT" "#4: not merged (exit 4)"; has "$OUT" " s, running 720"
 pass
 
+# The wait for a build's verdict covers its gate set (looper#158): the sum of
+# its sets' minutes in the commit's gates.yaml and LOOPER_BUILD_MARGIN (30
+# minutes) for the security checks and the status job, never less than
+# LOOPER_BUILD_WAIT; the build is asked for with that wait. tacplus's full
+# gates, declared at 180 minutes, were red at a flat 3h while the pipeline went
+# on to its verdict: here a build of docs+images (60 and 90 minutes) running for
+# 2 hours, past LOOPER_BUILD_WAIT's hour, is still within its 3h, and the
+# manager's job ending first leaves the land queued, not red.
+minutes_seed() {
+  pin_seed
+  printf 'images:\n  run: echo "images ${BUILD_STUB:-here}" >> "$FIX/gates-ran"\n  paths: ["*.img"]\n  minutes: 90\n' >> "$FIX/seed/gates.yaml"
+  sed -i '/^docs:/a\  minutes: 60' "$FIX/seed/gates.yaml"
+  git -C "$FIX/seed" commit -qam minutes && git -C "$FIX/seed" push -q origin main
+}
+scenario build-wait-gate-set
+minutes_seed; echo "running $(date -u -d '2 hours ago' +%FT%TZ)" > "$FIX/build-hold"
+d="$FIX/q-4"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b looper/alpha-4
+echo pixels > "$d/a.img"; echo "the docs" > "$d/notes.md"; git -C "$d" add -A; git -C "$d" commit -qm "fix 4"
+mkdir -p "$d/.looper"; printf 'id=q4\ngates=true\nstate=queued\nqueued=2026-11-11T10:00:00Z\n' > "$d/.looper/land"
+git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #4 (land queued)"; git -C "$d" push -q origin looper/alpha-4
+jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+# Its last land on the set was quick: the manager starts it (land_fits).
+mkdir -p "$FIX/work/alpha"; echo 0 > "$FIX/work/alpha/land-seconds.docs+images"
+manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=3600 LOOPER_LAND_MARGIN=15 CI_JOB_TIMEOUT=40 CI_JOB_STARTED_AT="$(date -u +%FT%TZ)"
+[[ "$(cut -d' ' -f4,6 "$FIX/builds")" == "docs+images 10800" ]] || fail "the build asked for: $(cat "$FIX/builds")"
+has "$OUT" "#4: left queued for the next manager: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901 has no verdict yet"
+lacks "$(cat "$FIX/comments")" "alpha#4 "; has "$(labels alpha 4)" "looper:landing"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+# Past its sets' wait, it is red, and says the wait it waited.
+s="$(cut -d' ' -f3 "$FIX/builds")"
+jq --arg t "$(date -u -d '4 hours ago' +%FT%TZ)" 'map(.created_at = $t)' "$FIX/statuses/$s.json" > "$FIX/x" && mv "$FIX/x" "$FIX/statuses/$s.json"
+manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=3600
+has "$(cat "$FIX/comments")" "alpha#4 The manager did not merge"; has "$(cat "$FIX/comments")" "no verdict within 3h of its start"
+pass
+
+# A report's --build asks for its set's wait and waits it: the docs alone (60
+# minutes) wait 1h30m, more than LOOPER_BUILD_WAIT's hour; a set with no
+# minutes, and a repository without a gate map, LOOPER_BUILD_WAIT.
+scenario build-wait-report
+minutes_seed; build_model notes.md "the docs"
+run "${BUILDS[@]}" LOOPER_BUILD_WAIT=3600
+has "$(cat "$FIX/build-4")" "rc 0"
+[[ "$(cut -d' ' -f4,6 "$FIX/builds")" == "docs 5400" ]] || fail "the build asked for: $(cat "$FIX/builds")"
+[[ "$(cat "$FIX"/project/looper-runs/*-issue-4/builds/*.wait)" == 5400 ]] || fail "the run's build's wait: $(cat "$FIX"/project/looper-runs/*-issue-4/builds/*.wait)"
+pass
+
 # A run waiting on its build, queued in the pool longer than the idle limit,
 # is not idle (looper#133): the watchdog leaves it alone until the verdict.
 scenario build-wait-not-idle
