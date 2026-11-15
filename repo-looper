@@ -3275,7 +3275,7 @@ $(sed 's/^/> /' "$run/step")"
   [[ ! -s "$run/outcome" ]] || progress=""
   # A run idle after its build had no verdict within the wait (a build that
   # ran that long, or hung) is retried, never stuck (looper#133).
-  local capped=""; [[ "$stopped" == idle ]] && capped="$(build_capped "$run")"
+  local capped=""; [[ "$stopped" != idle ]] || capped="$(build_capped "$run")" || true
   if [[ -n "$timed_out" ]]; then ended="The run reached its time limit ($(hours "$limit")) before finishing."
   elif [[ -n "$capped" ]]; then
     ended="The run's build had $capped, and the run then went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
