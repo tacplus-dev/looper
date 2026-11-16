@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#73).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#166).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -298,6 +298,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   no release line yet; the image's Syft carries GO-2026-6905 (github.com/blakesmith/ar, no fixed version: a crafted
   `.deb` panics it and fails the security run closed), accepted in `security-exceptions.yaml` until 2026-12-13 (#142):
   from 2026-12-14 looper's builds fail on it until it is renewed or fixed, and the nightly scan files it again then or
-  once a fixed version is published
+  once a fixed version is published; the image's docker CLI (29.9.3, from `build:2.6`'s `docker:29-cli`, go1.26.10)
+  carries net/http's GO-2026-6859, a server-side crash a client does not reach, accepted in
+  `security-exceptions.yaml` until 2026-11-30 (#166, the hub's decision): #73 step 3 removes the CLI and the entry;
+  the build's checks do not scan the image's binaries, so only the nightly scan's `govulncheck -mode=binary` sees it
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
