@@ -39,8 +39,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   retired; each report's model's containers limited to its memory (4 GB, or the `memory:` its land's gate set asks in `gates.yaml`, #74)
   without swap by `looper-docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone (#41); a
   report's limit capped at its job's deadline (its job sized for its issue's limit and an hour, #35); each run's model
-  chosen per run (#136): `claude-fable-5-1` (`LOOPER_MODEL_HIGH`) for a `priority:high` issue's report and a scan's
-  model step, `claude-opus-5-5` (`LOOPER_MODEL_DEFAULT`) otherwise, `LOOPER_MODEL` over both, a high model probed
+  chosen per run (#136, #162): `claude-fable-5-1` (`LOOPER_MODEL_HIGH`) for the report of an issue carrying `model:high`
+  (set by someone with write access; a bot's or a reader's ignored) and the roadmap's suggestion pass and recap,
+  `claude-opus-5-5` (`LOOPER_MODEL_DEFAULT`) otherwise (`priority:high` only orders the queues; each repository's
+  nightly scan on the default; the recap names a day the high model's share of the tokens passes
+  `LOOPER_RECAP_HIGH_SHARE`), `LOOPER_MODEL` over both, a high model probed
   first and a refused one falling back to the default, said in the run's start comment (which every report posts,
   naming its model), its record's `model` file and the job's log with its tokens per model; every model's
   `pkill` is `looper-pkill`, which signals only its run's own processes (tacplus#222, #61); each report's model runs
