@@ -215,6 +215,28 @@ repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`
 an issue's body holds it until that issue is closed. A `Blocked-by:` line the looper cannot read holds its issue
 too (looper#87).
 
+Waiting on another run (looper#171): a report whose work waits on another run's result (a GitLab pipeline or job, a
+GitHub Actions run: an image build, a fleet plan) does not wait in its model. On 2026-11-16 two runs that did ("Now I
+wait for image run ...") sat with no output, went idle and were `looper:stuck`, their work done and right. Its model
+runs `repo-looper --repo R --issue N --wait-on <url> "<what is left after it>"`: a run that has finished already is no
+wait (it says so, records nothing, and the model reads its result and goes on), and a URL that is no GitHub Actions run
+(`https://github.com/<owner>/<repo>/actions/runs/<id>`) nor GitLab pipeline or job (`https://gitlab.com/<path>/-/pipelines/<id>`,
+`/-/jobs/<id>`, or on `LOOPER_FORGE_URL`'s host) is refused; else it checkpoints the step `waiting on <url>: <what is
+left>`, writes `Waiting-on: <url>` to the run's `outcome`, and the run ends there (a model that sits waiting all the
+same is stopped as done, after `LOOPER_DONE_GRACE`, not idle). The looper adds `Waiting-on: <url> (since <time>)` to
+the issue's body, comments with the checkpoint, and the issue stays `approved`, never `looper:stuck`; it is not ready
+(the kicker, the plan and `--list` all read it) until that run has finished (GitHub's `completed`; GitLab's
+`success`, `failed`, `canceled`, `skipped` or `manual`), or `LOOPER_WAIT_MAX` (6h) after its since when the run
+cannot be read or does not end. GitLab is read with `GITLAB_TOKEN` on gitlab.com (`LOOPER_FORGE_TOKEN` on the forge's
+own host), from a file descriptor, else anonymously; no other host is read. The next run takes the lines out of the
+body, resumes from the checkpoint, and its prompt names each run it waited on and how it ended. The idle stop then
+catches only real hangs; a `--build` is still waited on in the run (looper#133).
+
+```sh
+tests/repo-looper.test.sh      # waiting-on: --wait-on checkpoints "waiting on <url>", the run ends waiting (approved, not stuck), the issue not listed while the pipeline runs, listed once it failed, and the next run resumes, the result in its prompt and the line out of the body; waiting-on-then-sits: a model that waits all the same is stopped as done, not idle; waiting-on-refused: a finished run is no wait, another host refused (#171)
+tests/looper-dispatch.test.sh  # waiting-pipeline-running, waiting-pipeline-finished, waiting-github-run, waiting-unreadable: the kicker starts an issue waiting on a run once it has finished, or LOOPER_WAIT_MAX after its since when it cannot be read; GITLAB_TOKEN from a file descriptor (#171)
+```
+
 Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
 instead, at most 10h. A report's job is sized for its issue (`repo-looper --job-timeout N`, looper#70): its
 limit and an hour, rounded up to hours, at most `LOOPER_JOB_MAX_HOURS` (11h). Its limit is capped at the job's
@@ -579,7 +601,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
   into `claude.log` as its text, each tool call and the start of each result, so a working run
   always shows output.
 - **Done:** once the run reported on the issue and it is closed, or the run wrote its `Blocked-by:`
-  outcome, the model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run
+  or `Waiting-on:` outcome (looper#171), the model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run
   ends as done. The prompt has it comment and close the issue as its last step, after any backport pull
   requests. Closed alone is not done (looper#54): a land's commit can close the issue while the model
   still verifies or writes its report, so its report is a comment since its last land (or since it
@@ -593,6 +615,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | pushed and closed it | closed |
 | asked a question | `needs-decision` |
 | found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. A land of its still queued stays queued, and the issue `looper:landing` until the manager's verdict; with none, it is no longer `looper:landing` (looper#93), as after every outcome but a land queued. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
+| waits on another run's result: it ran `--wait-on <url>` (looper#171) | `Waiting-on: <url> (since <time>)` added to its body and a comment with its checkpoint; it stays `approved`, never `looper:stuck`, and is worked again once that run has finished (or `LOOPER_WAIT_MAX` after, when it cannot be read); the next run resumes from its branch, the result named in its prompt. With its land queued too, it is `land-pending` and waits on both |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | ended with its land queued and no verdict yet (looper#70): every report that lands, since `--land` queues and returns (the merge train, looper#86), or one its limit stopped | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it (comments and closes, or fixes what came back) |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |

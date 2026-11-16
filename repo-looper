@@ -29,6 +29,9 @@
 #                                       with --wait, wait for its verdict
 #   repo-looper --repo NAME --issue N --build   a build job of the report's committed HEAD, in the build
 #                                       image it pins, and its verdict (the model's step, looper#71)
+#   repo-looper --repo NAME --issue N --wait-on URL [MSG]   the report waits on another run (a pipeline,
+#                                       a workflow run, a job): checkpoints "waiting on URL" and ends; the
+#                                       issue is worked again once that run has finished (looper#171)
 #
 # Managers and direct reports (looper#70; tacplus-dev/roadmap
 # decisions/looper-job-per-issue-2026-11-03.md). The pipeline's plan
@@ -148,7 +151,9 @@
 # made progress (a fix landed, a new step checkpointed; looper#34), or that went
 # idle after its fix landed (looper#37) or after its build had no verdict
 # within its wait from its start (looper#133) says what is done and what is left and
-# stays approved: the next run resumes from its branch. Anything else (idle
+# stays approved: the next run resumes from its branch. A run that waits on
+# another run's result (--wait-on, looper#171) ends, its issue `Waiting-on:`
+# that run and approved, and is worked again once it has finished. Anything else (idle
 # with nothing landed or queued, no progress) is looper:stuck, for a person.
 #
 # The planning files (looper#13): as it starts, the manager creates a missing
@@ -201,7 +206,8 @@
 # (when set, every run's: it overrides both, looper#136), LOOPER_TIMEOUT (seconds per issue,
 # default 14400), LOOPER_STOP_EARLY (default 600), LOOPER_CHECKPOINT_INTERVAL
 # (seconds, default 3600), LOOPER_IDLE_MINUTES (default 20), LOOPER_DONE_GRACE
-# (seconds, default 300), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
+# (seconds, default 300), LOOPER_WAIT_MAX (how long a run --wait-on named holds
+# its issue when it cannot be read or does not end, default 21600, looper#171), LOOPER_WATCH_INTERVAL (the watchdog's, seconds,
 # default 60), LOOPER_JOB_POLL (seconds, default 300), LOOPER_LAND_MINUTES (a land's
 # time before one is recorded), LOOPER_LAND_MARGIN (seconds kept after a land, default 600), LOOPER_GATES (default `just gates` when the
 # repository has a justfile), LOOPER_PLAN_TIMEOUT (the plan's model, seconds, default 1200),
@@ -234,7 +240,7 @@ pod_use_mark
 # This script's own path, for the model's --checkpoint.
 : "${LOOPER_SELF:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")}"
 
-REPO=""; ISSUE=""; MODE=next; STEP=""; LAND_GATES=""; VERDICT_DIR=""
+REPO=""; ISSUE=""; MODE=next; STEP=""; LAND_GATES=""; VERDICT_DIR=""; WAIT_URL=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) REPO="$2"; shift 2 ;;
@@ -243,6 +249,8 @@ while [[ $# -gt 0 ]]; do
     --land) MODE=land; shift ;;
     --wait) LAND_WAIT=1; shift ;;
     --build) MODE=build; shift ;;
+    --wait-on) WAIT_URL="${2:-}"; MODE=wait-on; shift 2 || die "--wait-on needs a URL"
+               if [[ $# -gt 0 && "$1" != --* ]]; then STEP="$1"; shift; fi ;;
     --gates) LAND_GATES="$2"; shift 2 ;;
     --manage) MODE=manage; shift ;;
     --verdict) VERDICT_DIR="$2"; MODE=verdict; shift 2 ;;
@@ -336,6 +344,7 @@ if [[ "$MODE" == list ]]; then
 fi
 [[ "$MODE" != checkpoint || -n "$ISSUE" ]] || die "--checkpoint needs --issue N"
 [[ "$MODE" != land || -n "$ISSUE" ]] || die "--land needs --issue N"
+[[ "$MODE" != wait-on || -n "$ISSUE" ]] || die "--wait-on needs --issue N"
 
 # Without --issue, the report of the next ready issue (priority first, looper#31).
 if [[ "$MODE" == next ]]; then
@@ -357,7 +366,7 @@ report_dir() { echo "$WORK/issues/$1"; } # issue
 # it saw an empty directory (looper#79).
 scratch_dir() { mkdir -p "$WORK/scratch" && mktemp -d "$WORK/scratch/XXXXXX"; }
 # A report, and the model's --checkpoint and --land from a report's clone.
-if [[ "$MODE" == one ]] || [[ "$MODE" =~ ^(checkpoint|land|build)$ && -e "$(report_dir "$ISSUE")/.git" ]]; then
+if [[ "$MODE" == one ]] || [[ "$MODE" =~ ^(checkpoint|land|build|wait-on)$ && -e "$(report_dir "$ISSUE")/.git" ]]; then
   CHECKOUT="$(report_dir "$ISSUE")"; BRANCH="looper/$REPO-$ISSUE"
 fi
 # A report's models run as its own user (looper#68), a scan's as looper-scan
@@ -1465,6 +1474,34 @@ build_record() { # branch
   [[ "$(sed -n 's/^sha=//p' <<<"$m")" == "$(git rev-parse -q --verify "$r^" 2>/dev/null)" &&
      "$(sed -n 's/^pipeline=//p' <<<"$m")" =~ ^[0-9]+$ && "$(sed -n 's/^triggered=//p' <<<"$m")" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$m"
+}
+
+# --wait-on URL [MSG], the model's step when what is left waits on another
+# run's result (a pipeline, a workflow run, a job: looper#171): the model does
+# not wait for it. A run that has finished already is no wait: it says so and
+# records nothing, for the model to read its result and go on. Else it
+# checkpoints the step "waiting on URL" (and MSG, what is left after it) and
+# writes `Waiting-on: URL` to the run's outcome: the run is done (run_done),
+# the issue waits on that run (outcome_waiting) and its next run starts once
+# it has finished (waits_over). A URL the looper cannot read as a run is
+# refused.
+wait_request() {
+  local run="${LOOPER_RUN:-}" url="$WAIT_URL" s last=""
+  [[ -n "$run" ]] || die "--wait-on is a report's step: no run of #$ISSUE here (LOOPER_RUN)"
+  run_ref "$url" >/dev/null || die "--wait-on takes the URL of a GitHub Actions run (https://github.com/<owner>/<repo>/actions/runs/<id>) or of a GitLab pipeline or job (https://gitlab.com/<path>/-/pipelines/<id>, .../-/jobs/<id>), not $url: nothing recorded"
+  if s="$(run_state "$url")"; then
+    [[ "$s" != done* ]] || { echo "$url has finished (${s#done }): it is no wait. Read its result and go on; nothing recorded." >&2; exit 1; }
+  else
+    log "$url cannot be read now: the issue waits on it at most $(hours "$LOOPER_WAIT_MAX")"
+  fi
+  [[ -f "$run/step" ]] && last="$(cat "$run/step")"
+  printf '%s\n' "waiting on $url${STEP:+: $STEP}" > "$run/step"
+  if ! checkpoint "$ISSUE" "waiting on $url" "$run"; then
+    if [[ -n "$last" ]]; then printf '%s\n' "$last" > "$run/step"; else rm -f "$run/step"; fi
+    die "the checkpoint did not push: nothing recorded; checkpoint again, or go on"
+  fi
+  printf 'Waiting-on: %s\n' "$url" >> "$run/outcome"
+  log "#$ISSUE waits on $url${s:+ (${s#waiting })}. Your run ends here: end your reply now, do not wait for it. Its next run starts once that run has finished (at most $(hours "$LOOPER_WAIT_MAX") from now) and resumes from this checkpoint."
 }
 
 # --build, the model's step in a report of a pinned repository (looper#71): a
@@ -2816,9 +2853,11 @@ run_reported() { # issue run-dir
 
 # The issue's run is done: it reported on the issue and the issue is closed,
 # or the run wrote its Blocked-by outcome (its last step, whether it pushed or
-# not: looper#22). Closed alone is not done: a land closes it (looper#54).
+# not: looper#22) or its Waiting-on one (--wait-on, looper#171: a model that
+# waits on that run all the same is stopped as done, not idle). Closed alone
+# is not done: a land closes it (looper#54).
 run_done() { # issue run-dir
-  if [[ -f "$2/outcome" ]] && grep -qi '^[[:space:]]*blocked-by:' "$2/outcome"; then return 0; fi
+  if [[ -f "$2/outcome" ]] && grep -qiE '^[[:space:]]*(blocked-by|waiting-on):' "$2/outcome"; then return 0; fi
   [[ "$(forge_issue_view "$REPO" "$1" state .state 2>/dev/null)" == CLOSED ]] && run_reported "$1" "$2"
 }
 
@@ -3054,6 +3093,53 @@ outcome_blocked() { # issue run-dir
 ${add%$'\n'}" >/dev/null || return 1
   fi
   printf '%s\n' "${lines[@]}"
+}
+
+# The runs the run's outcome waits on (its `Waiting-on:` lines, --wait-on,
+# looper#171), each added to the issue's body with its since, now (one there
+# already is kept as it is), and printed as its body line. Fails when the
+# outcome names none (1), or one the looper cannot read as a run, or the body
+# cannot be read or written (2): nothing is added.
+outcome_waiting() { # issue run-dir
+  local n="$1" urls url body add="" lines=() since
+  [[ -f "$2/outcome" ]] || return 1
+  urls="$(parse_waits < "$2/outcome" | cut -d' ' -f1 | awk '!seen[$0]++')"
+  [[ -n "$urls" ]] || return 1
+  body="$(forge_issue_view "$REPO" "$n" body .body)" || return 2
+  since="$(date -u +%FT%TZ)"
+  while read -r url; do
+    run_ref "$url" >/dev/null || return 2
+    if parse_waits <<<"$body" | cut -d' ' -f1 | grep -qxF -- "$url"; then
+      lines+=("$(grep -iE '^[[:space:]]*waiting-on:' <<<"$body" | grep -F -- "$url" | head -n 1 | sed -E 's/^[[:space:]]+//')")
+    else
+      lines+=("Waiting-on: $url (since $since)"); add+="${lines[-1]}"$'\n'
+    fi
+  done <<<"$urls"
+  if [[ -n "$add" ]]; then
+    forge_issue_edit "$REPO" "$n" --body "$body
+
+${add%$'\n'}" >/dev/null || return 2
+  fi
+  printf '%s\n' "${lines[@]}"
+}
+
+# The issue's `Waiting-on:` lines out of its body as its run starts: it is
+# ready, so every run they name has finished (or was waited on long enough,
+# waits_over). Prints, for the prompt, each with its state now.
+clear_waits() { # issue
+  local n="$1" body rest url since s
+  body="$(forge_issue_view "$REPO" "$n" body .body)" || return 0
+  grep -qiE '^[[:space:]]*waiting-on:' <<<"$body" || return 0
+  rest="$(grep -viE '^[[:space:]]*waiting-on:' <<<"$body")" || rest=""
+  forge_issue_edit "$REPO" "$n" --body "$rest" >/dev/null \
+    || log "#$n: its Waiting-on lines could not be taken out of its body"
+  while read -r url since; do
+    [[ -n "$url" ]] || continue
+    if ! s="$(run_state "$url" 2>/dev/null)"; then s="it cannot be read: it was waited on $(hours "$LOOPER_WAIT_MAX")"
+    elif [[ "$s" == done* ]]; then s="finished, ${s#done }"
+    else s="not finished (${s#waiting }) after $(hours "$LOOPER_WAIT_MAX") of waiting"; fi
+    echo "- $url: $s"
+  done < <(parse_waits <<<"$body")
 }
 
 # The issue flow (looper#14): the issue's kind from its labels, `feature` when
@@ -3363,7 +3449,7 @@ tacplus_rule() {
 }
 
 # A report's outcome, for its job's log: closed, blocked,
-# needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), stuck,
+# needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), waiting (on another run, looper#171), stuck,
 # held or job-gone.
 report() { # issue outcome
   log "#$1: $2"
@@ -3429,6 +3515,8 @@ work_issue() { # issue
     esac
   fi
   resumed="$(resume "$n" "commit it and land it")"
+  # The runs it waited on (looper#171): over, so out of its body; the prompt names them.
+  local waited; waited="$(clear_waits "$n")"
   if [[ -n "$resumed" ]]; then
     # The step it resumes from: the same step again, nothing landed, is no progress.
     git -C "$CHECKOUT" log -1 --format=%b "origin/$(wip_branch "$n")" > "$run/resumed-step" 2>/dev/null || true
@@ -3436,6 +3524,13 @@ work_issue() { # issue
 $resumed
 
 A comment since that run may answer it: the comments end the issue's text, at the end of this prompt.
+"
+  fi
+  if [[ -n "$waited" ]]; then
+    waited="
+The last run of this issue ended waiting on another run's result (--wait-on, looper#171). This run starts
+because that wait is over: read the result first, then go on from its checkpoint.
+$waited
 "
   fi
   new_nonce "$run"
@@ -3447,7 +3542,7 @@ same time, each in its own job. Read the issue first: its text, as the looper re
 is at the end of this prompt (rule 12 says whose text directs you); \`$(forge_cmd view "$REPO" "$n")\`
 shows any comment since. It was approved by someone with write access; issues it links to and the documents it
 cites (decision records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.$(security_context "$security")
-$resumed
+$resumed$waited
 Rules:
 1. Do what the issue asks, completely: its acceptance criteria are the definition of done. If it asks for
    something you believe is wrong, or needs a decision you may not make (a public contract the issue does
@@ -3502,6 +3597,12 @@ $(kind_rule "$kind")
    \`Blocked-by: #N\` (this repository) or \`Blocked-by: $LOOPER_ORG/<repo>#N\`, one per issue it waits on,
    to $run/outcome as your last step: that ends your run. The looper adds them to the issue, which is
    worked again once they are all closed. Never name this issue itself, nor a closed one.
+   Never wait in your reply on another run's result either (a pipeline, a workflow run, a job: anything but
+   your own --build): a model that sits waiting goes idle and is stopped (looper#171). Run
+   \`$LOOPER_SELF --repo $REPO --issue $n --wait-on <its URL> "<what is left after it>"\` (a GitHub Actions
+   run or a GitLab pipeline or job): it checkpoints "waiting on <its URL>" and records the wait, and your
+   run ends there: end your reply. The next run of this issue starts once that run has finished, from your
+   checkpoint, its result named in its prompt. A run that has finished already is no wait: it says so.
 10. Your time limit is $(hours "$limit"); you are stopped $(( STOP_EARLY / 60 )) minutes before it. Whenever you finish a step,
    checkpoint it: \`$LOOPER_SELF --repo $REPO --issue $n --checkpoint "<what is done; what is left>"\`.
    It pushes everything in the checkout, committed or not, to the branch $(wip_branch "$n") (never main) and
@@ -3598,6 +3699,10 @@ Run record: $(run_record "$run")." >/dev/null || true
   # left without (a land that never queued, say) would hold the manager.
   if [[ -n "$pending" ]]; then forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
   else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_LANDING" >/dev/null || true; fi
+  # The runs it waits on (--wait-on, looper#171) go in its body first: a run
+  # also blocked, or with its land queued, waits on them too.
+  local waiting wrc=0
+  waiting="$(outcome_waiting "$n" "$run")" || wrc=$?
   local blocked what by those="that issue is" brc=0 dropped="" also=""
   blocked="$(outcome_blocked "$n" "$run")" || brc=$?
   [[ -s "$run/blockers-closed" ]] && dropped="$(sed 's/.*/`&`/' "$run/blockers-closed" | paste -sd, - | sed 's/,/, /g')"
@@ -3635,6 +3740,21 @@ Run record: $(run_record "$run")." >/dev/null || true
   local wip="" b; b="$(wip_branch "$n")"
   wip_on_origin "$n" && wip="[\`$b\`]($(wip_url "$n"))"
   if grep -qx "$LABEL_DECISION" <<<"$labels"; then report "$n" "$LABEL_DECISION"; log "#$n waits on a decision"; return 0; fi
+  # It waits on another run's result (looper#171): not idle, not stuck, and
+  # nothing for a person. The issue stays approved, and is ready again once
+  # that run has finished (waits_over).
+  if (( wrc == 0 )) && [[ -z "$pending" ]]; then
+    local on_what
+    on_what="$(sed 's/.*/`&`/' <<<"$waiting" | paste -sd, - | sed 's/,/, /g')"
+    report "$n" waiting
+    forge_issue_comment "$REPO" "$n" "The run waits on another run's result, so it checkpointed and ended rather than wait in its model (looper#171). ${wip:+Its work in progress is on $wip. }Its last checkpoint (what is done, what is left):
+
+$(sed 's/^/> /' "$run/step" 2>/dev/null)
+
+This issue is now $on_what and stays $LABEL_APPROVED: it is worked again once that run has finished (or $(hours "$LOOPER_WAIT_MAX") after the wait began, if it cannot be read or does not end), and that run resumes from the branch. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n waits on $(cut -d' ' -f2 <<<"$waiting" | paste -sd, -); it is worked again once that has finished"
+    return 0
+  fi
   # Resumable, not for a person (looper#34): the time limit; a land the manager
   # now owns; or an early end that made progress (a fix landed, or a step
   # checkpointed other than the one it resumed from).
@@ -3664,6 +3784,7 @@ $(sed 's/^/> /' "$run/step")"
   else ended="The run ended before finishing (exit $rc)."; fi
   if [[ -n "$pending" ]]; then
     report "$n" land-pending
+    (( wrc != 0 )) || where+=" It also waits on $(cut -d' ' -f2 <<<"$waiting" | sed 's/.*/<&>/' | paste -sd, - | sed 's/,/, /g'): its next run starts once the verdict is in and that run has finished."
     forge_issue_comment "$REPO" "$n" "$ended Its commits are queued with the manager of $REPO, which merges them after the run and gives its verdict here. $where
 
 $done_left
@@ -3698,7 +3819,8 @@ This issue stays $LABEL_APPROVED: the next run resumes from that branch.$more Ru
   fi
   report "$n" stuck
   tail -n 40 "$run/claude.log" || true
-  if [[ -s "$run/outcome" ]]; then ended="The run's outcome names no open issue it waits on (it names this one, or one that cannot be read), so it was not taken."
+  if (( wrc == 2 )); then ended="The run's outcome names a run to wait on that the looper cannot read as a GitHub Actions run or a GitLab pipeline or job (or the issue's body could not be updated), so it was not taken."
+  elif [[ -s "$run/outcome" ]]; then ended="The run's outcome names no open issue it waits on (it names this one, or one that cannot be read), so it was not taken."
   elif [[ "$stopped" != idle ]]; then ended="The looper ended without finishing this issue, and with no progress: nothing landed, and no step checkpointed${resumed:+ beyond the one it resumed from}."; fi
   forge_issue_comment "$REPO" "$n" \
     "$ended ${wip:+Its work in progress is on $wip. }Run record: $(run_record "$run"). Marked $LABEL_STUCK for a person to look at.
@@ -4264,6 +4386,8 @@ case "$MODE" in
   land) land_request ;;
   # The model's build request in a pinned repository's report (looper#71).
   build) build_request ;;
+  # The model's step when what is left waits on another run (looper#171).
+  wait-on) wait_request ;;
   checkpoint)
     # The model's step: what is done and what is left becomes the message of
     # every checkpoint after it.

@@ -45,6 +45,11 @@ if [[ "$cmd" == "api repos/tacplus-dev/looper/commits?sha=main&per_page=20" ]]; 
   if [[ -f "$FIX/main-commits" ]]; then cat "$FIX/main-commits"; else printf '%s\n' "$(printf 'a%.0s' {1..40})" "$(printf 'b%.0s' {1..40})"; fi
   exit 0
 fi
+# A GitHub Actions run an issue waits on (looper#171): $FIX/runs/<id>.json, else HTTP 404.
+if [[ "$cmd" == api\ repos/*/actions/runs/* ]]; then
+  r="$FIX/runs/${cmd##*/}.json"; [[ -f "$r" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+  if [[ "${1:-}" == --jq ]]; then jq -r "$2" "$r"; else cat "$r"; fi; exit 0
+fi
 if [[ "$cmd" == "attestation verify" ]]; then
   echo "$*" >> "$FIX/attest"
   t="${1##*:main-}"
@@ -112,6 +117,11 @@ reply() { # code body
   printf '%s\n' "$2"
   [[ "$1" == 200 || "$1" == 201 || -z "$f" ]] || { echo "curl: (22) The requested URL returned error: $1" >&2; exit 22; }
 }
+# A GitLab pipeline an issue waits on (looper#171): $FIX/pipelines/<id>.json, else HTTP 404.
+case "$m $url" in
+  "GET https://gitlab.com/api/v4/projects/"*/pipelines/*)
+    if [[ -f "$FIX/pipelines/${url##*/}.json" ]]; then reply 200 "$(cat "$FIX/pipelines/${url##*/}.json")"; else reply 404 '{"message":"404 Not found"}'; fi; exit 0 ;;
+esac
 [[ -f "$FIX/jobs.json" ]] || { reply 500 '{"message":"500 Internal Server Error"}'; exit 0; }
 case "$m $url" in
   "GET "*/jobs\?*) reply 200 "$(jq --arg s "$(grep -oE 'scope\[\]=[a-z_]+' <<<"$url" | cut -d= -f2 | paste -sd, -)" '[.[] | select(.status | IN($s | split(",")[]))]' "$FIX/jobs.json")" ;;
@@ -433,6 +443,49 @@ scenario blocked-missing
 issue alpha 4 OPEN $'Fix it.\nBlocked-by: #9' approved
 dispatch run
 ! started || fail "started a pipeline for an issue blocked by a missing one"
+pass
+
+# Waiting-on (looper#171): an issue whose last run ended waiting on another
+# run's result is ready once that run has finished (a GitLab pipeline, a
+# GitHub Actions run), or LOOPER_WAIT_MAX after its since when it cannot be
+# read; while it runs, nothing starts for it.
+now_iso() { date -u -d "@$(( $(date +%s) - ${1:-0} ))" +%FT%TZ; } # seconds ago
+PIPE=https://gitlab.com/tacplus-dev/fleet/-/pipelines/77
+scenario waiting-pipeline-running
+mkdir -p "$FIX/pipelines"; echo '{"id": 77, "status": "running"}' > "$FIX/pipelines/77.json"
+issue alpha 4 OPEN $'Fix it.\nWaiting-on: '"$PIPE (since $(now_iso))" approved
+dispatch run
+! started || fail "started a pipeline for an issue waiting on a running pipeline"
+# Read with GITLAB_TOKEN, its header from a file descriptor, never on the command line.
+grep -q '^@/dev/fd/[0-9]* GET https://gitlab.com/api/v4/projects/tacplus-dev%2Ffleet/pipelines/77$' "$FIX/gitlab" || fail "the pipeline not read with a header from a file: $(cat "$FIX/gitlab")"
+! grep pipelines/77 "$FIX/argv" | grep -q tok || fail "GITLAB_TOKEN on a command line: $(cat "$FIX/argv")"
+pass
+
+scenario waiting-pipeline-finished
+mkdir -p "$FIX/pipelines"; echo '{"id": 77, "status": "success"}' > "$FIX/pipelines/77.json"
+issue alpha 4 OPEN $'Fix it.\nWaiting-on: '"$PIPE (since $(now_iso))" approved
+dispatch run
+started || fail "no pipeline started once the run it waits on finished: $OUT"
+pass
+
+scenario waiting-github-run
+mkdir -p "$FIX/runs"; echo '{"id": 43907923763, "status": "in_progress", "conclusion": null}' > "$FIX/runs/43907923763.json"
+issue alpha 4 OPEN $'Fix it.\n  waiting-on: <https://github.com/tacplus-dev/looper/actions/runs/43907923763>'" (since $(now_iso))" approved
+dispatch run
+! started || fail "started a pipeline for an issue waiting on a workflow run in progress"
+echo '{"id": 43907923763, "status": "completed", "conclusion": "failure"}' > "$FIX/runs/43907923763.json"
+dispatch run
+started || fail "no pipeline started once the workflow run completed: $OUT"
+pass
+
+# A run that cannot be read holds its issue LOOPER_WAIT_MAX (6h) from its since, no longer.
+scenario waiting-unreadable
+issue alpha 4 OPEN $'Fix it.\nWaiting-on: '"$PIPE (since $(now_iso 3600))" approved
+dispatch run
+! started || fail "started a pipeline an hour into a wait on a run it cannot read"
+issue alpha 4 OPEN $'Fix it.\nWaiting-on: '"$PIPE (since $(now_iso 21700))" approved
+dispatch run
+started || fail "an unreadable wait held its issue past LOOPER_WAIT_MAX: $OUT"
 pass
 
 for held in looper:stuck needs-decision; do

@@ -566,16 +566,98 @@ issue_state() { # repo n
   forge_issue_view "$1" "$2" state .state
 }
 
-# Ready: approved, not held, and every issue it is blocked by is closed. Any
-# forge error along the way means not ready.
+# Ready: approved, not held, every issue it is blocked by closed, and every
+# run it waits on finished (waits_over, looper#171). Any forge error along the
+# way means not ready.
 ready() { # repo issue
-  local list r n state
-  list="$(blockers "$1" "$2")" || return 1
+  local body list r n state
+  body="$(forge_issue_view "$1" "$2" body .body)" || return 1
+  list="$(printf '%s\n' "$body" | parse_blockers "$1")" || return 1
   while read -r r n; do
     [[ -z "$r" ]] && continue
     state="$(issue_state "$r" "$n" 2>/dev/null)" || return 1
     [[ "$state" == CLOSED ]] || return 1
   done <<<"$list"
+  printf '%s\n' "$body" | waits_over
+}
+
+# --- the runs an issue waits on (looper#171) ------------------------------------
+#
+# A report whose work waits on another run's result (a GitLab pipeline or
+# job, a GitHub Actions run) does not wait in its model: on 2026-11-16 two runs
+# that did ("Now I wait for image run ...") went idle and were looper:stuck,
+# their work done. Its model asks `repo-looper --wait-on <url>`, which
+# checkpoints "waiting on <url>" and writes `Waiting-on: <url>` to its outcome,
+# and ends; the looper puts the line in the issue's body, with when it began
+# (`Waiting-on: <url> (since <ISO time>)`), and the issue is not ready until
+# that run has finished, or LOOPER_WAIT_MAX seconds (default 6h) after its
+# since: a run that cannot be read, or never ends, holds it no longer. A line
+# with no since (a person's) holds only while its run is read as not finished.
+# The next run of the issue takes the lines out.
+LOOPER_WAIT_MAX="${LOOPER_WAIT_MAX:-21600}"
+
+# A run's URL as "<kind> <host> <path> <id>": github (an Actions run,
+# github.com/<owner>/<repo>/actions/runs/<id>, a job or attempt under it too),
+# pipeline or job (GitLab's, <host>/<path>/-/pipelines/<id> or /-/jobs/<id>,
+# on gitlab.com or LOOPER_FORGE_URL's host). Fails on any other: the looper
+# reads no other host.
+run_ref() { # url
+  local u="${1#<}" gl="${LOOPER_FORGE_URL#*://}"; u="${u%>}"; gl="${gl%/}"
+  if [[ "$u" =~ ^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/runs/([0-9]+)(/.*)?$ ]]; then
+    echo "github github.com ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+  elif [[ "$u" =~ ^https://([A-Za-z0-9_.:-]+)/([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)/-/(pipelines|jobs)/([0-9]+)([/?#].*)?$ ]] \
+       && [[ "${BASH_REMATCH[1],,}" == gitlab.com || "${BASH_REMATCH[1],,}" == "${gl,,}" ]]; then
+    echo "${BASH_REMATCH[4]%s} ${BASH_REMATCH[1],,} ${BASH_REMATCH[2]} ${BASH_REMATCH[5]}"
+  else return 1; fi
+}
+
+# A run's state: `done <status>` once it has finished (GitHub's completed;
+# GitLab's success, failed, canceled, skipped or manual: waiting on a person),
+# `waiting <status>` while not. Fails when it cannot be read. GitLab is read
+# with LOOPER_FORGE_TOKEN on the forge's own host, GITLAB_TOKEN on gitlab.com
+# (from a file descriptor, never a command line), else anonymously.
+run_state() { # url
+  local ref kind host path id s tok="" gl="${LOOPER_FORGE_URL#*://}"; gl="${gl%/}"
+  ref="$(run_ref "$1")" || return 1
+  read -r kind host path id <<<"$ref"
+  case "$kind" in
+    github)
+      s="$(gh api "repos/$path/actions/runs/$id" --jq '"\(.status) \(.conclusion // "")"')" || return 1
+      if [[ "$s" == completed* ]]; then echo "done ${s% }"; else echo "waiting ${s% }"; fi ;;
+    *)
+      if [[ "$LOOPER_FORGE" == gitlab && "$host" == "${gl,,}" ]]; then tok="${LOOPER_FORGE_TOKEN:-}"
+      elif [[ "$host" == gitlab.com ]]; then tok="${GITLAB_TOKEN:-}"; fi
+      if [[ -n "$tok" ]]; then s="$(curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$tok") "https://$host/api/v4/projects/$(gl_enc "$path")/${kind}s/$id")"
+      else s="$(curl -fsS --retry 2 "https://$host/api/v4/projects/$(gl_enc "$path")/${kind}s/$id")"; fi || return 1
+      s="$(jq -er '.status | strings' <<<"$s")" || return 1
+      case "$s" in success|failed|canceled|skipped|manual) echo "done $s" ;; *) echo "waiting $s" ;; esac ;;
+  esac
+}
+
+# The `Waiting-on:` lines of the text on stdin, as "<url> [<since, epoch>]".
+parse_waits() {
+  local l url since
+  grep -iE '^[[:space:]]*waiting-on:' | while IFS= read -r l; do
+    l="$(sed -E 's/^[[:space:]]*[Ww][Aa][Ii][Tt][Ii][Nn][Gg]-[Oo][Nn]:[[:space:]]*//' <<<"$l")"
+    url="${l%%[[:space:]]*}"; [[ -n "$url" ]] || continue
+    since=""
+    if [[ "$l" =~ \(since\ ([0-9T:Z.+-]+)\) ]]; then since="$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null)" || since=""; fi
+    echo "$url${since:+ $since}"
+  done
+  return 0
+}
+
+# The waits of the text on stdin (an issue's body) are over: each run it
+# waits on has finished, or LOOPER_WAIT_MAX has passed since its line's since.
+# Fails while one is waited on.
+waits_over() {
+  local url since s now; now="$(date +%s)"
+  while read -r url since; do
+    [[ -n "$url" ]] || continue
+    if [[ -n "$since" ]] && (( now >= since + LOOPER_WAIT_MAX )); then continue; fi
+    if s="$(run_state "$url" 2>/dev/null)"; then [[ "$s" == done* ]] || return 1
+    else [[ -z "$since" ]] || return 1; fi
+  done < <(parse_waits)
   return 0
 }
 
@@ -617,12 +699,13 @@ ready_all_by_repo() {
           done <<<"$issues")"
   # The blockers' states: "<repo> <number> <state>".
   states="$(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u | forge_issue_states)" || return 1
-  # Ready: every blocker closed. The first per repository is its next.
+  # Ready: every blocker closed, and every run it waits on finished (looper#171).
+  # The first per repository is its next.
   while read -r r n b64; do
     [[ -n "$r" ]] || continue
     if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
          while read -r br bn; do grep -qxF "$br $bn CLOSED" <<<"$states" || exit 1; done
-       }; then echo "$r $n"; fi
+       } && base64 -d <<<"$b64" | waits_over; then echo "$r $n"; fi
   done <<<"$issues"
 }
 

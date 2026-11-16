@@ -81,6 +81,9 @@ f="$FIX/issues/$repo-$n.json"
 case "$cmd" in "issue create"|"issue edit"|"issue comment") exec 9>"$FIX/issues.lock"; flock 9 ;; esac
 save() { printf '%s\n' "$1" > "$f.$$" && mv "$f.$$" "$f"; }
 case "$cmd" in
+  # A GitHub Actions run an issue waits on (looper#171): $FIX/runs/<id>.json, else HTTP 404.
+  api\ repos/*/actions/runs/*)
+    r="$FIX/runs/${cmd##*/}.json"; [[ -f "$r" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; jq -r "$q" "$r" ;;
   api\ repos/*/issues/*)
     p="${cmd#api repos/*/}"; f="$FIX/issues/${p%%/*}-$(cut -d/ -f3 <<<"$p").json"
     [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
@@ -266,6 +269,10 @@ case "$url" in
       esac
     fi
     reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"
+    exit 0 ;;
+  # A GitLab pipeline an issue waits on (looper#171): $FIX/pipelines/<id>.json, else HTTP 404.
+  https://gitlab.com/api/v4/projects/*/pipelines/*)
+    if [[ -f "$FIX/pipelines/${url##*/}.json" ]]; then reply 200 "$(cat "$FIX/pipelines/${url##*/}.json")"; else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
   */packages/generic/security-*/latest/*)
     if [[ -f "$FIX/security/${url##*/}" ]]; then reply 200 "$(cat "$FIX/security/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
@@ -904,6 +911,65 @@ echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX
 run LOOPER_IDLE_MINUTES=0.1 LOOPER_WATCH_INTERVAL=1
 [[ -z "$(others)" ]] || fail "unexpected comment"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+pass
+
+# A run that waits on another run's result (looper#171) does not wait in its
+# model: --wait-on checkpoints "waiting on <url>" and ends the run, which is
+# neither idle nor stuck; the issue is not ready while that run runs, and its
+# next run, once it has finished, resumes from the checkpoint, the result named.
+PIPE=https://gitlab.com/tacplus-dev/fleet/-/pipelines/77
+scenario waiting-on
+mkdir -p "$FIX/pipelines"; echo '{"id": 77, "status": "running"}' > "$FIX/pipelines/77.json"
+echo 'echo x > a.txt' >> "$FIX/claude.sh"
+echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --wait-on $PIPE \"left: read the plan\"" >> "$FIX/claude.sh"
+run
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$OUT" "#4: waiting"
+has "$(body alpha 4)" "Fix it."
+has "$(body alpha 4)" "Waiting-on: $PIPE (since "
+has "$(origin log -1 --format=%B looper/alpha-4)" "waiting on $PIPE: left: read the plan"
+c="$(others)"; has "$c" "waits on another run's result"; has "$c" "\`Waiting-on: $PIPE (since"; lacks "$c" "looper:stuck"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "--wait-on <its URL>"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "planned while the pipeline it waits on runs: $OUT"
+echo '{"id": 77, "status": "failed"}' > "$FIX/pipelines/77.json"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ "$OUT" == 4 ]] || fail "not planned once the pipeline finished: $OUT"
+echo 'cat a.txt > "$FIX/resumed-a"' > "$FIX/claude.sh"
+run
+p="$(cat "$(ls -d "$FIX"/project/looper-runs/*-issue-4 | tail -n 1)/prompt.md")"
+has "$p" "- $PIPE: finished, failed"
+has "$p" "waiting on $PIPE: left: read the plan"
+[[ "$(cat "$FIX/resumed-a" 2>/dev/null)" == x ]] || fail "the next run did not resume from the checkpoint"
+lacks "$(body alpha 4)" "Waiting-on"
+pass
+
+# The two runs of 2026-11-16: the model recorded its wait, then sat waiting all
+# the same. It is stopped as done (LOOPER_DONE_GRACE), not idle, and not stuck.
+scenario waiting-on-then-sits
+mkdir -p "$FIX/runs"; echo '{"id": 43907923763, "status": "queued", "conclusion": null}' > "$FIX/runs/43907923763.json"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --wait-on https://github.com/tacplus-dev/looper/actions/runs/43907923763' >> "$FIX/claude.sh"
+echo 'echo "Now I wait for image run 43907923763 (about an hour)"; sleep '"$BOUND" >> "$FIX/claude.sh"
+run LOOPER_DONE_GRACE=2 LOOPER_WATCH_INTERVAL=1
+(( REPORT_SECONDS < STOPPED )) || fail "the waiting model was not stopped (${REPORT_SECONDS}s)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$OUT" "#4: waiting"
+has "$(body alpha 4)" "Waiting-on: https://github.com/tacplus-dev/looper/actions/runs/43907923763 (since "
+pass
+
+# A run that has finished already is no wait (fleet-seatrials#48's pipeline was
+# green), and a URL the looper cannot read as a run is refused: nothing recorded.
+scenario waiting-on-refused
+mkdir -p "$FIX/runs"; echo '{"id": 5, "status": "completed", "conclusion": "success"}' > "$FIX/runs/5.json"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --wait-on https://github.com/tacplus-dev/looper/actions/runs/5 2> "$FIX/err-done"; echo $? > "$FIX/rc-done"' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --wait-on https://example.com/x/-/pipelines/5 2> "$FIX/err-host"; echo $? > "$FIX/rc-host"' >> "$FIX/claude.sh"
+run
+[[ "$(cat "$FIX/rc-done")" == 1 ]] || fail "--wait-on a finished run exited $(cat "$FIX/rc-done")"
+has "$(cat "$FIX/err-done")" "has finished (completed success): it is no wait"
+[[ "$(cat "$FIX/rc-host")" != 0 ]] || fail "--wait-on another host exited $(cat "$FIX/rc-host")"
+has "$(cat "$FIX/err-host")" "--wait-on takes the URL of a GitHub Actions run"
+lacks "$(body alpha 4)" "Waiting-on"
+lacks "$OUT" "#4: waiting"
 pass
 
 # Done means done: once the run reported on its issue and closed it, the
