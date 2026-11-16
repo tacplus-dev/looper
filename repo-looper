@@ -194,8 +194,9 @@
 #
 # Environment: GH_TOKEN (pushes and issue calls; on GitLab, LOOPER_FORGE_TOKEN), CLAUDE_CODE_OAUTH_TOKEN (the
 # model), LOOPER_WORK (default /work), LOOPER_RUNS (default LOOPER_WORK/NAME/runs),
-# LOOPER_MODEL_HIGH (the model of a priority:high issue's report and of a
-# scan, manager or verdict job's model step, default claude-fable-5-1),
+# LOOPER_MODEL_HIGH (the model of a model:high issue's report, of the
+# roadmap's scan and of a manager or verdict job's model step, default
+# claude-fable-5-1, looper#162),
 # LOOPER_MODEL_DEFAULT (every other run's, default claude-opus-5-5), LOOPER_MODEL
 # (when set, every run's: it overrides both, looper#136), LOOPER_TIMEOUT (seconds per issue,
 # default 14400), LOOPER_STOP_EARLY (default 600), LOOPER_CHECKPOINT_INTERVAL
@@ -2605,22 +2606,30 @@ broker_start() { # dir
 }
 
 # The model of a run (looper#136; Jody, 2026-11-12: the weekly Fable quota
-# went unused): MODEL_HIGH for a report on a priority:high issue and for every
-# model step of a scan, manager or verdict job; MODEL_DEFAULT for every other;
-# LOOPER_MODEL, when set, for all of them. A high model is probed first: one
-# the account refuses (no access, its quota spent) falls back to the default,
-# and the run goes on. Sets MODEL and MODEL_SAID (the start comment's words),
-# writes the run's record's `model` file and logs the choice, which the
+# went unused; looper#162, 2026-11-15: it went in less than a day): MODEL_HIGH
+# for a report on an issue that carries model:high, set by someone with write
+# access (model_high_label, below), for the roadmap's scan (its suggestion pass
+# and the recap) and for every model step of a manager or verdict job;
+# MODEL_DEFAULT for every other, a repository's nightly scan and a
+# priority:high issue's report among them (priority:high only orders the
+# queues); LOOPER_MODEL, when set, for all of them. A high model is probed
+# first: one the account refuses (no access, its quota spent) falls back to the
+# default, and the run goes on. Sets MODEL and MODEL_SAID (the start comment's
+# words), writes the run's record's `model` file and logs the choice, which the
 # nightly recap counts per model (`model: M for W (why)`).
 choose_model() { # run-dir [issue]
   local said reason
   MODEL_REFUSED=""; MODEL_REASON=""
   if [[ -n "${LOOPER_MODEL:-}" ]]; then
     MODEL="$LOOPER_MODEL"; MODEL_WHY="LOOPER_MODEL"; said="which LOOPER_MODEL sets"
-  elif [[ "$MODE" =~ ^(scan|manage|verdict|merge)$ ]]; then
+  elif [[ "$MODE" == scan && "$REPO" == "$LOOPER_ROADMAP_REPO" ]]; then
+    MODEL="$MODEL_HIGH"; MODEL_WHY="the roadmap's suggestion pass and recap"; said="the model of the roadmap's suggestion pass and recap"
+  elif [[ "$MODE" == scan ]]; then
+    MODEL="$MODEL_DEFAULT"; MODEL_WHY="the default: a repository's nightly scan"; said="the default model"
+  elif [[ "$MODE" =~ ^(manage|verdict|merge)$ ]]; then
     MODEL="$MODEL_HIGH"; MODEL_WHY="a $MODE job's step"; said="the model of a $MODE job's step"
-  elif [[ -n "${2:-}" ]] && forge_issue_view "$REPO" "$2" labels '.labels[].name' 2>/dev/null | grep -qx "$LABEL_PRIORITY_HIGH"; then
-    MODEL="$MODEL_HIGH"; MODEL_WHY="$LABEL_PRIORITY_HIGH"; said="the model of a \`$LABEL_PRIORITY_HIGH\` issue"
+  elif [[ -n "${2:-}" ]] && MODEL_WHY="$(model_high_label "$2")"; then
+    MODEL="$MODEL_HIGH"; said="the model of a \`$LABEL_MODEL_HIGH\` issue"
   else
     MODEL="$MODEL_DEFAULT"; MODEL_WHY="the default"; said="the default model"
   fi
@@ -2631,6 +2640,20 @@ choose_model() { # run-dir [issue]
   MODEL_SAID="on \`$MODEL\`, $said"
   log "model: $MODEL for ${2:+#}${2:-the $MODE} ($MODEL_WHY)"
   model_record "$1"
+}
+
+# Whether issue N carries model:high, set last by someone with write access
+# (looper#162; the rule of looper:workflows, looper#115): never by a bot, the
+# looper's own app among them. Prints why ("model:high, set by LOGIN"); one set
+# by anyone else, or whose setter the forge does not say, is ignored, logged.
+model_high_label() { # issue
+  local by
+  forge_issue_view "$REPO" "$1" labels '.labels[].name' 2>/dev/null | grep -qxF "$LABEL_MODEL_HIGH" || return 1
+  by="$(forge_label_adder "$REPO" "$1" "$LABEL_MODEL_HIGH" 2>/dev/null)" || by=""
+  if [[ -z "$by" ]]; then log "#$1's $LABEL_MODEL_HIGH: the forge does not say who set it: ignored (looper#162)" >&2; return 1
+  elif [[ "$by" == *"[bot]" ]]; then log "#$1's $LABEL_MODEL_HIGH was set by $by, a bot: ignored (looper#162)" >&2; return 1
+  elif ! forge_writer "$REPO" "$by"; then log "#$1's $LABEL_MODEL_HIGH was set by $by, who has no write access: ignored (looper#162)" >&2; return 1; fi
+  printf '%s, set by %s\n' "$LABEL_MODEL_HIGH" "$by"
 }
 
 # The run's record of its model: the model, why, and any model refused with

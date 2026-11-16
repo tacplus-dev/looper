@@ -98,7 +98,8 @@ tests/tacplus.test.sh                      # which tacplus: the pin, else the fl
 | `looper:stuck` | a run ended without finishing and without progress or a known reason; a person looks |
 | `looper:hold` | the looper's hold (one pinned issue of this repository, looper#157): the account's usage limit is reached, and nothing starts until the reset its body names |
 | `needs-decision` | the looper needs a decision it may not make |
-| `priority:high` | taken before the other ready issues (looper#31) |
+| `priority:high` | taken before the other ready issues (looper#31), and landed before them (looper#121); it does not choose the model |
+| `model:high` | its report runs on the high model, `LOOPER_MODEL_HIGH` (looper#162): set by someone with write access, never by the looper ([The model per run](#the-model-per-run)) |
 | `priority:low` | taken after every other ready issue |
 
 Only someone with write access can set a label, so an issue nobody approved is never worked, whoever
@@ -153,13 +154,20 @@ issue is `priority:high` merges before older unlabelled ones, a `priority:low` o
 ### The model per run
 
 Jody, 2026-11-12 (looper#136): "Are loopers running with frontier models when appropriate. We are not using all of
-our fable quota each week". `repo-looper` chooses each run's model (`choose_model`):
+our fable quota each week". Jody, 2026-11-15 (looper#162): "I just had to reset the Fable credits. We need to be
+careful with that as we used it all up in less then a day": eight issues marked `priority:high` only to move them up
+the queue each ran on Fable, and so did every repository's nightly scan. The model is now its own label, and the
+priority only orders the queues. `repo-looper` chooses each run's model (`choose_model`):
 
-- **`LOOPER_MODEL_HIGH`** (default `claude-fable-5-1`, Fable 5.1) for a report on a `priority:high` issue (all its
-  model steps: classifying, proposing, working) and for every model step of a scan, manager or verdict job (today the
-  nightly scan, and the roadmap's suggestion pass with the recap's advice; a manager or verdict job has no model step
-  yet: it resolves conflicts by regenerating).
-- **`LOOPER_MODEL_DEFAULT`** (default `claude-opus-5-5`, Opus 5.5) for every other run.
+- **`LOOPER_MODEL_HIGH`** (default `claude-fable-5-1`, Fable 5.1) for a report on an issue that carries **`model:high`**
+  (all its model steps: classifying, proposing, working), whatever its priority; for the roadmap's scan, its
+  suggestion pass with the recap's advice (Jody, 2026-11-12); and for every model step of a manager or verdict job
+  (none yet: it resolves conflicts by regenerating). `model:high` counts only when someone with write access set it
+  last, as `looper:workflows` (looper#115): one a bot set (the looper never sets it), one set by someone without write
+  access, or one the forge does not say who set, is ignored, and the job's log says so (`#N's model:high was set by
+  L, who has no write access: ignored`).
+- **`LOOPER_MODEL_DEFAULT`** (default `claude-opus-5-5`, Opus 5.5) for every other run: a `priority:high` issue's
+  report without `model:high`, and each repository's nightly scan.
 - **`LOOPER_MODEL`**, when set, for every run: one variable turns the rule off.
 
 A high model is probed first (one turn, no tools, the model's environment): when the account refuses it (no access,
@@ -167,11 +175,12 @@ the weekly quota spent) the run falls back to the default model and says so, in 
 job's log; it neither fails nor goes `looper:stuck`. One the account's usage limit refuses mid-run, its probe passed,
 falls back the same way and the run goes on; refused on the default too, the run is a hold, not a stuck issue
 ([The usage limit's hold](#the-usage-limits-hold), looper#157). Each report's start comment names its model (`The looper of R
-starts this issue on `M`, the model of a `priority:high` issue.`), its record's `model` file names it with why (and
+starts this issue on `M`, the model of a `model:high` issue.`), its record's `model` file names it with why (and
 any model refused, with the account's answer), and the job's log has `model: M for #N (why)` and, when the model
 exits, `tokens: M input=N output=N cache_read=N cache_write=N` per model it used (sub-agents' too, from the
-run's `modelUsage`): the nightly recap counts runs and tokens per model from those lines, so the hub sees how fast
-the Fable quota goes and Jody can widen or narrow the rule.
+run's `modelUsage`): the nightly recap counts runs and tokens per model from those lines, day by day, and names
+each day the high model's share of the tokens passes `LOOPER_RECAP_HIGH_SHARE` (default 25%), so the hub sees how
+fast the Fable quota goes and Jody can widen or narrow the rule ([Nightly recap](#nightly-recap)).
 
 ### Bug or feature
 
@@ -593,7 +602,7 @@ issues across five repositories, and nothing ran for 17 hours, nor would have af
 the labels (looper#157). A usage-limit refusal is no stuck issue: nothing about the issue is wrong.
 
 - **The run** reads its result (`limit_refusal`: an error result whose text names the account's limit, with no
-  usage). On a high model the rule chose (`priority:high`, looper#136), it falls back to the default model at once,
+  usage). On a high model the rule chose (`model:high`, looper#136, looper#162), it falls back to the default model at once,
   as a probe's refusal does, and the run goes on there (`model: M refused (why): falling back to D` in the job's log,
   the record's `model` file, the refused run's log kept as `claude.<model>.log`). Refused on the default too, or on
   `LOOPER_MODEL` (which has no fallback), the run ends as a **hold** (`#N: held`): the issue keeps its labels (no
@@ -615,7 +624,7 @@ the labels (looper#157). A usage-limit refusal is no stuck issue: nothing about 
 ```sh
 tests/looper-docker.test.sh                # a child's docker: the limit added, a lower one kept, a higher one or none refused, the image's own arguments left alone, other commands passed through; with a docker daemon, a container over its limit OOM-killed alone while the one beside it carries on (#41)
 tests/looper-pkill.test.sh                 # a model's pkill: its run's own processes signalled, another run's and the lander's spared and named, pkill's signal and -e options, the real pkill outside a run (#61)
-tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a report's `--land` queuing and returning at once, its run `land-pending` and landed by the manager after it (#86); a land the manager's job has no time for left queued; a model waiting on its land not idle, nor one waiting on its queued build, and one idle after its build had no verdict within the wait of its start retried, not stuck (#133); an early end with progress resumable, without it stuck; a checkpoint origin rejects failing loudly, the workflows it may not push named (#99); a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68); the model per run (#136: a `priority:high` issue's report and a scan on the high model, probed, any other on the default, unprobed, `LOOPER_MODEL` over both, each default its own variable, a refused high model falling back and recorded, the start comment naming the model, its tokens in the job's log); the usage limit's hold (#157: a run the weekly limit refuses, with empty usage, keeps its issue's labels and posts no comment, records the reset on the hub's one pinned hold issue with one comment per hold, a second run adding none and a later reset moving it, falls back from a high model mid-run and holds only when the default refuses too, holds a default when the reset cannot be read, and the reset times a refusal names) (stub gh, claude and curl, a local origin)
+tests/repo-looper.test.sh                  # these outcomes, checkpoints and the record, resume, the time limit, idle and done, prompt provenance (the issue's text in nonce blocks with author and association: a stranger's comment, a read-only collaborator's and quoted source text as data, changing nothing else in the prompt; a text holding the nonce refused; the nonce off the branch; every prompt's rule, #40), the planning files, bug or feature, the scan's labels, and the plan skipping a busy repository, priority order, a killed run resumed by its retry, a run whose job GitLab no longer runs stopped; managers and direct reports (#70): two reports at once, each in its own clone, neither able to push to main, both merged by the manager with their verdicts, their branches deleted and their HISTORY.md lines added; queued branches merged by priority, then oldest first (#121); a code conflict sent back with its files named, nothing merged; a lock-file conflict resolved by regenerating it; nothing merged on red; a land queued when its report's time ran out merged after it, the issue held until the verdict; a report's `--land` queuing and returning at once, its run `land-pending` and landed by the manager after it (#86); a land the manager's job has no time for left queued; a model waiting on its land not idle, nor one waiting on its queued build, and one idle after its build had no verdict within the wait of its start retried, not stuck (#133); an early end with progress resumable, without it stuck; a checkpoint origin rejects failing loudly, the workflows it may not push named (#99); a report whose issue asks for more time than the job has left capped at the job's deadline; a report's model given looper-docker and its memory, more when its land's gate set asks it in gates.yaml (#41, #74); each model as its own user (#68); the model per run (#136, #162: a `model:high` issue's report, whatever its priority, and the roadmap's scan on the high model, probed, `model:high` set by someone without write access or a bot ignored, a `priority:high` issue's report and a repository's nightly scan on the default, unprobed, as any other, `LOOPER_MODEL` over both, each default its own variable, a refused high model falling back and recorded, the start comment naming the model, its tokens in the job's log); the usage limit's hold (#157: a run the weekly limit refuses, with empty usage, keeps its issue's labels and posts no comment, records the reset on the hub's one pinned hold issue with one comment per hold, a second run adding none and a later reset moving it, falls back from a high model mid-run and holds only when the default refuses too, holds a default when the reset cannot be read, and the reset times a refusal names) (stub gh, claude and curl, a local origin)
 ```
 
 ## Planning files
@@ -761,7 +770,10 @@ wait for a VM, looper#92); each reason with what would have let the work run in 
 first-job failures before a VM was ready, boot to ready, the disk each job logs at its end: `disk at the end: N% used`),
 **the runs and tokens per model** (`models`, looper#136: each run's `model: M for ...` line, the `tokens: M ...` lines
 of its model's exit, and the high models the account refused, `model: M refused`, each refusal an item
-`model_refused/<model>`, recovered: its runs fell back),
+`model_refused/<model>`, recovered: its runs fell back; looper#162: the high model's runs and tokens and their share
+of the day's tokens, `high_model`, an item `model_share/<model>` when the share is over `LOOPER_RECAP_HIGH_SHARE`,
+default 25 percent, the high model `LOOPER_MODEL_HIGH`'s, default `claude-fable-5-1`; classify puts each night's runs
+and tokens per model beside the nights before, `models_by_day`, and the report has a line naming each day over it),
 GitHub Actions' nightly, release and image workflows of every repository, and the looper image against main (looper#58): `ghcr.io/tacplus-dev/looper:main`'s
 `org.opencontainers.image.revision` against main's head, the commits of main not in it and the latest image run, which
 catches a stale image when no run failed. **Duplicate builds** (looper#134): `tacplus-dev/build`'s gate builds (each
@@ -844,7 +856,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115)
 ```
 
 ## Build pipeline
@@ -1254,7 +1266,7 @@ The jobs' credentials are CI variables of the project gitlab.com/tacplus-dev/loo
 never baked into the image nor on a laptop ([Credentials](#credentials)). They are no group variables (moved
 2026-10-29, looper#17; the ci-on-gitlab addendum): a group variable reaches every pipeline of the group, the
 builds' too. The model is chosen per run ([The model per run](#the-model-per-run)): `LOOPER_MODEL_HIGH` (default
-`claude-fable-5-1`) for a `priority:high` issue and a scan, `LOOPER_MODEL_DEFAULT` (default `claude-opus-5-5`)
+`claude-fable-5-1`) for a `model:high` issue and the roadmap's scan, `LOOPER_MODEL_DEFAULT` (default `claude-opus-5-5`)
 otherwise, `LOOPER_MODEL` for all when set.
 
 ### Credentials
@@ -1893,7 +1905,7 @@ from GitLab straight into the variables; no agent handles them. `G=https://gitla
 
    ```sh
    for l in approved:0e8a16 looper:in-progress:fbca04 looper:landing:fbca04 looper:stuck:d93f0b needs-decision:5319e7 bug:d73a4a \
-            feature:a2eeef priority:high:b60205 priority:low:c5def5; do
+            feature:a2eeef priority:high:b60205 priority:low:c5def5 model:high:5319e7; do
      curl -sfH "$H" -X POST $G/groups/seabeam/labels --data-urlencode "name=${l%:*}" -d "color=%23${l##*:}" >/dev/null
    done
    ```

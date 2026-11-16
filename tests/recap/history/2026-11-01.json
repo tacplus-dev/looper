@@ -27,5 +27,29 @@
   "builds": 18,
   "commits": 10,
   "per_commit": 1.8
+ },
+ "models": {
+  "claude-fable-5-1": {
+   "runs": 4,
+   "refused": 0,
+   "tokens": {
+    "input": 1000,
+    "output": 99000,
+    "cache_read": 5500000,
+    "cache_write": 400000,
+    "total": 6000000
+   }
+  },
+  "claude-opus-5-5": {
+   "runs": 2,
+   "refused": 0,
+   "tokens": {
+    "input": 500,
+    "output": 49500,
+    "cache_read": 1800000,
+    "cache_write": 150000,
+    "total": 2000000
+   }
+  }
  }
 }

@@ -305,6 +305,14 @@
    "url": "https://gitlab.com/tacplus-dev/looper/-/jobs/1500"
   }
  ],
+ "high_model": {
+  "model": "claude-fable-5-1",
+  "over": true,
+  "runs": 1,
+  "threshold_pct": 25,
+  "tokens": 1911800,
+  "tokens_pct": 34.3
+ },
  "image": {
   "current": false,
   "digest": "sha256:d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
@@ -546,6 +554,14 @@
    "over": false,
    "recovered": true,
    "summary": "the account refused claude-fable-5-1 1 time: those runs fell back to the default model"
+  },
+  {
+   "count": 1,
+   "evidence": [],
+   "key": "model_share/claude-fable-5-1",
+   "over": true,
+   "recovered": false,
+   "summary": "claude-fable-5-1, the high model, took 34.3% of the day's tokens (1,911,800 of 5,570,700; 1 of 3 runs): over the 25% of LOOPER_RECAP_HIGH_SHARE"
   },
   {
    "count": 24,
@@ -1140,6 +1156,7 @@
   "control_queue_s": 600,
   "count": 3,
   "disk_pct": 85,
+  "high_share_pct": 25.0,
   "hold_hours": 1.0,
   "image_hours": 2.0,
   "land_minutes": 60,

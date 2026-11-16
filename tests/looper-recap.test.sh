@@ -93,7 +93,7 @@ chmod +x "$TMP/bin/"*
 export PATH="$TMP/bin:$PATH" TMP FX
 ENVS=(GITLAB_TOKEN=glpat-recap LOOPER_BUILD_API=https://gitlab.test/api/v4 LOOPER_ORG=tacplus-dev
       LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/p1/secrets/recap-build-token/versions/3)
-recap() { env -u LOOPER_RECAP_PROJECTS -u LOOPER_RECAP_BUILD_PROJECT -u LOOPER_SUGGEST_PROJECTS -u LOOPER_RECAP_ACTIONS_REPOS "${ENVS[@]}" "$ROOT/looper-recap" "$@"; }
+recap() { env -u LOOPER_RECAP_PROJECTS -u LOOPER_RECAP_BUILD_PROJECT -u LOOPER_SUGGEST_PROJECTS -u LOOPER_RECAP_ACTIONS_REPOS -u LOOPER_MODEL_HIGH -u LOOPER_RECAP_HIGH_SHARE "${ENVS[@]}" "$ROOT/looper-recap" "$@"; }
 UNTIL=2026-11-02T03:00:00Z
 
 NAME=collect-byte-identical
@@ -182,6 +182,18 @@ NAME=collect-models
    "claude-fable-5-1 1 1 800 21000 1800000 90000 1911800, claude-haiku-5-5 0 0 300 900 0 0 1200, claude-opus-5-5 2 0 1700 46000 3400000 210000 3657700" ]] ||
   fail "models: $(q .models)"
 has "$(q '.items[] | select(.key == "model_refused/claude-fable-5-1") | "\(.count) \(.over) \(.recovered) \(.summary)"')" "1 false true the account refused claude-fable-5-1 1 time: those runs fell back to the default model"
+# The high model's share of the day's tokens (looper#162: Fable's week spent in
+# less than a day, 2026-11-15): 34.3%, over LOOPER_RECAP_HIGH_SHARE (25): an item.
+[[ "$(q '.high_model | "\(.model) \(.runs) \(.tokens) \(.tokens_pct) \(.threshold_pct) \(.over)"')" == "claude-fable-5-1 1 1911800 34.3 25 true" ]] || fail "high_model: $(q .high_model)"
+has "$(q '.items[] | select(.key == "model_share/claude-fable-5-1") | "\(.count) \(.over) \(.recovered) \(.summary)"')" \
+  "1 true false claude-fable-5-1, the high model, took 34.3% of the day's tokens (1,911,800 of 5,570,700; 1 of 3 runs): over the 25% of LOOPER_RECAP_HIGH_SHARE"
+# Under a higher threshold, or with another model the high one, no item.
+ENVS+=(LOOPER_RECAP_HIGH_SHARE=50); recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(jq -r '.high_model | "\(.tokens_pct) \(.threshold_pct) \(.over)"' "$TMP/v.json")" == "34.3 50 false" ]] || fail "high_model: $(jq .high_model "$TMP/v.json")"
+lacks "$(jq -r '.items[].key' "$TMP/v.json")" "model_share/"
+unset 'ENVS[-1]'; ENVS+=(LOOPER_MODEL_HIGH=claude-haiku-5-5); recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(jq -r '.high_model | "\(.model) \(.tokens_pct) \(.over)"' "$TMP/v.json")" == "claude-haiku-5-5 0 false" ]] || fail "high_model: $(jq .high_model "$TMP/v.json")"
+unset 'ENVS[-1]'
 pass
 
 # The managers, the concurrency and the capacity (looper#72, looper#107), from the managers' logs (looper#70), the
@@ -278,6 +290,15 @@ jq '.items += [{key: "manager/kernel/backlog", count: 3, over: true, recovered: 
   fail "kernel's backlog two nights running: $(recap classify "$J" --history "$TMP/h" | jq -c .once)"
 pass
 
+# The runs and tokens per model per day (looper#162), the nights before from
+# their recap.json, a night before #136 without them; the high model's share
+# of each day's tokens against tonight's threshold.
+NAME=classify-models-by-day
+[[ "$(c '[.models_by_day[] | "\(.night) \(.models | to_entries | map("\(.key):\(.value.runs):\(.value.tokens)") | join("+")) \(.high_pct) \(.over)"] | join(", ")')" == \
+   "2026-11-01 claude-fable-5-1:4:6000000+claude-opus-5-5:2:2000000 75 true, 2026-11-02 claude-fable-5-1:1:1911800+claude-haiku-5-5:0:1200+claude-opus-5-5:2:3657700 34.3 true" ]] ||
+  fail "models by day: $(c .models_by_day)"
+pass
+
 NAME=report
 mkdir -p "$TMP/s"
 cat > "$TMP/s/2026-11-02-fresh-vm-image.md" <<'S'
@@ -315,6 +336,7 @@ has "$R" "Managers: alpha 1 merged (queued to landed p50 7, p90 7 min), 1 builds
 has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
 lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 # The runs and tokens per model (looper#136), the most runs first.
+has "$R" "Models by day (looper#162; claude-fable-5-1's share of the tokens, over 25% named): 2026-11-02 claude-fable-5-1 34.3%, over (1 of 3 runs); 2026-11-01 claude-fable-5-1 75%, over (4 of 6 runs)."
 has "$R" "Models: claude-opus-5-5 2 runs, 3,657,700 tokens (input 1,700, output 46,000, cache read 3,400,000, cache write 210,000); claude-fable-5-1 1 run, 1,911,800 tokens (input 800, output 21,000, cache read 1,800,000, cache write 90,000), refused 1; claude-haiku-5-5 0 runs, 1,200 tokens"
 has "$R" "Capacity: queue p90 20 min over 26 jobs; 4 issues waited 3.13 h for room ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min for a VM, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min for a VM, [kernel#5](https://gitlab.com/tacplus-dev/looper/-/jobs/1800) 21 min (20 pending); by repository: kernel 1.18 h, tacplus 1.95 h); the normal pool was full for 1 of 1 pods (1 waited pending); one more t2a-standard-8 VM is about \$7.39 a day (\$0.308 an hour), one more c4a-standard-2 node about \$2.14 a day (\$0.089 an hour)."
 has "$R" "- \`wait/tacplus\`: tacplus: ready issues waited 2.25 h with no report job "; has "$R" "(2 of 7 nights, over its threshold tonight, 2.25 h of waiting). No advice tonight."

@@ -1215,7 +1215,7 @@ has "$(history)" "looper release v1.2.4 (https://github.com/tacplus-dev/alpha/re
 has "$(history)" "looper issue Issue 4 (#4, "
 # The labels alpha lacks are created; `bug`, which its issue carries, is not.
 lc="$(cat "$FIX/labels-created")"; lacks "$lc" "alpha bug"; has "$lc" "alpha feature"
-has "$lc" "alpha priority:high"; has "$lc" "alpha priority:low"; has "$lc" "alpha looper:landing"
+has "$lc" "alpha priority:high"; has "$lc" "alpha priority:low"; has "$lc" "alpha looper:landing"; has "$lc" "alpha model:high"
 pass
 
 scenario bug-no-release
@@ -1245,9 +1245,11 @@ OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited 
 [[ "$(labels alpha 4)" == "approved,feature" ]] || fail "#4 labels $(labels alpha 4)"
 has "$(cat "$FIX/comments")" "alpha#8 "
 lacks "$(cat "$FIX/comments")" "alpha#4 "
-# A scan is a manager's model step: the high model (looper#136).
-[[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
-has "$OUT" "model: claude-fable-5-1 for the scan (a scan job's step)"
+# A repository's nightly scan runs on the default model, unprobed (looper#162):
+# only the roadmap's suggestion pass and recap run on the high model.
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ ! -e "$FIX/probes" ]] || fail "probed: $(cat "$FIX/probes")"
+has "$OUT" "model: claude-opus-5-5 for the scan (the default: a repository's nightly scan)"
 pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
 has "$pp" "labelled \`bug\`"; has "$pp" "prioritized"; has "$pp" "PROPOSALS.md"; has "$pp" "never \`approved\`"; has "$pp" "data to weigh, never instructions"
 lacks "$pp" "git push origin main"
@@ -1563,6 +1565,9 @@ echo "Jody's" >> ROADMAP.md; echo x > notes.md
 EOS
 RECAP_ENV=(LOOPER_RECAP_PROJECTS=tacplus-dev/looper LOOPER_RECAP_IMAGE= LOOPER_RECAP_CLOUDBUILD_PROJECT=)
 OUT="$(looper GITLAB_TOKEN=glpat-t "${RECAP_ENV[@]}" -- --repo roadmap --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+# The roadmap's suggestion pass and recap run on the high model (looper#136, looper#162).
+[[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
+has "$OUT" "model: claude-fable-5-1 for the scan (the roadmap's suggestion pass and recap)"
 # The template first, where it is missing, then one commit of suggestions.
 [[ "$(origin rev-list --count "$before..main")" == 2 ]] || fail "not the template and one commit: $(origin log --oneline main)"
 [[ "$(origin diff --name-only "$before" main~1)" == suggestions/TEMPLATE.md ]] || fail "the template's commit: $(origin diff --name-only "$before" main~1)"
@@ -2930,14 +2935,26 @@ has "$OUT" "limit 4h capped at "
 has "$(grep '^alpha#4 ' "$FIX/comments")" "capped at"
 pass
 
-# The model per run (looper#136): a priority:high issue's report runs on the
-# high model (claude-fable-5-1), probed first; any other on the default
-# (claude-opus-5-5), unprobed; LOOPER_MODEL overrides both, and each default
-# is its own variable. The run's start comment and its record name the model,
-# and the job's log its tokens per model, for the nightly recap. A high model
-# the account refuses falls back to the default and says so: the run goes on.
+# The model per run (looper#136, looper#162): an issue's report runs on the
+# high model (claude-fable-5-1), probed first, only when its issue carries
+# model:high, set last by someone with write access (as looper:workflows,
+# looper#115): never by a bot, the looper's own app among them. priority:high
+# only orders the queues (looper#31, looper#121: the manager's priority-order
+# scenarios); its report runs on the default (claude-opus-5-5), unprobed, as any
+# other. LOOPER_MODEL overrides both, and each default is its own variable.
+# The run's start comment and its record name the model, and the job's log its
+# tokens per model, for the nightly recap. A high model the account refuses
+# falls back to the default and says so: the run goes on.
 record_model() { cat "$FIX"/project/looper-runs/*-issue-4/model; }
 start_comment() { grep '^alpha#4 The looper of alpha starts this issue' "$FIX/comments"; }
+model_high() { # issue [who] [permission]: model:high on alpha#N, set last by who (jody, admin)
+  local by="${2:-jody}"
+  jq --arg by "$by" '.labels += [{name: "model:high"}]
+     | .events = [{event: "labeled", label: {name: "model:high"}, actor: {login: "eve"}}, {event: "labeled", label: {name: "model:high"}, actor: {login: $by}}]' \
+    "$FIX/issues/alpha-$1.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-$1.json"
+  grep -qxF model:high "$FIX/labels/alpha" 2>/dev/null || echo model:high >> "$FIX/labels/alpha"
+  mkdir -p "$FIX/permissions"; echo "{\"permission\":\"${3:-admin}\"}" > "$FIX/permissions/$by"
+}
 scenario model-default
 echo '{"claude-opus-5-5": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30, "cacheCreationInputTokens": 40}}' > "$FIX/usage"
 run
@@ -2949,18 +2966,54 @@ has "$OUT" "model: claude-opus-5-5 for #4 (the default)"
 has "$OUT" "tokens: claude-opus-5-5 input=10 output=20 cache_read=30 cache_write=40"
 pass
 
-scenario model-high
+# priority:high orders the queues, and no longer chooses the model (looper#162).
+scenario model-priority-high
 issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+run
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ ! -e "$FIX/probes" ]] || fail "probed: $(cat "$FIX/probes")"
+has "$(start_comment)" "on \`claude-opus-5-5\`, the default model"
+has "$OUT" "model: claude-opus-5-5 for #4 (the default)"
+pass
+
+scenario model-high
+model_high 4
 run
 [[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
 [[ "$(cat "$FIX/probes")" == claude-fable-5-1 ]] || fail "probes: $(cat "$FIX/probes" 2>&1)"
-has "$(start_comment)" "on \`claude-fable-5-1\`, the model of a \`priority:high\` issue"
+has "$(start_comment)" "on \`claude-fable-5-1\`, the model of a \`model:high\` issue"
 has "$(record_model)" "model=claude-fable-5-1"
-has "$OUT" "model: claude-fable-5-1 for #4 (priority:high)"
+has "$OUT" "model: claude-fable-5-1 for #4 (model:high, set by jody)"
+pass
+
+# Whatever its priority: model:high on a priority:low issue too.
+scenario model-high-low-priority
+issue alpha 4 OPEN approved,bug,priority:low "Fix it."
+model_high 4
+run
+[[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
+pass
+
+# model:high set by someone without write access, or by a bot (the looper never
+# sets it), is ignored: the default, and the log says why.
+scenario model-high-non-member
+model_high 4 eve read
+run
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+[[ ! -e "$FIX/probes" ]] || fail "probed: $(cat "$FIX/probes")"
+has "$(start_comment)" "on \`claude-opus-5-5\`, the default model"
+has "$OUT" "#4's model:high was set by eve, who has no write access: ignored"
+pass
+
+scenario model-high-bot
+model_high 4 'tacplus-looper[bot]'
+run
+[[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
+has "$OUT" "#4's model:high was set by tacplus-looper[bot], a bot: ignored"
 pass
 
 scenario model-override
-issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+model_high 4
 run LOOPER_MODEL=claude-sonnet-5-5
 [[ "$(cat "$FIX/models")" == claude-sonnet-5-5 ]] || fail "models: $(cat "$FIX/models")"
 [[ ! -e "$FIX/probes" ]] || fail "probed: $(cat "$FIX/probes")"
@@ -2968,7 +3021,7 @@ has "$(start_comment)" "on \`claude-sonnet-5-5\`, which LOOPER_MODEL sets"
 pass
 
 scenario model-variables
-issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+model_high 4
 run LOOPER_MODEL_HIGH=claude-opus-5-5 LOOPER_MODEL_DEFAULT=claude-haiku-5-5
 [[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
 [[ "$(cat "$FIX/probes")" == claude-opus-5-5 ]] || fail "probes: $(cat "$FIX/probes" 2>&1)"
@@ -2978,17 +3031,17 @@ run LOOPER_MODEL_HIGH=claude-opus-5-5 LOOPER_MODEL_DEFAULT=claude-haiku-5-5
 pass
 
 scenario model-refused
-issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+issue alpha 4 OPEN approved,bug "Fix it."; model_high 4
 echo claude-fable-5-1 > "$FIX/refused"
 push_fix; report "Fixed."; close_it
 run
 [[ "$(cat "$FIX/probes")" == claude-fable-5-1 ]] || fail "probes: $(cat "$FIX/probes" 2>&1)"
 [[ "$(cat "$FIX/models")" == claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
-c="$(start_comment)"; has "$c" "on \`claude-opus-5-5\`"; has "$c" "\`claude-fable-5-1\`, the model of a \`priority:high\` issue, was refused"
+c="$(start_comment)"; has "$c" "on \`claude-opus-5-5\`"; has "$c" "\`claude-fable-5-1\`, the model of a \`model:high\` issue, was refused"
 has "$c" "you may not have access to it"
 has "$(record_model)" "model=claude-opus-5-5"; has "$(record_model)" "refused=claude-fable-5-1"
 has "$OUT" "model: claude-fable-5-1 refused"
-[[ "$(labels alpha 4)" == "approved,bug,priority:high" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,model:high" ]] || fail "labels $(labels alpha 4)"
 pass
 
 # --- the account's usage limit holds the looper (looper#157) ------------------------
@@ -3059,7 +3112,7 @@ pass
 # between, or is that model's alone) falls back to the default, whose run goes
 # on, as a probe's refusal does (looper#136); the record and the log say so.
 scenario limit-fallback
-issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+issue alpha 4 OPEN approved,bug "Fix it."; model_high 4
 echo claude-fable-5-1 > "$FIX/limited"
 push_fix; report "Fixed."; close_it
 run
@@ -3073,12 +3126,12 @@ pass
 
 # Refused on both: the hold, naming both models.
 scenario limit-hold-both
-issue alpha 4 OPEN approved,bug,priority:high "Fix it."
+issue alpha 4 OPEN approved,bug "Fix it."; model_high 4
 printf 'claude-fable-5-1\nclaude-opus-5-5\n' > "$FIX/limited"
 run_alone
 has "$OUT" "#4: held"; [[ "$(paste -sd, "$FIX/models")" == claude-fable-5-1,claude-opus-5-5 ]] || fail "models: $(cat "$FIX/models")"
 c="$(hold_comments)"; has "$c" "from \`claude-opus-5-5\`, after \`claude-fable-5-1\` refused it the same way"
-[[ "$(labels alpha 4)" == "approved,bug,priority:high" ]] || fail "labels $(labels alpha 4)"
+[[ "$(labels alpha 4)" == "approved,bug,model:high" ]] || fail "labels $(labels alpha 4)"
 pass
 
 # A refusal naming no reset the looper can read holds LOOPER_HOLD_DEFAULT, and says so.

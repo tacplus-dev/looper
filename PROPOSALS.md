@@ -63,6 +63,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   `target/(debug|release|deps|build)/` trees, the non-source files a crate can include (`.json`, `.md`, `.yaml`,
   `.proto`, `.bin`) would cover it; or `looper-build gates` could read the `include_str!`/`include_bytes!` paths of
   the checkout's `.rs` files and keep those files. Neither is a known failure today.
+- **The high model's share by cost, not by tokens** (2026-11-15, #162): the recap names a day the high model's share
+  of the tokens passes `LOOPER_RECAP_HIGH_SHARE`, every kind of token counted alike; cache reads, most of a run's
+  tokens, cost a tenth of an input token, so the share by tokens is not the share of the quota. Weighting each kind by
+  its price (input, output, cache read, cache write), from one table beside the threshold, would name the day the
+  quota goes, not the day the cache does.
+- **A manager or verdict job's model step on the default** (2026-11-15, #162): `choose_model`'s rule still gives a
+  manage, verdict or merge job's model step the high model (#136); none has one yet (conflicts are resolved by
+  regenerating). When one is added, whether it needs Fable is its issue's decision, as `model:high` is for a report's.
 - **The hold for the scan's and the manager's model steps** (2026-11-15, #157): a report the account's usage limit
   refuses ends as a hold and the kicker starts nothing until the reset, but the nightly scan (a schedule, not the
   kicker's) still runs its model steps during a hold and ends with the CLI's error, and a manager or verdict job

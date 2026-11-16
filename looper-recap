@@ -150,7 +150,11 @@ T = {
     "vm_wait_hours": num("LOOPER_RECAP_VM_WAIT_HOURS", 1),
     "build_ratio": num("LOOPER_RECAP_BUILD_RATIO", 1.1),
     "control_queue_s": int(num("LOOPER_RECAP_CONTROL_QUEUE", 600)),
+    "high_share_pct": num("LOOPER_RECAP_HIGH_SHARE", 25),
 }
+# The high model (looper#162): repo-looper's LOOPER_MODEL_HIGH, whose share of
+# a day's tokens over high_share_pct the recap names.
+HIGH_MODEL = ENV.get("LOOPER_MODEL_HIGH") or "claude-fable-5-1"
 # The control jobs whose queues the recap reports on their own (looper#104):
 # behind reports for a VM, no work is planned and no land merged meanwhile.
 CONTROL = ("looper-plan", "looper-kick")
@@ -598,6 +602,30 @@ def resource_group(name, groups):
     return {"scan": f"looper-{repo}", "manager": f"looper-{repo}-main"}.get(kind, name)
 
 
+def share(models, high):
+    """The high model's share of a day's tokens, in percent (0 for a day with none)."""
+    total = sum(d["tokens"]["total"] for d in models.values())
+    return whole(round(100 * models.get(high, {"tokens": {"total": 0}})["tokens"]["total"] / total, 1)) if total else 0
+
+
+def high_share(models, items):
+    """The high model's runs and tokens against the day's (looper#162: Fable's
+    week went in less than a day, 2026-11-15), an item when its share of the
+    tokens is over high_share_pct."""
+    hm = models.get(HIGH_MODEL, {"runs": 0, "tokens": {"total": 0}})
+    pct, lim = share(models, HIGH_MODEL), T["high_share_pct"]
+    out = {"model": HIGH_MODEL, "runs": hm["runs"], "tokens": hm["tokens"]["total"], "tokens_pct": pct,
+           "threshold_pct": whole(lim), "over": pct > lim}
+    if out["over"]:
+        runs = sum(d["runs"] for d in models.values())
+        items.append({"key": f"model_share/{HIGH_MODEL}", "count": hm["runs"], "over": True, "recovered": False,
+                      "summary": f"{HIGH_MODEL}, the high model, took {pct}% of the day's tokens ({hm['tokens']['total']:,} of "
+                                 f"{sum(d['tokens']['total'] for d in models.values()):,}; {hm['runs']} of {runs} run{'s' * (runs != 1)}):"
+                                 f" over the {whole(lim)}% of LOOPER_RECAP_HIGH_SHARE",
+                      "evidence": []})
+    return out
+
+
 # --- collect -----------------------------------------------------------------
 
 
@@ -857,6 +885,7 @@ def collect(until):
                           "summary": f"the account refused {model} {n} time{'s' * (n != 1)}: those runs fell back to the default model",
                           "evidence": ev[:5]})
 
+    out["high_model"] = high_share(out["models"], items)
     out["managers"] = managers_of(managers, start, until, sources, items)
     out["concurrency"] = concurrency_of(passes, out["managers"], items, pools)
     out["capacity"] = capacity_of(queues, vmwait, out["runner_pools"], items)
@@ -1291,9 +1320,18 @@ def load(path):
         die(f"cannot read {path}: {e}")
 
 
+def model_day(day, recap):
+    """A night's runs and tokens per model and its high model's share (a night
+    before looper#162 named none: HIGH_MODEL's)."""
+    high = (recap.get("high_model") or {}).get("model") or HIGH_MODEL
+    pct = share(recap["models"], high)
+    return {"night": day, "models": {m: {"runs": d["runs"], "tokens": d["tokens"]["total"]} for m, d in sorted(recap["models"].items())},
+            "high_model": high, "high_pct": pct, "over": pct > T["high_share_pct"]}
+
+
 def classify(night, history):
     d = dt.date.fromisoformat(night["night"])
-    before, ratios = {}, []
+    before, ratios, days = {}, [], []
     for k in range(1, 7):
         day = (d - dt.timedelta(days=k)).isoformat()
         p = os.path.join(history, f"{day}.json") if history else ""
@@ -1302,12 +1340,18 @@ def classify(night, history):
             before[day] = {x["key"] for x in h.get("items", [])}
             if (h.get("builds") or {}).get("per_commit") is not None:
                 ratios.append({"night": day, "per_commit": h["builds"]["per_commit"]})
+            if h.get("models"):
+                days.append(model_day(day, h))
     out = {"night": night["night"], "history": sorted(before), "recurring": [], "transient": [], "once": []}
     # Builds a commit, night by night (looper#134): the duplicates' trend.
     b = night.get("builds") or {}
     if b.get("per_commit") is not None:
         ratios.append({"night": night["night"], "per_commit": b["per_commit"]})
     out["builds_per_commit"] = sorted(ratios, key=lambda x: x["night"])
+    # The runs and tokens per model, day by day (looper#162), the high model's share against tonight's threshold.
+    if night.get("models"):
+        days.append(model_day(night["night"], night))
+    out["models_by_day"] = sorted(days, key=lambda x: x["night"])
     for it in night.get("items", []):
         seen = sorted([day for day, keys in before.items() if it["key"] in keys] + [night["night"]])
         row = {"key": it["key"], "summary": it["summary"], "nights": len(seen), "seen": seen, "over": it["over"],
@@ -1479,6 +1523,12 @@ def report(night, classes, sdir, cov):
         f" output {d['tokens']['output']:,}, cache read {d['tokens']['cache_read']:,}, cache write {d['tokens']['cache_write']:,})"
         + (f", refused {d['refused']}" if d["refused"] else "")
         for md_, d in sorted(mds.items(), key=lambda x: (-x[1]["runs"], x[0]))) or "no run named its model") + ".")
+    days = list(reversed(classes.get("models_by_day", [])))
+    if days:
+        def runs(x):
+            return f"{x['models'].get(x['high_model'], {'runs': 0})['runs']} of {sum(d['runs'] for d in x['models'].values())} runs"
+        L[-1] += (f" Models by day (looper#162; {days[0]['high_model']}'s share of the tokens, over {whole(T['high_share_pct'])}% named): "
+                 + "; ".join(f"{x['night']} {x['high_model']} {x['high_pct']}%" + (", over" if x["over"] else "") + f" ({runs(x)})" for x in days) + ".")
     gone = [f"{k} ({v})" for k, v in sorted(night["sources"].items()) if v != "ok"]
     if gone:
         L.append("Not read: " + "; ".join(gone) + ".")

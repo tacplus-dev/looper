@@ -35,6 +35,10 @@ LABEL_LANDING="looper:landing"
 # A report whose token may push a change under .github/workflows/ (looper#115):
 # only someone with write access sets it, and looper-token reads who did.
 LABEL_WORKFLOWS="looper:workflows"
+# A report on the high model, LOOPER_MODEL_HIGH (looper#162; repo-looper's
+# choose_model): only someone with write access sets it, and the looper reads
+# who did; it never sets it itself. priority:high only orders the queues.
+LABEL_MODEL_HIGH="model:high"
 # The looper's hold (looper#157): the one issue of the hub repository that
 # records the account's usage limit, read by the kicker (hold_until, below).
 LABEL_HOLD="looper:hold"
@@ -63,6 +67,7 @@ LOOPER_LABELS=(
   "$LABEL_IN_PROGRESS|fbca04|A looper holds it"
   "$LABEL_LANDING|fbca04|Its commits are queued with the manager, which merges them and gives its verdict here"
   "$LABEL_WORKFLOWS|5319e7|Its report's token may push a change under .github/workflows/ (set by someone with write access)"
+  "$LABEL_MODEL_HIGH|5319e7|Its report runs on the high model, LOOPER_MODEL_HIGH (set by someone with write access)"
   "$LABEL_STUCK|d93f0b|A run ended without finishing, for no known reason; a person looks"
   "$LABEL_HOLD|ededed|The looper's hold: the account's usage limit is reached, and nothing starts until the reset its body names"
   "$LABEL_DECISION|5319e7|The looper needs a decision it may not make"
