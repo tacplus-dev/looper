@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#166).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#167).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -138,7 +138,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   and file, not line, are baselined, never new, so not filed; an issue's run is handed the repository's latest
   findings to record it from); SARIF and JSON reports, the new findings since the
   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
-  release's image SBOM (CycloneDX, SPDX); tested with stubs shaped as the tools' output and with the real tools,
+  release's image SBOM (CycloneDX, SPDX); the looper image's own Go binaries (#167, `looper-scan image`, the
+  `Dockerfile`'s last step): `govulncheck -mode=binary` on every one under `/usr/local/bin`, under the same policy and
+  `security-exceptions.yaml`, fails the image build (`image.yml`, a release's publish) before a push; a base-image
+  binary (by the sha256 recorded after `FROM`) is attributed to tacplus-dev/tacplus, a stripped one said (by hand on
+  main's image of 2026-11-16: the docker CLI's GO-2026-6859 alone fails it, which #166's exception accepts);
+  tested with stubs shaped as the tools' output and with the real tools,
   and run by hand (`looper-scan local`: its reports in a directory its summary names, never in the tree it scans, #161) on
   tacplus and kernel; this repository's own tree passes its gitleaks, a gate
   (`tests/looper-secrets.test.sh`: a test's fake token is built at run time, #117); formal verification out of the gates (#74,
@@ -301,6 +306,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   once a fixed version is published; the image's docker CLI (29.9.3, from `build:2.6`'s `docker:29-cli`, go1.26.10)
   carries net/http's GO-2026-6859, a server-side crash a client does not reach, accepted in
   `security-exceptions.yaml` until 2026-11-30 (#166, the hub's decision): #73 step 3 removes the CLI and the entry;
-  the build's checks do not scan the image's binaries, so only the nightly scan's `govulncheck -mode=binary` sees it
+  the image build's `looper-scan image` (#167) honours it, and from 2026-12-01 fails main's image build on it until
+  it is renewed or the CLI removed
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
