@@ -120,3 +120,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue --checkpoint says 'pushed' when GitHub rejected the push (a .github/workflows change without the App's workflows permission) (#99, 7667274; gates: full)
 - 2026-11-15 looper issue Manager jobs hang after 'merging #N' for hours (6 at once, 2026-11-09 from 00:57), while looper-token's workflows:write mint is refused (422) and falls back (#112)
 - 2026-11-15 looper issue Dockerfile follows tacplus line 2.5; 2.6 is released (v2.6.1) (#102)
+- 2026-11-15 looper issue looper-scan local DIR: the default BUILD_OUT (./security) is inside DIR, so gitleaks scans the run's own raw output (14 CRITICAL sourcegraph-access-token on govulncheck's JSON) (#161)
