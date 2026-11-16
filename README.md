@@ -944,8 +944,17 @@ jobs run `looper-build`, from this image.
   `BUILD_BUILDER_IMAGE` is empty (no published build image has `tacplus-image-build` yet: tacplus#315's first
   images.yml run on main makes one), publish still needs host Docker: the plan writes it in the looper image on
   `BUILD_DOCKER_TAGS` (the runners that mount the socket) and says so in its log (`publish needs host Docker`), and
-  it builds with `docker buildx`. Both are variables of `ci/build.gitlab-ci.yml`, which the hub sets: the builder
-  image by digest, and a tag only the VM build pool has before the in-cluster `build` runner takes `arm64, build`.
+  it builds with `docker buildx`. Both are variables of `ci/build.gitlab-ci.yml` (looper#172): the builder image by
+  digest, still empty (tacplus#315 is open and no images.yml run on main has published a build image with
+  `tacplus-image-build` yet), and `BUILD_DOCKER_TAGS`, `arm64, build-docker`: `build-docker` is a tag only the VM
+  build pool carries (tacplus-dev/cloud#70), so the in-cluster `build` runner (`arm64, build`, no socket) never takes
+  a job that needs one. **No gate set needs Docker** (looper#172, read 2026-11-16 in the 25 repositories whose main
+  pins a build image): kernel's and eventbus's `tools/tacplus.sh` would `docker run`, but the gates job runs the
+  image's own tacplus (`TACPLUS_BIN=tacplus`, looper#137); the rest of their `docker` (operator's `just container`,
+  deploymentproxy's `make image`, the release scripts of coop, opa, pigeon, llmproxy, doppelganger, tenantecho and
+  kernel) is in no gate, only in their GitHub release workflows; none uses testcontainers. So every gates, security
+  and verify job runs on `arm64, build`, and a gate that comes to need Docker fails there for want of a socket: a bug
+  of its repository (its gates run in its build image, without one), never a job on `build-docker`.
 - **The same commit gives the same verdict and digest.** The gates image is pinned by digest. The image is built
   with every timestamp the commit's (`SOURCE_DATE_EPOCH`, `rewrite-timestamp=true`), without provenance or SBOM
   attestations (which record the build's time and builder), and by a BuildKit pinned by digest (the builder
@@ -987,14 +996,16 @@ tag names `sha`, runs the gates, and publishes; the looper then creates the GitH
 
 ```sh
 looper-build plan | gates | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
-tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
 ```
 
 **The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A
 second runner entry on `gitlab-runner-mgr`, which the hub applies (restarting the manager kills running jobs, so at
 a moment when no looper job runs). It is a **project** runner of tacplus-dev/build, registered with
-`tag_list=arm64,build` and `run_untagged=false`. Every job of the pipeline carries `tags: [arm64, build]`, which the
-loopers' runner (`arm64, autoscale`) never takes. Each job gets a fresh VM, deleted after it:
+`tag_list=arm64,build,build-docker` and `run_untagged=false` (`build-docker` its own, tacplus-dev/cloud#70: the in-cluster
+`build` runner, which mounts no socket, takes `arm64, build` too, never `arm64, build-docker`, looper#172). Every job of
+the pipeline carries `tags: [arm64, build]`, but a release's publish that needs host Docker `[arm64, build-docker]`;
+the loopers' runner (`arm64, autoscale`) takes neither. Each job gets a fresh VM, deleted after it:
 
 ```toml
 [[runners]]
@@ -1626,7 +1637,7 @@ cluster#18):
 | Runner | Tags | Its jobs | Pods | A job's requests and limits |
 |---|---|---|---|---|
 | `control` (58541761, *tacplus-dev control (cluster, ci, normal pool)*) | `arm64, control` | the kicker, the plan and the hub's probes ([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml)'s `.control`); the reports, the manager and the nightly scan of every repository whose gates are build jobs (its main pins its build image and the project holds the trigger, [Build jobs](#build-jobs)) | the normal pool (3 × c4a-standard-2, always on), no spot node, no Docker socket, 8 at once (`concurrent`) | the runner's defaults 250m / 1 CPU, 512Mi / 2Gi; a job raises its own with GitLab's `KUBERNETES_CPU_REQUEST`, `KUBERNETES_MEMORY_REQUEST`, `KUBERNETES_CPU_LIMIT`, `KUBERNETES_MEMORY_LIMIT`, up to 1500m and 4Gi |
-| `build` (58541760) | `arm64, build` | tacplus-dev/build's jobs ([Build pipeline](#build-pipeline)) | the spot pool (0 to 3, tainted), rootless BuildKit in the pod (tacplus#315) | 1 / 3 CPU, 4Gi / 8Gi; up to 3500m and 12Gi |
+| `build` (58541760) | `arm64, build` | tacplus-dev/build's jobs ([Build pipeline](#build-pipeline)) | the spot pool (0 to 3, tainted), rootless BuildKit in the pod (tacplus#315); never a job on `arm64, build-docker` (a release's publish while it needs host Docker: the VM build pool's alone, looper#172) | 1 / 3 CPU, 4Gi / 8Gi; up to 3500m and 12Gi |
 
 **Requests per job type** (Jody, 2026-11-07: every looper runs at once on the 3 always-on nodes, with small requests,
 since an agent mostly waits on the model's API; never the 4 CPU/14 GB a gate needs, which is a build job's). The
@@ -1655,7 +1666,7 @@ repository that does not yet pin its build image (tacplus, tacplus#340; fleet-se
 repository's jobs move the day its pin lands, by `looper-dispatch plan`'s read of the pin, with no change here), its
 nightly scan among them, whose model runs the repository's gates on main through `looper-docker` (a pinned one's reads
 the nightly build's verdict and runs on `control`, looper#73); in tacplus-dev/build, only a release's `publish-<repo>` while
-`BUILD_BUILDER_IMAGE` is empty (on `BUILD_DOCKER_TAGS`, [Build pipeline](#build-pipeline), looper#73). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
+`BUILD_BUILDER_IMAGE` is empty (on `BUILD_DOCKER_TAGS`, `arm64, build-docker`, the VM build pool's own tag: [Build pipeline](#build-pipeline), looper#73, looper#172). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
 jobs' alone; no job of `ci/tacplus-dev.gitlab-ci.yml` asks for them (`tests/looper-dispatch.test.sh`: ci-control), and
 `LOOPER_CONTROL_TAGS` names the control runner's (default `arm64, control`). The hub unpauses `control` once this is on
 main; tacplus-dev/cloud#11 (*No VMs outside GKE*) removes the VM pools when nothing is left on them, and looper#43 closes

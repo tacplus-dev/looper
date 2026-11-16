@@ -849,8 +849,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   with it, publish could run in the repository's own pinned image, as the gates and the verification do, so a
   release's builder is its pin's (deterministic builds: the BuildKit that built it is the commit's), and
   `BUILD_BUILDER_IMAGE` and the Docker fallback (`BUILD_DOCKER_TAGS`, `docker buildx`) could go.
-- **The Docker tags of the build pipeline** (2026-11-16, #73): while `BUILD_BUILDER_IMAGE` is empty a release's
-  publish runs on `BUILD_DOCKER_TAGS`, today `arm64, build`, which the VM build pool (with the socket) and the
-  in-cluster `build` runner (without) would both take once the hub unpauses the latter. Either the builder image is set
-  first (then nothing in the build pipeline needs Docker), or the VM build pool gets a tag of its own (tacplus-dev/cloud,
-  its `runner_pools.build`) that `BUILD_DOCKER_TAGS` names.
+- **The builder image, once one is published** (2026-11-16, #172): `BUILD_DOCKER_TAGS` is `arm64, build-docker`, the VM
+  build pool's own tag (tacplus-dev/cloud#70), but `BUILD_BUILDER_IMAGE` is still empty: tacplus#315 is open, and no
+  images.yml run on main has published a build image with `tacplus-image-build` (ae5fda5's run rebuilt nothing; the
+  2026-11-16 scheduled run's amd64 build failed its cache-determinism step, rootless BuildKit's `newuidmap` refused on
+  the GitHub runner, so no manifest). Once one is (or a tacplus release carries it), pin it by digest there; then no
+  build job needs the socket, and the VM build pool and `build-docker` can go (tacplus-dev/cloud#11).

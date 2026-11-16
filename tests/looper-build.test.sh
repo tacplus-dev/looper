@@ -1063,6 +1063,29 @@ grep -qxF '  tags: [arm64, build, docker]' "$TMP/publish.yml" || fail "not on th
 grep -q "publish needs host Docker (no BUILD_BUILDER_IMAGE.*): on arm64, build, docker" "$TMP/err" || fail "the plan does not say so: $(cat "$TMP/err")"
 pass
 
+# The values the hub's copy runs with (looper#172): the in-cluster build runner (tags arm64, build, no socket)
+# never takes a job that needs host Docker, and the builder image is pinned by digest, or none yet.
+NAME="ci/build.gitlab-ci.yml: publish's Docker tags are the VM build pool's alone; its builder image by digest"
+civar() { sed -n "s/^  $1: \"\(.*\)\"\$/\1/p" "$ROOT/ci/build.gitlab-ci.yml"; }
+[[ "$(civar BUILD_DOCKER_TAGS)" == "arm64, build-docker" ]] || fail "BUILD_DOCKER_TAGS is '$(civar BUILD_DOCKER_TAGS)', not 'arm64, build-docker'"
+b="$(civar BUILD_BUILDER_IMAGE)"
+[[ -z "$b" || "$b" =~ ^ghcr\.io/tacplus-dev/tacplus/build(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] ||
+  fail "BUILD_BUILDER_IMAGE '$b' is no tacplus build image by digest"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_BUILDER_IMAGE="$b" BUILD_DOCKER_TAGS="$(civar BUILD_DOCKER_TAGS)" -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+# Every job but a Docker publish is on the build runner's tags; a Docker publish names build-docker, which it lacks.
+grep '^  tags: ' "$OUT/build-gates.yml" | sort | uniq -c > "$TMP/tags"
+if [[ -z "$b" ]]; then
+  [[ "$(grep -c 'build-docker' "$OUT/build-gates.yml")" == 1 ]] || fail "not publish alone on build-docker: $(cat "$TMP/tags")"
+  sed -n '/^publish-demo:$/,/^[^ ]/p' "$OUT/build-gates.yml" > "$TMP/publish.yml"
+  grep -qxF '  tags: [arm64, build-docker]' "$TMP/publish.yml" || fail "publish not on build-docker: $(cat "$TMP/tags")"
+else
+  ! grep -q 'build-docker' "$OUT/build-gates.yml" || fail "a job on build-docker with a builder image: $(cat "$TMP/tags")"
+fi
+! grep '^  tags: ' "$OUT/build-gates.yml" | grep -vxF -e '  tags: [arm64, build]' -e '  tags: [arm64, build-docker]' ||
+  fail "a job on other tags: $(cat "$TMP/tags")"
+pass
+
 NAME="publish: rootless BuildKit, reproducible, pushed with a federated token, its digest and archive kept; no Docker"
 build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
 img="us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3@$(cat "$TMP/digest")"
