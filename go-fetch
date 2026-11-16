@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# go-fetch: the Dockerfile's Go steps fetch through it (looper#169). Two image
+# builds on main in a row failed on an HTTP/2 stream reset from Google's front
+# end, "stream error: stream ID 515; INTERNAL_ERROR; received from peer": once
+# reading sum.golang.org (glab's go install), once proxy.golang.org (Trivy's
+# go mod tidy). Each step fetches first, by this script, then builds from the
+# module cache it filled:
+#
+#   go-fetch ARG...
+#       runs `go ARG...` (version: the GOTOOLCHAIN download; mod tidy, mod
+#       download; install -n MODULE@VERSION: every module the install loads,
+#       verified, nothing built), over HTTP/1.1 (GODEBUG http2client=0, the
+#       step's other GODEBUG settings kept), up to LOOPER_GO_FETCH_TRIES times
+#       (default 5), sleeping LOOPER_GO_FETCH_SLEEP seconds (default 10) times
+#       the try before the next. Exits 0 on the first success, else as the last
+#       try. Quiet on success (install -n prints every command it would run):
+#       a failed try's output is on stderr, under the line that names it.
+#
+# What the go command fetched is in its cache, so a try resumes where the last
+# stopped. It retries any failure: run it on fetches alone, never a build.
+set -euo pipefail
+
+tries="${LOOPER_GO_FETCH_TRIES:-5}" sleep="${LOOPER_GO_FETCH_SLEEP:-10}"
+[[ "$tries" =~ ^[1-9][0-9]*$ ]] || { echo "go-fetch: LOOPER_GO_FETCH_TRIES is not a count: $tries" >&2; exit 2; }
+[[ "$sleep" =~ ^[0-9]+$ ]] || { echo "go-fetch: LOOPER_GO_FETCH_SLEEP is not seconds: $sleep" >&2; exit 2; }
+(( $# )) || { echo "usage: go-fetch ARG..." >&2; exit 2; }
+export GODEBUG="${GODEBUG:+$GODEBUG,}http2client=0"
+out="$(mktemp)"; trap 'rm -f "$out"' EXIT
+for ((try = 1; ; try++)); do
+  rc=0; go "$@" > "$out" 2>&1 || rc=$?
+  (( rc )) || exit 0
+  if (( try < tries )); then
+    echo "go-fetch: go $*: try $try of $tries exited $rc; again in $((sleep * try))s:" >&2
+  else
+    echo "go-fetch: go $*: failed $try times, the last with exit $rc:" >&2
+  fi
+  cat "$out" >&2
+  (( try < tries )) || exit "$rc"
+  sleep "$((sleep * try))"
+done

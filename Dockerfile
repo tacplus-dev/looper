@@ -50,8 +50,18 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cac
 # are: the release binary is built with go1.27.3, whose net/http has GO-2026-6859
 # (looper#159). Its version as the release sets it (.goreleaser.yml; glab prints
 # it without the v), its symbol table kept as Trivy's.
+# Each Go step fetches first, through go-fetch (looper#169): its toolchain, then
+# every module it builds (go install -n, or the module made here's go mod tidy),
+# over HTTP/1.1, each fetch retried: two builds in a row failed on an HTTP/2
+# stream reset from proxy.golang.org and sum.golang.org. It builds from the
+# module cache so filled, offline: a go install's GOPROXY is the cache's
+# download directory (its checksums still checked by sum.golang.org's tiles
+# there), and a module made here builds what its go mod tidy fetched.
+COPY go-fetch /usr/local/lib/looper/
 ARG GO_TOOLCHAIN=go1.27.4 GLAB_VERSION=1.130.0
-RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
+RUN set -eu; export PATH="$PATH:/usr/local/lib/looper"; \
+    GOTOOLCHAIN="$GO_TOOLCHAIN" go-fetch version; GOTOOLCHAIN="$GO_TOOLCHAIN" go-fetch install -n "gitlab.com/gitlab-org/cli/cmd/glab@v$GLAB_VERSION"; \
+    GOPROXY="file://$(go env GOMODCACHE)/cache/download" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
       -ldflags "-w -X main.version=v$GLAB_VERSION" "gitlab.com/gitlab-org/cli/cmd/glab@v$GLAB_VERSION"; \
     go clean -cache -modcache; glab --version | grep -q "^glab $GLAB_VERSION "; \
     go version /usr/local/bin/glab | grep -qx "/usr/local/bin/glab: $GO_TOOLCHAIN"
@@ -100,11 +110,11 @@ RUN set -eu; GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod g
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
 ARG TRIVY_VERSION=0.76.1 TRIVY_COMPRESS_VERSION=1.20.2
-RUN set -eu; d="$(mktemp -d)"; \
+RUN set -eu; d="$(mktemp -d)"; export PATH="$PATH:/usr/local/lib/looper"; \
     (cd "$d"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; tr=github.com/aquasecurity/trivy; \
-      go mod init looper.local/trivy 2>/dev/null; \
+      go-fetch version; go mod init looper.local/trivy 2>/dev/null; \
       go mod edit -require "$tr@v$TRIVY_VERSION" -require "github.com/klauspost/compress@v$TRIVY_COMPRESS_VERSION" -tool "$tr/cmd/trivy"; \
-      go mod tidy; go build -ldflags "-w -X $tr/pkg/version/app.ver=$TRIVY_VERSION" -o /usr/local/bin/trivy "$tr/cmd/trivy"); \
+      go-fetch mod tidy; go build -ldflags "-w -X $tr/pkg/version/app.ver=$TRIVY_VERSION" -o /usr/local/bin/trivy "$tr/cmd/trivy"); \
     trivy --version | grep -qx "Version: $TRIVY_VERSION"; \
     go version /usr/local/bin/trivy | grep -qx "/usr/local/bin/trivy: $GO_TOOLCHAIN"; \
     go version -m /usr/local/bin/trivy | grep -q "github.com/klauspost/compress[[:space:]]*v$TRIVY_COMPRESS_VERSION[[:space:]]"; \
@@ -118,6 +128,12 @@ ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc4
 ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8
 ARG GOVULNCHECK_VERSION=1.9.0
 RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=https://github.com; \
+    export PATH="$PATH:/usr/local/lib/looper"; (export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; go-fetch version; \
+      go-fetch install -n "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
+      go-fetch install -n "github.com/securego/gosec/v2/cmd/gosec@v$GOSEC_VERSION"; \
+      go-fetch install -n "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
+      CGO_ENABLED=0 go-fetch install -n "github.com/anchore/syft/cmd/syft@v$SYFT_VERSION"); \
+    fetched="file://$(go env GOMODCACHE)/cache/download"; \
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
     get deny.tgz "$gh/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl.tar.gz" "$CARGO_DENY_SHA256"; \
     tar -xzf "$d/deny.tgz" -C "$d"; install -m 0755 "$d/cargo-deny-$CARGO_DENY_VERSION-aarch64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny; \
@@ -125,28 +141,28 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
     mkdir -p /opt/scanners; tar -xzf "$d/spotbugs.tgz" -C /opt/scanners; ln -s "/opt/scanners/spotbugs-$SPOTBUGS_VERSION/bin/spotbugs" /usr/local/bin/spotbugs; \
     get findsecbugs-plugin.jar "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/$FINDSECBUGS_VERSION/findsecbugs-plugin-$FINDSECBUGS_VERSION.jar" "$FINDSECBUGS_SHA256"; \
     install -m 0644 "$d/findsecbugs-plugin.jar" /opt/scanners/findsecbugs-plugin.jar; \
-    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
+    GOPROXY="$fetched" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
     go version /usr/local/bin/govulncheck | grep -qx "/usr/local/bin/govulncheck: $GO_TOOLCHAIN"; \
     mkdir "$d/govulncheck"; printf 'module looper.local/smoke\n\ngo 1.27\n\ntoolchain %s\n\nrequire golang.org/x/text v0.3.0\n' "$GO_TOOLCHAIN" > "$d/govulncheck/go.mod"; \
     printf 'package main\n\nimport (\n\t"math/rand/v2"\n\t"net/http"\n\n\t"golang.org/x/text/language"\n)\n\nfunc main() {\n\t_, _ = language.Parse("en")\n\tprintln(rand.N(6))\n\t_ = http.ListenAndServe(":0", nil)\n}\n' > "$d/govulncheck/main.go"; \
-    (cd "$d/govulncheck" && GOFLAGS=-mod=mod govulncheck -format json ./... > "$d/govulncheck.json") || \
+    (cd "$d/govulncheck" && GOFLAGS=-mod=mod go-fetch mod tidy && GOFLAGS=-mod=mod govulncheck -format json ./... > "$d/govulncheck.json") || \
       { echo "govulncheck: a go 1.27 module importing net/http does not scan" >&2; exit 1; }; \
     jq -s -e --arg go "$GO_TOOLCHAIN" '[.[] | .config? // empty | .go_version] == [$go]' "$d/govulncheck.json" >/dev/null; \
     jq -s -e '[.[] | .finding? // empty | select(.trace[0].function == "Parse") | .osv] | index("GO-2021-0113")' "$d/govulncheck.json" >/dev/null; \
-    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
+    GOPROXY="$fetched" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
       -ldflags "-w -X main.Version=$GOSEC_VERSION -X main.GitTag=v$GOSEC_VERSION" "github.com/securego/gosec/v2/cmd/gosec@v$GOSEC_VERSION"; \
     gosec -version | grep -qx "Version: $GOSEC_VERSION"; \
-    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
+    GOPROXY="$fetched" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
     osv-scanner --version | grep -qx "osv-scanner version: $OSV_SCANNER_VERSION"; \
     mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
-      go mod init looper.local/gitleaks 2>/dev/null; \
+      go-fetch version; go mod init looper.local/gitleaks 2>/dev/null; \
       go mod edit -require "$gl@v$GITLEAKS_VERSION" -tool "$gl" -replace "github.com/ulikunitz/xz=github.com/ulikunitz/xz@v$GITLEAKS_XZ_VERSION" \
         -require "github.com/klauspost/compress@v$GITLEAKS_COMPRESS_VERSION" -require "github.com/andybalholm/brotli@v$GITLEAKS_BROTLI_VERSION"; \
-      go mod tidy; go build -ldflags "-w -X $gl/version.Version=$GITLEAKS_VERSION" -o /usr/local/bin/gitleaks "$gl"); \
+      go-fetch mod tidy; go build -ldflags "-w -X $gl/version.Version=$GITLEAKS_VERSION" -o /usr/local/bin/gitleaks "$gl"); \
     gitleaks version | grep -qx "$GITLEAKS_VERSION"; \
     go version -m /usr/local/bin/gitleaks | grep -q "github.com/klauspost/compress[[:space:]]*v$GITLEAKS_COMPRESS_VERSION[[:space:]]"; \
     go version -m /usr/local/bin/gitleaks | grep -q "github.com/andybalholm/brotli[[:space:]]*v$GITLEAKS_BROTLI_VERSION[[:space:]]"; \
-    GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod CGO_ENABLED=0 go install \
+    GOPROXY="$fetched" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod CGO_ENABLED=0 go install \
       -ldflags "-w -X main.version=$SYFT_VERSION" "github.com/anchore/syft/cmd/syft@v$SYFT_VERSION"; \
     syft --version | grep -qx "syft $SYFT_VERSION"; \
     atleast() { v="$(go version -m "/usr/local/bin/$1" | awk -v m="$2" '$1 == "dep" && $2 == m { print $3 }')"; \

@@ -1125,7 +1125,10 @@ against: OSV's API and the query time, govulncheck's `db_last_modified`, cargo-d
 Trivy's database `UpdatedAt`/`DownloadedAt`, its Java database's `UpdatedAt` and its check bundle, the Semgrep rules and the fetch time. The tools'
 versions as run are `security/tools.json`. glab (1.130.0, the model's GitLab CLI, not a scanner) is built the same way, by its
 module checksum with Go 1.27.4, its symbol table kept: its release binary is built with go1.27.3, whose net/http has
-GO-2026-6859 (looper#159). To move a tool, change its version and checksum in the `Dockerfile` (the
+GO-2026-6859 (looper#159). Each Go step fetches through `go-fetch` first (looper#169): the toolchain and every
+module, over HTTP/1.1 (`GODEBUG=http2client=0`), each fetch retried up to 5 times (an HTTP/2 stream reset from
+proxy.golang.org or sum.golang.org failed two image builds in a row); its build then reads the module cache alone
+(`GOPROXY=file://`, the checksums still checked). To move a tool, change its version and checksum in the `Dockerfile` (the
 Python ones: regenerate `scanners/requirements.txt` as its header says; CodeQL: `CODEQL_VERSION`/`CODEQL_SHA256` in
 `looper-scan`).
 
@@ -1279,6 +1282,7 @@ looper-scan run | report | local DIR | sbom SOURCE DIR | image ROOT DIR   # the 
 looper-scan baseline FINDINGS > security-baseline.json  # a run's findings as the repository's recorded baseline
 tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
 tests/repo-looper.test.sh    # scan-security-report: the scan reads the report; scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes; issue-security-report: an issue's run is handed it
+tests/go-fetch.test.sh       # the image build's Go fetches: retried, bounded, over HTTP/1.1; every Go step of the Dockerfile fetches through it, then installs from the module cache (looper#169)
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)
 ```
 
