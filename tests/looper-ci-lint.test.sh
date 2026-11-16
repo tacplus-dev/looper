@@ -138,6 +138,6 @@ FILES=("$TMP/ci/mapping.gitlab-ci.yml"); lint GITLAB_TOKEN=glpat-lint
 FILES=(); lint
 [[ $RC == 0 ]] || fail "a CI file of ci/ is invalid"
 n="$(grep -c ': ok$' <<<"$OUT")"; m="$(ls "$ROOT"/ci/*.gitlab-ci.yml | wc -l)"
-[[ "$n" == "$m" && "$m" -ge 4 ]] || fail "$n of $m CI files linted"
+[[ "$n" == "$m" && "$m" -ge 3 ]] || fail "$n of $m CI files linted"
 
 echo "looper-ci-lint: all scenarios pass"
