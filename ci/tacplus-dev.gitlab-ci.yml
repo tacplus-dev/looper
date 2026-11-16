@@ -106,7 +106,7 @@ stages:
 
 looper-plan:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
+  image: ghcr.io/tacplus-dev/looper@sha256:9c4d29d785279d7f5f70949ff5f6fd2e29f4d945d8f149f28865b9c3faef9975
   needs: []
   <<: *looper-rules
   extends: [.looper-identity, .control]
@@ -155,7 +155,7 @@ looper-run:
 # that waited for a runner do not run their hours back to back.
 looper-kick:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
+  image: ghcr.io/tacplus-dev/looper@sha256:9c4d29d785279d7f5f70949ff5f6fd2e29f4d945d8f149f28865b9c3faef9975
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/
@@ -175,7 +175,7 @@ looper-kick:
 # after the setup and whenever the ruleset or the apps change.
 looper-ruleset-probe:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
+  image: ghcr.io/tacplus-dev/looper@sha256:9c4d29d785279d7f5f70949ff5f6fd2e29f4d945d8f149f28865b9c3faef9975
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -198,7 +198,7 @@ looper-ruleset-probe:
 # expected one, and says why (gcloud's own error, its class).
 looper-token-diagnose:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:bc0d0e03c7cda85d0e0e8fc0c973d6e7e5f88b83ad65cb69084dc9bcee8a8ef2
+  image: ghcr.io/tacplus-dev/looper@sha256:9c4d29d785279d7f5f70949ff5f6fd2e29f4d945d8f149f28865b9c3faef9975
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
