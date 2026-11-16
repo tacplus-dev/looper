@@ -799,8 +799,8 @@ pass
 # its jobs runs Docker) has its reports and manager on the control runner, `arm64, control`, each pod with its
 # kind's requests and limits (GitLab's KUBERNETES_* variables, within that runner's ceilings); its per-repository
 # tag override is not read, so a repository moves the day its pin lands, with nothing changed here. A job that
-# would hold looper-docker stays on the VM runners' tags: an unpinned repository's reports, verdict and manager,
-# and every scan (its model runs the gates on main). A control job's retry: is as before: it resumes from its
+# would hold looper-docker stays on the VM runners' tags: an unpinned repository's reports, verdict, manager and
+# scan (its model runs the gates on main; a pinned one's reads the nightly build's, looper#73). A control job's retry: is as before: it resumes from its
 # checkpoint. The plan's one job with nothing to plan takes the control tags once the project has the trigger.
 scenario plan-control
 issue tacplus 5 OPEN "Go." approved
@@ -840,11 +840,20 @@ control_plan BUILD_TRIGGER_TOKEN=glptt-x LOOPER_CONTROL_TAGS="arm64, ctl" LOOPER
 control_plan
 [[ "$(tags_of alpha-4)" == "[arm64, autoscale]" && "$(tags_of alpha-manager)" == "[arm64, autoscale]" ]] || fail "without the trigger: $(tags_of alpha-4) $(tags_of alpha-manager)"
 ! grep -q KUBERNETES_ <<<"$PLAN" || fail "requests without the trigger: $PLAN"
-# Every scan stays on the VM tags: its model runs the gates on main with looper-docker.
+# A pinned repository's scan reads the nightly build's gates and holds no looper-docker (looper#73): on the
+# control runner, with a model's requests (a report's), its override unread; an unpinned one's stays on the VM tags.
 printf '%s\n' alpha tacplus > "$FIX/repos"
-control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule
-[[ "$(tags_of scan-alpha)" == "[arm64, autoscale]" && "$(tags_of scan-tacplus)" == "[arm64, autoscale]" ]] || fail "the scans: $(tags_of scan-alpha) $(tags_of scan-tacplus)"
-! grep -q KUBERNETES_ <<<"$PLAN" || fail "requests on a scan: $PLAN"
+control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule LOOPER_SCAN_TAGS_alpha="arm64, lab"
+[[ "$(tags_of scan-alpha)" == "[arm64, control]" ]] || fail "alpha's scan: $(tags_of scan-alpha): $PLAN"
+[[ "$(vars_of looper-scan-alpha)" == *'KUBERNETES_CPU_REQUEST: 100m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
+  || fail "alpha's scan's requests: $(vars_of looper-scan-alpha)"
+[[ "$(tags_of scan-tacplus)" == "[arm64, autoscale]" ]] || fail "tacplus's scan: $(tags_of scan-tacplus)"
+! grep -q KUBERNETES_ <<<"$(job_of looper-scan-tacplus)" || fail "requests on a VM scan: $(job_of looper-scan-tacplus)"
+control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule LOOPER_REQUESTS_scan="1 2Gi 1500m 4Gi"
+[[ "$(vars_of looper-scan-alpha)" == *'KUBERNETES_CPU_REQUEST: 1 KUBERNETES_MEMORY_REQUEST: 2Gi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
+  || fail "LOOPER_REQUESTS_scan: $(vars_of looper-scan-alpha)"
+control_plan CI_PIPELINE_SOURCE=schedule
+[[ "$(tags_of scan-alpha)" == "[arm64, autoscale]" ]] || fail "alpha's scan without the trigger: $(tags_of scan-alpha)"
 # Nothing to plan: the one job that says so runs on the control runner with the trigger, else on the VM tags.
 rm "$FIX/issues/tacplus-5.json" "$FIX/issues/alpha-6.json"; jobs "looper-alpha-4 running"
 control_plan BUILD_TRIGGER_TOKEN=glptt-x

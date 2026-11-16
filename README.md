@@ -386,7 +386,7 @@ lander are gone. One job per issue needs none of them.
     it out (PROPOSALS.md: the revision baked into the image would tell).
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): a build-jobs repository's reports and manager on `arm64, control` with their kind's requests, a repository moving on its pin with its VM override unread, an unpinned one's jobs and every scan on the VM tags, the pipeline file's control jobs on `.control`; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
+tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): a build-jobs repository's reports and manager on `arm64, control` with their kind's requests, a repository moving on its pin with its VM override unread, an unpinned one's jobs and scan on the VM tags, a pinned one's scan on `control` with a report's requests (#73), the pipeline file's control jobs on `.control`; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
 tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-bisects (one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch)
 ```
 
@@ -467,12 +467,17 @@ pin issue (filed by the hub) commits one.
 - **An image build inside the build job, without the host's Docker** (looper#73, the hub's step 1): a release's
   publish builds with rootless BuildKit in a build image that has it ([Build pipeline](#build-pipeline)), once
   `BUILD_BUILDER_IMAGE` names one; until then it alone still needs Docker, and runs on the Docker tags.
-- **Not yet** (looper#73's steps 2 and 3): the nightly scans reading the nightly build's verdict instead of running
-  the gates through `looper-docker`, and retiring `looper-docker`, `looper-docker-broker` and the host socket's path
+- **The nightly scan of a pinned repository runs no gates** (looper#73, the hub's step 2): its gates on main are the
+  nightly build's (`gates-report`, [Build pipeline](#build-pipeline)); `repo-looper --scan` reads that record and its
+  log tail with `GITLAB_TOKEN` into the run's `gates/`, before the model, and the prompt's item 3 points there (a
+  `fail` a finding, `none` not; no record read, no gates run and nothing filed for them). Its model has no container
+  runtime, as a report's (its `docker` says why), and its job runs on the control runner, with a report's requests
+  (`LOOPER_REQUESTS_scan`). An unpinned repository's scan still runs its gates through `looper-docker`.
+- **Not yet** (looper#73's step 3): retiring `looper-docker`, `looper-docker-broker` and the host socket's path
   once every repository is pinned (tacplus, tacplus#340).
 
 ```sh
-tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/repo-looper.test.sh       # build-job-scan: a pinned repository's scan, its model with no docker, reads the nightly build's gates record into its prompt's item 3, none read runs no gates; scan-unpinned-gates: an unpinned one's keeps its gates; build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
 tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin; the nightly fan-out: a pinned repository is built, an unpinned, archived or another owner's is not, each child is its repository's nightly and needs its own plan alone, a listing or pin it cannot read fails (looper#164)
 ```
 
@@ -517,7 +522,8 @@ read from that tree.
   land, and starts it only when the land's estimate on that set fits in its job's time left; else it leaves the
   land queued for the next manager ([Managers and direct reports](#managers-and-direct-reports)).
 - **Nothing goes unchecked for more than a day, nothing is released on partial gates:** the nightly scan runs the
-  repository's full gates on main (its prompt names the map's full), every release (the patch rule's tag, and the
+  repository's full gates on main (its prompt names the map's full; a pinned repository's are the nightly build's,
+  whose verdict it reads, looper#73), every release (the patch rule's tag, and the
   [build pipeline](#build-pipeline)'s release build, which always runs `just gates`) runs them before it ships,
   and the build pipeline's verdict is always the full gates.
 
@@ -908,6 +914,11 @@ jobs run `looper-build`, from this image.
   lines (`just gates exited 127: sh: 1: trivy: not found; error: ...`, looper#144).
 - **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the
   code its gates generated, which fail the build as a gate does ([Security checks](#security-checks), looper#49).
+- **`gates-report`**, a nightly's alone, in the looper image after `gates` (also when they fail; allowed to fail):
+  the gates' verdict on main as the repository's latest (looper#73), the generic package `gates-<repo>`, version
+  `latest`: `record` (`repo`, `kind nightly`, `checked` the commit, `result` pass, fail or none, `why` a red one's
+  reason or that the gates job left no verdict, `run` the pipeline, `at`) and `log-tail` (the last 200 lines of
+  `gates.log`). The nightly scan of a pinned repository reads it rather than run the gates.
 - **A job whose runner is lost runs again** (looper#148): the build's VMs are spot, and a preempted one ends its job
   `runner_system_failure`. Every job, the child pipeline's too (the parent's `default:` does not reach it), is
   retried twice on `runner_system_failure`, `scheduler_failure` and `unknown_failure`, so the build's verdict
@@ -976,7 +987,7 @@ tag names `sha`, runs the gates, and publishes; the looper then creates the GitH
 
 ```sh
 looper-build plan | gates | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
-tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
 ```
 
 **The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A
@@ -1591,20 +1602,21 @@ cluster#18):
 
 | Runner | Tags | Its jobs | Pods | A job's requests and limits |
 |---|---|---|---|---|
-| `control` (58541761, *tacplus-dev control (cluster, ci, normal pool)*) | `arm64, control` | the kicker, the plan and the hub's probes ([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml)'s `.control`); the reports and the manager of every repository whose gates are build jobs (its main pins its build image and the project holds the trigger, [Build jobs](#build-jobs)) | the normal pool (3 × c4a-standard-2, always on), no spot node, no Docker socket, 8 at once (`concurrent`) | the runner's defaults 250m / 1 CPU, 512Mi / 2Gi; a job raises its own with GitLab's `KUBERNETES_CPU_REQUEST`, `KUBERNETES_MEMORY_REQUEST`, `KUBERNETES_CPU_LIMIT`, `KUBERNETES_MEMORY_LIMIT`, up to 1500m and 4Gi |
+| `control` (58541761, *tacplus-dev control (cluster, ci, normal pool)*) | `arm64, control` | the kicker, the plan and the hub's probes ([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml)'s `.control`); the reports, the manager and the nightly scan of every repository whose gates are build jobs (its main pins its build image and the project holds the trigger, [Build jobs](#build-jobs)) | the normal pool (3 × c4a-standard-2, always on), no spot node, no Docker socket, 8 at once (`concurrent`) | the runner's defaults 250m / 1 CPU, 512Mi / 2Gi; a job raises its own with GitLab's `KUBERNETES_CPU_REQUEST`, `KUBERNETES_MEMORY_REQUEST`, `KUBERNETES_CPU_LIMIT`, `KUBERNETES_MEMORY_LIMIT`, up to 1500m and 4Gi |
 | `build` (58541760) | `arm64, build` | tacplus-dev/build's jobs ([Build pipeline](#build-pipeline)) | the spot pool (0 to 3, tainted), rootless BuildKit in the pod (tacplus#315) | 1 / 3 CPU, 4Gi / 8Gi; up to 3500m and 12Gi |
 
 **Requests per job type** (Jody, 2026-11-07: every looper runs at once on the 3 always-on nodes, with small requests,
 since an agent mostly waits on the model's API; never the 4 CPU/14 GB a gate needs, which is a build job's). The
 plan (`looper-dispatch plan`) gives each control pod its kind's, as the job's variables: a **report** 100m and 512Mi,
-limits the ceilings (1500m, 4Gi); a **manager** (git and the forge's API, no model step yet) 50m and 256Mi, limits 1
-and 2Gi; `LOOPER_REQUESTS_report` and `LOOPER_REQUESTS_manager` (`"<cpu> <memory> <cpu limit> <memory limit>"`) set
-them. The **kicker and the plan** ask 50m and 256Mi, limits 1 and 1Gi (`.control`). The requests are **from the
-evidence, the limits unchanged** (looper#165): #84's 500m a report and 250m a manager filled the three nodes on paper
-while they ran at 5-15% CPU, a report refused `0/3 nodes are available: 3 Insufficient cpu`; the `ci` namespace's job
-containers used p50 8m, p90 151m, max 1032m CPU (Cloud Monitoring, 2 h, 10-minute max per pod, 48 pods), a burst the
-limit allows. Not more nodes: each pod logs its use at its end and the recap's **Requests against use** sets it beside
-its kind's requests ([Nightly recap](#nightly-recap)), so a drift shows.
+limits the ceilings (1500m, 4Gi), and a **scan** the same (a model run too, looper#73); a **manager** (git and the
+forge's API, no model step yet) 50m and 256Mi, limits 1 and 2Gi; `LOOPER_REQUESTS_report`, `LOOPER_REQUESTS_scan` and
+`LOOPER_REQUESTS_manager` (`"<cpu> <memory> <cpu limit> <memory limit>"`) set them. The **kicker and the plan** ask 50m
+and 256Mi, limits 1 and 1Gi (`.control`). The requests are **from the evidence, the limits unchanged** (looper#165):
+#84's 500m a report and 250m a manager filled the three nodes on paper while they ran at 5-15% CPU, a report refused
+`0/3 nodes are available: 3 Insufficient cpu`; the `ci` namespace's job containers used p50 8m, p90 151m, max 1032m CPU
+(Cloud Monitoring, 2 h, 10-minute max per pod, 48 pods), a burst the limit allows. Not more nodes: each pod logs its use
+at its end and the recap's **Requests against use** sets it beside its kind's requests ([Nightly
+recap](#nightly-recap)), so a drift shows.
 Requests and the pool's size bound how many run at once (no `caps.yaml`, looper#107): the rest wait as pending pods,
 which the [nightly recap](#nightly-recap) reports as waits for room, per repository, with how often the pool was full
 and what a 4th node costs, for Jody to decide.
@@ -1617,9 +1629,9 @@ pipeline's gates job on its runner lost alone (its 11h timeout is its own, loope
 
 **What still runs on the interim VM runners** (below), until it needs no Docker: the reports, verdict and manager of a
 repository that does not yet pin its build image (tacplus, tacplus#340; fleet-seatrials pins since its #42: a
-repository's jobs move the day its pin lands, by `looper-dispatch plan`'s read of the pin, with no change here), and
-**every nightly scan**, whose model runs the repository's gates on main through `looper-docker` (PROPOSALS.md: the scan
-reading the nightly build's verdict instead); in tacplus-dev/build, only a release's `publish-<repo>` while
+repository's jobs move the day its pin lands, by `looper-dispatch plan`'s read of the pin, with no change here), its
+nightly scan among them, whose model runs the repository's gates on main through `looper-docker` (a pinned one's reads
+the nightly build's verdict and runs on `control`, looper#73); in tacplus-dev/build, only a release's `publish-<repo>` while
 `BUILD_BUILDER_IMAGE` is empty (on `BUILD_DOCKER_TAGS`, [Build pipeline](#build-pipeline), looper#73). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
 jobs' alone; no job of `ci/tacplus-dev.gitlab-ci.yml` asks for them (`tests/looper-dispatch.test.sh`: ci-control), and
 `LOOPER_CONTROL_TAGS` names the control runner's (default `arm64, control`). The hub unpauses `control` once this is on
@@ -1776,8 +1788,8 @@ with no startup-script and nothing installed at boot. They keep the gate, as
 runtime, so there is no marker file), and one VM per job. `runner/`, `runner-image build` and `runner-image template`
 stay until the redesign's issues retire them. The runner VMs themselves get no fix (Jody, 2026-11-06): they are
 retired (no SSH in any form, and the docker-autoscaler VMs use it). looper#84 (landed 2026-11-16) moved the agents' jobs
-onto the in-cluster control runner; [what still needs Docker](#the-interim-vm-runners) (tacplus's jobs until tacplus#340,
-every nightly scan) follows, and tacplus-dev/cloud#11 then removes the `ci` stack's runner manager and pools and lists
+onto the in-cluster control runner; [what still needs Docker](#the-interim-vm-runners) (tacplus's jobs, its nightly scan
+among them, until tacplus#340) follows, and tacplus-dev/cloud#11 then removes the `ci` stack's runner manager and pools and lists
 jody1-328023's interim VMs for Jody to delete. looper#43 closes when they are gone, with no `runner-image measure`
 tables. The steps below are the procedure for jody1-328023's Ubuntu workers, kept as a record.
 

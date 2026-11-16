@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A nightly gates record that is days old is not flagged** (2026-11-16, #73): the scan's item 3 reads
+  `gates-<repo>/latest` as the nightly build left it; when the fan-out stops planning a repository (its pin gone, the
+  schedule off), the record stays and the scan goes on reading an old main's verdict, said only by its `checked` and
+  `at`. `repo-looper` could compare `at` with the scan's time and tell the model when it is over a day old (a finding
+  of the build pipeline, not of the repository).
 - **The nightly scan without Docker, so it runs on the control runner** (2026-11-15, #84): every scan still runs on
   the interim VM runners, since its model holds `looper-docker` to run the repository's gates on main (its checklist's
   item 3) and the ecosystem's auditors through `tacplus`. In a pinned repository the nightly build of tacplus-dev/build
@@ -11,7 +16,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   commit status, or the pipeline's record) instead of running the gates, and its model would then have no container
   runtime, as a pinned report has (`BUILD_JOBS`). Then `looper-dispatch plan`'s `where_it_runs` moves the scans by the
   same pin rule (one line), and nothing is left on the VM runners once tacplus and fleet-seatrials are pinned, so the hub
-  can remove the pools (the hub's step after #84).
+  can remove the pools (the hub's step after #84). **Done** 2026-11-16 (#73, step 2): the nightly's `gates-report`
+  publishes the gates' verdict on main (`gates-<repo>/latest`), the scan reads it, and a pinned repository's scan
+  runs on `arm64, control` with no container runtime. Left: tacplus's scan, until its pin (tacplus#340).
 - **The gates job retried on `stuck_or_timeout_failure` too** (2026-11-15, #84): the issue asks every build job for
   `retry: {max: 2, when: [runner_system_failure, stuck_or_timeout_failure]}`; the build pipeline's own jobs have it,
   the child pipeline's gates job keeps #148's choice (its runner lost alone), since its 11h timeout is its own and a
@@ -298,7 +305,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   can drop the socket's mount from the jobs' containers. With it, the test that an image builds in the build job
   without host Docker (rootless BuildKit in the build image: tacplus-dev/tacplus#315, which it is Blocked-by). The
   follow-up issue is #71's (linked from it): #73. Its step 1 (2026-11-16): a release's publish builds with rootless
-  BuildKit in `BUILD_BUILDER_IMAGE`; its steps 2 (the nightly scan off Docker, above) and 3 (the retirement) remain.
+  BuildKit in `BUILD_BUILDER_IMAGE`; step 2 (2026-11-16): a pinned repository's nightly scan reads the nightly
+  build's `gates-report` and runs on the control runner; step 3 (the retirement, once tacplus#340 pins) remains.
 - **A forged build verdict** (2026-11-03, #71): the looper takes a build's verdict only from the commit status the
   `tacplus-reader` app set, by its creator's login (`tacplus-reader[bot]`), linking the pipeline it started. A
   status's creator is GitHub's to record, so the looper's `GH_TOKEN` cannot pass for it; reading the pipeline's own

@@ -27,6 +27,9 @@
 #   verify-report  the record as the repository's latest (the next verify
 #            run's last verified commit), which the nightly scan files as bugs
 #            when it is red (looper-verify)
+#   gates-report  a nightly's gates verdict on main, as the repository's
+#            latest, which the nightly scan reads instead of running the
+#            gates (looper#73)
 #   status   the GitHub commit status (context tacplus-dev/build)
 #   publish  on a release tag, a job of the child pipeline once every check
 #            passed: the image, built with rootless BuildKit in a build image
@@ -80,6 +83,7 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build sbom                  the release image's SBOM, of publish's archive (image.tar)
        looper-build verify                just verify on the commit (a verify run: when verify-changed says run)
        looper-build verify-report         the verify job's record, published as the repository's latest
+       looper-build gates-report          a nightly's gates verdict, published as the repository's latest
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
 nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty; with BUILD_REPO
 empty too, the plan's child pipeline is every pinned repository's nightly), BUILD_VERIFY
@@ -526,6 +530,23 @@ security-report:
     BUILD_SCAN_KIND: "$(scan_kind)"
   script:
     - looper-scan report
+EOF
+  # A nightly's gates verdict, main's as it is, published for the nightly scan
+  # (looper#73): the scan reads it rather than run the gates with Docker.
+  [[ "${BUILD_NIGHTLY:-}" != true ]] || cat <<EOF
+gates-report:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: gates, artifacts: true}]
+  when: always
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_NIGHTLY: "true"
+  script:
+    - looper-build gates-report
 EOF
   # A failed security job's verdict, the gates green, as gates-failed sets
   # theirs (looper#144): report-fail cannot read it either. Not a nightly's:
@@ -979,6 +1000,38 @@ cmd_verify_report() {
   log "published as verify-$BUILD_REPO/latest: ${files[*]}"
 }
 
+# --- gates-report -------------------------------------------------------------
+
+# A nightly's gates on main (looper#73), as the repository's latest: the build
+# project's generic package gates-<repo>, its record (repo, kind, checked,
+# result pass, fail or none, why, run, at) and the gates' log tail. The
+# nightly scan reads it (repo-looper) instead of running the gates itself.
+cmd_gates_report() {
+  check_inputs
+  [[ "${BUILD_NIGHTLY:-}" == true ]] || { log "gates-report: not a nightly: a build's gates are no verdict on main; nothing published"; return 0; }
+  local d="$BUILD_OUT/gates-report" f v result why
+  mkdir -p "$d"
+  v="$(head -n 1 "$BUILD_OUT/build-verdict" 2>/dev/null || true)"
+  case "$v" in
+    pass) result=pass; why="" ;;
+    fail:*) result=fail; why="${v#fail: }" ;;
+    *) result=none; why="the gates job left no verdict (its runner lost, after GitLab's retries, or it timed out)" ;;
+  esac
+  { printf 'repo %s\nkind nightly\nchecked %s\nresult %s\n' "$BUILD_REPO" "$BUILD_SHA" "$result"
+    [[ -z "$why" ]] || printf 'why %s\n' "$why"
+    printf 'run %s\nat %s\n' "${CI_PIPELINE_URL:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$d/record"
+  tail -n 200 "$BUILD_OUT/gates.log" > "$d/log-tail" 2>/dev/null || true
+  cat "$d/record" >&2
+  : "${CI_JOB_TOKEN:?no job token: the report publishes with it}" "${CI_API_V4_URL:?}" "${CI_PROJECT_ID:?}"
+  for f in record log-tail; do
+    [[ -s "$d/$f" ]] || echo "(none)" > "$d/$f"
+    curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$d/$f" \
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/gates-$BUILD_REPO/latest/$f" ||
+      { log "the package registry refused $f"; exit 1; }
+  done
+  log "published as gates-$BUILD_REPO/latest: record log-tail"
+}
+
 # --- status -----------------------------------------------------------------
 
 cmd_status() { # state [description]
@@ -1238,6 +1291,7 @@ case "${1:-}" in
   sbom) cmd_sbom ;;
   verify) cmd_verify ;;
   verify-report) cmd_verify_report ;;
+  gates-report) cmd_gates_report ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

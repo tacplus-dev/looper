@@ -274,6 +274,10 @@ case "$url" in
   */packages/generic/verify-*/latest/*)
     if [[ -f "$FIX/verify/${url##*/}" ]]; then reply 200 "$(cat "$FIX/verify/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
+  # The nightly's gates on main (looper#73): $FIX/gates/<file>.
+  */packages/generic/gates-*/latest/*)
+    if [[ -f "$FIX/gates/${url##*/}" ]]; then reply 200 "$(cat "$FIX/gates/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
+    exit 0 ;;
   */packages\?*)
     if [[ -f "$FIX/packages.json" ]]; then reply 200 "$(cat "$FIX/packages.json")"; else reply 200 '[]'; fi
     exit 0 ;;
@@ -3335,6 +3339,49 @@ lacks "$pr" "limited to 2048m of memory"
 [[ "$pr" == *"1 on a failure, 2 with none
    within its wait, 3 with none by this job's end, 4 when no runner took it within 15m: no verdict yet, and a later --build of the same commit takes it up). You
    have no container runtime"*"you may run yourself. The full gates are "*". Long builds: "* ]] || fail "rule 4: $(grep -A7 '^4\. ' <<<"$pr")"
+pass
+
+# The nightly scan of a pinned repository (looper#73): its model has no
+# container runtime, as a report's, and runs no gates: its item 3 is the
+# nightly build's verdict on main, the record the build published, read with
+# GITLAB_TOKEN into the run's directory; none read, the prompt says so and
+# asks for no gates run. An unpinned repository's scan keeps its gates.
+scenario build-job-scan
+templates; pin_seed
+cat > "$FIX/scan.sh" <<'EOS'
+{ readlink -f "$(command -v docker)"; docker ps; echo "docker rc $?"; env | grep -E '^(DOCKER_HOST|BUILD_TRIGGER_TOKEN|LOOPER_DOCKER_BROKER|LOOPER_REAL_DOCKER)=' ; } > "$FIX/probe" 2>&1
+EOS
+mkdir -p "$FIX/gates"
+printf 'repo alpha\nkind nightly\nchecked %s\nresult fail\nwhy just gates exited 3\nrun https://gitlab.com/tacplus-dev/build/-/pipelines/77\nat 2026-11-16T03:00:00Z\n' \
+  "$(origin rev-parse main)" > "$FIX/gates/record"
+printf 'test x ... FAILED\n' > "$FIX/gates/log-tail"
+OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" DOCKER_HOST="unix://$FIX/docker.sock" PATH="$FIX/dk:$TMP/bin:$PATH" -- --repo alpha --scan 2>&1)" ||
+  { echo "$OUT"; fail "scan exited non-zero"; }
+has "$OUT" "alpha pins its build image: this scan reads the nightly build's gates, its model with no container runtime"
+p="$(cat "$FIX/probe")"
+has "$p" "a scan has no container runtime"; has "$p" "docker rc 125"
+lacks "$p" "looper-docker"; lacks "$p" "DOCKER_HOST="; lacks "$p" "BUILD_TRIGGER_TOKEN="; lacks "$p" "LOOPER_DOCKER_BROKER="
+[[ ! -e "$FIX/real-docker" ]] || fail "the model reached docker: $(cat "$FIX/real-docker")"
+grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/gates-alpha/latest/record" "$FIX/gitlab" ||
+  fail "$(cat "$FIX/gitlab")"
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)/gates"
+cmp -s "$d/record" "$FIX/gates/record" && cmp -s "$d/log-tail" "$FIX/gates/log-tail" || fail "the record was not read: $(ls "$d" 2>&1)"
+pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
+has "$pp" "3. The repository's own gates failing on main: the nightly build's verdict (tacplus-dev/build, looper#73), not yours to run"
+has "$pp" "its latest record is $d/record"; has "$pp" "the gates' log tail $d/log-tail"
+has "$pp" "You have no container runtime"
+lacks "$pp" "the full gates, "
+[[ ! -e "$FIX/gates-ran" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
+# No record: no gates run, no finding of them.
+rm -rf "$FIX/gates" "$FIX"/project/looper-runs/*-scan
+OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" PATH="$FIX/dk:$TMP/bin:$PATH" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "3. The repository's own gates on main are the nightly build's (tacplus-dev/build, looper#73), and its record could not be read: do not run them"
+pass
+scenario scan-unpinned-gates
+templates; : > "$FIX/scan.sh"
+OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
+has "$pp" "3. The repository's own gates failing on main ("; lacks "$pp" "nightly build's verdict"; lacks "$pp" "You have no container runtime"
 pass
 
 # A build is keyed by (repo, commit, gate set, base) (looper#134). Two requests

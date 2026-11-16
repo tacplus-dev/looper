@@ -1309,6 +1309,57 @@ build BUILD_SHA="${SHA[verify2]}" "${VAPI[@]}" -- verify-report 2>"$TMP/err" || 
 ! grep -q '^package-put' "$TMP/api.log" || fail "published without a record: $(cat "$TMP/api.log")"
 pass
 
+# --- the nightly's gates, the scan's item 3 (looper#73) -------------------------------
+grec() { sed -n "s/^$1 //p" "$OUT/gates-report/record" | tail -n 1; } # key
+
+NAME="plan: a nightly publishes its gates' verdict on main for the scan (gates-report), a build and a release do not"
+build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+y="$OUT/build-gates.yml"
+sed -n '/^gates-report:$/,/^[^ ]/p' "$y" > "$TMP/gr.yml"
+[[ -s "$TMP/gr.yml" ]] || fail "no gates-report job: $(cat "$y")"
+for l in '  image: "ghcr.io/tacplus-dev/looper:main"' '  needs: [{job: gates, artifacts: true}]' '  when: always' '  allow_failure: true' \
+         '    BUILD_NIGHTLY: "true"' '    - looper-build gates-report'; do
+  grep -qxF -- "$l" "$TMP/gr.yml" || fail "the gates-report job lacks '$l': $(cat "$TMP/gr.yml")"
+done
+grep -qxF "$(sed -n '/^gates:$/,/^[^ ]/p' "$y" | grep -m1 '^    BUILD_SHA: ')" "$TMP/gr.yml" || fail "not the gates' commit: $(cat "$TMP/gr.yml")"
+build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed"
+! grep -q '^gates-report:' "$OUT/build-gates.yml" || fail "a build's gates published as main's nightly"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 -- plan 2>"$TMP/err" || fail "release plan failed"
+! grep -q '^gates-report:' "$OUT/build-gates.yml" || fail "a release's gates published as main's nightly"
+pass
+
+NAME="gates-report: the nightly's verdict, its commit and run, and the gates' log tail, as the repository's latest"
+build BUILD_SHA="${SHA[pass]}" -- gates 2>"$TMP/err" || fail "gates failed"
+GREEN_OUT="$OUT"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true BUILD_OUT="$GREEN_OUT" "${VAPI[@]}" -- gates-report 2>"$TMP/err" ||
+  fail "the report failed: $(cat "$TMP/err")"
+OUT="$GREEN_OUT"
+[[ "$(grec repo) $(grec kind) $(grec checked) $(grec result) $(grec run)" == "demo nightly ${SHA[pass]} pass https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] ||
+  fail "$(cat "$OUT/gates-report/record")"
+[[ "$(grec at)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] || fail "no time: $(cat "$OUT/gates-report/record")"
+grep -q "gates ok" "$OUT/gates-report/log-tail" || fail "no log tail: $(cat "$OUT/gates-report/log-tail")"
+for f in record log-tail; do
+  grep -q "^package-put JOB-TOKEN: glcbt-stub gates-demo/latest/$f " "$TMP/api.log" || fail "$f not published: $(cat "$TMP/api.log")"
+done
+pass
+
+NAME="gates-report: red gates, their reason; none when the gates job left no verdict (its runner lost)"
+if build BUILD_SHA="${SHA[fail]}" -- gates 2>"$TMP/err"; then fail "a failing gate passed"; fi
+RED_GATES="$OUT"
+build BUILD_SHA="${SHA[fail]}" BUILD_NIGHTLY=true BUILD_OUT="$RED_GATES" "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+OUT="$RED_GATES"
+[[ "$(grec result)" == fail && "$(grec why)" == "just gates exited 3"* ]] || fail "$(cat "$OUT/gates-report/record")"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+[[ "$(grec result)" == none && "$(grec why)" == "the gates job left no verdict"* ]] || fail "$(cat "$OUT/gates-report/record")"
+grep -q "gates-demo/latest/record " "$TMP/api.log" || fail "no verdict is not published: $(cat "$TMP/api.log")"
+pass
+
+NAME="gates-report: only a nightly's: a build's or a release's gates are no verdict on main"
+build BUILD_SHA="${SHA[pass]}" BUILD_OUT="$GREEN_OUT" "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+! grep -q '^package-put' "$TMP/api.log" || fail "published a build's gates: $(cat "$TMP/api.log")"
+grep -q "not a nightly" "$TMP/err" || fail "$(cat "$TMP/err")"
+pass
+
 # --- the security checks (looper-scan, looper#49) ------------------------------------
 NAME="plan: the child pipeline runs the security checks in the looper image, after the gates, of the run's kind"
 build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed"
