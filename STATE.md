@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#167).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#171).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -63,7 +63,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   high model the limit refuses mid-run falls back to the default, as a probe's refusal does; one idle after its land
   landed reports `landed`, with main's range, and stays approved for the next run to close, #37; a run waiting on its
   build, pending or running in tacplus-dev/build, is not idle until its verdict or `LOOPER_BUILD_WAIT` from its start, and one idle after its
-  build had no verdict within that wait is retried, not stuck, #133; one that ends with its land queued and no verdict is `land-pending`, held
+  build had no verdict within that wait is retried, not stuck, #133; one whose work waits on another run's result (an image build, a pipeline) does not wait in its model: `--wait-on <url>` checkpoints `waiting on <url>` and ends it (one that sits waiting all the same is stopped as done, not idle), its issue `Waiting-on: <url> (since ...)` in its body and `approved`, never stuck, ready again (the kicker, the plan) once that GitHub Actions run or GitLab pipeline or job has finished, or `LOOPER_WAIT_MAX` (6h) after when it cannot be read, its next run resuming with the result named in its prompt, #171; one that ends with its land queued and no verdict is `land-pending`, held
   (`looper:landing`) until the manager's verdict, #70, a blocked one's land too, kept queued, and any other
   outcome leaves no `looper:landing`, nor does a manager wait on one with no land queued: it clears it, and says
   what holds it every `LOOPER_MANAGER_SAY`, #93;
