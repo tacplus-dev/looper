@@ -359,10 +359,11 @@ mkdir -p "$TMP/bin"
 echo "$READ_TOKEN" > "$TMP/token"   # what the app hands out
 cat > "$TMP/bin/curl" <<EOF
 #!/usr/bin/env bash
-method=GET data="" auth="" url="" out=""
+method=GET data="" auth="" url="" out="" w=""
 while ((\$#)); do
   case "\$1" in
     -X) method="\$2"; shift 2 ;;
+    -w) w="\$2"; shift 2 ;;
     -H) [[ "\$2" == Authorization:* ]] && auth="\${2#Authorization: }"; [[ "\$2" == JOB-TOKEN:* ]] && auth="\$2"; shift 2 ;;
     --upload-file) method=PUT; up="\$2"; shift 2 ;;
     -d) data="\$2"; shift 2 ;;
@@ -385,6 +386,17 @@ case "\$method \$url" in
     echo "status \$auth \${url##*/} \$data" >> "$TMP/api.log" ;;
   "GET https://api.github.com/repos/tacplus-dev/demo/commits/"*"/statuses?per_page=100")   # the statuses set so far: \$TMP/statuses
     echo "statuses \$auth" >> "$TMP/api.log"; cat "$TMP/statuses" 2>/dev/null || echo '[]' ;;
+  # The org's repositories, as the app's installation sees them (looper#164): \$TMP/installation-<page>.
+  "GET https://api.github.com/installation/repositories?per_page=100&page="*)
+    echo "installation-repos \$auth page=\${url##*page=}" >> "$TMP/api.log"
+    [[ -f "$TMP/installation-\${url##*page=}" ]] || exit 22
+    cat "$TMP/installation-\${url##*page=}" ;;
+  # A pin on a repository's main: \$TMP/pins/<repo>/<file> holds GitHub's answer, 200 or another; none, 404.
+  "GET https://api.github.com/repos/tacplus-dev/"*"/contents/"*"?ref=main")
+    p="\${url#https://api.github.com/repos/tacplus-dev/}"; p="\${p%%\?*}"; r="\${p%%/*}"; f="\${p##*/}"
+    echo "contents \$auth \$r \$f" >> "$TMP/api.log"
+    code="\$(cat "$TMP/pins/\$r/\$f" 2>/dev/null || echo 404)"
+    [[ -z "\$w" ]] || printf '%s' "\$code" ;;
   "GET https://api.github.com/repos/tacplus-dev/demo")   # its visibility: CodeQL's terms (looper#49)
     echo "repo \$auth" >> "$TMP/api.log"; [[ -f "$TMP/private" ]] && echo '{"private": true}' || echo '{"private": false}' ;;
   # The build project's package registry (looper#49): the latest findings, the SBOMs.
@@ -1197,6 +1209,113 @@ if build BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned without a commit"; 
 verdict_is "fail: BUILD_SHA ''"
 if build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true BUILD_TAG=v1.2.3 -- plan 2>"$TMP/err"; then fail "a nightly release"; fi
 verdict_is "fail: a nightly build is not a release"
+pass
+
+# One nightly for the org (looper#164): GitLab allows a project 10 pipeline
+# schedules (tacplus-dev/cloud#65), so a nightly with no repository is one
+# pipeline whose plan lists the repositories that pin their build image on
+# main, as the cutover reads a pin, and fans out a child pipeline to each.
+# The installation's repositories: page 1 full (100), page 2 the rest; demo
+# pins with tacplus.lock, late with build.lock, other with both; bare pins
+# nothing; old is archived and elsewhere another owner's: neither is read.
+fanout_repos() { # page name[:archived|:owner]...
+  local page="$1" r; shift
+  { printf '{"total_count": 101, "repositories": ['
+    for r in "$@"; do
+      printf '{"name": "%s", "owner": {"login": "%s"}, "archived": %s},' "${r%%:*}" \
+        "$([[ "$r" == *:owner ]] && echo someone || echo tacplus-dev)" "$([[ "$r" == *:archived ]] && echo true || echo false)"
+    done | sed 's/,$//'
+    printf ']}\n'; } > "$TMP/installation-$page"
+}
+fanout_fixture() {
+  rm -rf "$TMP/pins"; mkdir -p "$TMP/pins/demo" "$TMP/pins/late" "$TMP/pins/other" "$TMP/pins/old"
+  echo 200 > "$TMP/pins/demo/tacplus.lock"; echo 200 > "$TMP/pins/late/build.lock"
+  echo 200 > "$TMP/pins/other/tacplus.lock"; echo 200 > "$TMP/pins/other/build.lock"; echo 200 > "$TMP/pins/old/tacplus.lock"
+  local fill=() i; for i in $(seq 95); do fill+=("unpinned-$i"); done
+  fanout_repos 1 other bare old:archived demo elsewhere:owner "${fill[@]}"
+  fanout_repos 2 late
+}
+FANOUT=(BUILD_REPO= BUILD_SHA= BUILD_NIGHTLY=true CI_JOB_IMAGE="ghcr.io/tacplus-dev/looper@$DIGEST_A")
+
+NAME="plan: a nightly with no repository fans out, one child pipeline per pinned repository, none for another (looper#164)"
+fanout_fixture
+build "${FANOUT[@]}" -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+y="$OUT/build-gates.yml"
+jobs="$(grep -oE '^[A-Za-z][^:]*:' "$y" | paste -sd' ' -)"
+[[ "$jobs" == "default: stages: nightly-plan-demo: nightly-demo: nightly-plan-late: nightly-late: nightly-plan-other: nightly-other:" ]] ||
+  fail "not one child per pinned repository: $jobs"
+grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"}}' "$TMP/api.log" ||
+  fail "the listing's token is not contents read-only: $(grep '^token' "$TMP/api.log")"
+grep -qF 'installation-repos Bearer '"$READ_TOKEN"' page=2' "$TMP/api.log" || fail "the listing's second page was not read"
+! grep -qE '^contents .* (old|elsewhere) ' "$TMP/api.log" || fail "read the pin of an archived or another owner's repository"
+grep -qxF "contents Bearer $READ_TOKEN bare build.lock" "$TMP/api.log" || fail "bare's build.lock was not read"
+grep -qxF "contents Bearer $READ_TOKEN other tacplus.lock" "$TMP/api.log" || fail "other's tacplus.lock was not read"
+for r in demo late other; do
+  sed -n "/^nightly-plan-$r:\$/,/^[^ ]/p" "$y" | sed '$d' > "$TMP/plan-$r.yml"
+  for l in "  stage: plan" "  image: \"ghcr.io/tacplus-dev/looper@$DIGEST_A\"" '  tags: [arm64, build]' '    GIT_STRATEGY: none' \
+           "    BUILD_REPO: \"$r\"" '    BUILD_SHA: ""' '    BUILD_ORG: "tacplus-dev"' '    BUILD_NIGHTLY: "true"' \
+           '    - looper-build plan' '    paths: [build-gates.yml, build-verdict]'; do
+    grep -qxF -- "$l" "$TMP/plan-$r.yml" || fail "nightly-plan-$r lacks '$l': $(cat "$TMP/plan-$r.yml")"
+  done
+  sed -n "/^nightly-$r:\$/,/^[^ ]/p" "$y" > "$TMP/child-$r.yml"
+  for l in "  stage: nightly" '      - artifact: build-gates.yml' "        job: nightly-plan-$r" '    strategy: depend' \
+           '    forward:' '      yaml_variables: false' '      pipeline_variables: false'; do
+    grep -qxF -- "$l" "$TMP/child-$r.yml" || fail "nightly-$r lacks '$l': $(cat "$TMP/child-$r.yml")"
+  done
+done
+# A nightly sets no commit status: it is no commit's verdict.
+! grep -q 'looper-build status' "$y" || fail "the fan-out sets a commit status: $(grep -n 'looper-build status' "$y")"
+[[ ! -e "$OUT/build-verdict" ]] || fail "the fan-out plan wrote a verdict: $(cat "$OUT/build-verdict")"
+# Valid as GitLab reads it (its schema, looper-ci-lint, looper#94).
+"$ROOT/looper-ci-lint" "$y" > "$TMP/lint" 2>&1 || fail "the fan-out pipeline is not valid GitLab CI: $(cat "$TMP/lint")"
+pass
+
+NAME="fan-out: each child is exactly today's nightly of its repository, and one's failure does not stop the others"
+# Each child needs its own plan alone: GitLab runs a job once its needs are
+# done, whatever another child's plan or pipeline did (strategy: depend: its
+# pipeline's result is its trigger job's, the fan-out's red when one is).
+for r in demo late other; do
+  needs="$(grep '^  needs:' "$TMP/child-$r.yml")"
+  [[ "$needs" == "  needs: [nightly-plan-$r]" ]] || fail "nightly-$r needs more than its own plan: $needs"
+  ! grep -q '^  needs:\|^  when:\|^  allow_failure:' "$TMP/plan-$r.yml" || fail "nightly-plan-$r waits on another job: $(cat "$TMP/plan-$r.yml")"
+done
+grep -qxF 'stages: [plan, nightly]' "$y" || fail "no stages: $(grep stages "$y")"
+cp "$y" "$TMP/fanout.yml"
+# demo's plan job, as the child pipeline runs it, writes today's nightly of demo.
+build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "the nightly of demo failed: $(cat "$TMP/err")"
+cp "$OUT/build-gates.yml" "$TMP/nightly-demo.yml"
+v=(); while read -r l; do v+=("$l"); done < <(sed -n 's/^    \(BUILD_[A-Z]*\): "\(.*\)"$/\1=\2/p' "$TMP/plan-demo.yml")
+build "${v[@]}" -- plan 2>"$TMP/err" || fail "demo's plan job failed: $(cat "$TMP/err")"
+cmp -s "$OUT/build-gates.yml" "$TMP/nightly-demo.yml" || fail "demo's child is not its nightly: $(diff "$TMP/nightly-demo.yml" "$OUT/build-gates.yml" | head)"
+# late's (no main to read here) fails in its own plan job, with its own verdict.
+v=(); while read -r l; do v+=("$l"); done < <(sed -n 's/^    \(BUILD_[A-Z]*\): "\(.*\)"$/\1=\2/p' "$TMP/plan-late.yml")
+if build "${v[@]}" -- plan 2>"$TMP/err"; then fail "late's plan passed with no repository"; fi
+verdict_is "fail: tacplus-dev/late has no main branch to scan"
+pass
+
+NAME="fan-out: a listing or a pin it cannot read, or no pinned repository, is a fail verdict, never a nightly of fewer"
+fanout_fixture; rm "$TMP/installation-2"
+if build "${FANOUT[@]}" -- plan 2>"$TMP/err"; then fail "fanned out without the listing's second page"; fi
+verdict_is "fail: cannot list the repositories of tacplus-dev"
+[[ ! -e "$OUT/build-gates.yml" ]] || fail "wrote a fan-out"
+fanout_fixture; mkdir -p "$TMP/pins/bare"; echo 502 > "$TMP/pins/bare/build.lock"
+if build "${FANOUT[@]}" -- plan 2>"$TMP/err"; then fail "fanned out without bare's pin"; fi
+verdict_is "fail: cannot tell whether tacplus-dev/bare pins its build image: GitHub answered 502 for build.lock"
+fanout_fixture; rm -rf "$TMP/pins"
+if build "${FANOUT[@]}" -- plan 2>"$TMP/err"; then fail "fanned out to nothing"; fi
+verdict_is "fail: no repository of tacplus-dev pins its build image on main"
+# A nightly names a repository, or none and no commit: a commit with no repository is refused.
+if build "${FANOUT[@]}" BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err"; then fail "a nightly of a commit of no repository"; fi
+verdict_is "fail: BUILD_REPO ''"
+rm -rf "$TMP/pins" "$TMP/installation-"*
+pass
+
+NAME="pipeline: a nightly with no repository (a schedule, or the API) is the fan-out, from the sources a nightly has"
+w="$(sed -n '/^workflow:$/,/^[^ w]/p' "$ROOT/ci/build.gitlab-ci.yml")"
+grep -qF '    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO == "" && $BUILD_SHA == "" && $BUILD_NIGHTLY == "true"' <<<"$w" ||
+  fail "no fan-out rule: $w"
+grep -qF '    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_NIGHTLY == "true"' <<<"$w" ||
+  fail "the nightly of one repository is gone: $w"
 pass
 
 # GitLab passes a trigger job's variables, the pipeline's global ones among

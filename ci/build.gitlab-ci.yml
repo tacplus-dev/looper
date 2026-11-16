@@ -54,6 +54,12 @@
 # makes the image's SBOM. A nightly is a scheduled (or API) run with inputs
 # repo and "nightly": true, and no sha: the plan scans main as it is then. It
 # sets no commit status: it is no commit's verdict. README: Security checks.
+# The nightly of every repository (looper#164): a nightly with no repo (and no
+# sha) is one pipeline, so one schedule serves the org (GitLab allows a project
+# 10, tacplus-dev/cloud#65). Its plan lists the repositories whose main pins a
+# build image (tacplus.lock or build.lock) and its child pipeline runs each
+# one's nightly, as above, in a pipeline of its own (strategy: depend): one's
+# failure stops no other's.
 #
 # The runner image (looper#43): a web or scheduled run on main with
 # "runner_image": true is a pipeline of one job, runner-image, which bakes the
@@ -108,7 +114,7 @@ spec:
       type: boolean
       default: false
     nightly:
-      description: "The nightly security checks of repo's main branch (no tag; sha empty: main's head now)"
+      description: "The nightly security checks of repo's main branch (no tag; sha empty: main's head now; repo empty too: every repository that pins its build image)"
       type: boolean
       default: false
     verify:
@@ -133,6 +139,9 @@ workflow:
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_NIGHTLY == "true"
       variables:
         BUILD_PIPELINE_NAME: "nightly $[[ inputs.repo ]] $[[ inputs.sha ]]"
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO == "" && $BUILD_SHA == "" && $BUILD_NIGHTLY == "true"
+      variables:
+        BUILD_PIPELINE_NAME: "nightly"
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
       variables:
         BUILD_PIPELINE_NAME: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]] $[[ inputs.gates ]]"
@@ -187,6 +196,7 @@ pending:
 # Fetch exactly the commit (a nightly or a verify run: main's head), read its pin (tacplus.lock, or
 # build.lock), write the gates job in the pinned image and the security checks' jobs, and on a
 # release the formal verification's (a verify run: those alone). No pin, or a bad one, is a fail verdict.
+# A nightly with no repo: the child pipeline of each pinned repository's nightly (looper#164).
 plan:
   extends: .build-run
   stage: plan

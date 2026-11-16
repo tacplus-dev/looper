@@ -470,7 +470,7 @@ pin issue (filed by the hub) commits one.
 
 ```sh
 tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
-tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin
+tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin; the nightly fan-out: a pinned repository is built, an unpinned, archived or another owner's is not, each child is its repository's nightly and needs its own plan alone, a listing or pin it cannot read fails (looper#164)
 ```
 
 ### Gates scaled to the diff
@@ -883,7 +883,8 @@ jobs run `looper-build`, from this image.
 - **`plan`** fetches exactly that commit and reads its `tacplus.lock` (as tacplus validates it: an exact release,
   the build image by digest, of the same line), or for a repository that is no tacplus project its `build.lock`
   (`build_image:` by digest alone; the looper's, looper#71). No pin, or a bad one, is a **fail** verdict, never a guess. It
-  writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' jobs.
+  writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' jobs. A
+  nightly with no `repo` plans every pinned repository's nightly instead ([Security checks](#security-checks), looper#164).
 - **`gates`**, in the pinned build image, first compares the pipeline's creation (`CI_PIPELINE_CREATED_AT`) with
   now: past its `wait`, nobody waits for its verdict any more, and it writes the verdict `abandoned: no verdict wanted
   after 3h` (say) and runs no gates (looper#130; the trigger token cannot cancel a pipeline, the job ends itself). Else
@@ -1058,9 +1059,16 @@ run by two jobs of the child pipeline `plan` writes, beside `gates`:
 **When.** Every build: OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
 FindSecBugs, Trivy on the release jars the gates built (below), and a Syft SBOM of the source. A **nightly** and every
 **release** tag add CodeQL and Trivy on the tree. A nightly is
-a pipeline of tacplus-dev/build started with the inputs `repo` and `"nightly": true` and no `sha` (a pipeline schedule
-per repository, on `main`; the plan scans `main`'s head then); it runs the gates and the checks and sets no commit
-status. A release's `publish` makes the SBOM of the image it pushed.
+a pipeline of tacplus-dev/build started with the inputs `repo` and `"nightly": true` and no `sha` (the plan scans
+`main`'s head then); it runs the gates and the checks and sets no commit status. **One schedule runs every
+repository's** (looper#164): GitLab allows a project 10 pipeline schedules and the org has more repositories
+(tacplus-dev/cloud#65), so a nightly with neither `repo` nor `sha` is the **fan-out**. Its `plan` lists the org's
+repositories the tacplus-reader app reads, not archived, and keeps those whose `main` has a `tacplus.lock` or a
+`build.lock` (the cutover's rule, [Build jobs](#build-jobs)); its child pipeline has, per repository,
+`nightly-plan-<repo>` (that repository's own nightly `plan`) and `nightly-<repo>`, the pipeline it writes,
+`strategy: depend`. Each needs its own plan alone, so one repository's failure stops no other's, and the fan-out is
+red when one is. A listing or a pin it cannot read, or no pinned repository, fails the plan rather than run fewer.
+The schedule: `{"nightly": true}`, on `main`. A release's `publish` makes the SBOM of the image it pushed.
 
 | Tool | Version | Pinned by | Runs on |
 |---|---|---|---|

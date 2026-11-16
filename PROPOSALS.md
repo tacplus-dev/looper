@@ -751,6 +751,19 @@ the looper then marks it `promoted` or `declined` here with the date.
   with a `read_repository` reader) comparing the two and filing a bug on a difference would catch it before a land
   does; since #127 the trigger's refusal carries GitLab's body, which names the input.
 
+- **A nightly's red gates set a commit status on main** (2026-11-16, #164): the child pipeline's `gates-failed` job
+  (looper#148) is written for every kind of build, a nightly's too, so a nightly whose gates fail sets
+  `tacplus-dev/build` failure on main's head, though the build pipeline says a nightly "sets no commit status: it is
+  no commit's verdict" (and `security-failed` is already left out of a nightly's, looper#144). The fan-out runs each
+  repository's nightly exactly as before, so this is unchanged by #164; leaving `gates-failed` out when
+  `BUILD_NIGHTLY` is true would match the promise. A `bug` to file once confirmed it is unwanted (a red main may be
+  a status someone reads).
+- **The fan-out starts every repository's nightly at once** (2026-11-16, #164): one schedule now plans about 25
+  nightlies whose gates and scans all start together on the spot pool, where 25 schedules could be spread over the
+  night. If the pool's scale-up or the registry's pulls suffer, a `resource_group` per slot, or the plan writing the
+  children in waves (`needs` on the previous wave's triggers, with `when: always` so a red one still stops none),
+  would spread them.
+
 ## Promoted / declined
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap
   compares `ghcr.io/tacplus-dev/looper:main`'s `org.opencontainers.image.revision` with main's head.

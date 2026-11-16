@@ -11,6 +11,8 @@
 #   plan     fetch exactly the commit, read its pin (tacplus.lock, or
 #            build.lock: looper#71), and write the child pipeline whose gates
 #            job runs in the pinned build image
+#            (a nightly with no repository: the child pipeline of every
+#            pinned repository's nightly, looper#164)
 #   gates    in that image, with no agent: `just gates` on the commit, or the
 #            gate set asked for from its gates.yaml (looper#71); a change to a
 #            tracked file fails it; then the code it generates (a `generated`
@@ -67,7 +69,8 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build verify                just verify on the commit (a verify run: when verify-changed says run)
        looper-build verify-report         the verify job's record, published as the repository's latest
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
-nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty), BUILD_VERIFY
+nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty; with BUILD_REPO
+empty too, the plan's child pipeline is every pinned repository's nightly), BUILD_VERIFY
 (true: the formal verification of the main branch, likewise; BUILD_VERIFY_SINCE, _RESULT and _RUN: the last
 record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
@@ -258,6 +261,9 @@ check_release() { # dir
 
 cmd_plan() {
   refuse_write_credentials
+  if [[ "${BUILD_NIGHTLY:-}" == true && -z "${BUILD_REPO:-}${BUILD_SHA:-}${BUILD_TAG:-}" && "${BUILD_VERIFY:-}" != true ]]; then
+    plan_fanout; return 0
+  fi
   check_inputs plan
   mkdir -p "$BUILD_OUT"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"' "$BUILD_REPO")" ||
@@ -286,6 +292,106 @@ cmd_plan() {
   else
     log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE${BUILD_TAG:+, the formal verification}"
   fi
+}
+
+# The nightly of every repository (looper#164): GitLab allows a project 10
+# pipeline schedules and the org has more repositories (tacplus-dev/cloud#65),
+# so a nightly with no repository is one pipeline. Its plan lists the org's
+# repositories the tacplus-reader app is installed on, not archived (as the
+# looper's own scan lists them), and keeps those whose main pins a build image
+# (tacplus.lock or build.lock: the cutover's rule, looper#71). Its child
+# pipeline has, per repository, that repository's nightly as it runs alone:
+# its plan job (this command, with BUILD_REPO), and the gates and security
+# checks' pipeline that job writes, triggered with strategy: depend. Each
+# trigger needs its own plan alone, so one repository's failure stops no
+# other's; the fan-out is red when one is. Two levels below the build's own
+# pipeline, GitLab's limit. No commit status: no commit's verdict.
+plan_fanout() {
+  mkdir -p "$BUILD_OUT"
+  local token list r pinned=() unpinned=()
+  token="$(reader_token '"contents":"read","metadata":"read"')" || verdict fail "no read-only GitHub token (the tacplus-reader app)"
+  list="$(org_repos "$token")" || verdict fail "cannot list the repositories of $BUILD_ORG (the tacplus-reader app's installation)"
+  for r in $list; do
+    if ! [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$r" != *..* ]]; then log "fan-out: '$r' is not a repository name: skipped"
+    elif pins_build_image "$token" "$r"; then pinned+=("$r")
+    else unpinned+=("$r"); fi
+  done
+  ((${#pinned[@]})) || verdict fail "no repository of $BUILD_ORG pins its build image on main (tacplus.lock, build.lock)"
+  write_fanout_pipeline "${pinned[@]}" > "$BUILD_OUT/build-gates.yml"
+  log "plan: the nightly of ${#pinned[@]} repositories of $BUILD_ORG: ${pinned[*]}; no pin on main: ${unpinned[*]:-none}"
+}
+
+# The org's repositories the app's installation reads, not archived, by name, sorted.
+org_repos() { # token
+  local page=1 resp n
+  while :; do
+    resp="$(curl -fsS -H "Authorization: Bearer $1" -H 'Accept: application/vnd.github+json' \
+              "$BUILD_GITHUB_API/installation/repositories?per_page=100&page=$page")" || return 1
+    n="$(jq '.repositories | length' <<<"$resp")" || return 1
+    jq -r --arg o "$BUILD_ORG" '.repositories[] | select(.owner.login == $o and (.archived | not)) | .name' <<<"$resp" || return 1
+    ((n == 100)) || break
+    page=$((page + 1))
+  done | LC_ALL=C sort -u
+  return "${PIPESTATUS[0]}"
+}
+
+# Whether the repository's main pins its build image: GitHub's 200 for a pin
+# file, 404 for none; any other answer fails the plan rather than drop it.
+pins_build_image() { # token repo
+  local f code
+  for f in tacplus.lock build.lock; do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Accept: application/vnd.github+json' \
+              "$BUILD_GITHUB_API/repos/$BUILD_ORG/$2/contents/$f?ref=main")" || code="${code:-000}"
+    case "$code" in
+      200) return 0 ;;
+      404) ;;
+      *) verdict fail "cannot tell whether $BUILD_ORG/$2 pins its build image: GitHub answered $code for $f" ;;
+    esac
+  done
+  return 1
+}
+
+write_fanout_pipeline() { # repo...
+  local r
+  echo "# Written by looper-build plan: the nightly of each repository of $BUILD_ORG whose main pins its build image."
+  cat <<'EOF'
+default:
+  retry:
+    max: 2
+    when: [runner_system_failure, scheduler_failure, unknown_failure]
+stages: [plan, nightly]
+EOF
+  for r in "$@"; do
+    cat <<EOF
+nightly-plan-$r:
+  stage: plan
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$r"
+    BUILD_SHA: ""
+    BUILD_ORG: "$BUILD_ORG"
+    BUILD_NIGHTLY: "true"
+  script:
+    - looper-build plan
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [build-gates.yml, build-verdict]
+nightly-$r:
+  stage: nightly
+  needs: [nightly-plan-$r]
+  trigger:
+    include:
+      - artifact: build-gates.yml
+        job: nightly-plan-$r
+    strategy: depend
+    forward:
+      yaml_variables: false
+      pipeline_variables: false
+EOF
+  done
 }
 
 # The child pipeline: the gates job, in the pinned image, running this
