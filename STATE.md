@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by looper (#161).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#84).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -200,10 +200,14 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
   credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, an issue's URL read as its reference and an unreadable
-  `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each with its repository's runner tags (a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
+  `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each where it runs (#84: the reports and manager of a repository whose gates are build jobs on the in-cluster control runner, `LOOPER_CONTROL_TAGS`, default `arm64, control`, with their kind's requests and limits as `KUBERNETES_*` variables, a report 500m/1Gi, a manager 250m/512Mi, `LOOPER_REQUESTS_<kind>`; a job that still needs Docker, an unpinned repository's or any scan's, on the VM runners' tags: a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
-- **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper on the
+- **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its control jobs (the
+  kicker, the plan) and the pinned repositories' reports and managers as pods of the in-cluster `control` runner
+  (58541761, `arm64, control`, tacplus-dev/cluster#13, #84) once the hub copies `ci/tacplus-dev.gitlab-ci.yml` there
+  and unpauses it (the hub's step after #84 lands; until then everything runs on the VM runners as before), the jobs
+  that still need Docker (tacplus's and fleet-seatrials' until their pins, every nightly scan) on the
   *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
@@ -219,7 +223,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   jobs with `GITLAB_TOKEN` (#85), its bot a Reporter there once tacplus-dev/cloud#12's `apply:gitlab` has run on
   main (until then `sources` names the 404), and the image's revision only where it has `docker buildx`:
   otherwise its `sources` says so; Cloud Build is not read (#85); one more VM's cost is the t2a-standard-8 on-demand list price (`LOOPER_RECAP_VM_USD_HOUR`,
-  0.308), not the billing's; a red main is read from the `tacplus-dev/build` commit status, which only a build of the
+  0.308) and one more node's the c4a-standard-2's (`LOOPER_RECAP_NODE_USD_HOUR`, 0.089, #84), not the billing's; a pod's wait
+  for room is read from its job's log as the executor's preparation while it said `Pending` (the image pull included:
+  GitLab's timestamped logs would separate them, PROPOSALS.md); a red main is read from the `tacplus-dev/build` commit status, which only a build of the
   merged commit sets (#71 redefines the build jobs);
   gitlab.com/tacplus-dev/looper's pipeline file is `ci/tacplus-dev.gitlab-ci.yml` here, whose
   `looper-plan` runs `looper-dispatch plan` (#56, tested against the hub's former inline plan), but it takes effect
@@ -231,8 +237,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-15 by lo
   baked image is superseded (roadmap `decisions/builds-in-containers-2026-11-03.md`; `runner/` and `runner-image
   build`/`template` stay until the redesign retires them, never run against GCP); until the jobs move onto those
   pools a fresh worker installs and restarts Docker at boot under its first job, which fails in preparation and is
-  retried; the VMs get no fix (Jody, 2026-11-06): #84 moves every looper job onto the in-cluster Kubernetes runners
-  and the VMs are then deleted, and #43 closes when they are gone; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
+  retried; the VMs get no fix (Jody, 2026-11-06): #84 moved the agents' jobs onto the in-cluster Kubernetes runners,
+  what still needs Docker (the unpinned repositories' jobs, the scans: PROPOSALS.md) follows, and the VMs are then
+  deleted, and #43 closes when they are gone; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
   once it no longer answers SSH (tacplus, 2026-10-31); README's Credentials (#25) are applied (hub, checked 2026-11-03): the jobs' `GITLAB_TOKEN` is
   `tacplus-looper-bot`'s `read_api` token (`looper-jobs`, expires 2027-10-01), `looper-runtime` is revoked, and every
