@@ -464,9 +464,12 @@ pin issue (filed by the hub) commits one.
 - **The looper repository's build image is the looper image, by digest** (`build.lock`; Jody on looper#71): it is no
   tacplus project, and its gates are the bash tests of `gates.yaml`, which run in that image. A new digest is a
   change like any other.
-- **Not yet** (the follow-up, Blocked-by tacplus-dev/tacplus#315): retiring `looper-docker`, `looper-docker-broker`
-  and the host socket's path once every repository is pinned, and an image build inside the build job with rootless
-  BuildKit, without the host's Docker.
+- **An image build inside the build job, without the host's Docker** (looper#73, the hub's step 1): a release's
+  publish builds with rootless BuildKit in a build image that has it ([Build pipeline](#build-pipeline)), once
+  `BUILD_BUILDER_IMAGE` names one; until then it alone still needs Docker, and runs on the Docker tags.
+- **Not yet** (looper#73's steps 2 and 3): the nightly scans reading the nightly build's verdict instead of running
+  the gates through `looper-docker`, and retiring `looper-docker`, `looper-docker-broker` and the host socket's path
+  once every repository is pinned (tacplus, tacplus#340).
 
 ```sh
 tests/repo-looper.test.sh       # build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
@@ -909,12 +912,24 @@ jobs run `looper-build`, from this image.
   failed `security-<repo>` job's, the gates green, is set likewise by **`security-failed`** (looper#144): `security:
   <why>` from its artifact `security/verdict`, or that its runner was lost; never a nightly's. This is the only
   thing a build writes to GitHub.
-- **`publish`**, on a release (below), once the gates passed: `docker buildx build` of the repository's
-  `Dockerfile` for `linux/amd64` and `linux/arm64`, pushed as `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z`
-  (tacplus-dev/tacplus#223), its digest recorded in the artifact `image`.
+- **`publish-<repo>`**, on a release (below), a job of the child pipeline once the gates, the security checks and
+  the formal verification passed: the repository's `Dockerfile` built for `linux/amd64` and `linux/arm64`, pushed as
+  `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z` (tacplus-dev/tacplus#223), its digest recorded in the
+  artifact `image`, its OCI archive in `image.tar` (7 days) for **`sbom-<repo>`**, in the looper image (Syft, below).
+  **No host Docker** (looper#73): it runs in `BUILD_BUILDER_IMAGE`, a build image with rootless BuildKit
+  (`tacplus-image-build`, tacplus-dev/tacplus#315), whose daemon runs in the job's own container (the in-cluster
+  `build` runner's pods allow it a user namespace: seccomp and AppArmor unconfined, no privilege, no socket) and
+  builds the other platform with BuildKit's own QEMU helpers; `buildctl` builds, and the registry's token is in a
+  `config.json` of the job's own. A daemon that does not start fails the job, never falling back to Docker. While
+  `BUILD_BUILDER_IMAGE` is empty (no published build image has `tacplus-image-build` yet: tacplus#315's first
+  images.yml run on main makes one), publish still needs host Docker: the plan writes it in the looper image on
+  `BUILD_DOCKER_TAGS` (the runners that mount the socket) and says so in its log (`publish needs host Docker`), and
+  it builds with `docker buildx`. Both are variables of `ci/build.gitlab-ci.yml`, which the hub sets: the builder
+  image by digest, and a tag only the VM build pool has before the in-cluster `build` runner takes `arm64, build`.
 - **The same commit gives the same verdict and digest.** The gates image is pinned by digest. The image is built
   with every timestamp the commit's (`SOURCE_DATE_EPOCH`, `rewrite-timestamp=true`), without provenance or SBOM
-  attestations (which record the build's time and builder), and by a BuildKit pinned by digest. So publish first
+  attestations (which record the build's time and builder), and by a BuildKit pinned by digest (the builder
+image's, or buildx's `BUILD_BUILDKIT_IMAGE`). So publish first
   builds the image to a file, then pushes it, and fails unless both have one digest. A release already in the
   registry under another digest fails rather than being overwritten. The documented exception: a `Dockerfile`
   whose bases are not pinned by digest, or whose steps fetch "latest", builds what its bases are that day.
@@ -951,8 +966,8 @@ are per repository) and starts the pipeline on that tag with `"tag": "vX.Y.Z"`. 
 tag names `sha`, runs the gates, and publishes; the looper then creates the GitHub release.
 
 ```sh
-looper-build plan | gates | status STATE [TEXT] | publish [--dry-run]   # what the jobs run; --dry-run builds the release image and pushes nothing
-tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; publish (stub buildx and WIF), and with a real buildx the same digest twice
+looper-build plan | gates | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
 ```
 
 **The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A
@@ -1068,7 +1083,7 @@ repositories the tacplus-reader app reads, not archived, and keeps those whose `
 `nightly-plan-<repo>` (that repository's own nightly `plan`) and `nightly-<repo>`, the pipeline it writes,
 `strategy: depend`. Each needs its own plan alone, so one repository's failure stops no other's, and the fan-out is
 red when one is. A listing or a pin it cannot read, or no pinned repository, fails the plan rather than run fewer.
-The schedule: `{"nightly": true}`, on `main`. A release's `publish` makes the SBOM of the image it pushed.
+The schedule: `{"nightly": true}`, on `main`. A release's `sbom-<repo>` makes the SBOM of the image `publish-<repo>` pushed.
 
 | Tool | Version | Pinned by | Runs on |
 |---|---|---|---|
@@ -1207,8 +1222,9 @@ a run per tool), `summary.md` (the counts, what fails, what is **new since the p
 was not analyzed or only in part, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
 `sbom.spdx.json`, and `raw/`, each tool's own report (JSON or SARIF) and log.
 
-**A release's SBOM**: `publish` runs Syft on the image it built (the OCI archive whose digest it pushed): the job's
-artifacts `sbom.cdx.json` and `sbom.spdx.json`, beside `image`, and the generic package `sbom-<repo>`, version
+**A release's SBOM**: `sbom-<repo>` (`looper-build sbom`, in the looper image) runs Syft on the image `publish-<repo>`
+built (the OCI archive whose digest it pushed, its artifact `image.tar`): the job's artifacts `sbom.cdx.json` and
+`sbom.spdx.json`, beside `image`, and the generic package `sbom-<repo>`, version
 `X.Y.Z`, of tacplus-dev/build.
 
 **The nightly agent scan** (`repo-looper --scan`) reads the repository's latest findings (with `GITLAB_TOKEN`) into its
@@ -1589,7 +1605,8 @@ pipeline's gates job on its runner lost alone (its 11h timeout is its own, loope
 repository that does not yet pin its build image (tacplus, tacplus#340; fleet-seatrials pins since its #42: a
 repository's jobs move the day its pin lands, by `looper-dispatch plan`'s read of the pin, with no change here), and
 **every nightly scan**, whose model runs the repository's gates on main through `looper-docker` (PROPOSALS.md: the scan
-reading the nightly build's verdict instead). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
+reading the nightly build's verdict instead); in tacplus-dev/build, only a release's `publish-<repo>` while
+`BUILD_BUILDER_IMAGE` is empty (on `BUILD_DOCKER_TAGS`, [Build pipeline](#build-pipeline), looper#73). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
 jobs' alone; no job of `ci/tacplus-dev.gitlab-ci.yml` asks for them (`tests/looper-dispatch.test.sh`: ci-control), and
 `LOOPER_CONTROL_TAGS` names the control runner's (default `arm64, control`). The hub unpauses `control` once this is on
 main; tacplus-dev/cloud#11 (*No VMs outside GKE*) removes the VM pools when nothing is left on them, and looper#43 closes

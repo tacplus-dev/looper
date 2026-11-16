@@ -28,8 +28,13 @@
 #            run's last verified commit), which the nightly scan files as bugs
 #            when it is red (looper-verify)
 #   status   the GitHub commit status (context tacplus-dev/build)
-#   publish  on a release tag: the image, pushed to Artifact Registry through
-#            Workload Identity Federation, its digest and its SBOM
+#   publish  on a release tag, a job of the child pipeline once every check
+#            passed: the image, built with rootless BuildKit in a build image
+#            that has it (BUILD_BUILDER_IMAGE: tacplus-image-build,
+#            tacplus-dev/tacplus#315; no host Docker, looper#73), pushed to
+#            Artifact Registry through Workload Identity Federation, and its
+#            digest; with no such image, docker buildx on the Docker tags
+#   sbom     the release image's SBOM, in the looper image (the scanners)
 #
 # Self-contained (no looper-lib.sh, no jq on the gates path): the plan embeds
 # this very file in the gates job, which runs in the repository's pinned build
@@ -54,7 +59,13 @@ BUILD_STATUS_CONTEXT="${BUILD_STATUS_CONTEXT:-tacplus-dev/build}"
 # The image the security checks run in (the looper image: the scanners), by
 # default the one the plan runs in.
 BUILD_SCAN_IMAGE="${BUILD_SCAN_IMAGE:-${CI_JOB_IMAGE:-ghcr.io/tacplus-dev/looper:main}}"
-# The builder publish runs in, and the emulators for a foreign platform, by digest.
+# The image publish runs in (looper#73): a build image with rootless BuildKit
+# (tacplus-image-build, tacplus-dev/tacplus#315), by digest. Empty: none yet,
+# and publish runs in the looper image with host Docker (docker buildx), on
+# BUILD_DOCKER_TAGS, the runners that still mount the Docker socket.
+BUILD_BUILDER_IMAGE="${BUILD_BUILDER_IMAGE:-}"
+BUILD_DOCKER_TAGS="${BUILD_DOCKER_TAGS:-$BUILD_RUNNER_TAGS}"
+# Host Docker's builder (buildx), and the emulators for a foreign platform, by digest.
 BUILD_BUILDKIT_IMAGE="${BUILD_BUILDKIT_IMAGE:-moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea}"
 BUILD_BINFMT_IMAGE="${BUILD_BINFMT_IMAGE:-tonistiigi/binfmt:qemu-v10.0.4@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541}"
 
@@ -65,7 +76,8 @@ usage() {
 usage: looper-build plan                  write build-gates.yml (the gates job, in the pinned image)
        looper-build gates                 just gates on the commit, in this directory's checkout
        looper-build status STATE [TEXT]   the commit status: pending, success or failure
-       looper-build publish [--dry-run]   the release image and its digest (--dry-run: build only)
+       looper-build publish [--dry-run]   the release image, its digest and archive (--dry-run: build only)
+       looper-build sbom                  the release image's SBOM, of publish's archive (image.tar)
        looper-build verify                just verify on the commit (a verify run: when verify-changed says run)
        looper-build verify-report         the verify job's record, published as the repository's latest
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
@@ -74,7 +86,8 @@ empty too, the plan's child pipeline is every pinned repository's nightly), BUIL
 (true: the formal verification of the main branch, likewise; BUILD_VERIFY_SINCE, _RESULT and _RUN: the last
 record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
-LOOPER_GATES_BASE, a full hash), BUILD_WAIT (the requester's wait, in seconds: a gates job whose pipeline
+LOOPER_GATES_BASE, a full hash), BUILD_BUILDER_IMAGE (the build image a release's publish runs in, with
+rootless BuildKit; empty: the looper image, host Docker, on BUILD_DOCKER_TAGS), BUILD_WAIT (the requester's wait, in seconds: a gates job whose pipeline
 is older runs no gates), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
@@ -292,6 +305,11 @@ cmd_plan() {
   else
     log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE${BUILD_TAG:+, the formal verification}"
   fi
+  if [[ -n "${BUILD_TAG:-}" && -n "$BUILD_BUILDER_IMAGE" ]]; then
+    log "plan: publish in $BUILD_BUILDER_IMAGE (rootless BuildKit) on $BUILD_RUNNER_TAGS"
+  elif [[ -n "${BUILD_TAG:-}" ]]; then
+    log "plan: publish needs host Docker (no BUILD_BUILDER_IMAGE, a build image with tacplus-image-build): on $BUILD_DOCKER_TAGS"
+  fi
 }
 
 # The nightly of every repository (looper#164): GitLab allows a project 10
@@ -411,6 +429,7 @@ default:
 EOF
   if [[ "${BUILD_VERIFY:-}" != true ]]; then gates_jobs "$1"; fi
   if [[ "${BUILD_VERIFY:-}" == true || -n "${BUILD_TAG:-}" ]]; then verify_jobs "$1"; fi
+  if [[ -n "${BUILD_TAG:-}" ]]; then publish_jobs; fi
 }
 
 # A job's script: this very script, embedded, run with the command given.
@@ -568,6 +587,56 @@ verify-report:
     BUILD_SHA: "$BUILD_SHA"
   script:
     - looper-build verify-report
+EOF
+}
+
+# A release's image (looper#73), once the gates, the security checks and the
+# formal verification passed: publish in the builder image (rootless BuildKit,
+# no host Docker), else in the looper image on the Docker tags; its identity
+# the job's id_token, which GCP trusts on this project's protected tags alone.
+# The SBOM is the looper image's (its scanners), of the archive publish keeps.
+publish_jobs() {
+  local image="$BUILD_BUILDER_IMAGE" tags="$BUILD_RUNNER_TAGS"
+  [[ -n "$image" ]] || { image="$BUILD_SCAN_IMAGE"; tags="$BUILD_DOCKER_TAGS"; }
+  cat <<EOF
+publish-$BUILD_REPO:
+  image: "$image"
+  tags: [$tags]
+  needs: [{job: gates, artifacts: false}, {job: "security-$BUILD_REPO", artifacts: false}, {job: "verify-$BUILD_REPO", artifacts: false}]
+  environment:
+    name: registry
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/\$GCP_WIF_PROVIDER
+  timeout: 2h
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_TAG: "$BUILD_TAG"
+    BUILD_ORG: "$BUILD_ORG"
+    BUILD_REGISTRY: "$BUILD_REGISTRY"
+    BUILD_PLATFORMS: "$BUILD_PLATFORMS"
+EOF
+  embedded_script publish
+  cat <<EOF
+  artifacts:
+    expire_in: 7 days
+    paths: [image, image.tar]
+sbom-$BUILD_REPO:
+  image: "$BUILD_SCAN_IMAGE"
+  tags: [$BUILD_RUNNER_TAGS]
+  needs: [{job: "publish-$BUILD_REPO", artifacts: true}]
+  variables:
+    GIT_STRATEGY: none
+    BUILD_REPO: "$BUILD_REPO"
+    BUILD_SHA: "$BUILD_SHA"
+    BUILD_TAG: "$BUILD_TAG"
+  script:
+    - looper-build sbom
+  artifacts:
+    expire_in: 1 year
+    paths: [image, sbom.cdx.json, sbom.spdx.json]
 EOF
 }
 
@@ -955,10 +1024,12 @@ cmd_status() { # state [description]
 
 # --- publish ----------------------------------------------------------------
 
-# Docker logs in to the registry with a short-lived GCP token from the job's
-# GitLab id_token (GCP_ID_TOKEN), through Workload Identity Federation
-# (GCP_WIF_PROVIDER, tacplus#223); GCP_PUBLISH_SA, when set, is impersonated.
-# No key file, no stored token: both configs live in a temporary directory.
+# The registry's short-lived GCP token, from the job's GitLab id_token
+# (GCP_ID_TOKEN), through Workload Identity Federation (GCP_WIF_PROVIDER,
+# tacplus#223); GCP_PUBLISH_SA, when set, is impersonated. No key file, no
+# stored token: gcloud's config and the registry client's (DOCKER_CONFIG's
+# config.json, which buildctl and docker both read) live in a temporary
+# directory. The token is REGISTRY_TOKEN, for the registry's API.
 registry_login() { # tmp
   : "${GCP_ID_TOKEN:?the publish job has no id_tokens GCP_ID_TOKEN}"
   : "${GCP_WIF_PROVIDER:?the build project variable GCP_WIF_PROVIDER is not set (tacplus-dev/tacplus#223)}"
@@ -972,11 +1043,30 @@ registry_login() { # tmp
       --credential-source-file="$1/oidc-token" --output-file="$1/federation.json" >/dev/null )
   gcloud auth login --cred-file="$1/federation.json" --quiet >/dev/null 2>&1 ||
     verdict fail "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER)"
-  gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${BUILD_REGISTRY%%/*}" >/dev/null ||
-    verdict fail "the registry refused the federated token"
+  REGISTRY_TOKEN="$(gcloud auth print-access-token)" && [[ -n "$REGISTRY_TOKEN" ]] ||
+    verdict fail "Workload Identity Federation gave no token for the registry"
+  ( umask 077
+    printf '{"auths": {"%s": {"auth": "%s"}}}\n' "${BUILD_REGISTRY%%/*}" \
+      "$(printf 'oauth2accesstoken:%s' "$REGISTRY_TOKEN" | openssl base64 -A)" > "$DOCKER_CONFIG/config.json" )
 }
 
-# The digest of the image buildx built (its --metadata-file).
+# The manifest a release's tag names in the registry, as it serves the bytes
+# (their sha256 is the image's digest), into file; returns 1 when there is
+# none (404). Any other answer fails: a release is never pushed over one
+# the registry could not show.
+registry_manifest() { # name file
+  local host="${1%%/*}" path="${1#*/}" code
+  code="$(curl -sS -o "$2" -w '%{http_code}' -H "Authorization: Bearer $REGISTRY_TOKEN" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://$host/v2/${path%:*}/manifests/${path##*:}")" || code="${code:-000}"
+  case "$code" in
+    200) [[ -s "$2" ]] || verdict fail "the registry served an empty manifest for $1" ;;
+    404) return 1 ;;
+    *) verdict fail "the registry answered $code for $1: whether the release is there cannot be told" ;;
+  esac
+}
+
+# The digest of the image the builder built (its --metadata-file).
 built_digest() { # metadata.json
   sed -n 's/.*"containerimage\.digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]\{64\}\)".*/\1/p' "$1" | head -1
 }
@@ -985,23 +1075,54 @@ built_digest() { # metadata.json
 # (SOURCE_DATE_EPOCH, rewrite-timestamp), no provenance or SBOM attestation
 # (they carry the build's time and identity), OCI media types for every
 # output, so the same commit gives the same digest whether it is pushed or
-# written to a file. Prints the digest.
+# written to a file. Rootless BuildKit's buildctl (BUILDKIT_HOST, the
+# daemon tacplus-image-build started), else docker buildx. Prints the digest.
 build_image() { # src output-spec tmp
   local meta="$3/metadata-$RANDOM.json" epoch
   epoch="$(git -C "$1" log -1 --format=%ct)"
-  SOURCE_DATE_EPOCH="$epoch" docker buildx build --builder "$BUILDER" --platform "$BUILD_PLATFORMS" \
-    --provenance=false --sbom=false --pull \
-    --build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "VERSION=${BUILD_TAG:-}" --build-arg "REVISION=$BUILD_SHA" \
-    --label "org.opencontainers.image.revision=$BUILD_SHA" \
-    --label "org.opencontainers.image.source=$BUILD_GITHUB_URL/$BUILD_ORG/$BUILD_REPO" \
-    --output "$2,rewrite-timestamp=true" --metadata-file "$meta" "$1" >&2 ||
-    verdict fail "the image of $BUILD_REPO $BUILD_SHA did not build"
+  if [[ "$IMAGE_BUILDER" == buildkit ]]; then
+    # buildctl adds no attestation unless asked.
+    buildctl build --frontend dockerfile.v0 --local "context=$1" --local "dockerfile=$1" \
+      --opt filename=Dockerfile --opt "platform=$BUILD_PLATFORMS" --opt image-resolve-mode=pull \
+      --opt "build-arg:SOURCE_DATE_EPOCH=$epoch" --opt "build-arg:VERSION=${BUILD_TAG:-}" --opt "build-arg:REVISION=$BUILD_SHA" \
+      --opt "label:org.opencontainers.image.revision=$BUILD_SHA" \
+      --opt "label:org.opencontainers.image.source=$BUILD_GITHUB_URL/$BUILD_ORG/$BUILD_REPO" \
+      --output "$2,rewrite-timestamp=true" --metadata-file "$meta" >&2 ||
+      verdict fail "the image of $BUILD_REPO $BUILD_SHA did not build"
+  else
+    SOURCE_DATE_EPOCH="$epoch" docker buildx build --builder "$BUILDER" --platform "$BUILD_PLATFORMS" \
+      --provenance=false --sbom=false --pull \
+      --build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "VERSION=${BUILD_TAG:-}" --build-arg "REVISION=$BUILD_SHA" \
+      --label "org.opencontainers.image.revision=$BUILD_SHA" \
+      --label "org.opencontainers.image.source=$BUILD_GITHUB_URL/$BUILD_ORG/$BUILD_REPO" \
+      --output "$2,rewrite-timestamp=true" --metadata-file "$meta" "$1" >&2 ||
+      verdict fail "the image of $BUILD_REPO $BUILD_SHA did not build"
+  fi
   built_digest "$meta"
 }
 
-# A builder of its own (BuildKit by digest), and the emulators for a platform
-# it cannot build: they are installed (once per machine) and the builder made
-# again, since BuildKit finds them when it starts.
+# The builder (looper#73): rootless BuildKit where the image has it
+# (tacplus-image-build, tacplus-dev/tacplus#315), which runs in the job's own
+# container with no host Docker and builds a foreign platform with its own
+# QEMU helpers; else docker buildx on the host's Docker, said so. A daemon
+# that does not start fails the job: never a fall back to Docker.
+setup_image_builder() {
+  if command -v tacplus-image-build >/dev/null; then
+    IMAGE_BUILDER=buildkit
+    BUILDKIT_HOST="$(tacplus-image-build start)" && [[ -n "$BUILDKIT_HOST" ]] ||
+      verdict fail "rootless BuildKit did not start (tacplus-image-build: it needs a user namespace, seccomp and AppArmor unconfined)"
+    export BUILDKIT_HOST
+    log "publish: rootless BuildKit ($BUILDKIT_HOST)"
+  else
+    IMAGE_BUILDER=docker
+    log "publish: no tacplus-image-build in this image: host Docker (docker buildx), as a job on the Docker tags has"
+    setup_builder
+  fi
+}
+
+# Docker's builder of its own (BuildKit by digest), and the emulators for a
+# platform it cannot build: they are installed (once per machine) and the
+# builder made again, since BuildKit finds them when it starts.
 setup_builder() {
   local p missing=""
   new_builder
@@ -1027,6 +1148,16 @@ builder_platforms() {
   docker buildx inspect --bootstrap "$BUILDER" 2>/dev/null | sed -n 's/^Platforms:[[:space:]]*//p' | tr ',' '\n' | tr -d ' *'
 }
 
+# The builder this run made, and its directory: gone at its end.
+publish_cleanup() { # tmp
+  if [[ "${IMAGE_BUILDER:-}" == buildkit ]]; then tacplus-image-build stop >/dev/null 2>&1 || true
+  elif [[ "${IMAGE_BUILDER:-}" == docker ]]; then docker buildx rm "$BUILDER" >/dev/null 2>&1 || true; fi
+  rm -rf "$1"
+}
+
+# The release image (looper#73: rootless BuildKit, setup_image_builder), its
+# OCI archive kept as image.tar for the SBOM job, and its name by digest as
+# image.
 cmd_publish() {
   local dry=0
   [[ "${1:-}" == --dry-run ]] && dry=1
@@ -1041,23 +1172,23 @@ cmd_publish() {
   fetch_commit "$src"
   check_release "$src"
   [[ -f "$src/Dockerfile" ]] || verdict fail "$BUILD_REPO has no Dockerfile at $BUILD_SHA: nothing to publish"
-  tmp="$(mktemp -d)"; BUILDER="looper-build-$$"
+  tmp="$(mktemp -d)"; BUILDER="looper-build-$$"; IMAGE_BUILDER=""
   # shellcheck disable=SC2064  # the builder and directory of this run
-  trap "docker buildx rm '$BUILDER' >/dev/null 2>&1; rm -rf '$tmp'" EXIT
-  setup_builder
+  trap "publish_cleanup '$tmp'" EXIT
+  setup_image_builder
   name="$BUILD_REGISTRY/$BUILD_REPO:${BUILD_TAG#v}"
-  built="$(build_image "$src" "type=oci,dest=$tmp/image.tar" "$tmp")"
-  [[ -n "$built" ]] || verdict fail "buildx reported no digest"
+  rm -f "$BUILD_OUT/image" "$BUILD_OUT/image.tar"
+  built="$(build_image "$src" "type=oci,dest=$BUILD_OUT/image.tar" "$tmp")"
+  [[ -n "$built" ]] || verdict fail "the builder reported no digest"
   log "built $name@$built"
   if ((dry)); then
     echo "$name@$built" > "$BUILD_OUT/image"
-    BUILD_SBOM_UPLOAD=0 release_sbom "$tmp/image.tar"
     log "dry run: nothing pushed"; return 0
   fi
   registry_login "$tmp"
   # An immutable release: an image already there must be this one.
   # (The digest is that of the manifest's bytes as the registry serves them.)
-  if docker buildx imagetools inspect --raw "$name" > "$tmp/existing" 2>/dev/null && [[ -s "$tmp/existing" ]]; then
+  if registry_manifest "$name" "$tmp/existing"; then
     existing="sha256:$(sha256sum < "$tmp/existing" | cut -d' ' -f1)"
     [[ "$existing" == "$built" ]] || verdict fail "$name is already published as $existing; this build gives $built"
     log "$name is already published, with this digest"
@@ -1067,7 +1198,15 @@ cmd_publish() {
   fi
   echo "$name@$built" > "$BUILD_OUT/image"
   log "published $name@$built"
-  release_sbom "$tmp/image.tar"
+}
+
+# The SBOM job: the release image's SBOM, of the archive publish kept.
+cmd_sbom() {
+  refuse_write_credentials
+  check_inputs
+  [[ -n "${BUILD_TAG:-}" ]] || verdict fail "an SBOM is a release's (BUILD_TAG vX.Y.Z)"
+  [[ -s "$BUILD_OUT/image.tar" ]] || verdict fail "no image.tar: the publish job kept no image archive"
+  release_sbom "$BUILD_OUT/image.tar"
 }
 
 # The release's SBOM (looper#49), of the image published, CycloneDX and SPDX:
@@ -1096,6 +1235,7 @@ case "${1:-}" in
   gates) cmd_gates ;;
   status) shift; cmd_status "$@" ;;
   publish) shift; cmd_publish "$@" ;;
+  sbom) cmd_sbom ;;
   verify) cmd_verify ;;
   verify-report) cmd_verify_report ;;
   -h|--help) usage ;;

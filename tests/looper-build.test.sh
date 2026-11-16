@@ -409,21 +409,30 @@ case "\$method \$url" in
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/verify-record" ]] || exit 22
     cp "$TMP/verify-record" "\$out" ;;
+  # Artifact Registry's manifest of the release (publish's check for an image already there): \$TMP/existing, else 404;
+  # \$TMP/registry-code another answer.
+  "GET https://us-docker.pkg.dev/v2/jody1-328023/tacplus/demo/manifests/1.2.3")
+    echo "manifest \$auth" >> "$TMP/api.log"
+    code=404; [[ -f "$TMP/existing" ]] && code=200; [[ -f "$TMP/registry-code" ]] && code="\$(cat "$TMP/registry-code")"
+    [[ "\$code" != 200 ]] || cp "$TMP/existing" "\$out"
+    printf '%s' "\$code" ;;
   "PUT https://gitlab.example/api/v4/projects/42/packages/generic/"*)
     echo "package-put \$auth \${url#*/generic/} \$(sha256sum < "\$up" | cut -c1-12)" >> "$TMP/api.log" ;;
   *) echo "curl stub: \$method \$url" >&2; exit 22 ;;
 esac
 EOF
 
-# --- buildx and Workload Identity Federation ---------------------------------
+# --- buildx, rootless BuildKit and Workload Identity Federation -----------------
+# The registry credential a client reads (\$DOCKER_CONFIG/config.json), decoded, for a stub's log.
+REGISTRY_AUTH='registry_auth() { jq -r '"'"'.auths["us-docker.pkg.dev"].auth // "none"'"'"' "${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null | base64 -d 2>/dev/null || echo none; }'
 cat > "$TMP/bin/docker" <<EOF
 #!/usr/bin/env bash
+$REGISTRY_AUTH
 echo "docker \$*" >> "$TMP/docker.log"
 case "\$1 \${2:-}" in
   "buildx inspect")   # amd64 once the emulators are installed
     echo "Platforms: linux/arm64*, linux/arm/v7\$( [[ -f "$TMP/emulated" ]] && echo ', linux/amd64, linux/amd64/v2' )" ;;
   "run --rm") [[ "\$*" == *binfmt*--install* ]] && touch "$TMP/emulated" ;;
-  "login "*) echo "login \${*: -1} \$(cat)" >> "$TMP/docker.log" ;;
   "buildx build")
     meta=""; push=""
     for a in "\$@"; do
@@ -432,12 +441,44 @@ case "\$1 \${2:-}" in
       [[ "\$a" == *push=true* ]] && push=1
     done
     echo "SOURCE_DATE_EPOCH=\$SOURCE_DATE_EPOCH" >> "$TMP/docker.log"
+    [[ -z "\$push" ]] || echo "auth \$(registry_auth)" >> "$TMP/docker.log"
     d="\$(cat "$TMP/digest")"; [[ -n "\$push" && -f "$TMP/push-digest" ]] && d="\$(cat "$TMP/push-digest")"
     printf '{"containerimage.digest": "%s"}\n' "\$d" > "\$meta" ;;
-  "buildx imagetools") [[ -f "$TMP/existing" ]] && cat "$TMP/existing" || exit 1 ;;
   *) ;;
 esac
 EOF
+# Rootless BuildKit in the build image (tacplus-dev/tacplus#315): tacplus-image-build starts
+# the daemon and prints its address; buildctl builds, as docker's stub does. In \$TMP/bk,
+# on PATH only for a job in an image that has them.
+mkdir -p "$TMP/bk"
+cat > "$TMP/bk/tacplus-image-build" <<EOF
+#!/usr/bin/env bash
+echo "tacplus-image-build \$*" >> "$TMP/buildctl.log"
+case "\$1" in
+  start) [[ -f "$TMP/no-userns" ]] && { echo "tacplus-image-build: rootless BuildKit did not start" >&2; exit 2; }
+         echo unix:///run/buildkit/buildkitd.sock ;;
+  stop) ;;
+  *) echo "tacplus-image-build stub: \$*" >&2; exit 2 ;;
+esac
+EOF
+cat > "$TMP/bk/buildctl" <<EOF
+#!/usr/bin/env bash
+$REGISTRY_AUTH
+echo "buildctl BUILDKIT_HOST=\${BUILDKIT_HOST:-} \$*" >> "$TMP/buildctl.log"
+meta="" push="" dest=""
+while ((\$#)); do
+  case "\$1" in
+    --metadata-file) meta="\$2"; shift ;;
+    --output) [[ "\$2" == *push=true* ]] && push=1; [[ "\$2" == type=oci,dest=* ]] && { dest="\${2#type=oci,dest=}"; dest="\${dest%%,*}"; } ;;
+  esac
+  shift
+done
+[[ -z "\$push" ]] || echo "auth \$(registry_auth)" >> "$TMP/buildctl.log"
+[[ -z "\$dest" ]] || echo "an oci archive" > "\$dest"
+d="\$(cat "$TMP/digest")"; [[ -n "\$push" && -f "$TMP/push-digest" ]] && d="\$(cat "$TMP/push-digest")"
+printf '{"containerimage.digest": "%s"}\n' "\$d" > "\$meta"
+EOF
+chmod +x "$TMP/bk/"*
 cat > "$TMP/bin/gcloud" <<EOF
 #!/usr/bin/env bash
 echo "gcloud \$*" >> "$TMP/gcloud.log"
@@ -579,7 +620,7 @@ EOF
 chmod +x "$RB/"*
 
 NAME=""
-fail() { echo "FAIL $NAME: $*" >&2; for f in "$TMP/err" "$TMP/api.log" "$TMP/docker.log"; do [[ -f "$f" ]] && cat "$f" >&2; done; exit 1; }
+fail() { echo "FAIL $NAME: $*" >&2; for f in "$TMP/err" "$TMP/api.log" "$TMP/docker.log" "$TMP/buildctl.log"; do [[ -f "$f" ]] && cat "$f" >&2; done; exit 1; }
 pass() { echo "ok $NAME"; }
 n=0
 # The directory a build runs in is a checkout whose own config sends GitHub
@@ -593,7 +634,7 @@ build() { # [VAR=value...] -- args
   local e=(); while [[ "$1" != -- ]]; do e+=("$1"); shift; done; shift
   n=$((n + 1)); OUT="$TMP/out-$n"; KEY="$TMP/key-$n.pem"; mkdir -p "$OUT" "$TMP/home"
   cp "$TMP/app.pem" "$KEY"
-  : > "$TMP/api.log"; : > "$TMP/docker.log"; : > "$TMP/gcloud.log"; : > "$TMP/syft.log"; : > "$SRV/log"
+  : > "$TMP/api.log"; : > "$TMP/docker.log"; : > "$TMP/buildctl.log"; : > "$TMP/gcloud.log"; : > "$TMP/syft.log"; : > "$SRV/log"
   (cd "$cwd" && env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TMPDIR="$TMP" \
     HTTPS_PROXY="http://127.0.0.1:$PORT" GIT_SSL_CAINFO="$SRV/cert.pem" \
     GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
@@ -985,33 +1026,109 @@ echo "sha256:$(printf 'b%.0s' {1..64})" > "$TMP/digest"
 REL=(BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 CI_COMMIT_REF_NAME=demo/v1.2.3
      GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g
      CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42)
+# A job in a build image with rootless BuildKit (tacplus-dev/tacplus#315).
+BK=(PATH="$TMP/bk:$TMP/bin:$PATH")
+BUILDER="ghcr.io/tacplus-dev/tacplus/build:latest@sha256:$(printf 'd%.0s' {1..64})"
 
-NAME="publish: the image, reproducible, pushed with a federated token, its digest recorded"
-build "${REL[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
+NAME="plan: a release publishes in the builder image, rootless BuildKit on the build runner, after every check; its SBOM in the looper image"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_BUILDER_IMAGE="$BUILDER" -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+y="$OUT/build-gates.yml"
+sed -n '/^publish-demo:$/,/^[^ ]/p' "$y" | sed '$d' > "$TMP/publish.yml"
+for l in "  image: \"$BUILDER\"" '  tags: [arm64, build]' \
+         '  needs: [{job: gates, artifacts: false}, {job: "security-demo", artifacts: false}, {job: "verify-demo", artifacts: false}]' \
+         '  environment:' '    name: registry' '  id_tokens:' '    GCP_ID_TOKEN:' '      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER' \
+         '    BUILD_TAG: "v1.2.3"' "    BUILD_SHA: \"${SHA[release]}\"" '      bash "$CI_PROJECT_DIR/looper-build" publish' \
+         '    paths: [image, image.tar]'; do
+  grep -qxF -- "$l" "$TMP/publish.yml" || fail "the publish job lacks '$l': $(grep -v '^      ' "$TMP/publish.yml")"
+done
+sed -n '/^sbom-demo:$/,/^[^ ]/p' "$y" > "$TMP/sbom.yml"
+for l in '  image: "ghcr.io/tacplus-dev/looper:main"' '  tags: [arm64, build]' '  needs: [{job: "publish-demo", artifacts: true}]' \
+         '    - looper-build sbom' '    paths: [image, sbom.cdx.json, sbom.spdx.json]'; do
+  grep -qxF -- "$l" "$TMP/sbom.yml" || fail "the sbom job lacks '$l': $(cat "$TMP/sbom.yml")"
+done
+grep -q "publish in $BUILDER (rootless BuildKit)" "$TMP/err" || fail "the plan does not say where publish builds: $(cat "$TMP/err")"
+# The parent pipeline publishes no more: the plan's child does (ci/build.gitlab-ci.yml).
+! grep -q '^publish:' "$ROOT/ci/build.gitlab-ci.yml" || fail "ci/build.gitlab-ci.yml still has its own publish job"
+build BUILD_SHA="${SHA[pass]}" BUILD_BUILDER_IMAGE="$BUILDER" -- plan 2>"$TMP/err" || fail "plan failed"
+! grep -q '^publish-\|^sbom-' "$OUT/build-gates.yml" || fail "a build that is no release publishes"
+pass
+
+NAME="plan: with no builder image, publish still needs host Docker: the looper image on the Docker tags, said so"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_DOCKER_TAGS="arm64, build, docker" -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+sed -n '/^publish-demo:$/,/^[^ ]/p' "$OUT/build-gates.yml" | sed '$d' > "$TMP/publish.yml"
+grep -qxF '  image: "ghcr.io/tacplus-dev/looper:main"' "$TMP/publish.yml" || fail "not the looper image: $(grep -v '^      ' "$TMP/publish.yml")"
+grep -qxF '  tags: [arm64, build, docker]' "$TMP/publish.yml" || fail "not on the Docker tags: $(grep -v '^      ' "$TMP/publish.yml")"
+grep -q "publish needs host Docker (no BUILD_BUILDER_IMAGE.*): on arm64, build, docker" "$TMP/err" || fail "the plan does not say so: $(cat "$TMP/err")"
+pass
+
+NAME="publish: rootless BuildKit, reproducible, pushed with a federated token, its digest and archive kept; no Docker"
+build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
 img="us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3@$(cat "$TMP/digest")"
 [[ "$(cat "$OUT/image")" == "$img" ]] || fail "image $(cat "$OUT/image")"
+[[ -s "$OUT/image.tar" ]] || fail "no image.tar for the SBOM job"
+[[ ! -s "$TMP/docker.log" ]] || fail "used Docker: $(cat "$TMP/docker.log")"
 epoch="$(git -C "$work" log -1 --format=%ct "${SHA[release]}")"
+[[ "$(grep -c "^buildctl BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock build " "$TMP/buildctl.log")" == 2 ]] ||
+  fail "not built twice on the rootless daemon"
+for o in "--frontend dockerfile.v0" "--opt platform=linux/amd64,linux/arm64" "--opt image-resolve-mode=pull" \
+         "--opt build-arg:SOURCE_DATE_EPOCH=$epoch" "--opt build-arg:VERSION=v1.2.3" "--opt build-arg:REVISION=${SHA[release]}" \
+         "--opt label:org.opencontainers.image.revision=${SHA[release]}" \
+         "--opt label:org.opencontainers.image.source=https://github.com/tacplus-dev/demo" \
+         "--output type=oci,dest=$OUT/image.tar,rewrite-timestamp=true" \
+         "--output type=image,name=us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3,push=true,oci-mediatypes=true,rewrite-timestamp=true"; do
+  grep -q -- " $o" "$TMP/buildctl.log" || fail "buildctl without $o: $(cat "$TMP/buildctl.log")"
+done
+grep -qxF "auth oauth2accesstoken:ya29.stub" "$TMP/buildctl.log" || fail "not pushed with the federated token"
+grep -qxF "manifest Bearer ya29.stub" "$TMP/api.log" || fail "the registry was not asked for the release with the token: $(cat "$TMP/api.log")"
+grep -qxF "id-token eyJ.stub.id" "$TMP/gcloud.log" || fail "the id token was not exchanged"
+grep -qxF "tacplus-image-build stop" "$TMP/buildctl.log" || fail "the daemon was left running"
+! grep -q "^syft" "$TMP/syft.log" || fail "the SBOM is the sbom job's, not publish's"
+pass
+
+NAME="publish: rootless BuildKit that cannot start fails, and does not fall back to Docker"
+touch "$TMP/no-userns"
+if build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err"; then fail "published"; fi
+rm "$TMP/no-userns"
+verdict_is "fail: rootless BuildKit did not start"
+[[ ! -s "$TMP/docker.log" ]] || fail "fell back to Docker: $(cat "$TMP/docker.log")"
+pass
+
+NAME="sbom: the release's SBOM, of the image publish built, CycloneDX and SPDX, kept and published"
+build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
+PUB="$OUT"   # the publish job's artifacts, image and image.tar, as the sbom job gets them
+# The sbom job holds no GCP identity: only publish has one.
+SBOM_ENV=(BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42 BUILD_OUT="$PUB")
+if build "${SBOM_ENV[@]}" GCP_ID_TOKEN=eyJ.stub.id -- sbom 2>"$TMP/err"; then fail "an SBOM job with the GCP identity"; fi
+build "${SBOM_ENV[@]}" -- sbom 2>"$TMP/err" || fail "sbom failed: $(cat "$TMP/err")"
+jq -e '.stub == "cyclonedx-json"' "$PUB/sbom.cdx.json" >/dev/null && jq -e '.stub == "spdx-json"' "$PUB/sbom.spdx.json" >/dev/null ||
+  fail "no SBOM: $(ls "$PUB")"
+grep -q "^syft scan -q oci-archive:$PUB/image.tar " "$TMP/syft.log" || fail "not of the image: $(cat "$TMP/syft.log")"
+for f in sbom.cdx.json sbom.spdx.json; do
+  grep -qxF "package-put JOB-TOKEN: glcbt-stub sbom-demo/1.2.3/$f $(sha256sum < "$PUB/$f" | cut -c1-12)" "$TMP/api.log" ||
+    fail "$f not published: $(cat "$TMP/api.log")"
+done
+rm "$PUB/image.tar"
+if build "${SBOM_ENV[@]}" -- sbom 2>"$TMP/err"; then fail "an SBOM of no image"; fi
+OUT="$PUB" verdict_is "fail: no image.tar"
+pass
+
+NAME="publish: with no rootless BuildKit, host Docker (buildx), said so; the same token, by its config"
+build "${REL[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
+[[ "$(cat "$OUT/image")" == "$img" ]] || fail "image $(cat "$OUT/image")"
+grep -q "no tacplus-image-build in this image: host Docker" "$TMP/err" || fail "does not say it uses Docker: $(cat "$TMP/err")"
 [[ "$(grep -c "^SOURCE_DATE_EPOCH=$epoch\$" "$TMP/docker.log")" == 2 ]] || fail "not built twice at the commit's time"
 grep -q -- "--provenance=false --sbom=false" "$TMP/docker.log" || fail "attestations"
-grep -q -- "--output type=oci,dest=.*,rewrite-timestamp=true" "$TMP/docker.log" || fail "no reproducible oci build"
+grep -q -- "--output type=oci,dest=$OUT/image.tar,rewrite-timestamp=true" "$TMP/docker.log" || fail "no reproducible oci build"
 grep -q -- "--output type=image,name=us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3,push=true,oci-mediatypes=true,rewrite-timestamp=true" \
   "$TMP/docker.log" || fail "no reproducible push"
 grep -q -- "--driver-opt image=moby/buildkit:v[0-9.]*@sha256:" "$TMP/docker.log" || fail "the builder is not pinned"
-grep -qxF "login https://us-docker.pkg.dev ya29.stub" "$TMP/docker.log" || fail "no login with the federated token"
-grep -qxF "id-token eyJ.stub.id" "$TMP/gcloud.log" || fail "the id token was not exchanged"
+grep -qxF "auth oauth2accesstoken:ya29.stub" "$TMP/docker.log" || fail "not pushed with the federated token"
+! grep -q "^docker login" "$TMP/docker.log" || fail "docker login: the token is the config's"
 pass
 
-NAME="publish: the release's SBOM, of the image, CycloneDX and SPDX, kept and published"
-jq -e '.stub == "cyclonedx-json"' "$OUT/sbom.cdx.json" >/dev/null && jq -e '.stub == "spdx-json"' "$OUT/sbom.spdx.json" >/dev/null ||
-  fail "no SBOM: $(ls "$OUT")"
-grep -q "^syft scan -q oci-archive:.*/image.tar " "$TMP/syft.log" || fail "not of the image: $(cat "$TMP/syft.log")"
-for f in sbom.cdx.json sbom.spdx.json; do
-  grep -qxF "package-put JOB-TOKEN: glcbt-stub sbom-demo/1.2.3/$f $(sha256sum < "$OUT/$f" | cut -c1-12)" "$TMP/api.log" ||
-    fail "$f not published: $(cat "$TMP/api.log")"
-done
-pass
-
-NAME="publish: the emulators are installed once, when the builder lacks a platform"
+NAME="publish: the emulators are installed once, when the Docker builder lacks a platform"
 grep -q "^docker run --rm --privileged tonistiigi/binfmt:[^ ]*@sha256:[0-9a-f]* --install all$" "$TMP/docker.log" ||
   fail "no emulators installed"
 [[ "$(grep -c "^docker buildx create" "$TMP/docker.log")" == 2 ]] || fail "the builder was not made again"
@@ -1021,7 +1138,7 @@ pass
 
 NAME="publish: a build that does not reproduce is not published"
 echo "sha256:$(printf 'c%.0s' {1..64})" > "$TMP/push-digest"
-if build "${REL[@]}" -- publish 2>"$TMP/err"; then fail "published"; fi
+if build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err"; then fail "published"; fi
 rm "$TMP/push-digest"
 verdict_is "fail: not reproducible"
 pass
@@ -1029,32 +1146,41 @@ pass
 NAME="publish: a release already published with this digest is not pushed again; another digest fails"
 printf '{"schemaVersion":2}' > "$TMP/existing"
 echo "sha256:$(printf '{"schemaVersion":2}' | sha256sum | cut -d' ' -f1)" > "$TMP/digest"
-build "${REL[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
-! grep -q "push=true" "$TMP/docker.log" || fail "pushed again"
+build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
+! grep -q "push=true" "$TMP/buildctl.log" || fail "pushed again"
 echo "sha256:$(printf 'b%.0s' {1..64})" > "$TMP/digest"
-if build "${REL[@]}" -- publish 2>"$TMP/err"; then fail "published over another digest"; fi
+if build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err"; then fail "published over another digest"; fi
 verdict_is "fail: us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3 is already published as"
 rm "$TMP/existing"
 pass
 
+NAME="publish: a registry that cannot say whether the release is there publishes nothing"
+echo 500 > "$TMP/registry-code"
+if build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err"; then fail "published"; fi
+rm "$TMP/registry-code"
+verdict_is "fail: the registry answered 500 for us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3"
+! grep -q "push=true" "$TMP/buildctl.log" || fail "pushed"
+pass
+
 NAME="publish: --dry-run builds and pushes nothing, with no GCP identity"
-build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 -- publish --dry-run 2>"$TMP/err" || fail "dry run failed"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 "${BK[@]}" -- publish --dry-run 2>"$TMP/err" || fail "dry run failed"
 [[ "$(cat "$OUT/image")" == "us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3@$(cat "$TMP/digest")" ]] || fail "$(cat "$OUT/image")"
-! grep -q "push=true\|^login" "$TMP/docker.log" || fail "pushed"
+! grep -q "push=true" "$TMP/buildctl.log" || fail "pushed"
+[[ ! -s "$TMP/gcloud.log" ]] || fail "federated: $(cat "$TMP/gcloud.log")"
 pass
 
 NAME="publish: only on the build project's protected tag, for the repository's tag at that commit"
-if build "${REL[@]}" CI_COMMIT_TAG= CI_COMMIT_REF_NAME=main -- publish 2>"$TMP/err"; then fail "published from main"; fi
+if build "${REL[@]}" "${BK[@]}" CI_COMMIT_TAG= CI_COMMIT_REF_NAME=main -- publish 2>"$TMP/err"; then fail "published from main"; fi
 verdict_is "fail: a release build of demo v1.2.3 runs on the build project's protected tag demo/v1.2.3, not 'main'"
-if build "${REL[@]}" BUILD_SHA="${SHA[pass]}" -- publish 2>"$TMP/err"; then fail "published another commit"; fi
+if build "${REL[@]}" "${BK[@]}" BUILD_SHA="${SHA[pass]}" -- publish 2>"$TMP/err"; then fail "published another commit"; fi
 verdict_is "fail: demo's tag v1.2.3 is at '${SHA[release]}', not ${SHA[pass]}"
-if build "${REL[@]}" BUILD_TAG= -- publish 2>"$TMP/err"; then fail "published without a tag"; fi
+if build "${REL[@]}" "${BK[@]}" BUILD_TAG= -- publish 2>"$TMP/err"; then fail "published without a tag"; fi
 verdict_is "fail: publish needs a release tag"
-[[ ! -s "$TMP/docker.log" ]] || fail "built: $(cat "$TMP/docker.log")"
+[[ ! -s "$TMP/docker.log" && ! -s "$TMP/buildctl.log" ]] || fail "built: $(cat "$TMP/docker.log" "$TMP/buildctl.log")"
 pass
 
 NAME="publish: no write credential either, but its GCP identity"
-if build "${REL[@]}" GH_TOKEN=ghp_x -- publish 2>"$TMP/err"; then fail "published with GH_TOKEN"; fi
+if build "${REL[@]}" "${BK[@]}" GH_TOKEN=ghp_x -- publish 2>"$TMP/err"; then fail "published with GH_TOKEN"; fi
 verdict_is "fail: this job holds a write credential (GH_TOKEN)"
 pass
 
@@ -1792,12 +1918,34 @@ if [[ -n "$real_docker" ]] && docker buildx version >/dev/null 2>&1 && docker in
     build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 \
       BUILD_PLATFORMS=linux/arm64,linux/amd64 -- publish --dry-run 2>"$TMP/err" || fail "the real dry run failed"
     digests+=("$(cat "$OUT/image")")
+    build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 BUILD_OUT="$OUT" BUILD_SBOM_UPLOAD=0 \
+      -- sbom 2>"$TMP/err" || fail "the real SBOM failed"
   done
   [[ "${digests[0]}" == "${digests[1]}" && "${digests[0]}" == *@sha256:* ]] || fail "${digests[*]}"
   [[ -s "$OUT/sbom.cdx.json" && -s "$OUT/sbom.spdx.json" ]] || fail "no SBOM of the image"
   echo "ok $NAME: ${digests[0]##*@}"
 else
   echo "skip $NAME: no docker with buildx here"
+fi
+
+# In a build image with rootless BuildKit (tacplus-dev/tacplus#315), in a container
+# that allows it a user namespace (the in-cluster build runner's pods, looper#73),
+# the image builds with no host Docker: the same commit twice, the same digest.
+NAME="publish --dry-run, real rootless BuildKit, no Docker: the same commit twice gives the same digest"
+if command -v tacplus-image-build >/dev/null && command -v buildctl >/dev/null && tacplus-image-build start >/dev/null 2>&1; then
+  mkdir -p "$TMP/bin-bk"; ln -sf "$TMP/bin/curl" "$TMP/bin-bk/curl"
+  printf '#!/bin/sh\necho "docker: no host Docker here" >&2; exit 1\n' > "$TMP/bin-bk/docker"; chmod +x "$TMP/bin-bk/docker"
+  digests=()
+  for _ in 1 2; do
+    build PATH="$TMP/bin-bk:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 \
+      BUILD_PLATFORMS=linux/arm64,linux/amd64 -- publish --dry-run 2>"$TMP/err" || fail "the rootless dry run failed"
+    digests+=("$(cat "$OUT/image")")
+  done
+  [[ "${digests[0]}" == "${digests[1]}" && "${digests[0]}" == *@sha256:* ]] || fail "${digests[*]}"
+  grep -q "publish: rootless BuildKit" "$TMP/err" || fail "not rootless BuildKit: $(cat "$TMP/err")"
+  echo "ok $NAME: ${digests[0]##*@}"
+else
+  echo "skip $NAME: no rootless BuildKit that starts here (tacplus-image-build)"
 fi
 
 echo "looper-build: all passed"

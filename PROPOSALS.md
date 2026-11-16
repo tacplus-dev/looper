@@ -284,7 +284,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   `looper-docker` user and the model-user code that guards the socket's gid (#68, #69) can go, and tacplus-dev/cloud
   can drop the socket's mount from the jobs' containers. With it, the test that an image builds in the build job
   without host Docker (rootless BuildKit in the build image: tacplus-dev/tacplus#315, which it is Blocked-by). The
-  follow-up issue is #71's (linked from it).
+  follow-up issue is #71's (linked from it): #73. Its step 1 (2026-11-16): a release's publish builds with rootless
+  BuildKit in `BUILD_BUILDER_IMAGE`; its steps 2 (the nightly scan off Docker, above) and 3 (the retirement) remain.
 - **A forged build verdict** (2026-11-03, #71): the looper takes a build's verdict only from the commit status the
   `tacplus-reader` app set, by its creator's login (`tacplus-reader[bot]`), linking the pipeline it started. A
   status's creator is GitHub's to record, so the looper's `GH_TOKEN` cannot pass for it; reading the pipeline's own
@@ -598,7 +599,7 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Line tags for released images** (2026-10-29, #17): publish pushes `<repo>:X.Y.Z` only. The services' GitHub
   release workflows also move `X.Y` (scripts/release-tags.sh) for fleets that pin a line; a step after publish,
   through the same federated token, could move it when the release is its line's highest.
-- **Private dependencies in a release image** (2026-10-29, #17): publish's `docker buildx build` gets no credential,
+- **Private dependencies in a release image** (2026-10-29, #17): publish's build (`buildctl`, or `docker buildx build`) gets no credential,
   so a Dockerfile that fetches private tacplus-dev modules cannot. A BuildKit secret (`--secret id=github,env=...`)
   holding the read-only token would give it one without it landing in a layer.
 - **Gates that need the reader app's key** (2026-10-29, #17): the gates job mints its read-only token, then deletes
@@ -819,3 +820,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   clone, the prompt) for a comment and a close; a cheaper closer (the manager posting the report's closing comment
   from its last checkpoint and closing a `closes-on-green` issue itself) would save it, but changes who closes
   issues (the report's model does today, rule 8) and so is Jody's call.
+- **A release published in its own pinned build image** (2026-11-16, #73): publish runs in one builder image for
+  every repository (`BUILD_BUILDER_IMAGE`, a tacplus build image with rootless BuildKit, set by the hub), not the
+  repository's pin, because no pinned image has `tacplus-image-build` yet (it ships with tacplus 2.7, tacplus#315),
+  and publish needs gcloud and the embedded `looper-build`, which every build image has. Once the pins reach a line
+  with it, publish could run in the repository's own pinned image, as the gates and the verification do, so a
+  release's builder is its pin's (deterministic builds: the BuildKit that built it is the commit's), and
+  `BUILD_BUILDER_IMAGE` and the Docker fallback (`BUILD_DOCKER_TAGS`, `docker buildx`) could go.
+- **The Docker tags of the build pipeline** (2026-11-16, #73): while `BUILD_BUILDER_IMAGE` is empty a release's
+  publish runs on `BUILD_DOCKER_TAGS`, today `arm64, build`, which the VM build pool (with the socket) and the
+  in-cluster `build` runner (without) would both take once the hub unpauses the latter. Either the builder image is set
+  first (then nothing in the build pipeline needs Docker), or the VM build pool gets a tag of its own (tacplus-dev/cloud,
+  its `runner_pools.build`) that `BUILD_DOCKER_TAGS` names.
