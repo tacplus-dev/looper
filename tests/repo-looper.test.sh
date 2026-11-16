@@ -1564,7 +1564,9 @@ sed -e 's/^Rank: 1/Rank: 3/' -e '/^Decided/d' -e 's/^rejected/open/' suggestions
 echo "Jody's" >> ROADMAP.md; echo x > notes.md
 EOS
 RECAP_ENV=(LOOPER_RECAP_PROJECTS=tacplus-dev/looper LOOPER_RECAP_IMAGE= LOOPER_RECAP_CLOUDBUILD_PROJECT=)
-OUT="$(looper GITLAB_TOKEN=glpat-t "${RECAP_ENV[@]}" -- --repo roadmap --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+mkdir -p "$FIX/cgroup"; echo "usage_usec 5000000" > "$FIX/cgroup/cpu.stat"; echo $((300 * 1048576)) > "$FIX/cgroup/memory.peak"
+OUT="$(looper GITLAB_TOKEN=glpat-t "${RECAP_ENV[@]}" KUBERNETES_CPU_REQUEST=100m KUBERNETES_MEMORY_REQUEST=512Mi LOOPER_CGROUP="$FIX/cgroup" \
+  -- --repo roadmap --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 # The roadmap's suggestion pass and recap run on the high model (looper#136, looper#162).
 [[ "$(cat "$FIX/models")" == claude-fable-5-1 ]] || fail "models: $(cat "$FIX/models")"
 has "$OUT" "model: claude-fable-5-1 for the scan (the roadmap's suggestion pass and recap)"
@@ -1586,6 +1588,8 @@ has "$rp" "Advice: [Retry builds](../$d-retry-builds.md)"
 has "$(origin show "main:suggestions/$d-retry-builds.md")" "Recap: $d failures/tacplus-dev/looper/script_failure"
 has "$OUT" "suggestions filed: $d-docs-gap.md $d-pin-rules.md $d-retry-builds.md $d-more-4.md $d-more-5.md recap/$d.md"
 has "$OUT" "disk at the end: "
+# And, a control pod, its use against its requests (looper#165).
+has "$OUT" "pod use at the end: cpu 0m mean over "; has "$OUT" " s, memory 300Mi peak; requested cpu 100m, memory 512Mi"
 idx="$(origin show main:suggestions/INDEX.md)"
 order="$(sed -n '/^## Open/,/^## Accepted/p' <<<"$idx" | grep -oE '^\| \[[^]]+\]' | tr -d '|[]' | sed 's/^ //' | paste -sd, -)"
 [[ "$order" == "Pin rules,Docs gap,More 4,More 5,Retry builds" ]] || fail "open order: $order"
@@ -3918,6 +3922,20 @@ run
 has "$(cat "$FIX/land-4")" "on the gates docs (its one changed path, README.md, maps to docs)"
 has "$(origin show main:README.md)" "more"
 has "$(cat "$FIX/land-4b")" "nothing landed: the gates failed"; has "$(cat "$FIX/land-4b")" "HISTORY.md changed other than by lines added at its end"
+pass
+
+# A control pod's use against its requests (looper#165): the CPU its cgroup used from the mark to the end, its
+# mean in millicores, and its memory's peak (memory.current without memory.peak), beside the KUBERNETES_*
+# requests the plan gave it; nothing on a job with no request (a VM's) or no cgroup to read.
+scenario pod-use
+mkdir -p "$FIX/cg"; echo "usage_usec 1000000" > "$FIX/cg/cpu.stat"; echo $((700 * 1048576)) > "$FIX/cg/memory.peak"
+use() { lib "LOOPER_CGROUP='$FIX/cg'; SECONDS=0; pod_use_mark; echo 'usage_usec 31000000' > '$FIX/cg/cpu.stat'; SECONDS=120; $1 pod_use_log"; }
+has "$(use "KUBERNETES_CPU_REQUEST=100m KUBERNETES_MEMORY_REQUEST=512Mi")" "pod use at the end: cpu 250m mean over 120 s, memory 700Mi peak; requested cpu 100m, memory 512Mi"
+echo "usage_usec 1000000" > "$FIX/cg/cpu.stat"; rm "$FIX/cg/memory.peak"; echo $((90 * 1048576)) > "$FIX/cg/memory.current"
+has "$(use "KUBERNETES_CPU_REQUEST=50m KUBERNETES_MEMORY_REQUEST=256Mi")" "pod use at the end: cpu 250m mean over 120 s, memory 90Mi peak; requested cpu 50m, memory 256Mi"
+echo "usage_usec 1000000" > "$FIX/cg/cpu.stat"
+[[ -z "$(use "unset KUBERNETES_CPU_REQUEST;")" ]] || fail "a use line with no request"
+[[ -z "$(lib "LOOPER_CGROUP='$FIX/none'; KUBERNETES_CPU_REQUEST=100m; pod_use_mark; pod_use_log")" ]] || fail "a use line with no cgroup"
 pass
 
 echo "repo-looper: all scenarios pass"

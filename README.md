@@ -834,6 +834,15 @@ login; a secret it cannot read is named in `sources` and the project is not read
   room is not a slow preparation: it is left out of the project's prepare time and kept in its pool's
   (`runner_pools`, each with its `executor`, `pods_pending` and `pool_full`). Capacity is manual: the advice is a
   scale-up for Jody to decide, never an autoscaling change.
+- **Requests against use** (`requests`, looper#165: the normal pool refused a report `Insufficient cpu` at 5-15% CPU
+  used, full on paper and idle in fact): per kind of control pod (`report`, `manager`, `scan`, `control`: the plan
+  and the kicker), its requests (the most common of its pods') against what its pods used, as each logs at its end
+  (`pod use at the end: cpu Nm mean over S s, memory NMi peak; requested cpu C, memory M`: its cgroup's CPU from the
+  job's start, a mean in millicores, and its memory's peak; a job with no `KUBERNETES_CPU_REQUEST`, a VM's, logs
+  none), p50, p90 and max, at the end of the report's Capacity line. An item, `requests/<kind>`, when a resource's
+  p90 is over its request (the scheduler holds less than the pods use) or its request is `LOOPER_RECAP_REQUEST_RATIO`
+  (5) times its p90 or more (a p90 under 25m or 64Mi counts as that): set `LOOPER_REQUESTS_<kind>` or `.control` from
+  the numbers ([Infrastructure](#infrastructure)).
 - **The control jobs' queues** (`control`, looper#104): `looper-plan`'s and `looper-kick`'s, created to started (to
   canceled, for one canceled before it started), each its own line of the report (`Plan queue: ...`, `Kick queue:
   ...`), and an item, `control-queue/<job>`, when the longest is `LOOPER_RECAP_CONTROL_QUEUE` (600 seconds) or more:
@@ -1587,10 +1596,15 @@ cluster#18):
 
 **Requests per job type** (Jody, 2026-11-07: every looper runs at once on the 3 always-on nodes, with small requests,
 since an agent mostly waits on the model's API; never the 4 CPU/14 GB a gate needs, which is a build job's). The
-plan (`looper-dispatch plan`) gives each control pod its kind's, as the job's variables: a **report** 500m and 1Gi,
-limits the ceilings (1500m, 4Gi); a **manager** (git and the forge's API, no model step yet) the runner's defaults,
-250m and 512Mi, limits 1 and 2Gi; `LOOPER_REQUESTS_report` and `LOOPER_REQUESTS_manager` (`"<cpu> <memory> <cpu
-limit> <memory limit>"`) set them. The **kicker and the plan** ask 100m and 256Mi, limits 1 and 1Gi (`.control`).
+plan (`looper-dispatch plan`) gives each control pod its kind's, as the job's variables: a **report** 100m and 512Mi,
+limits the ceilings (1500m, 4Gi); a **manager** (git and the forge's API, no model step yet) 50m and 256Mi, limits 1
+and 2Gi; `LOOPER_REQUESTS_report` and `LOOPER_REQUESTS_manager` (`"<cpu> <memory> <cpu limit> <memory limit>"`) set
+them. The **kicker and the plan** ask 50m and 256Mi, limits 1 and 1Gi (`.control`). The requests are **from the
+evidence, the limits unchanged** (looper#165): #84's 500m a report and 250m a manager filled the three nodes on paper
+while they ran at 5-15% CPU, a report refused `0/3 nodes are available: 3 Insufficient cpu`; the `ci` namespace's job
+containers used p50 8m, p90 151m, max 1032m CPU (Cloud Monitoring, 2 h, 10-minute max per pod, 48 pods), a burst the
+limit allows. Not more nodes: each pod logs its use at its end and the recap's **Requests against use** sets it beside
+its kind's requests ([Nightly recap](#nightly-recap)), so a drift shows.
 Requests and the pool's size bound how many run at once (no `caps.yaml`, looper#107): the rest wait as pending pods,
 which the [nightly recap](#nightly-recap) reports as waits for room, per repository, with how often the pool was full
 and what a 4th node costs, for Jody to decide.

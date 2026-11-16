@@ -230,6 +230,7 @@ if [ -z "${LOOPER_RUNNING_COPY:-}" ]; then
 fi
 # shellcheck source=looper-lib.sh
 source "$LOOPER_LIB"
+pod_use_mark
 # This script's own path, for the model's --checkpoint.
 : "${LOOPER_SELF:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")}"
 
@@ -4191,10 +4192,12 @@ report_job() { # issue
   work_issue "$n"
 }
 
-# The disk a job leaves, for the nightly recap's runner pools (looper#57).
+# The disk a job leaves, for the nightly recap's runner pools (looper#57), and
+# a control pod's use against its requests (looper#165).
 disk_log() {
   local u; u="$(df -Ph "${CI_BUILDS_DIR:-$WORK}" 2>/dev/null | awk 'NR == 2 { print $5 " used of " $2 " (" $6 ")" }')" || u=""
   [[ -z "$u" ]] || log "disk at the end: $u"
+  pod_use_log
 }
 
 case "$MODE" in

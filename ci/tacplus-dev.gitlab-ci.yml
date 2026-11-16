@@ -88,7 +88,8 @@ stages:
 # hub's probes run on the in-cluster control runner (`arm64, control`,
 # tacplus-dev/cluster#13), each a pod on the normal pool with small requests
 # (GitLab's KUBERNETES_* variables, within that runner's ceilings: they run
-# bash, gh and git, and wait on the forge). None of them runs Docker. The plan's
+# bash, gh and git, and wait on the forge; 50m CPU from what they use,
+# looper#165, the recap's "Requests against use"). None of them runs Docker. The plan's
 # reports and managers get their tags and requests from looper-dispatch plan:
 # the control runner for a repository whose gates are build jobs, the VM
 # runners' tags for a job that still needs Docker. A control job's retry is on
@@ -99,7 +100,7 @@ stages:
     max: 2
     when: [runner_system_failure, scheduler_failure, unknown_failure]
   variables:
-    KUBERNETES_CPU_REQUEST: 100m
+    KUBERNETES_CPU_REQUEST: 50m
     KUBERNETES_MEMORY_REQUEST: 256Mi
     KUBERNETES_CPU_LIMIT: 1
     KUBERNETES_MEMORY_LIMIT: 1Gi

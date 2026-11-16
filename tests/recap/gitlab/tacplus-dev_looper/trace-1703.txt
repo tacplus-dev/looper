@@ -34,3 +34,4 @@
 [2026-11-02T01:10:01Z] #32: deleted looper/gamma-32
 [2026-11-02T01:15:00Z] no report at work and no land queued; the manager ends
 [2026-11-02T01:15:00Z] disk at the end: 30% used of 100G (/builds)
+[2026-11-02T01:15:00Z] pod use at the end: cpu 20m mean over 11700 s, memory 90Mi peak; requested cpu 50m, memory 256Mi

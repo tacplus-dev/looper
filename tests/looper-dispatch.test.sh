@@ -811,10 +811,10 @@ control_plan() { PLAN="$(env -u CI_PIPELINE_SOURCE -u GH_TOKEN -u LOOPER_JOB_TAG
 vars_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  variables:/ {v=1; next} f && /^  [a-z]/ {v=0} f && v {sub(/^    /, ""); print}' <<<"$PLAN" | paste -sd' '; }
 control_plan BUILD_TRIGGER_TOKEN=glptt-x
 [[ "$(tags_of alpha-4)" == "[arm64, control]" ]] || fail "alpha's report: $(tags_of alpha-4): $PLAN"
-[[ "$(vars_of looper-alpha-4)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 500m KUBERNETES_MEMORY_REQUEST: 1Gi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
+[[ "$(vars_of looper-alpha-4)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 100m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
   || fail "alpha's report's requests: $(vars_of looper-alpha-4)"
 [[ "$(tags_of alpha-manager)" == "[arm64, control]" ]] || fail "alpha's manager: $(tags_of alpha-manager)"
-[[ "$(vars_of looper-alpha-manager)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 250m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1 KUBERNETES_MEMORY_LIMIT: 2Gi' ]] \
+[[ "$(vars_of looper-alpha-manager)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 50m KUBERNETES_MEMORY_REQUEST: 256Mi KUBERNETES_CPU_LIMIT: 1 KUBERNETES_MEMORY_LIMIT: 2Gi' ]] \
   || fail "alpha's manager's requests: $(vars_of looper-alpha-manager)"
 grep -qx '    - repo-looper --repo alpha --manage' <<<"$(job_of looper-alpha-manager)" || fail "alpha's manager: $(job_of looper-alpha-manager)"
 # tacplus, unpinned: its reports on their VM override, its split batch's jobs as before (the verdict runs its
@@ -863,7 +863,7 @@ for j in looper-plan looper-kick looper-ruleset-probe looper-token-diagnose; do
 done
 awk '$0 == ".control:" {f=1; next} /^[^ ]/ {f=0} f' "$f" > "$FIX/control"
 grep -qx '  tags: \[arm64, control\]' "$FIX/control" || fail ".control's tags: $(cat "$FIX/control")"
-for v in 'KUBERNETES_CPU_REQUEST: 100m' 'KUBERNETES_MEMORY_REQUEST: 256Mi' 'KUBERNETES_CPU_LIMIT: 1' 'KUBERNETES_MEMORY_LIMIT: 1Gi'; do
+for v in 'KUBERNETES_CPU_REQUEST: 50m' 'KUBERNETES_MEMORY_REQUEST: 256Mi' 'KUBERNETES_CPU_LIMIT: 1' 'KUBERNETES_MEMORY_LIMIT: 1Gi'; do
   grep -qx "    $v" "$FIX/control" || fail ".control's requests lack $v: $(cat "$FIX/control")"
 done
 ! grep -nE '^\s*tags:.*(autoscale|gce)' "$f" || fail "a job of $f asks for a VM runner's tag"

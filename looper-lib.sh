@@ -120,6 +120,28 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "FATAL $*" >&2; exit 2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
+# A control pod's use against its requests (looper#165), for the nightly
+# recap: the CPU its cgroup (v2, LOOPER_CGROUP) used from pod_use_mark to
+# pod_use_log, as a mean in millicores, and its memory's peak (memory.current
+# where there is no memory.peak), beside the KUBERNETES_* requests the plan
+# gave the job. Nothing for a job with no request (a VM's) or no cgroup.
+LOOPER_CGROUP="${LOOPER_CGROUP:-/sys/fs/cgroup}"
+POD_USE_MARK=""
+cgroup_cpu_usec() { awk '$1 == "usage_usec" { print $2 }' "$LOOPER_CGROUP/cpu.stat" 2>/dev/null || true; }
+pod_use_mark() { local u; u="$(cgroup_cpu_usec)"; [[ -z "$u" ]] || POD_USE_MARK="$u $SECONDS"; }
+pod_use_log() {
+  [[ -n "$POD_USE_MARK" && -n "${KUBERNETES_CPU_REQUEST:-}" ]] || return 0
+  local u0 s0 u s mem f
+  read -r u0 s0 <<<"$POD_USE_MARK"; u="$(cgroup_cpu_usec)"
+  [[ "$u" =~ ^[0-9]+$ ]] || return 0
+  s=$(( SECONDS - s0 )); (( s > 0 )) || s=1
+  for f in memory.peak memory.current; do
+    mem="$(cat "$LOOPER_CGROUP/$f" 2>/dev/null)" || mem=""; [[ ! "$mem" =~ ^[0-9]+$ ]] || break
+  done
+  log "pod use at the end: cpu $(( (u - u0) / s / 1000 ))m mean over $s s, memory $([[ "$mem" =~ ^[0-9]+$ ]] && echo "$(( mem / 1048576 ))Mi" || echo ?) peak;" \
+    "requested cpu $KUBERNETES_CPU_REQUEST, memory ${KUBERNETES_MEMORY_REQUEST:-?}"
+}
+
 # Every call to the network ends (looper#112): a manager that waited on one
 # without a bound held its job for hours, saying nothing. Each gh call is
 # stopped after LOOPER_NET_TIMEOUT seconds (default 300), and so is each of

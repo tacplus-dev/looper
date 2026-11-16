@@ -1083,6 +1083,71 @@
    }
   }
  },
+ "requests": {
+  "control": {
+   "cpu": {
+    "requested": 50,
+    "used": {
+     "max": 6,
+     "n": 1,
+     "p50": 6,
+     "p90": 6
+    }
+   },
+   "memory": {
+    "requested": 256,
+    "used": {
+     "max": 70,
+     "n": 1,
+     "p50": 70,
+     "p90": 70
+    }
+   },
+   "pods": 1
+  },
+  "manager": {
+   "cpu": {
+    "requested": 50,
+    "used": {
+     "max": 20,
+     "n": 1,
+     "p50": 20,
+     "p90": 20
+    }
+   },
+   "memory": {
+    "requested": 256,
+    "used": {
+     "max": 90,
+     "n": 1,
+     "p50": 90,
+     "p90": 90
+    }
+   },
+   "pods": 1
+  },
+  "report": {
+   "cpu": {
+    "requested": 100,
+    "used": {
+     "max": 12,
+     "n": 1,
+     "p50": 12,
+     "p90": 12
+    }
+   },
+   "memory": {
+    "requested": 512,
+    "used": {
+     "max": 340,
+     "n": 1,
+     "p50": 340,
+     "p90": 340
+    }
+   },
+   "pods": 1
+  }
+ },
  "runner_pools": {
   "tacplus-dev arm64 autoscale-16": {
    "boot_to_ready_s": {
@@ -1163,6 +1228,7 @@
   "merge_minutes": 120,
   "prepare_p90_s": 300,
   "queue_p90_s": 900,
+  "request_ratio": 5.0,
   "scan_minutes": 60,
   "vm_wait_hours": 1.0,
   "vm_wait_s": 300,

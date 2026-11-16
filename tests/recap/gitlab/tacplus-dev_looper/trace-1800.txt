@@ -11,3 +11,4 @@ Running on runner-x3k9q-project-58307470-concurrent-0-7h2m via gitlab-runner-con
 [0Ksection_end:1793535660:prepare_executor[0Ksection_start:1793535660:prepare_script[0KGetting source from Git repository
 [2026-11-01T12:21:00Z] work
 [2026-11-01T12:59:00Z] disk at the end: 12% used of 50G (/builds)
+[2026-11-01T12:59:00Z] pod use at the end: cpu 12m mean over 2280 s, memory 340Mi peak; requested cpu 100m, memory 512Mi

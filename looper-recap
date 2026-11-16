@@ -66,7 +66,10 @@
 #       ready, the prepare times (boot to ready: every job has a fresh VM,
 #       looper#42; a pod's wait to be scheduled and its containers to start),
 #       the pods that waited Pending and those no node had room for, and the disk use the
-#       jobs logged at their end. GitHub Actions runs of the workflows named like
+#       jobs logged at their end. Per kind of control pod (report, manager,
+#       scan, control: the plan and the kicker; looper#165): its requests
+#       against the use its pods logged at their end, the CPU's mean and the
+#       memory's peak. GitHub Actions runs of the workflows named like
 #       LOOPER_RECAP_WORKFLOWS (default nightly|release|image) in every
 #       repository of LOOPER_ORG, each run with its ref (head_branch): a failed
 #       run is recovered only by a later success of its workflow on the same
@@ -100,7 +103,8 @@
 # LOOPER_RECAP_VM_WAIT (300 s: a report's wait for room, a VM or a pod's, that counts),
 # LOOPER_RECAP_VM_WAIT_HOURS (1), LOOPER_RECAP_CONTROL_QUEUE (600 s: a
 # control job's queue, its longest, looper#104), LOOPER_RECAP_BUILD_RATIO (1.1:
-# builds of the build project a commit, looper#134). One more VM: LOOPER_RECAP_VM_MACHINE
+# builds of the build project a commit, looper#134), LOOPER_RECAP_REQUEST_RATIO (5: a
+# kind's request against its pods' p90 use, looper#165). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing); one more node of the normal pool (looper#84):
 # LOOPER_RECAP_NODE_MACHINE (c4a-standard-2) at LOOPER_RECAP_NODE_USD_HOUR
@@ -151,6 +155,7 @@ T = {
     "build_ratio": num("LOOPER_RECAP_BUILD_RATIO", 1.1),
     "control_queue_s": int(num("LOOPER_RECAP_CONTROL_QUEUE", 600)),
     "high_share_pct": num("LOOPER_RECAP_HIGH_SHARE", 25),
+    "request_ratio": num("LOOPER_RECAP_REQUEST_RATIO", 5),
 }
 # The high model (looper#162): repo-looper's LOOPER_MODEL_HIGH, whose share of
 # a day's tokens over high_share_pct the recap names.
@@ -318,6 +323,8 @@ LANDED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): landed on main: .*on the gate
 NOT_LANDED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): nothing landed")
 DEFERRED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): deferred to the next job")
 DISK = re.compile(r"disk at the end: (\d+)% used")
+# A control pod's use against its requests (looper#165; looper-lib.sh pod_use_log).
+POD_USE = re.compile(r"pod use at the end: cpu (\d+)m mean over (\d+) s, memory (?:(\d+)Mi|\?) peak; requested cpu (\S+), memory (\S+)")
 # The plan's line for each job it plans (looper-dispatch plan_job): its resource group.
 PLANNED = re.compile(r"\] planned (\S+) \(.*, resource_group (\S+)\)$")
 
@@ -378,9 +385,9 @@ def read_log(text, started, finished):
     """What a job's log says: its prepare time and VM (its pod, on the in-cluster
     runners: the executor, whether the pod waited Pending and whether no node had
     room for it, looper#84), a pull or gate failure, and for a looper job its
-    plans, holds, lands and disk."""
+    plans, holds, lands and disk, and a control pod's use against its requests."""
     out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False, "executor": None, "pod_pending": False, "pod_full": False,
-           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}}
+           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}, "pod_use": None}
     now = started
     waiting = {}   # issue -> (reason, since)
     landing = {}   # issue -> since
@@ -473,6 +480,11 @@ def read_log(text, started, finished):
         m = DISK.search(line)
         if m:
             out["disk_pct"] = int(m.group(1))
+            continue
+        m = POD_USE.search(line)
+        if m:
+            out["pod_use"] = {"cpu_m": int(m.group(1)), "s": int(m.group(2)), "memory_mi": None if m.group(3) is None else int(m.group(3)),
+                              "cpu_request_m": cpu_m(m.group(4)), "memory_request_mi": memory_mi(m.group(5))}
             continue
         m = PLANNED.search(line)
         if m:
@@ -642,6 +654,7 @@ def collect(until):
     queues, lands, scans, holdl = [], [], [], []
     passes, managers, vmwait, groups = [], {}, [], {}
     control = {name: [] for name in CONTROL}
+    uses = {}
 
     for project in projects:
         try:
@@ -713,6 +726,10 @@ def collect(until):
                                            "reason": j.get("failure_reason"), "recovered": rec,
                                            "before_ready": lg["prepare_at"] is None, "url": url})
             kind, repo = looper_repo(j.get("name"))
+            if lg["pod_use"]:
+                uk = "control" if j.get("name") in control else {"work": "report"}.get(kind, kind)
+                if uk:
+                    uses.setdefault(uk, []).append(dict(lg["pod_use"], url=url))
             if kind is None:
                 continue
             # The runs and tokens per model (looper#136): how fast the Fable quota goes.
@@ -890,6 +907,7 @@ def collect(until):
     out["concurrency"] = concurrency_of(passes, out["managers"], items, pools)
     out["capacity"] = capacity_of(queues, vmwait, out["runner_pools"], items)
     out["control"] = control_of(control, items)
+    out["requests"] = requests_of(uses, items)
     out["actions"] = actions(start, until, sources, items)
     out["image"] = image_check(until, sources, items)
 
@@ -1186,6 +1204,71 @@ def control_of(control, items):
                                      f"behind reports or an older kick (looper#104)",
                           "evidence": [x["url"] for x in xs][:5]})
     return out
+
+
+def cpu_m(q):
+    """A CPU quantity (100m, 1, 1.5) in millicores; None for none."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(m?)", q or "")
+    return None if not m else whole(round(float(m.group(1)) * (1 if m.group(2) else 1000)))
+
+
+def memory_mi(q):
+    """A memory quantity (512Mi, 1Gi, 1G, bytes) in MiB; None for none."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|k|M|G|T)?", q or "")
+    if not m:
+        return None
+    f = {"Ki": 2 ** 10, "Mi": 2 ** 20, "Gi": 2 ** 30, "Ti": 2 ** 40, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}.get(m.group(2), 1)
+    return whole(round(float(m.group(1)) * f / 2 ** 20))
+
+
+# A use under these is noise: a request this or smaller is never too big (looper#165).
+USE_FLOOR = {"cpu": 25, "memory": 64}
+
+
+def requests_of(uses, items):
+    """The control pods' requests against their use, per kind (looper#165:
+    the normal pool full on paper at 5-15% CPU used): report, manager, scan
+    and control (the plan and the kicker), each its pods' requests (the most
+    common) and their use, the CPU's mean over each pod's run in millicores and
+    its memory's peak in MiB, p50, p90 and max. An item when a kind's p90 is
+    over its request (its pods use more than the scheduler holds for them) or
+    its request is LOOPER_RECAP_REQUEST_RATIO times its p90 or more (the pool
+    full on paper and idle in fact; a p90 under USE_FLOOR counts as the floor)."""
+    out = {}
+    for kind, xs in sorted(uses.items()):
+        k, drift = {"pods": len(xs)}, []
+        for res, unit in (("cpu", "m"), ("memory", "Mi")):
+            reqs = [x[f"{res}_request_{unit.lower()}"] for x in xs if x[f"{res}_request_{unit.lower()}"] is not None]
+            req = min(set(reqs), key=lambda r: (-reqs.count(r), r)) if reqs else None
+            used = dist([x[f"{res}_{unit.lower()}"] for x in xs])
+            k[res] = {"requested": req, "used": used}
+            if req is None or used is None:
+                continue
+            p90, over = used["p90"], None
+            if p90 > req:
+                over = "the p90 over the request, the scheduler holding less than the pods use"
+            elif req >= T["request_ratio"] * max(p90, USE_FLOOR[res]):
+                over = f"the request {whole(round(req / max(p90, 1), 1))} times the p90, the pool full on paper and idle in fact"
+            if over:
+                drift.append(f"{res} requested {req}{unit}, used p50 {used['p50']}{unit}, p90 {p90}{unit}, max {used['max']}{unit}: {over}")
+        if drift:
+            items.append({"key": f"requests/{kind}", "count": len(xs), "over": True, "recovered": False,
+                          "summary": f"{kind} pods ({len(xs)}): " + "; ".join(drift)
+                                     + f" (threshold {whole(T['request_ratio'])} times; looper-dispatch's LOOPER_REQUESTS_<kind>, the CI file's .control)",
+                          "evidence": sorted(x["url"] for x in xs)[:5]})
+        out[kind] = k
+    return out
+
+
+def requests_line(rq):
+    """The Capacity line's requests against use, per kind (looper#165)."""
+    def use(r, unit):
+        u = r["used"]
+        return (f"{'?' if r['requested'] is None else r['requested']}{unit} asked, "
+                + ("no use read" if not u else f"used p50 {u['p50']}, p90 {u['p90']}, max {u['max']}{unit}"))
+    return "" if not rq else " Requests against use (looper#165): " + "; ".join(
+        f"{k} CPU {use(r['cpu'], 'm')}, memory {use(r['memory'], 'Mi')} ({r['pods']} pod{'s' * (r['pods'] != 1)})"
+        for k, r in rq.items()) + "."
 
 
 def actions(start, until, sources, items):
@@ -1493,7 +1576,8 @@ def report(night, classes, sdir, cov):
                     + (f"; by repository: {', '.join(f'{r} {h} h' for r, h in w['by_repo'].items())}" if len(w["by_repo"]) > 1 else "") + ")" if w["jobs"] else "")
                  + (f"; the normal pool was full for {full['full']} of {full['pods']} pods ({full['pending']} waited pending)" if full["pods"] else "")
                  + f"; one more {vm['machine']} VM is about ${vm['usd_day']} a day (${vm['usd_hour']} an hour), "
-                 f"one more {node['machine']} node about ${node['usd_day']} a day (${node['usd_hour']} an hour).")
+                 f"one more {node['machine']} node about ${node['usd_day']} a day (${node['usd_hour']} an hour)."
+                 + requests_line(night.get("requests")))
     for name, what in (("looper-plan", "Plan"), ("looper-kick", "Kick")):
         c = (night.get("control") or {}).get(name)
         if c is None:

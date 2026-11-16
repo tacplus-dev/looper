@@ -257,6 +257,11 @@ has "$(q '.items[] | select(.key == "capacity/pods") | "\(.over) \(.summary)"')"
 [[ "$(q '.runner_pools["tacplus-dev control (cluster, ci, normal pool)"] | "\(.executor) \(.jobs) \(.vms) \(.pods_pending) \(.pool_full) \(.boot_to_ready_s.max)"')" == "kubernetes 1 1 1 1 1200" ]] || fail "the control pool: $(q .runner_pools)"
 [[ "$(q '.runner_pools["tacplus-dev arm64 autoscaler"] | "\(.executor) \(.pods_pending) \(.pool_full)"')" == "docker-autoscaler 0 0" ]] || fail "the VM pool: $(q .runner_pools)"
 lacks "$(q '.items[].key')" "capacity/tacplus-dev"
+# The control pods' requests against their use, per kind (looper#165): each pod's CPU mean and memory peak
+# as it logged them at its end; no drift at tonight's requests.
+[[ "$(q '[.requests | to_entries[] | "\(.key) \(.value.pods) \(.value.cpu.requested)/\(.value.cpu.used.p90) \(.value.memory.requested)/\(.value.memory.used.p90)"] | join(", ")')" == "control 1 50/6 256/70, manager 1 50/20 256/90, report 1 100/12 512/340" ]] ||
+  fail "the requests: $(q .requests)"
+lacks "$(q '.items[].key')" "requests/"
 [[ "$(LOOPER_RECAP_VM_USD_HOUR=1.5 LOOPER_RECAP_VM_MACHINE=t2a-standard-16 LOOPER_RECAP_NODE_USD_HOUR=0.2 LOOPER_RECAP_NODE_MACHINE=c4a-standard-4 recap collect --until "$UNTIL" 2>/dev/null | jq -r '.capacity | "\(.one_more_vm.machine) \(.one_more_vm.usd_day) \(.one_more_node.machine) \(.one_more_node.usd_day)"')" == "t2a-standard-16 36 c4a-standard-4 4.8" ]] ||
   fail "the VM's price"
 pass
@@ -338,7 +343,7 @@ lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 # The runs and tokens per model (looper#136), the most runs first.
 has "$R" "Models by day (looper#162; claude-fable-5-1's share of the tokens, over 25% named): 2026-11-02 claude-fable-5-1 34.3%, over (1 of 3 runs); 2026-11-01 claude-fable-5-1 75%, over (4 of 6 runs)."
 has "$R" "Models: claude-opus-5-5 2 runs, 3,657,700 tokens (input 1,700, output 46,000, cache read 3,400,000, cache write 210,000); claude-fable-5-1 1 run, 1,911,800 tokens (input 800, output 21,000, cache read 1,800,000, cache write 90,000), refused 1; claude-haiku-5-5 0 runs, 1,200 tokens"
-has "$R" "Capacity: queue p90 20 min over 26 jobs; 4 issues waited 3.13 h for room ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min for a VM, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min for a VM, [kernel#5](https://gitlab.com/tacplus-dev/looper/-/jobs/1800) 21 min (20 pending); by repository: kernel 1.18 h, tacplus 1.95 h); the normal pool was full for 1 of 1 pods (1 waited pending); one more t2a-standard-8 VM is about \$7.39 a day (\$0.308 an hour), one more c4a-standard-2 node about \$2.14 a day (\$0.089 an hour)."
+has "$R" "Capacity: queue p90 20 min over 26 jobs; 4 issues waited 3.13 h for room ([tacplus#16](https://gitlab.com/tacplus-dev/looper/-/jobs/1310) 97 min for a VM, [kernel#4](https://gitlab.com/tacplus-dev/looper/-/jobs/1702) 50 min for a VM, [kernel#5](https://gitlab.com/tacplus-dev/looper/-/jobs/1800) 21 min (20 pending); by repository: kernel 1.18 h, tacplus 1.95 h); the normal pool was full for 1 of 1 pods (1 waited pending); one more t2a-standard-8 VM is about \$7.39 a day (\$0.308 an hour), one more c4a-standard-2 node about \$2.14 a day (\$0.089 an hour). Requests against use (looper#165): control CPU 50m asked, used p50 6, p90 6, max 6m, memory 256Mi asked, used p50 70, p90 70, max 70Mi (1 pod); manager CPU 50m asked, used p50 20, p90 20, max 20m, memory 256Mi asked, used p50 90, p90 90, max 90Mi (1 pod); report CPU 100m asked, used p50 12, p90 12, max 12m, memory 512Mi asked, used p50 340, p90 340, max 340Mi (1 pod)."
 has "$R" "- \`wait/tacplus\`: tacplus: ready issues waited 2.25 h with no report job "; has "$R" "(2 of 7 nights, over its threshold tonight, 2.25 h of waiting). No advice tonight."
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`manager/kernel/backlog\`: kernel: its manager behind: "
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "(1 night running; advice after 2)."
@@ -444,6 +449,22 @@ variant 1600 "" 'map(if .id == 1600 then .created_at = "2026-11-01T21:20:00.000Z
 [[ "$(v '.control["looper-plan"] | "\(.unstarted) \(.queue_minutes.max)"')" == "0 100" ]] || fail "plan: $(v .control)"
 has "$(v '.items[] | select(.key == "control-queue/looper-plan") | "\(.over) \(.summary)"')" "true looper-plan queued up to 100 min (p90 100, over 1 job; threshold 10 min): a control job waited for a runner, behind reports or an older kick"
 has "$(v '.items[] | select(.key == "control-queue/looper-kick") | "\(.wait_hours) \(.summary)"')" "5.01 looper-kick queued up to 300 min (p90 300, over 2 jobs;"
+pass
+
+# A drift of a kind's requests from its use (looper#165): the request LOOPER_RECAP_REQUEST_RATIO times its
+# pods' p90 or more (#84's 250m and 512Mi for a manager that used 20m and 90Mi: the pool full on paper,
+# idle in fact), or the p90 over the request; a use under the floor (25m, 64Mi) counts as the floor.
+NAME=requests-drift
+variant 1703 's/requested cpu 50m, memory 256Mi$/requested cpu 250m, memory 512Mi/'
+has "$(v '.items[] | select(.key == "requests/manager") | "\(.over) \(.summary)"')" "true manager pods (1): cpu requested 250m, used p50 20m, p90 20m, max 20m: the request 12.5 times the p90, the pool full on paper and idle in fact; memory requested 512Mi, used p50 90Mi, p90 90Mi, max 90Mi: the request 5.7 times the p90"
+variant 1800 's/cpu 12m mean/cpu 180m mean/'
+has "$(v '.items[] | select(.key == "requests/report") | .summary')" "report pods (1): cpu requested 100m, used p50 180m, p90 180m, max 180m: the p90 over the request, the scheduler holding less than the pods use (threshold 5 times;"
+lacks "$(v '.items[] | select(.key == "requests/report") | .summary')" "memory"
+variant 1501 's/requested cpu 50m, memory 256Mi$/requested cpu 150m, memory 1Gi/'
+has "$(v '.items[] | select(.key == "requests/control") | .summary')" "control pods (1): cpu requested 150m, used p50 6m, p90 6m, max 6m: the request 25 times the p90"
+has "$(v '.items[] | select(.key == "requests/control") | .summary')" "memory requested 1024Mi"
+[[ "$(LOOPER_RECAP_REQUEST_RATIO=7 FX="$TMP/fx" recap collect --until "$UNTIL" 2>/dev/null | jq -r '.items[] | select(.key == "requests/control") | .summary')" != *"cpu requested"* ]] ||
+  fail "LOOPER_RECAP_REQUEST_RATIO=7: 150m is under 7 times the 25m floor"
 pass
 
 # The image at main's head is current only as main's build (looper#115): :main's digest that of

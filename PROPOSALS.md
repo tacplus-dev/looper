@@ -24,6 +24,19 @@ the looper then marks it `promoted` or `declined` here with the date.
   queue, which the recap reports as its queue time, not a pending pod. With requests of 500m/1Gi a report, the 3
   nodes fit more than that beside the platform: raise `concurrent` (and the ceilings) with the recap's numbers, or
   the pods' requests are not what bounds concurrency.
+- **The control runner's `concurrent` after #165's requests** (2026-11-16, #165): at 100m a report and 50m a manager
+  the 3 normal nodes fit far more than 8 pods by CPU, so tacplus-dev/cluster's `concurrent: 8` (the entry above) is
+  now what bounds the reports and managers running at once. Raise it in tacplus-dev/cluster once the recap's
+  **Requests against use** has a few nights at the new requests and its `capacity` shows reports queued for the
+  runner rather than Pending.
+- **Memory requests from Cloud Monitoring's p90** (2026-11-16, #165): the issue asks the memory requests be sized
+  from `kubernetes.io/container/memory/used_bytes` p90 with headroom; #165's run had no GCP credentials, so a report
+  asks the issue's 512Mi and a manager 256Mi. Each pod now logs its memory's peak and the recap sets it against the
+  request (`requests/<kind>`): read a few nights of it, or the metric, and set `LOOPER_REQUESTS_<kind>` from them.
+- **A pod's CPU peak beside its mean** (2026-11-16, #165): a pod logs its CPU as the mean over its run (its cgroup's
+  `usage_usec` over the job's seconds), which is what a request should cover; #165's evidence was a 10-minute max.
+  If the recap's means stay far under the metric's maxima, sample `cpu.stat` in the job (every few minutes, the
+  checkpoint's loop) and log the highest window too.
 - **The pod's Pending time from timestamps, not the preparation** (2026-11-15, #84): the recap reads a pod's wait for
   room as its executor's preparation (started to its script) when its log says `status is Pending`, which includes
   the image pull and the containers' start. GitLab Runner's timestamped logs (`FF_TIMESTAMPS`) would give the Pending
