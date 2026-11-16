@@ -1933,6 +1933,114 @@ scan "${JAR_PATH[@]}" BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err" || fail 
 [[ ! -s "$TMP/trivy.log" ]] || fail "trivy ran: $(cat "$TMP/trivy.log")"
 pass
 
+# looper-scan image (looper#167): the Go binaries of an image's /usr/local/bin,
+# read by govulncheck -mode=binary, always with stubs (no image here): go
+# (version, tool nm) and govulncheck read what a fake binary says it is: its Go,
+# no symbol table, the vulnerable functions it calls (govulncheck reports them
+# in the same shape whether a binary is stripped or not).
+IB="$TMP/scanbin-image"; mkdir -p "$IB"
+cat > "$IB/go" <<'EOF'
+#!/usr/bin/env bash
+f="${@: -1}"
+case "$1 $2" in
+  "version -m") echo "$f: go1.27.4"; echo "	mod	golang.org/x/vuln	v1.9.0	h1:stub" ;;
+  "version "*) v="$(sed -n 's/^go: //p' "$f" 2>/dev/null)"
+    if [[ -n "$v" ]]; then echo "$f: $v"; else echo "$f: could not read Go build info from $f: not a Go executable" >&2; fi ;;
+  "tool nm") grep -q '^stripped$' "$f" && { echo "reading $f: no symbols" >&2; exit 1; }; echo " 1000 T main.main" ;;
+  *) echo "go stub: $*" >&2; exit 1 ;;
+esac
+EOF
+cat > "$IB/govulncheck" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2 $3" == "-mode=binary -format json" ]] || { echo "govulncheck stub: $*" >&2; exit 2; }
+f="$4"; echo "$f" >> "$TMP_IMAGE_LOG"
+grep -q '^unreadable$' "$f" && { echo "govulncheck: fetching vulnerabilities: vuln.go.dev: no route to host" >&2; exit 1; }
+echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.9.0","db":"https://vuln.go.dev","db_last_modified":"2026-11-11T02:51:11Z","scan_mode":"binary"}}'
+sed -n 's/^vuln: //p' "$f" | while read -r id fixed module version package function; do
+  jq -cn --arg id "$id" '{osv: {id: $id, aliases: [], summary: ("the planted " + $id)}}'
+  jq -cn --arg id "$id" --arg fixed "$fixed" --arg m "$module" --arg v "$version" --arg p "$package" --arg fn "$function" \
+    '{finding: {osv: $id, fixed_version: (if $fixed == "-" then null else $fixed end), trace: [{module: $m, version: $v, package: $p, function: $fn}]}}'
+  jq -cn --arg id "$id" --arg m "$module" --arg v "$version" '{finding: {osv: $id, trace: [{module: $m, version: $v}]}}'
+done
+EOF
+chmod +x "$IB/"*
+IMG="$TMP/image-root"; mkdir -p "$IMG/usr/local/bin/sub" "$IMG/usr/local/share/looper"
+printf 'go: go1.26.10\nvuln: GO-2026-6859 v1.26.11 stdlib go1.26.10 net/http MaxBytesReader\n' > "$IMG/usr/local/bin/docker"
+printf 'go: go1.27.4\n' > "$IMG/usr/local/bin/gh"
+printf 'go: go1.27.4\nvuln: GO-2021-0113 v0.3.7 golang.org/x/text v0.3.0 golang.org/x/text/language Parse\n' > "$IMG/usr/local/bin/ours"
+printf 'go: go1.27.4\nstripped\nvuln: GO-2026-6905 - github.com/blakesmith/ar v0.0.0-20190502131153-809d4375e1fb github.com/blakesmith/ar Next\n' > "$IMG/usr/local/bin/sub/plain"
+printf '#!/bin/sh\necho a script\n' > "$IMG/usr/local/bin/tool.sh"
+printf '\177ELF, Rust\n' > "$IMG/usr/local/bin/just"
+ln -s tool.sh "$IMG/usr/local/bin/link"
+# The base image's record: docker and gh as it had them, and a binary of the
+# same name the image replaced (ours: its sha256 is not the base image's).
+{ echo "# ghcr.io/tacplus-dev/tacplus/build:2.6"
+  (cd "$IMG" && sha256sum usr/local/bin/docker usr/local/bin/gh usr/local/bin/just | sed 's:  usr/:  /usr/:')
+  echo "$(printf 'base' | sha256sum | cut -d' ' -f1)  /usr/local/bin/ours"; } > "$IMG/usr/local/share/looper/base-image.sha256"
+image_scan() { # dir [VAR=value...]
+  local d="$1"; shift
+  n=$((n + 1)); OUT="$TMP/out-$n"; : > "$TMP/image.log"
+  env -i PATH="$IB:$TMP/bin:$SB:$PATH" HOME="$TMP/home" TMPDIR="$TMP" TMP_IMAGE_LOG="$TMP/image.log" \
+    BUILD_REPO=looper BUILD_SHA="${SHA[scanclean]}" BUILD_OUT="$OUT" "$@" "$ROOT/looper-scan" image "$IMG" "$d"
+}
+EXC_IMG="$TMP/image-exc"; mkdir -p "$EXC_IMG"
+
+NAME="security: image: every Go binary of /usr/local/bin under the policy: a fixed version fails, the base image's is tacplus-dev/tacplus's, a stripped one is said"
+if image_scan "$EXC_IMG" 2>"$TMP/err"; then fail "passed: $(cat "$TMP/err")"; fi
+scan_verdict_is "fail: 2 security finding(s) the policy fails: GO-2021-0113, GO-2026-6859"
+[[ "$(blocking)" == "govulncheck GO-2021-0113 golang.org/x/text@v0.3.0 (/usr/local/bin/ours, called: golang.org/x/text/language.Parse)
+govulncheck GO-2026-6859 stdlib@go1.26.10 (/usr/local/bin/docker, the base image's: tacplus-dev/tacplus, called: net/http.MaxBytesReader)" ]] ||
+  fail "blocking: $(blocking)"
+# A stripped binary's findings are every vulnerable function of a package it links: counted, and said.
+jq -e '[.[] | select(.id == "GO-2026-6905")] == [{tool: "govulncheck", kind: "sca", id: "GO-2026-6905", aliases: [], severity: "HIGH", fix: false,
+  where: "github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb (/usr/local/bin/sub/plain, read stripped, called: github.com/blakesmith/ar.Next)",
+  title: "the planted GO-2026-6905", excepted: null, blocking: false, new: true, baselined: false}]' "$OUT/security/findings.json" >/dev/null ||
+  fail "$(cat "$OUT/security/findings.json")"
+[[ "$(sort "$TMP/image.log")" == "$(printf '%s\n' "$IMG/usr/local/bin/docker" "$IMG/usr/local/bin/gh" "$IMG/usr/local/bin/ours" "$IMG/usr/local/bin/sub/plain")" ]] ||
+  fail "govulncheck read: $(cat "$TMP/image.log")"
+s="$OUT/security/summary.md"
+grep -qxF "## Security checks: looper ${SHA[scanclean]} (image)" "$s" || fail "$(cat "$s")"
+sed -n "/^### The image's binaries/,/^\$/p" "$s" > "$TMP/bins"
+[[ "$(cat "$TMP/bins")" == "### The image's binaries (govulncheck -mode=binary on every Go binary under $IMG/usr/local/bin)
+- /usr/local/bin/docker: go1.26.10, the base image's: tacplus-dev/tacplus (ghcr.io/tacplus-dev/tacplus/build:2.6)
+- /usr/local/bin/gh: go1.27.4, the base image's: tacplus-dev/tacplus (ghcr.io/tacplus-dev/tacplus/build:2.6)
+- /usr/local/bin/ours: go1.27.4
+- /usr/local/bin/sub/plain: go1.27.4, read stripped" ]] || fail "$(cat "$s")"
+grep -qxF -e "- govulncheck: /usr/local/bin/sub/plain: read stripped (no symbol table): every vulnerable function of a package it links counts as called" "$s" ||
+  fail "$(cat "$s")"
+grep -qxF -e "- govulncheck: not Go, not read: /usr/local/bin/just, /usr/local/bin/tool.sh" "$s" || fail "$(cat "$s")"
+ls "$OUT/security/raw" | grep -q '^govulncheck-binary-' || fail "no raw report: $(ls "$OUT/security/raw")"
+jq -e 'keys == ["govulncheck"] and .govulncheck.db_last_modified' "$OUT/security/databases.json" >/dev/null ||
+  fail "databases: $(cat "$OUT/security/databases.json")"
+pass
+
+NAME="security: image: security-exceptions.yaml accepts a binary's finding, and an expired one fails"
+printf 'exceptions:\n  - id: %s\n    reason: "the planted %s"\n    decided_by: jodydadescott\n    expires: %s\n' \
+  GO-2021-0113 GO-2021-0113 2099-12-31 GO-2026-6859 GO-2026-6859 2099-12-31 > "$EXC_IMG/security-exceptions.yaml"
+image_scan "$EXC_IMG" 2>"$TMP/err" || fail "the accepted findings failed: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+[[ "$(jq -r '[.[] | select(.excepted) | .excepted] | join(" ")' "$OUT/security/findings.json")" == "GO-2021-0113 GO-2026-6859" ]] ||
+  fail "$(cat "$OUT/security/findings.json")"
+sed -i 's/2099-12-31/2020-01-31/' "$EXC_IMG/security-exceptions.yaml"
+if image_scan "$EXC_IMG" 2>"$TMP/err"; then fail "an expired exception passed"; fi
+scan_verdict_is "fail: exception GO-2021-0113 expired on 2020-01-31"
+pass
+
+NAME="security: image: a binary govulncheck cannot read fails the run; without the base image's record, every binary is the image's own"
+rm "$EXC_IMG/security-exceptions.yaml"; mv "$IMG/usr/local/bin/ours" "$TMP/ours"
+mv "$IMG/usr/local/share/looper/base-image.sha256" "$TMP/base-image.sha256"
+if image_scan "$EXC_IMG" 2>"$TMP/err"; then fail "passed"; fi
+blocking | grep -qxF "govulncheck GO-2026-6859 stdlib@go1.26.10 (/usr/local/bin/docker, called: net/http.MaxBytesReader)" || fail "$(blocking)"
+grep -qxF -e "- no record of the base image's binaries (/usr/local/share/looper/base-image.sha256): every binary is counted as the image's own" \
+  "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+printf 'go: go1.27.4\nunreadable\n' > "$IMG/usr/local/bin/ours"
+if image_scan "$EXC_IMG" 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: govulncheck: /usr/local/bin/ours: govulncheck: fetching vulnerabilities: vuln.go.dev: no route to host"
+mv "$TMP/ours" "$IMG/usr/local/bin/ours"; mv "$TMP/base-image.sha256" "$IMG/usr/local/share/looper/base-image.sha256"
+if image_scan "$TMP/nonexistent" 2>"$TMP/err"; then fail "no exceptions directory passed"; fi
+grep -q '^usage: ' "$TMP/err" || fail "$(cat "$TMP/err")"
+pass
+
 NAME="security: a nightly adds CodeQL and Trivy (Kubernetes manifests): a privileged pod fails it, not a build"
 mkdir -p "$TMP/scanbin-nightly"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
 SCAN_API+=(PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH")

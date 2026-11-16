@@ -345,19 +345,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   while those numbers stay small (Jody: "If we have a problem we will look to address it"); the runner's `limit` or
   pod requests (decisions/only-vms-are-k8s-nodes-2026-11-04.md) are where a bound would go, never a per-repository
   cap.
-- **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47): the build's checks scan the tree and Trivy the
-  Dockerfiles' base images, never the tools our Dockerfile downloads (glab, OSV-Scanner, Trivy, Syft, gitleaks,
-  gosec, cargo-deny). The nightly scan found reachable vulnerabilities in four of them by running
-  `govulncheck -mode=binary` by hand. A step in the image workflow (or `looper-scan` on a release's image, beside its
-  SBOM) running `govulncheck -mode=binary` on each Go binary under `/usr/local/bin` that the base image does not
-  have, or `trivy image` on the built image, would put them under the same policy as the tree. Trivy built from
-  source reports GO-2026-4919 (the compromised v0.69.4 release, an open range: not applicable, #64): such a step
-  needs an exception for it. A binary stripped of its symbol table (`-s`, as most releases are) is read less
-  precisely: Trivy's source build stripped so reports x/net GO-2026-6860/6866 and openpgp GO-2026-5932 again,
-  unstripped none of them (#64); such a step should say which binaries it could read only so. The base image's
-  binaries escape too (2026-11-16, #166): the build's `trivy image` of `build:2.6` did not report the docker CLI's
-  GO-2026-6859 (go1.26.10), which `govulncheck -mode=binary /usr/local/bin/docker` does. So the step should cover
-  every Go binary under `/usr/local/bin`, and attribute a base-image one to tacplus-dev/tacplus.
 - **Drop gitleaks' xz replace** (2026-11-03, #65): the image builds gitleaks 8.30.1 from source with
   `github.com/ulikunitz/xz` replaced with v0.5.15 (`GITLEAKS_XZ_VERSION`, Dockerfile; 8.30.1 pins v0.5.12, GO-2025-3922),
   a combination upstream did not test, smoke-tested only by a planted AWS key. When gitleaks releases with xz >= 0.5.15
@@ -746,15 +733,14 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Refresh the vendored CI schema** (2026-11-05, #94): `ci/gitlab-ci.schema.json` is GitLab's `ci.json` at
   a38e1992; a keyword GitLab adds later is refused offline until it is refreshed. The nightly scan could compare it
   with GitLab's current file and propose the update.
-- **The security checks scan the binaries the image builds** (2026-11-06, #101): the build's checks scan the tree
-  and the Dockerfile's base images, not the Go tools the `Dockerfile` compiles into the looper image (osv-scanner,
-  trivy, gitleaks, syft, govulncheck, glab). The nightly scan found GO-2026-6865 and GO-2026-6888 in them only with
-  `govulncheck -mode=binary` by hand (#101, #47). Running govulncheck in binary mode on each Go binary of the image
-  `publish` pushes, under the same policy (a fixed version HIGH fails), would put a deterministic floor under
-  that check as well, and catch an override (looper#65, #88) that stopped working. Again by hand on 2026-11-15:
-  gosec and glab, the two release binaries left, still call net/http's GO-2026-6859 two days after #124 fixed the
-  source-built four (#159); the base image's docker CLI (go1.26.10) too, which such a step would name as the base
-  image's.
+- **The published image's binaries, nightly** (2026-11-16, #167): the `Dockerfile`'s last step reads the looper
+  image's Go binaries with `govulncheck -mode=binary` (`looper-scan image`), so an advisory published after main's
+  image was built waits for the next land's image build, or the nightly agent scan by hand. A nightly run of
+  `looper-scan image /` in main's published image (the nightly `security-looper` job already runs in it), its findings
+  published beside the tree's, would put those under the same deterministic floor. A release's published image could
+  have the same scan beside its SBOM (`looper-build sbom`, of `image.tar`), though its build already ran it.
+  `image.yml` could pass `--build-arg REVISION="$GITHUB_SHA"` so the scan's summary names main's commit (it says
+  `unknown` there): a change under `.github/workflows/` a person pushes, the looper's credential has no `workflows`.
 - **A secret's identity that survives a moved line** (2026-11-12, #120, #129): a gitleaks finding's id is
   `<path>:<rule>:<line>` (looper-scan, README: Security checks), both for `new` and for an exception's `id`. So an
   unchanged fixture that moves is a new finding: #120's withheld `GITLAB_TOKEN` fixture at
@@ -795,6 +781,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   prefix the finding's `where` must match) would keep an exception to the place it was decided for.
 
 ## Promoted / declined
+- **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
+  image builds** (2026-11-06, #101): done in #167 (2026-11-16): the `Dockerfile`'s last step, `looper-scan image`,
+  runs `govulncheck -mode=binary` on every Go binary under `/usr/local/bin` under the tree's policy and
+  `security-exceptions.yaml`, says which it read stripped and attributes a base-image binary (recorded by sha256
+  right after `FROM`) to tacplus-dev/tacplus.
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap
   compares `ghcr.io/tacplus-dev/looper:main`'s `org.opencontainers.image.revision` with main's head.
 - **A manual macOS smoke job in the build pipeline** (2026-10-31, #36): `ci/build.gitlab-ci.yml` gets a `smoke`

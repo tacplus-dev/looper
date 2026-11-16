@@ -34,6 +34,12 @@ LABEL org.opencontainers.image.title="looper" \
       org.opencontainers.image.description="tacplus-dev looper: the tacplus build image plus the claude CLI and the per-repository looper; tacplus runs in the build image of its line" \
       org.opencontainers.image.source="https://github.com/tacplus-dev/looper" \
       org.opencontainers.image.licenses="Apache-2.0"
+# The base image's own binaries, before this file adds any (looper#167): each
+# file of its /usr/local/bin by sha256, under its name, for the scan below to
+# say which of the image's binaries are tacplus-dev/tacplus's to fix.
+ARG BUILD_IMAGE
+RUN mkdir -p /usr/local/share/looper && \
+    { echo "# $BUILD_IMAGE"; find /usr/local/bin -type f -exec sha256sum {} + | LC_ALL=C sort -k2; } > /usr/local/share/looper/base-image.sha256
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
 # openssl: the nonce of each prompt (repo-looper, looper#40).
 RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*; }
@@ -192,5 +198,17 @@ COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
 COPY repo-looper looper-dispatch looper-build looper-scan looper-token looper-ruleset looper-suggest looper-recap looper-trace looper-verify tacplus looper-smoke looper-docker looper-docker-broker looper-pkill runner-image /usr/local/bin/
+# The image's Go binaries under the tree's policy (looper#167; README: Security
+# checks): govulncheck -mode=binary on every one under /usr/local/bin, the
+# tools above and the base image's, with this commit's security-exceptions.yaml
+# (kept beside the record: what the image accepts). A reachable vulnerability
+# with a fixed version fails the image build, here and in a release's publish,
+# before anything is pushed; the summary is in the build's log. Last, so it
+# reads every binary the image ships (vuln.go.dev: the network).
+# REVISION: the commit, as a release's publish gives it (image.yml does not: unknown).
+ARG REVISION
+COPY security-exceptions.yaml /usr/local/share/looper/
+RUN BUILD_REPO=looper BUILD_SHA="${REVISION:-unknown}" BUILD_OUT=/tmp/image-scan looper-scan image / /usr/local/share/looper && \
+    rm -rf /tmp/image-scan
 ENV LOOPER_IMAGE=1 LOOPER_TACPLUS_LINE=${TACPLUS_LINE} LOOPER_LIB=/usr/local/lib/looper/looper-lib.sh LOOPER_WORK=/work
 WORKDIR /work

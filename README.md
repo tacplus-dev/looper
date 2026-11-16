@@ -1155,6 +1155,25 @@ jars nor the shade plugin's `original-` one. Every run, a build's too, scans the
 finding; an exception for one goes in `security-exceptions.yaml` like any other (its CVE as the `id`). A repository
 needs no scan of its own for them.
 
+**The looper image's binaries** (looper#167). The tree's scans never read the Go binaries inside the looper image:
+the scanners and glab the `Dockerfile` builds, and the base image's (the docker CLI, gh, protoc-gen-go); every Go
+advisory in them was found by hand (#64, #88, #101, #124, #159, #166). So the `Dockerfile`'s last step runs
+`looper-scan image / /usr/local/share/looper`: `govulncheck -mode=binary` on every Go binary under `/usr/local/bin`
+(`go version` says which are Go; the others are listed as not read), under the policy of every other finding (a
+reachable vulnerability with a fixed version is HIGH and fails), with the commit's `security-exceptions.yaml`, copied
+beside it. It fails the image build that brings one in, `image.yml`'s on main and a release's `publish` alike, before
+anything is pushed; its summary is in the build's log. A finding's `where` is
+`<module>@<version> (<binary>[, read stripped][, the base image's: <repository>], called: <function>)`:
+- a binary whose sha256 is the base image's (the `Dockerfile` records its `/usr/local/bin` right after `FROM`, in
+  `/usr/local/share/looper/base-image.sha256`) is **the base image's**: tacplus-dev/tacplus fixes it, and the summary
+  names the image;
+- a binary stripped of its symbol table (`go tool nm` reads none) is **read stripped**: govulncheck then takes each
+  vulnerable function of a package it links as called (#64), so its findings may be more than the code calls. They
+  count all the same, and the summary says which binaries were read so.
+
+`looper-scan image ROOT DIR` reads any image's root (`ROOT`: its files unpacked) with `DIR`'s exceptions; its reports
+are those of a run, in `BUILD_OUT/security` (else a temporary directory its summary names).
+
 cargo-deny reads the build's graph with `cargo metadata`, which needs every path dependency's manifest: a service
 whose `Cargo.toml` path-depends on the crates its gates generate (its tacplus.yaml's generated tree, gateway's
 `target/generated-sources/model`) has them from `built/`; without them, cargo-deny runs on a copy of the tree with the
@@ -1256,9 +1275,9 @@ its title the cause; the other new ones are one issue. A cause another repositor
 are filed the same way; a baselined finding is never new. An issue's run is handed the same report in its run directory, its prompt pointing at it.
 
 ```sh
-looper-scan run | report | local DIR | sbom SOURCE DIR   # the jobs; local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them), its reports in a temporary directory its summary names (or BUILD_OUT/security, written once the scan is done): never in the tree it scans (looper#161)
+looper-scan run | report | local DIR | sbom SOURCE DIR | image ROOT DIR   # the jobs; image: the Go binaries of an image (the Dockerfile's last step); local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them), its reports in a temporary directory its summary names (or BUILD_OUT/security, written once the scan is done): never in the tree it scans (looper#161)
 looper-scan baseline FINDINGS > security-baseline.json  # a run's findings as the repository's recorded baseline
-tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was)
+tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), the report, a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
 tests/repo-looper.test.sh    # scan-security-report: the scan reads the report; scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes; issue-security-report: an issue's run is handed it
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)
 ```

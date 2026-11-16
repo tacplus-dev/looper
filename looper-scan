@@ -19,6 +19,8 @@
 #   baseline a run's findings as the repository's recorded baseline
 #            (security-baseline.json, looper#146): what it accepts as its start
 #   sbom     an SBOM, CycloneDX and SPDX, of a source (publish: the release image)
+#   image    the Go binaries of an image (looper#167): govulncheck -mode=binary
+#            on each under its /usr/local/bin, the policy, a commit's exceptions
 #
 # The kinds (BUILD_SCAN_KIND): build (every build): OSV-Scanner, govulncheck,
 # cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
@@ -81,6 +83,8 @@ usage: looper-scan run               the security checks of BUILD_REPO at BUILD_
        looper-scan report            the run's findings, published as the repository's latest (what the next run compares with)
        looper-scan baseline FINDINGS a run's findings.json as a security-baseline.json (MEDIUM, LOW and UNKNOWN only)
        looper-scan sbom SOURCE DIR   a CycloneDX and an SPDX SBOM of SOURCE (dir:..., oci-archive:...) in DIR
+       looper-scan image ROOT DIR    the Go binaries under ROOT/usr/local/bin (an image's root), govulncheck -mode=binary,
+                                     under the policy with DIR's security-exceptions.yaml and security-baseline.json
 Reports go to BUILD_OUT/security (default: ./security; local: a new temporary directory, which its
 summary names). local never scans its own reports: a BUILD_OUT/security inside DIR is written once the scan is done.
 EOF
@@ -197,16 +201,67 @@ tool_govulncheck() { # tree label prefix
     if ! (cd "$d" && govulncheck -format json ./... > "$raw" 2>"$raw.log"); then
       tool_error govulncheck "$1" "$d" "$(grep -m1 . "$raw.log")"; continue
     fi
-    # Reachable only: a finding whose trace reaches a vulnerable function.
-    norm "$SCAN_OUT/norm/govulncheck-$2-$i.json" '
-      ([.[] | .osv // empty | {(.id): .}] | add // {}) as $osv
-      | [.[] | .finding // empty | select(.trace[0].function != null)]
-      | unique_by(.osv) | map(.trace[0] as $t
-        | finding("govulncheck"; "sca"; .osv; ($osv[.osv].aliases // []); "HIGH"; ((.fixed_version // "") != "");
-                  ($t.module + "@" + ($t.version // "") + " (" + $where + ", called: " + ($t.package // "") + "." + ($t.function // "") + ")");
-                  $osv[.osv].summary))' \
-      "$raw" --arg where "$(rel_dir "$1" "$d" "$3")go.mod"
+    norm "$SCAN_OUT/norm/govulncheck-$2-$i.json" "$JQ_GOVULNCHECK" "$raw" --arg where "$(rel_dir "$1" "$d" "$3")go.mod"
   done < <(projects "$1" go.mod)
+}
+
+# Reachable only: a finding whose trace reaches a vulnerable function, the
+# first by package and function (govulncheck's order varies from run to run);
+# where is the module's place (its go.mod, a binary).
+JQ_GOVULNCHECK='
+([.[] | .osv // empty | {(.id): .}] | add // {}) as $osv
+| [.[] | .finding // empty | select(.trace[0].function != null)]
+| sort_by(.osv, .trace[0].package, .trace[0].function) | unique_by(.osv) | map(.trace[0] as $t
+  | finding("govulncheck"; "sca"; .osv; ($osv[.osv].aliases // []); "HIGH"; ((.fixed_version // "") != "");
+            ($t.module + "@" + ($t.version // "") + " (" + $where + ", called: " + ($t.package // "") + "." + ($t.function // "") + ")");
+            $osv[.osv].summary))'
+
+# The base image's binaries, as an image's Dockerfile records them before it
+# adds its own (looper#167): a first line "# <base image>", then each file of
+# its /usr/local/bin as sha256sum prints it ("<sha256>  /usr/local/bin/<name>").
+BASE_RECORD=usr/local/share/looper/base-image.sha256
+# The repository a base image is built from: ghcr.io/<org>/<repo>/..., else the image.
+image_repo() { # ref
+  if [[ "$1" =~ ^ghcr\.io/([^/]+)/([^/:@]+) ]]; then echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; else echo "$1"; fi
+}
+
+# Every Go binary under an image's /usr/local/bin (looper#167), read by
+# govulncheck -mode=binary: what the tree's scans cannot see (the tools a
+# Dockerfile builds or downloads, the base image's). A binary the base image
+# has as recorded is its repository's to fix; one stripped of its symbol
+# table is read at package level, each vulnerable function of a package it
+# links taken as called (#64): its findings count, and the summary says so.
+binaries=()
+tool_binaries() { # root
+  local root="$1" f rel v i=0 raw base="" owner="" attrs from notgo=()
+  need go || return 0
+  need govulncheck || return 0
+  if [[ -f "$root/$BASE_RECORD" ]]; then
+    base="$(sed -n '1s/^# *//p' "$root/$BASE_RECORD")"; owner="$(image_repo "$base")"
+  else
+    notes+=("no record of the base image's binaries (/$BASE_RECORD): every binary is counted as the image's own")
+  fi
+  while read -r f; do
+    rel="/${f#"$root"/}"
+    v="$(go version "$f" 2>/dev/null | awk -v f="$f:" '$1 == f && $2 ~ /^go[0-9]/ { print $2 }')"
+    [[ -n "$v" ]] || { notgo+=("$rel"); continue; }
+    attrs=""
+    go tool nm "$f" >/dev/null 2>&1 || {
+      attrs+=", read stripped"
+      notes+=("govulncheck: $rel: read stripped (no symbol table): every vulnerable function of a package it links counts as called")
+    }
+    from=""
+    if [[ -n "$base" ]] && grep -qxF "$(sha256sum < "$f" | cut -d' ' -f1)  $rel" "$root/$BASE_RECORD"; then
+      attrs+=", the base image's: $owner"; from=" ($base)"
+    fi
+    binaries+=("$rel: $v$attrs$from")
+    i=$((i + 1)); raw="$SCAN_OUT/raw/govulncheck-binary-$i-$(basename "$f").json"
+    if ! govulncheck -mode=binary -format json "$f" > "$raw" 2>"$raw.log"; then
+      tool_error govulncheck "$root" "$root" "$rel: $(grep -m1 . "$raw.log")"; continue
+    fi
+    norm "$SCAN_OUT/norm/govulncheck-binary-$i.json" "$JQ_GOVULNCHECK" "$raw" --arg where "$rel$attrs"
+  done < <(find "$root/usr/local/bin" -type f 2>/dev/null | LC_ALL=C sort)
+  ((${#notgo[@]} == 0)) || notes+=("govulncheck: not Go, not read: $(printf '%s\n' "${notgo[@]}" | paste -sd, - | sed 's/,/, /g')")
 }
 
 # A project's directory in its tree, as a path prefix: "" at the root, else "sub/".
@@ -586,8 +641,14 @@ databases() { # started
            | if . then {govulncheck: {db: .db, db_last_modified: .db_last_modified}} else {} end' 2>/dev/null)" || gv="{}"
   fi
   [[ -n "$trivy" ]] || trivy="{}"; [[ -n "$gv" ]] || gv="{}"
-  jq -n --arg at "$1" --argjson trivy "$trivy" --argjson deny "$deny" --argjson gv "$gv" --arg sg "$SEMGREP_CONFIG" '
-    {"osv-scanner": {db: "api.osv.dev", queried_at: $at}, semgrep: {rules: $sg, fetched_at: $at}} + $gv + $deny + $trivy'
+  # OSV-Scanner and Semgrep: when they ran (an image's run has only govulncheck).
+  local osv=false sg=false
+  ls "$SCAN_OUT"/raw/osv-scanner-* >/dev/null 2>&1 && osv=true
+  ls "$SCAN_OUT"/raw/semgrep-* >/dev/null 2>&1 && sg=true
+  jq -n --arg at "$1" --argjson trivy "$trivy" --argjson deny "$deny" --argjson gv "$gv" --arg sg "$SEMGREP_CONFIG" \
+        --argjson osv_ran "$osv" --argjson sg_ran "$sg" '
+    (if $osv_ran then {"osv-scanner": {db: "api.osv.dev", queried_at: $at}} else {} end)
+    + (if $sg_ran then {semgrep: {rules: $sg, fetched_at: $at}} else {} end) + $gv + $deny + $trivy'
 }
 
 # --- the exceptions ---------------------------------------------------------------
@@ -689,6 +750,13 @@ scan_tree() { # src previous-findings started
       problems+=("syft: $(tool_cause "$SCAN_OUT/raw/syft.log")")
   fi
 
+  scan_policy "$src" "$previous" "$started"
+}
+
+# The policy on the run's findings, with dir's security-exceptions.yaml and
+# security-baseline.json (the commit's), the reports; the verdict ends the run.
+scan_policy() { # dir previous-findings started
+  local src="$1" previous="$2" started="$3" t
   # The exceptions, the policy, the comparison.
   local exceptions errs today
   today="$(date -u +%Y-%m-%d)"
@@ -853,9 +921,33 @@ write_summary() { # blocking
     jq -r 'length as $n | "\($n) SAST finding(s) and secret(s) in the code tacplus generates (security/generated.json): tacplus scans its generated output at the source; its dependencies are checked here (looper#108)."
            , (group_by(.tool + " " + .id)[] | "- \(.[0].tool) \(.[0].id): \(length)")' "$SCAN_OUT/generated.json"
   fi
+  if ((${#binaries[@]})); then
+    echo; echo "### The image's binaries (govulncheck -mode=binary on every Go binary under $SCAN_IMAGE_ROOT/usr/local/bin)"
+    for p in "${binaries[@]}"; do echo "- $p"; done
+  fi
   if ((${#notes[@]})); then echo; echo "### Not analyzed, or in part"; for p in "${notes[@]}"; do echo "- $p"; done; fi
   echo; echo "### Checked against"; jq -r 'to_entries[] | "- \(.key): \(.value | to_entries | map("\(.key) \(.value)") | join(", "))"' "$SCAN_OUT/databases.json"
   echo; echo "### Tools"; jq -r 'to_entries[] | "- \(.key) \(.value)"' "$SCAN_OUT/tools.json"
+}
+
+# The Go binaries of an image (looper#167): ROOT is its root (/ in the image
+# itself, as its Dockerfile's last step runs it, or its files unpacked), DIR
+# the commit's checkout or a directory holding its security-exceptions.yaml
+# (and security-baseline.json). No previous run: every finding is new.
+cmd_image() { # root dir
+  [[ $# -eq 2 && -d "$1" && -d "$2" ]] || { scan_usage >&2; exit 2; }
+  local dir; SCAN_IMAGE_ROOT="$(cd "$1" && pwd)"; SCAN_IMAGE_ROOT="${SCAN_IMAGE_ROOT%/}"; dir="$(cd "$2" && pwd)"
+  SCAN_KIND=image
+  BUILD_REPO="${BUILD_REPO:-image}"; BUILD_SHA="${BUILD_SHA:-${SCAN_IMAGE_ROOT:-/}}"
+  [[ -n "$SCAN_OUT_GIVEN" ]] || { SCAN_OUT="$(mktemp -d)/security"; SCAN_REPORTS="$SCAN_OUT"; }
+  rm -rf "$SCAN_OUT"; mkdir -p "$SCAN_OUT/raw" "$SCAN_OUT/norm"
+  SCAN_WORK="$(mktemp -d)"
+  # shellcheck disable=SC2064  # this run's directory
+  trap "rm -rf '$SCAN_WORK'" EXIT
+  local started; started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  log "security (image): the Go binaries under $SCAN_IMAGE_ROOT/usr/local/bin"
+  tool_binaries "$SCAN_IMAGE_ROOT"
+  scan_policy "$dir" /nonexistent "$started"
 }
 
 # --- report -------------------------------------------------------------------------
@@ -904,6 +996,7 @@ case "${1:-}" in
   report) cmd_report ;;
   baseline) shift; cmd_baseline "$@" ;;
   sbom) shift; cmd_sbom "$@" ;;
+  image) shift; cmd_image "$@" ;;
   -h|--help) scan_usage ;;
   *) scan_usage >&2; exit 2 ;;
 esac
