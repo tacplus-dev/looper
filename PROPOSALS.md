@@ -332,7 +332,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   source reports GO-2026-4919 (the compromised v0.69.4 release, an open range: not applicable, #64): such a step
   needs an exception for it. A binary stripped of its symbol table (`-s`, as most releases are) is read less
   precisely: Trivy's source build stripped so reports x/net GO-2026-6860/6866 and openpgp GO-2026-5932 again,
-  unstripped none of them (#64); such a step should say which binaries it could read only so.
+  unstripped none of them (#64); such a step should say which binaries it could read only so. The base image's
+  binaries escape too (2026-11-16, #166): the build's `trivy image` of `build:2.6` did not report the docker CLI's
+  GO-2026-6859 (go1.26.10), which `govulncheck -mode=binary /usr/local/bin/docker` does. So the step should cover
+  every Go binary under `/usr/local/bin`, and attribute a base-image one to tacplus-dev/tacplus.
 - **Drop gitleaks' xz replace** (2026-11-03, #65): the image builds gitleaks 8.30.1 from source with
   `github.com/ulikunitz/xz` replaced with v0.5.15 (`GITLEAKS_XZ_VERSION`, Dockerfile; 8.30.1 pins v0.5.12, GO-2025-3922),
   a combination upstream did not test, smoke-tested only by a planted AWS key. When gitleaks releases with xz >= 0.5.15
