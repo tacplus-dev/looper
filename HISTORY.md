@@ -123,3 +123,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue looper-scan local DIR: the default BUILD_OUT (./security) is inside DIR, so gitleaks scans the run's own raw output (14 CRITICAL sourcegraph-access-token on govulncheck's JSON) (#161)
 - 2026-11-16 looper issue Looper jobs on the in-cluster runner: normal-pool tags, build jobs on spot with retry:, requests per job type, no Docker in any pod (#84)
 - 2026-11-16 looper issue Remove the per-repository identity pilot (#28): looper-identity, repo-looper --think, ci/looper.gitlab-ci.yml, its tests and README section (#111)
+- 2026-11-16 looper issue The model is its own label: priority:high only orders the queue; model:high selects Fable; repository scans on the default (#162)
