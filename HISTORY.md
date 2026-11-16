@@ -126,3 +126,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-16 looper issue The model is its own label: priority:high only orders the queue; model:high selects Fable; repository scans on the default (#162)
 - 2026-11-16 looper issue ci/: the pinned looper image predates #84, so the plan still puts every report and manager on the VM tags: pin main's attested image (#163)
 - 2026-11-16 looper issue Build pipeline: one nightly that fans out a build per pinned repository (GitLab's 10-schedule limit, cloud#65) (#164)
+- 2026-11-16 looper issue Control pods request 10-60x the CPU they use, so the normal pool refuses reports at 10% CPU (Insufficient cpu) (#165)
