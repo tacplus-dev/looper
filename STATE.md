@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#84).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#43).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -207,8 +207,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   kicker, the plan) and the pinned repositories' reports and managers as pods of the in-cluster `control` runner
   (58541761, `arm64, control`, tacplus-dev/cluster#13, #84) once the hub copies `ci/tacplus-dev.gitlab-ci.yml` there
   and unpauses it (the hub's step after #84 lands; until then everything runs on the VM runners as before), the jobs
-  that still need Docker (tacplus's and fleet-seatrials' until their pins, every nightly scan) on the
-  *tacplus-dev arm64 autoscaler* runner, image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives that runner a fresh worker per job
+  that still need Docker (tacplus's until its pin, tacplus#340; every nightly scan) on the VM runners' tags (`arm64, autoscale`:
+  jody1-328023's *tacplus-dev arm64 autoscaler* and cloud's `ci` stack's `shared` pool, runner 58534919, which took #43's job of 2026-11-16), image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives the jody1 runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58) with the
@@ -237,9 +237,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   baked image is superseded (roadmap `decisions/builds-in-containers-2026-11-03.md`; `runner/` and `runner-image
   build`/`template` stay until the redesign retires them, never run against GCP); until the jobs move onto those
   pools a fresh worker installs and restarts Docker at boot under its first job, which fails in preparation and is
-  retried; the VMs get no fix (Jody, 2026-11-06): #84 moved the agents' jobs onto the in-cluster Kubernetes runners,
-  what still needs Docker (the unpinned repositories' jobs, the scans: PROPOSALS.md) follows, and the VMs are then
-  deleted, and #43 closes when they are gone; until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
+  retried; the VMs get no fix (Jody, 2026-11-06): #84 (closed 2026-11-16) moved the agents' jobs onto the in-cluster
+  control runner, what still needs Docker (tacplus's jobs until tacplus#340, the scans: PROPOSALS.md) follows, and
+  tacplus-dev/cloud#11 (*No VMs outside GKE*, in progress) then removes cloud's `ci` pools and manager and lists
+  jody1-328023's interim VMs for Jody to delete; #43 is blocked by cloud#11 and closes when the VMs are gone, with no
+  `runner-image measure` tables (no looper job has a GitLab `read_api` token to take them); until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
   once it no longer answers SSH (tacplus, 2026-10-31); README's Credentials (#25) are applied (hub, checked 2026-11-03): the jobs' `GITLAB_TOKEN` is
   `tacplus-looper-bot`'s `read_api` token (`looper-jobs`, expires 2027-10-01), `looper-runtime` is revoked, and every
