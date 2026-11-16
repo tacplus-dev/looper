@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The image build's other fetches retried too** (2026-11-16, #169): `go-fetch` retries the Dockerfile's Go
+  fetches alone, the failures seen so far; the npm install of the claude CLI, the scanners' pip install and the
+  release archives' `curl -fsSL` (cargo-deny, SpotBugs, FindSecBugs) still fail the image build on one reset. curl's
+  `--retry 5 --retry-all-errors` and pip's `--retries` would cover two of them, if one is ever seen failing. And
+  image.yml's Test step does not run `tests/go-fetch.test.sh` (nor several other gates): a land runs it, in full.
 - **A nightly gates record that is days old is not flagged** (2026-11-16, #73): the scan's item 3 reads
   `gates-<repo>/latest` as the nightly build left it; when the fan-out stops planning a repository (its pin gone, the
   schedule off), the record stays and the scan goes on reading an old main's verdict, said only by its `checked` and
