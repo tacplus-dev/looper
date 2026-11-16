@@ -1918,11 +1918,12 @@ if [[ -n "$real_docker" ]] && docker buildx version >/dev/null 2>&1 && docker in
     build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 \
       BUILD_PLATFORMS=linux/arm64,linux/amd64 -- publish --dry-run 2>"$TMP/err" || fail "the real dry run failed"
     digests+=("$(cat "$OUT/image")")
-    build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 BUILD_OUT="$OUT" BUILD_SBOM_UPLOAD=0 \
-      -- sbom 2>"$TMP/err" || fail "the real SBOM failed"
+    PUB="$OUT"   # the publish job's artifacts, as the sbom job gets them: build gives the sbom job an OUT of its own
+    build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 BUILD_OUT="$PUB" BUILD_SBOM_UPLOAD=0 \
+      -- sbom 2>"$TMP/err" || fail "the real SBOM failed: $(cat "$TMP/err")"
+    [[ -s "$PUB/sbom.cdx.json" && -s "$PUB/sbom.spdx.json" ]] || fail "no SBOM of the image: $(ls "$PUB")"
   done
   [[ "${digests[0]}" == "${digests[1]}" && "${digests[0]}" == *@sha256:* ]] || fail "${digests[*]}"
-  [[ -s "$OUT/sbom.cdx.json" && -s "$OUT/sbom.spdx.json" ]] || fail "no SBOM of the image"
   echo "ok $NAME: ${digests[0]##*@}"
 else
   echo "skip $NAME: no docker with buildx here"
