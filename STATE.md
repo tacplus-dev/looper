@@ -281,11 +281,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   repository is pinned (#73's step 3); a pinned repository's scan has no gates record to read until the first nightly fan-out
   after the next looper image (`gates-report` is in that image's plan): until then its prompt says none was read and
   asks for no gates run; a release's publish with
-  rootless BuildKit has not run yet: no published build image has `tacplus-image-build` (tacplus#315's first images.yml
-  run on main makes one), so `BUILD_BUILDER_IMAGE` is empty and publish still runs with Docker on `BUILD_DOCKER_TAGS`
-  (`arm64, build`, which the in-cluster `build` runner takes too once unpaused: PROPOSALS.md), until the hub sets it
-  in its copy of `ci/build.gitlab-ci.yml` (which drops the parent's own `publish` job: until it is copied, a release
-  publishes twice, the second finding the same digest there); `macos-smoke` (#36) has not run yet: the hub copies
+  rootless BuildKit has not run yet: no published build image has `tacplus-image-build` (tacplus#315 is open; the
+  2026-11-16 scheduled images.yml run on main failed on amd64 and published none), so `BUILD_BUILDER_IMAGE` is empty
+  (#172 pins it once one is: PROPOSALS.md) and publish still runs with Docker on `BUILD_DOCKER_TAGS`, `arm64,
+  build-docker`, the VM build pool's own tag (tacplus-dev/cloud#70; #172), never the in-cluster `build` runner's, and
+  no gate set needs Docker (README: Build pipeline); `macos-smoke` (#36) has not run yet: the hub copies
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
