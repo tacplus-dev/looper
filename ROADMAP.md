@@ -51,6 +51,7 @@ Done (moved from Next on 2026-11-05):
 - The model is chosen per run: Fable 5.1 for `priority:high` issues and the managers' model steps, Opus 5.5 otherwise; `LOOPER_MODEL` overrides (#136). Agent, at Jody's request, 2026-11-12.
 - looper-scan: a recorded security baseline per repository (`security-baseline.json`); findings matching it are baselined, not filed as new; HIGH and CRITICAL stay one issue each (#146). Agent, at Jody's request, 2026-11-13.
 - The model is its own label: `priority:high` only orders the queue, `model:high` (set by a member) selects Fable; repository scans on the default, the roadmap's suggestion pass and recap on Fable; the recap reports use per model (#162). Agent, at Jody's request, 2026-11-15 (Fable credits spent in under a day).
+- Build pipeline: one nightly fans out a build per pinned repository, under GitLab's 10-schedule limit (#164; for tacplus-dev/cloud#65). Hub, 2026-11-16.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
