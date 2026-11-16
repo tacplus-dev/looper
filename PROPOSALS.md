@@ -788,6 +788,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   night. If the pool's scale-up or the registry's pulls suffer, a `resource_group` per slot, or the plan writing the
   children in waves (`needs` on the previous wave's triggers, with `when: always` so a red one still stops none),
   would spread them.
+- **An exception scoped to where the finding is** (2026-11-16, #166): a `security-exceptions.yaml` entry names an
+  id only, so GO-2026-6859, accepted for the docker CLI alone (a client: the server-side crash is not reachable),
+  would accept it in any binary or tree the scan reads, gosec's or glab's (#159) should they regress. Once the scan
+  reads the image's binaries (above: "Scan the looper image's own binaries"), an optional `where` key (a path or
+  prefix the finding's `where` must match) would keep an exception to the place it was decided for.
 
 ## Promoted / declined
 - **Report the image's revision against main's head** (2026-11-03, #58): done in #57 (2026-11-03): the recap

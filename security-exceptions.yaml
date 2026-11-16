@@ -7,3 +7,7 @@ exceptions:
     reason: "looper#142: the image's syft carries github.com/blakesmith/ar, no fixed version; a crafted .deb panics syft and fails the security run closed; syft reads only what our own builds produce"
     decided_by: jodydadescott
     expires: 2026-12-13
+  - id: GO-2026-6859
+    reason: "looper#166: /usr/local/bin/docker (docker CLI 29.9.3 from tacplus build:2.6's docker:29-cli, go1.26.10); the advisory is a server-side crash (MaxBytesReader in an HTTP/1 server) and the docker CLI is a client that serves no HTTP, so the path is not reachable; #73 step 3 removes the CLI from the image with looper-docker, and this entry with it"
+    decided_by: jodydadescott (hub)
+    expires: 2026-11-30
