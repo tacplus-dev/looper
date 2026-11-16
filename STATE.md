@@ -113,6 +113,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   check passed, with **rootless BuildKit and no host Docker** in `BUILD_BUILDER_IMAGE` (`tacplus-image-build`,
   tacplus#315; its daemon failing to start fails the job), else, while that is empty, `docker buildx` in the looper
   image on `BUILD_DOCKER_TAGS`, the plan saying so, and its SBOM by `sbom-<repo>` in the looper image (#73, step 1);
+  a nightly's `gates-report` publishes its gates' verdict on main (`gates-<repo>/latest`: record and log tail), which a
+  pinned repository's nightly scan reads as its item 3 instead of running the gates, its model with no container
+  runtime and its job on the control runner with a report's requests (#73, step 2);
   tested against a local origin and stub GitHub, BuildKit and registry, and with a real buildx (same commit, same
   digest; a real rootless BuildKit where one starts); its deterministic security checks (#49, `looper-scan`, README:
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
@@ -212,7 +215,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   kicker, the plan) and the pinned repositories' reports and managers as pods of the in-cluster `control` runner
   (58541761, `arm64, control`, tacplus-dev/cluster#13, #84) once the hub copies `ci/tacplus-dev.gitlab-ci.yml` there
   and unpauses it (the hub's step after #84 lands; until then everything runs on the VM runners as before), the jobs
-  that still need Docker (tacplus's until its pin, tacplus#340; every nightly scan) on the VM runners' tags (`arm64, autoscale`:
+  that still need Docker (tacplus's until its pin, tacplus#340, its nightly scan among them) on the VM runners' tags (`arm64, autoscale`:
   jody1-328023's *tacplus-dev arm64 autoscaler* and cloud's `ci` stack's `shared` pool, runner 58534919, which took #43's job of 2026-11-16), image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives the jody1 runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
@@ -270,7 +273,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   the report and manager jobs hold `BUILD_TRIGGER_TOKEN` (not yet set in tacplus-dev/looper), and need the hub's copy
   of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
   job (with the apps, its verdict job: #90) and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
-  repository is pinned (#73's step 3; its step 2, the nightly scan off Docker, is next); a release's publish with
+  repository is pinned (#73's step 3); a pinned repository's scan has no gates record to read until the first nightly fan-out
+  after the next looper image (`gates-report` is in that image's plan): until then its prompt says none was read and
+  asks for no gates run; a release's publish with
   rootless BuildKit has not run yet: no published build image has `tacplus-image-build` (tacplus#315's first images.yml
   run on main makes one), so `BUILD_BUILDER_IMAGE` is empty and publish still runs with Docker on `BUILD_DOCKER_TAGS`
   (`arm64, build`, which the in-cluster `build` runner takes too once unpaused: PROPOSALS.md), until the hub sets it
