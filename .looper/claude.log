@@ -1,0 +1,112 @@
+= init
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short && git log --oneline -3 && grep -n "BUILD_BUILDER_IMAGE\|BUILD_DOCKER_TAGS" -r ci tests README.md PROPOSALS.md STATE.md | head -40
+< f2f5237 STATE.md: publish's Docker tags are build-docker; the builder image waits for tacplus#315 (#172) 62d00a2 ci/build.gitlab-ci.yml: publish's Docker tags are arm64, build-docker, the VM build pool's alone (#172) 1d25d29 HISTORY.md: #170 (looper) ci/build.gitlab-ci.yml:35:# BUILD_BUILDER_IMAGE, ...
+> Bash cd /tmp && gh run list --repo tacplus-dev/tacplus --workflow images.yml --limit 15 --json databaseId,headSha,status,conclusion,event,createdAt,headBranch 2>&1 | head -60; sed -n 1060,1080p /builds/looper/looper/issues/172/tests/looper-build.test.sh
+< [{"conclusion":"success","createdAt":"2026-11-16T18:54:32Z","databaseId":43933746155,"event":"push","headBranch":"main","headSha":"845f55dca7356ea5fdd72bd1287c31f3d2ede92c","status":"completed"},{"conclusion":"success","createdAt":"2026-11-16T15:13:23Z","databaseId":43894020986,"event":"push","headB...
+Let me look at what the ae5fda5 run actually did, and whether any build image exists with the label.
+> Bash cd /tmp && for r in 43894020986 43933746155 43858666929 43824665730 43824652168 43824645438; do echo "== $r"; gh run view $r --repo tacplus-dev/tacplus --json jobs --jq '.jobs[]|"\(.name)\t\(.conclusion)"'; done 2>&1 | head -80
+= task_started
+= task_notification
+< == 43894020986 Which layers	success Rebuild each release line	skipped base	skipped build (${{ matrix.arch }})	skipped build (manifest)	skipped == 43933746155 Which layers	success Rebuild each release line	skipped base	skipped build (${{ matrix.arch }})	skipped build (manifest)	skipped == 43858666929...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api '/orgs/tacplus-dev/packages/container/tacplus%2Fbuild/versions?per_page=15' --jq '.[]|"\(.created_at)\t\(.name)\t\(.metadata.container.tags|join(","))"' 2>&1 | head -20; gh api /orgs/tacplus-dev/packages?package_type=container --jq '.[].name' 2>&1 | head -30
+< 2026-11-16T15:18:28Z	sha256:a9f20d48b25940d5fd6d6927fdb5ee376123ac393bafb12a427f0f63cd7abb5e	20261116-2ffaddd,2.6 2026-11-16T15:17:17Z	sha256:4a6ebbbb9b1e57d0f91b9f08e8fdcccc9f5bd5416bb7d118a304f70b6ba417e1	buildcache-arm64 2026-11-16T15:13:58Z	sha256:0120a4b9b064b11bac44cb9eb717951cab1f6256c9b2949c...
+> Bash cd /tmp && gh api --paginate '/orgs/tacplus-dev/packages/container/tacplus%2Fbuild/versions?per_page=100' --jq '.[]|select(.metadata.container.tags|length>0)|"\(.created_at)\t\(.name)\t\(.metadata.container.tags|join(","))"' 2>&1 | head -30
+= task_started
+= task_notification
+< 2026-11-16T15:18:28Z	sha256:a9f20d48b25940d5fd6d6927fdb5ee376123ac393bafb12a427f0f63cd7abb5e	20261116-2ffaddd,2.6 2026-11-16T15:17:17Z	sha256:4a6ebbbb9b1e57d0f91b9f08e8fdcccc9f5bd5416bb7d118a304f70b6ba417e1	buildcache-arm64 2026-11-16T14:40:47Z	sha256:a347d7e98c5c702d69c0af803aa48e094f9c7295f64d53a7...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && for ref in main release/2.6 2ffadddf7ca095720e7532ee021fda98a18d0790; do echo "== $ref"; gh api "repos/tacplus-dev/tacplus/git/trees/$ref?recursive=1" --jq '.tree[].path' | grep -i 'image-build' ; done; gh issue view 315 --repo tacplus-dev/tacplus --json state,title --jq '.state+" "+.titl...
+< == main images/image-build.sh == release/2.6 == 2ffadddf7ca095720e7532ee021fda98a18d0790 OPEN Build image: rootless BuildKit for image builds inside the container; shared build caches; cold and warm give identical results Shell cwd was reset to /builds/looper/looper/issues/172
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh run view 43879522285 --repo tacplus-dev/tacplus --json jobs --jq '.jobs[]|"\(.name)\t\(.conclusion)"'; which crane skopeo regctl oras 2>/dev/null; gh run view 43894020986 --repo tacplus-dev/tacplus --log 2>/dev/null | grep -i -E "changed|layer|skip|rebuild" | head -20
+< Which layers	success Rebuild each release line	success base	success build (arm64)	success build (amd64)	failure build (manifest)	skipped Which layers	UNKNOWN STEP	﻿2026-11-16T15:13:26.3194861Z Current runner version: '2.338.2' Which layers	UNKNOWN STEP	2026-11-16T15:13:26.3210633Z ##[group]Runner Im...
+> Bash cd /tmp && gh run view 43894020986 --repo tacplus-dev/tacplus --log 2>/dev/null | grep -v "##\[group\]\|UNKNOWN STEP.*Runner\|Version:" | grep -iE "base=|build=|outputs|echo|changed|false|true" | head -20; echo; curl -s "https://ghcr.io/token?scope=repository:tacplus-dev/tacplus/build:pull" | head -...
+< Which layers	UNKNOWN STEP	2026-11-16T15:13:26.7619810Z   ssh-strict: true Which layers	UNKNOWN STEP	2026-11-16T15:13:26.7620295Z   persist-credentials: true Which layers	UNKNOWN STEP	2026-11-16T15:13:26.7620560Z   clean: true Which layers	UNKNOWN STEP	2026-11-16T15:13:26.7620807Z   sparse-checkout-c...
+= thinking_tokens
+= thinking_tokens
+I'm checking the registry directly: Jody's comment says the ae5fda5 run published the build image, but that run's log shows `base=false build=false`, so it built nothing.
+> Bash cd /tmp && T=$(curl -s "https://ghcr.io/token?scope=repository:tacplus-dev/tacplus/build:pull" | python3 -I -c 'import json,sys;print(json.load(sys.stdin)["token"])'); A="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.l...
+< == latest {'org.opencontainers.image.description': "tacplus base plus protoc and every plugin, grpcio-tools, Kani, JBMC/OpenJML, cargo-fuzz, just, the docker CLI and gcloud; its tacplus runs the repository's pinned release", 'org.opencontainers.image.source': 'https://github.com/tacplus-dev/tacplus'...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/git/trees/main?recursive=1" --jq '.tree[].path' | grep -E '^images/' | head; gh search code --repo tacplus-dev/tacplus "image-build" --json path --jq '.[].path' 2>/dev/null | head
+< images/base.Dockerfile images/base.packages images/build.Dockerfile images/build.packages images/cache-determinism.sh images/cache.sh images/image-build.sh images/packages-check.sh images/smoke-pipeline.sh images/smoke.sh Shell cwd was reset to /builds/looper/looper/issues/172
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/contents/images/build.Dockerfile?ref=main" -H 'Accept: application/vnd.github.raw' | grep -n -iE "image-build|buildkit|rootless|LABEL" | head; gh api "repos/tacplus-dev/tacplus/contents/images/build.Dockerfile?ref=main" -H 'Accept: application/vnd.github....
+< 7:# gcloud, rootless BuildKit (tacplus-image-build builds images inside the 56:# Rootless BuildKit and the compiler cache (#315). buildkitd, buildctl, runc 57:# (the one BuildKit's release ships) and RootlessKit are built from their 61:# X_NET_VERSION and Go GO_VERSION. BuildKit's QEMU helpers (C) a...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/contents/images/build.Dockerfile?ref=main" -H 'Accept: application/vnd.github.raw' | grep -n -A2 "description" | head
+< 250:      org.opencontainers.image.description="tacplus base plus protoc and every plugin, grpcio-tools, Kani, JBMC/OpenJML, cargo-fuzz, just, the docker CLI, gcloud, rootless BuildKit and sccache; its tacplus runs the repository's pinned release" \ 251-      org.opencontainers.image.source="https:/...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh issue list --repo tacplus-dev/tacplus --state open --search "newuidmap OR cache-determinism OR images.yml in:title,body" --json number,title,labels --jq '.[]|"\(.number) \(.title) [\(.labels|map(.name)|join(","))]"' | head; gh issue view 315 --repo tacplus-dev/tacplus --comments | tail...
+< 315 Build image: rootless BuildKit for image builds inside the container; shared build caches; cold and warm give identical results [approved,feature,priority:high,looper:landing,looper:workflows] 584 semgrep run-shell-injection (HIGH) at .github/workflows/images.yml:74: github.event.inputs.rebuild ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+The registry settles it. I'll comment with the evidence and a recommendation, and add `needs-decision` (rule 1). Nothing gets committed.
+> Bash cd /tmp && cat > /tmp/c172.md <<'EOF' **Needs a decision: no published build image has `tacplus-image-build`, so there is no digest to pin.** Re the hub's 19:27Z comment: this run checked again, and the ae5fda5 run did not publish a build image.  - **images.yml at ae5fda5** ([43894020986](https://gi...
+= task_started
+= task_notification
+< https://github.com/tacplus-dev/looper/issues/172#issuecomment-6926831285 https://github.com/tacplus-dev/looper/issues/172 Shell cwd was reset to /builds/looper/looper/issues/172
+> Bash /usr/local/bin/repo-looper --repo looper --issue 172 --checkpoint "needs-decision: no published tacplus/build image has tacplus-image-build (ae5fda5's images.yml run logged base=false build=false; every GHCR tag is a release line whose label lacks 'rootless BuildKit and sccache'). Commented with the...
+< [2026-11-16T19:29:14Z] checkpoint of #172 (a step) pushed to looper/looper-172:  2 files changed, 267 insertions(+)
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short; git log --oneline -2 origin/looper/looper-172 --stat 2>/dev/null | head
+< 9536658 looper: work in progress on #172 (a step)  .looper/claude.log |  78 ++++++++++++++++++++++  .looper/prompt.md  | 189 +++++++++++++++++++++++++++++++++++++++++++++++++++++  2 files changed, 267 insertions(+) f2f5237 STATE.md: publish's Docker tags are build-docker; the builder image waits for...
+I couldn't do what you asked: no published image has `tacplus-image-build`, so there is no digest to pin. `BUILD_BUILDER_IMAGE` stays `""`. I commented the evidence and a recommendation on the issue, added `needs-decision`, and committed nothing.
+
+**Why the ae5fda5 run has no image to pin:**
+- **That run built nothing.** Its "Which layers" step logged `base=false build=false` and skipped base, both arch builds and the manifest. Every main push since #315 merged did the same: 260b1fc, 10977536, 594d0cc, 37daed9 and 845f55d. tacplus#315's own last checkpoint says why: `images-plan.sh` compared each commit only with the one before it, so it never saw #315's image change. Its fix, b8bae0de, is queued in tacplus.
+- **The one main run that did build failed.** The 13:49Z scheduled run's amd64 build failed (rootless BuildKit, `newuidmap: Operation not permitted`), so it pushed no image.
+- **The registry has no image from main.** Every tagged `tacplus/build` version comes from a release line (`latest` is 2.6.13, `2.6` is from release/2.6, which has no `images/image-build.sh`). I read the config of `latest` and `2.6`: their description label lacks the "rootless BuildKit and sccache" that main's `build.Dockerfile` would add.
+
+Pinning `latest` or `2.6` would break every publish. Publish would run `tacplus-image-build` in an image that lacks it, on runners with no Docker to fall back to.
+
+**Recommendation in the comment:** keep the value empty until a green images.yml run on main builds and pushes the build image. That needs b8bae0de to land, or a member to start a rebuild on main by hand (the bot's token is refused). It also needs the amd64 `newuidmap` failure fixed. Then this issue pins that image's digest, updates the test's value check and removes the PROPOSALS entry. Until then, I suggested blocking it again on tacplus#315, or on a new tacplus bug for the amd64 failure.
+
+**Not blocked:** the hub can unpause runner 58541760 now. Since 62d00a2 (on main), only a Docker publish names `build-docker`, and no other job needs a Docker socket.
+
+The checkpoint is pushed to `looper/looper-172` and says what is left.
+= success: I couldn't do what you asked: no published image has `tacplus-image-build`, so there is no digest to pin. `BUILD_BUILDER_IMAGE` stays `""`. I commented the evidence and a recommendation on the issue, added `needs-decision`, and committed nothing.
+
+**Why the ae5fda5 run has no image to pin:**
+- **That run built nothing.** Its "Which layers" step logged `base=false build=false` and skipped base, both arch builds and the manifest. Every main push since #315 merged did the same: 260b1fc, 10977536, 594d0cc, 37daed9 and 845f55d. tacplus#315's own last checkpoint says why: `images-plan.sh` compared each commit only with the one before it, so it never saw #315's image change. Its fix, b8bae0de, is queued in tacplus.
+- **The one main run that did build failed.** The 13:49Z scheduled run's amd64 build failed (rootless BuildKit, `newuidmap: Operation not permitted`), so it pushed no image.
+- **The registry has no image from main.** Every tagged `tacplus/build` version comes from a release line (`latest` is 2.6.13, `2.6` is from release/2.6, which has no `images/image-build.sh`). I read the config of `latest` and `2.6`: their description label lacks the "rootless BuildKit and sccache" that main's `build.Dockerfile` would add.
+
+Pinning `latest` or `2.6` would break every publish. Publish would run `tacplus-image-build` in an image that lacks it, on runners with no Docker to fall back to.
+
+**Recommendation in the comment:** keep the value empty until a green images.yml run on main builds and pushes the build image. That needs b8bae0de to land, or a member to start a rebuild on main by hand (the bot's token is refused). It also needs the amd64 `newuidmap` failure fixed. Then this issue pins that image's digest, updates the test's value check and removes the PROPOSALS entry. Until then, I suggested blocking it again on tacplus#315, or on a new tacplus bug for the amd64 failure.
+
+**Not blocked:** the hub can unpause runner 58541760 now. Since 62d00a2 (on main), only a Docker publish names `build-docker`, and no other job needs a Docker socket.
+
+The checkpoint is pushed to `looper/looper-172` and says what is left.
+= usage: {"claude-opus-5-5":{"inputTokens":34,"outputTokens":6951,"cacheReadInputTokens":650233,"cacheCreationInputTokens":34804,"webSearchRequests":0,"costUSD":0.5476346,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":1631,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}
