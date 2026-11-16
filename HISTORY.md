@@ -129,3 +129,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-16 looper issue Control pods request 10-60x the CPU they use, so the normal pool refuses reports at 10% CPU (Insufficient cpu) (#165)
 - 2026-11-16 looper issue The image's docker CLI (29.9.3, from tacplus build:2.6's docker:29-cli) is built with go1.26.10: net/http's GO-2026-6859 (fixed in go1.26.11), and no stable docker release fixes it (#166)
 - 2026-11-16 looper issue The security checks scan the Go binaries in the looper image (govulncheck -mode=binary), not only the tree and base images by name (#167)
+- 2026-11-16 looper issue The looper image is not published: the image workflow fails on main (#168)
