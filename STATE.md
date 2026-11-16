@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#43).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by looper (#73).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -109,8 +109,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
   linking it; the nightly recap counts builds against the commits they built, #134), and on a release
-  a reproducible image published to Artifact Registry through WIF; tested against a local origin and stub GitHub,
-  and with a real buildx (same commit, same digest); its deterministic security checks (#49, `looper-scan`, README:
+  a reproducible image published to Artifact Registry through WIF, by the child pipeline's `publish-<repo>` once every
+  check passed, with **rootless BuildKit and no host Docker** in `BUILD_BUILDER_IMAGE` (`tacplus-image-build`,
+  tacplus#315; its daemon failing to start fails the job), else, while that is empty, `docker buildx` in the looper
+  image on `BUILD_DOCKER_TAGS`, the plan saying so, and its SBOM by `sbom-<repo>` in the looper image (#73, step 1);
+  tested against a local origin and stub GitHub, BuildKit and registry, and with a real buildx (same commit, same
+  digest; a real rootless BuildKit where one starts); its deterministic security checks (#49, `looper-scan`, README:
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
   clippy, Bandit and SpotBugs+FindSecBugs (pinned in the looper image) on the commit as its gates built it (the
   gates' `built/`: the untracked sources, manifests, bytecode, release jars, and each tacplus.yaml's generated tree
@@ -266,8 +270,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   the report and manager jobs hold `BUILD_TRIGGER_TOKEN` (not yet set in tacplus-dev/looper), and need the hub's copy
   of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
   job (with the apps, its verdict job: #90) and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
-  repository is pinned, and an image build in the build job without host Docker waits on rootless BuildKit
-  (tacplus-dev/tacplus#315), both the follow-up's (PROPOSALS.md); `macos-smoke` (#36) has not run yet: the hub copies
+  repository is pinned (#73's step 3; its step 2, the nightly scan off Docker, is next); a release's publish with
+  rootless BuildKit has not run yet: no published build image has `tacplus-image-build` (tacplus#315's first images.yml
+  run on main makes one), so `BUILD_BUILDER_IMAGE` is empty and publish still runs with Docker on `BUILD_DOCKER_TAGS`
+  (`arm64, build`, which the in-cluster `build` runner takes too once unpaused: PROPOSALS.md), until the hub sets it
+  in its copy of `ci/build.gitlab-ci.yml` (which drops the parent's own `publish` job: until it is copied, a release
+  publishes twice, the second finding the same digest there); `macos-smoke` (#36) has not run yet: the hub copies
   `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
