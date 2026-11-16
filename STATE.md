@@ -121,7 +121,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   (its `output-name`, default `model`, in its `output-dir`, as tacplus writes it: operator's `.` is `tacplus/`, #152),
   through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149) and
   Trivy on the release jars the gates keep (`trivy rootfs`: the dependencies they shade, #147), a nightly (input
-  `nightly: true`, main's head, no commit status) and a release add
+  `nightly: true`, main's head, no commit status; with no `repo`, one pipeline fanning out to every repository whose
+  main pins its build image, each its own child pipeline, #164) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it; a service's generated tree (its root `tacplus.yaml`'s
   `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
@@ -271,7 +272,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
   tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
-  `nightly` input; a schedule per repository; a nightly's and a verify run's child pipeline got the parent's empty
+  `nightly` input; one schedule, `{"nightly": true}` with no `repo`, fanning out to each pinned repository's nightly,
+  #164, which cloud#65 puts in place of its schedule per repository; a nightly's and a verify run's child pipeline got the parent's empty
   `BUILD_SHA` until #138, whose fix, the `gates` trigger forwarding no variables, starts with that copy too), and on the day they start tacplus's build fails them (gosec's HIGH
   findings, six OSV advisories with fixes) as kernel's does (gitleaks: PEM markers in its Java) until each is fixed
   or accepted in a `security-exceptions.yaml` (PROPOSALS.md), and tacplus has no `generated` recipe yet, so its
