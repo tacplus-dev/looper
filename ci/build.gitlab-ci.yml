@@ -187,7 +187,7 @@ variables:
   BUILD_DOCKER_TAGS: "arm64, build-docker"
 
 default:
-  image: ghcr.io/tacplus-dev/looper@sha256:a40bf6460d858d87d5e27caaf7a0f59aa68eb21b9deedc6edde9731213eb1078
+  image: ghcr.io/tacplus-dev/looper@sha256:ffd21be69119996d2ddf7ca5929475e79fff541afd8cb7074c98bd22d8ab714f
   tags: [arm64, build]
   retry:
     max: 2
