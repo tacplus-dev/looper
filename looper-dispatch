@@ -171,7 +171,8 @@ held() {
 
 # One pass: release the orphans, then start the pipeline for the first
 # repository with a ready issue no report job holds, in the order of ready_all_by_repo (priority:high first,
-# looper#31), or with commits queued to land and no manager job (looper#70).
+# looper#31), and ready read itself (ready_itself: the search lags, looper#175),
+# or with commits queued to land and no manager job (looper#70).
 # Nothing during the looper's hold (looper#157).
 pass() {
   local statuses jobs ready repo n landing hold
@@ -186,6 +187,7 @@ pass() {
   while read -r repo n; do
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" "$n" >/dev/null && continue
+    if ! ready_itself "$repo" "$n"; then log "$repo#$n is not ready, read itself (the search lags, looper#175); not started"; continue; fi
     start_pipeline
     log "started the $PIPELINE pipeline ($repo#$n is ready)"
     return 0
@@ -249,6 +251,7 @@ plan() {
     while read -r repo n; do
       [[ -n "$repo" ]] || continue
       if busy "$repo" "$jobs" "$n" >/dev/null; then log "$repo#$n already has its report job; not planned again" >&2; continue; fi
+      if ! ready_itself "$repo" "$n"; then log "$repo#$n is not ready, read itself (the search lags, looper#175); not planned" >&2; continue; fi
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
       reports+="$(plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n")"$'\n'; any=1

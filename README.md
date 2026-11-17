@@ -18,7 +18,10 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
   fails at the end if a pass failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
   `looper-lib.sh`: one search, one GraphQL query for the blockers' states), since the per-repository
-  reads came to about 270 requests a pass, past the token owner's 5000 an hour. Two kicker jobs never overlap (`resource_group: kicker`), and
+  reads came to about 270 requests a pass, past the token owner's 5000 an hour. The search's index lags an
+  issue's labels and body, so before it starts the pipeline for an issue the pass reads that issue itself, and one
+  that is not ready so starts nothing (`<repo>#N is not ready, read itself`), nor does the plan plan its report
+  (looper#175: the search kept looper#174 ready for 40 minutes, and 14 report jobs found nothing to do). Two kicker jobs never overlap (`resource_group: kicker`), and
   only the newest runs (looper#104): a kick stops before any pass once a newer one is created, pending, waiting or
   running (`a newer kick (job N) is queued; this one stops`), so kicks that waited for a runner no longer run their
   hours back to back. Nothing else runs when there is no ready issue. During [the looper's hold](#the-usage-limits-hold)

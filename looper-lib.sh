@@ -570,8 +570,12 @@ issue_state() { # repo n
 # run it waits on finished (waits_over, looper#171). Any forge error along the
 # way means not ready.
 ready() { # repo issue
-  local body list r n state
+  local body
   body="$(forge_issue_view "$1" "$2" body .body)" || return 1
+  ready_body "$1" "$body"
+}
+ready_body() { # repo body
+  local body="$2" list r n state
   list="$(printf '%s\n' "$body" | parse_blockers "$1")" || return 1
   while read -r r n; do
     [[ -z "$r" ]] && continue
@@ -579,6 +583,21 @@ ready() { # repo issue
     [[ "$state" == CLOSED ]] || return 1
   done <<<"$list"
   printf '%s\n' "$body" | waits_over
+}
+
+# Ready as the issue itself says, read alone, not as GitHub's search has it
+# (looper#175): open, approved, not held, and ready (above). The search's
+# index lags an issue's labels and body by minutes and more: on 2026-11-17 the
+# kicker started the pipeline for looper#174 every 3 minutes for 40 minutes,
+# the search still listing it ready, each report job finding it no longer
+# ready in 27 s. The kicker and the plan read an issue so before they start or
+# plan its report: a request for it, and one per blocker.
+ready_itself() { # repo issue
+  local i
+  i="$(forge_issue_view "$1" "$2" state,labels,body '.')" || return 1
+  jq -e --arg a "$LABEL_APPROVED" --arg p "$LABEL_IN_PROGRESS" --arg s "$LABEL_STUCK" --arg d "$LABEL_DECISION" --arg l "$LABEL_LANDING" \
+    '(.state | ascii_upcase) == "OPEN" and any(.labels[]; .name == $a) and all(.labels[].name; IN($p, $s, $d, $l) | not)' <<<"$i" >/dev/null || return 1
+  ready_body "$1" "$(jq -r '.body // ""' <<<"$i")"
 }
 
 # --- the runs an issue waits on (looper#171) ------------------------------------

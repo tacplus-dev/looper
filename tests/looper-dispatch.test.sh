@@ -85,9 +85,12 @@ case "$cmd" in
     p="${cmd#api repos/*/}"; f="$FIX/contents/${p%%/*}-${p#*/contents/}"
     [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; echo '{"type":"file"}'; exit 0 ;;
   # $FIX/private: the org's private repositories, one a line (--visibility public leaves them out).
-  "search issues") jq -s --arg l "$label" --arg vis "$vis" --arg priv "$(cat "$FIX/private" 2>/dev/null || true)" \
+  # GitHub's search index lags (looper#175): $FIX/search/<repo>-<n>.json is the
+  # issue as the search still has it, where the issue itself has changed.
+  "search issues") seen=(); for f in "$FIX"/issues/*.json; do s="$FIX/search/${f##*/}"; [[ -f "$s" ]] && seen+=("$s") || seen+=("$f"); done
+                   jq -s --arg l "$label" --arg vis "$vis" --arg priv "$(cat "$FIX/private" 2>/dev/null || true)" \
                      'map(select(.state == "OPEN" and any(.labels[]; .name == $l)) | . + {repository: {name: .repo}})
-                      | map(select($vis != "public" or (.repo | IN($priv | split("\n")[]) | not)))' "$FIX"/issues/*.json | jq -r "$q" ;;
+                      | map(select($vis != "public" or (.repo | IN($priv | split("\n")[]) | not)))' "${seen[@]}" | jq -r "$q" ;;
   # A repository's open issues with the label (approved when none asked); one with no issue yet lists none.
   "issue list") shopt -s nullglob; files=("$FIX/issues/$repo"-*.json); shopt -u nullglob
     jq -s --arg l "${label:-approved}" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)))' "${files[@]+"${files[@]}"}" < /dev/null | jq -r "$q" ;;
@@ -496,6 +499,60 @@ for held in looper:stuck needs-decision; do
   pass
 done
 
+# GitHub's search lags the issue itself (looper#175): on 2026-11-17 the kicker
+# started the pipeline for looper#174 every 3 minutes for 40 minutes, the search
+# still listing it ready (its Waiting-on not in its body there yet, then its
+# looper:landing not in its labels), and each report job found it "no longer
+# ready" in 27 s, with no report job of it active for the next pass to see.
+# Before it starts the pipeline for an issue, the pass reads that issue itself:
+# one the search lists ready that is not starts nothing, and the next ready one
+# does; and a report job of it active still starts nothing. The plan plans no
+# report job for it either.
+stale() { mkdir -p "$FIX/search"; cp "$FIX/issues/$1-$2.json" "$FIX/search/"; } # repo n: the search keeps the issue as it is now
+scenario stale-landing
+stale alpha 4
+issue alpha 4 OPEN "Fix it." approved looper:landing
+dispatch run
+! started || fail "started a pipeline for an issue the search lists ready but that is looper:landing: $OUT"
+grep -q 'alpha#4 is not ready, read itself (the search lags, looper#175)' <<<"$OUT" || fail "log: $OUT"
+grep -q 'nothing to start' <<<"$OUT" || fail "log: $OUT"
+pass
+
+scenario stale-waiting
+mkdir -p "$FIX/pipelines"; echo '{"id": 77, "status": "running"}' > "$FIX/pipelines/77.json"
+stale alpha 4
+issue alpha 4 OPEN $'Fix it.\nWaiting-on: '"$PIPE (since $(now_iso))" approved
+dispatch run
+! started || fail "started a pipeline for an issue whose own body waits on a running pipeline: $OUT"
+pass
+
+scenario stale-next
+stale alpha 4
+issue alpha 4 OPEN "Fix it." approved looper:in-progress
+issue beta 2 OPEN "Go." approved
+dispatch run
+grep -q 'started the .* (beta#2 is ready)' <<<"$OUT" || fail "log: $OUT"
+pass
+
+scenario stale-running
+stale alpha 4
+issue alpha 4 OPEN "Fix it." approved looper:in-progress
+jobs "looper-alpha-4 running"
+dispatch run
+! started || fail "started a pipeline while looper-alpha-4 runs: $OUT"
+pass
+
+scenario plan-stale
+stale alpha 4
+issue alpha 4 OPEN "Fix it." approved looper:landing
+issue beta 2 OPEN "Go." approved
+PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"
+! grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "planned a report for an issue that is not ready, read itself: $PLAN"
+grep -qx 'looper-beta-2:' <<<"$PLAN" || fail "beta#2 not planned: $PLAN"
+grep -q 'alpha#4 is not ready, read itself (the search lags, looper#175); not planned' "$FIX/err" || fail "log: $(cat "$FIX/err")"
+pass
+
 # GitHub refusing (its rate limit, say): no issue can be told ready, the pass
 # fails and starts nothing.
 scenario rate-limited
@@ -510,14 +567,15 @@ pass
 # the issues (a request per issue and per blocker came to about 270 a pass,
 # past GitHub's 5000 an hour at one every 3 minutes; looper#24): the orphans'
 # search, the hold (one list of the hub's, looper#157), the ready issues'
-# search and their blockers' states, the lands' search.
+# search and their blockers' states, the lands' search, and the issue it starts
+# the pipeline for, read itself (looper#175).
 scenario cost
 for r in alpha beta gamma; do
   for n in 1 2 3 5 6 7; do issue "$r" "$n" OPEN "Blocked-by: #$((n + 1))" approved; done
 done
 issue gamma 8 OPEN "Not approved."
 dispatch run
-[[ "$(wc -l < "$FIX/gh")" -le 5 ]] || fail "$(wc -l < "$FIX/gh") GitHub calls: $(sort "$FIX/gh" | uniq -c)"
+[[ "$(wc -l < "$FIX/gh")" -le 6 ]] || fail "$(wc -l < "$FIX/gh") GitHub calls: $(sort "$FIX/gh" | uniq -c)"
 grep -q 'started the .* (alpha#4 is ready)' <<<"$OUT" || fail "log: $OUT"
 pass
 
