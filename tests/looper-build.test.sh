@@ -211,6 +211,51 @@ client/gen/'
 scan_commit scanjava src/main/java/demo/Main.java 'package demo;
 
 public class Main { public static void main(String[] a) { } }' .gitignore 'target/'
+# Test code (looper#179): a Rust file whose #[cfg(test)] modules hold the
+# lines marked test, around and between the lines marked production.
+scan_commit scantest src/auth.rs 'pub fn nonce() -> [u8; 12] {
+    let n = [0u8; 12]; // production
+    n
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    const BRACE: &str = "}";
+    const C: char = '"'"'}'"'"';
+    /* } a brace /* nested } */ in a comment */
+    fn life<'"'"'a>(x: &'"'"'a str) -> &'"'"'a str { x }
+    #[test]
+    fn empty_nonce() {
+        let r = r#"{"nonce": "}"}"#;
+        let s = "a line \
+          and } its continuation";
+        assert_eq!(nonce().len(), 12, "{r} {s}"); // test
+    }
+}
+
+pub fn after() -> &'"'"'static str {
+    "after the test module" // production
+}
+
+#[cfg(not(test))]
+mod prod {
+    pub const KEY: [u8; 4] = [0; 4]; // production
+}
+
+#[cfg(test)]
+fn helper() -> [u8; 4] { [0; 4] }
+pub const AFTER_A_TEST_FN: [u8; 4] = [0; 4]; // production
+
+mod outer {
+    #[cfg(test)]
+    pub(crate) mod inner_tests
+    {
+        fn t() { let _ = [1u8; 4]; } // test
+    }
+    pub fn real() -> [u8; 4] { [0; 4] } // production
+}' src/tests.rs 'pub const NOT_A_TEST: [u8; 4] = [0; 4];'
 scan_commit scanpod k8s/pod.yaml 'apiVersion: v1
 kind: Pod
 metadata:
@@ -581,7 +626,8 @@ $(opt --output)
 echo "codeql \$*" >> "$TMP/codeql.log"
 case "\$1 \$2" in
   "database create") mkdir -p "\$3" ;;
-  "database analyze") echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[{"id":"go/log-injection","properties":{"security-severity":"3.1"}}]}},"results":[{"ruleId":"go/log-injection","level":"error","message":{"text":"log entry from user input"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"main.go"},"region":{"startLine":5}}}]}]}]}' > "\$out" ;;
+  "database analyze") if [[ -f "$TMP/codeql.sarif" ]]; then cp "$TMP/codeql.sarif" "\$out"; exit; fi
+    echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[{"id":"go/log-injection","properties":{"security-severity":"3.1"}}]}},"results":[{"ruleId":"go/log-injection","level":"error","message":{"text":"log entry from user input"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"main.go"},"region":{"startLine":5}}}]}]}]}' > "\$out" ;;
 esac
 EOF
 cp "$TMP/bin/syft" "$SB/syft"
@@ -2022,7 +2068,7 @@ govulncheck GO-2026-6859 stdlib@go1.26.10 (/usr/local/bin/docker, the base image
 # A stripped binary's findings are every vulnerable function of a package it links: counted, and said.
 jq -e '[.[] | select(.id == "GO-2026-6905")] == [{tool: "govulncheck", kind: "sca", id: "GO-2026-6905", aliases: [], severity: "HIGH", fix: false,
   where: "github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb (/usr/local/bin/sub/plain, read stripped, called: github.com/blakesmith/ar.Next)",
-  title: "the planted GO-2026-6905", excepted: null, blocking: false, new: true, baselined: false}]' "$OUT/security/findings.json" >/dev/null ||
+  title: "the planted GO-2026-6905", excepted: null, test: false, blocking: false, new: true, baselined: false}]' "$OUT/security/findings.json" >/dev/null ||
   fail "$(cat "$OUT/security/findings.json")"
 [[ "$(sort "$TMP/image.log")" == "$(printf '%s\n' "$IMG/usr/local/bin/docker" "$IMG/usr/local/bin/gh" "$IMG/usr/local/bin/ours" "$IMG/usr/local/bin/sub/plain")" ]] ||
   fail "govulncheck read: $(cat "$TMP/image.log")"
@@ -2084,6 +2130,49 @@ if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err";
 rm "$TMP/private"
 [[ ! -s "$TMP/codeql.log" ]] || fail "CodeQL ran on a private repository"
 grep -q "^- codeql: not run: demo is not known to be public" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+unset 'SCAN_API[-1]'
+pass
+
+# CodeQL's findings (the stub's SARIF), CRITICAL, at each path:line given.
+codeql_finds() { # path:line...
+  printf '%s\n' "$@" | jq -Rn '{version: "2.1.0", runs: [{tool: {driver: {name: "CodeQL",
+      rules: [{id: "rust/hard-coded-cryptographic-value", properties: {"security-severity": "9.8"}}]}},
+    results: [inputs | capture("^(?<u>.*):(?<l>[0-9]+)$") | {ruleId: "rust/hard-coded-cryptographic-value", level: "error",
+      message: {text: "a hard-coded value"}, locations: [{physicalLocation: {artifactLocation: {uri: .u}, region: {startLine: (.l | tonumber)}}}]}]}]}' \
+    > "$TMP/codeql.sarif"
+}
+NAME="security: a SAST finding in test code is listed (test: true), never failing the policy; one in any other file fails it, and a secret in a test still does"
+mkdir -p "$TMP/scanbin-nightly"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
+SCAN_API+=(PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+marked() { git -C "$work" show "${SHA[scantest]}:src/auth.rs" | grep -n "// $1\$" | cut -d: -f1 | sed 's:^:src/auth.rs\::'; }
+mapfile -t IN_TESTS < <(marked test; printf '%s\n' tests/it.rs:3 crates/x/tests/common/mod.rs:1 main_test.go:5 pkg/a/b_test.go:9 \
+  webapp-login/test/page.test.ts:31 web/test/helper.js:1 web/src/x.test.tsx:2 web/src/util.test.mjs:1 svc/src/test/java/demo/MainTest.java:4)
+mapfile -t NOT_TESTS < <(marked production; printf '%s\n' src/tests.rs:1 src/latest/x.rs:1 attests/a.rs:1 src/test/x.rs:1 main.go:5 test/main.go:1 \
+  pkg/footest.go:1 web/src/test.ts:1 web/latest/page.ts:1 web/src/testing.ts:2 svc/src/main/java/test/Main.java:1 svc/src/testing/java/X.java:1 tests/run.sh:1)
+((${#IN_TESTS[@]} == 11 && ${#NOT_TESTS[@]} == 18)) || fail "the fixture's marks: ${IN_TESTS[*]} / ${NOT_TESTS[*]}"
+codeql_finds "${IN_TESTS[@]}" "${NOT_TESTS[@]}"
+if scan BUILD_SHA="${SHA[scantest]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err"; then fail "the findings outside test code passed"; fi
+codeql_where() { jq -r --argjson t "$1" '[.[] | select(.tool == "codeql" and .test == $t) | .where] | sort | join(" ")' "$OUT/security/findings.json"; }
+[[ "$(codeql_where false)" == "$(printf '%s\n' "${NOT_TESTS[@]}" | LC_ALL=C sort | paste -sd' ')" ]] || fail "not test code: $(codeql_where false)"
+[[ "$(codeql_where true)" == "$(printf '%s\n' "${IN_TESTS[@]}" | LC_ALL=C sort | paste -sd' ')" ]] || fail "test code: $(codeql_where true)"
+[[ "$(blocking | grep '^codeql ' | cut -d' ' -f3 | LC_ALL=C sort | paste -sd' ')" == "$(codeql_where false)" ]] || fail "blocking: $(blocking)"
+jq -e '[.[] | select(.test)] | length == 11 and all(.severity == "CRITICAL" and .kind == "sast" and (.blocking | not))' "$OUT/security/findings.json" >/dev/null ||
+  fail "$(cat "$OUT/security/findings.json")"
+jq -e 'all(.test | type == "boolean")' "$OUT/security/findings.json" >/dev/null || fail "a finding without test: $(cat "$OUT/security/findings.json")"
+s="$OUT/security/summary.md"
+grep -q ', 11 SAST in test code (listed, never failing)[.]$' "$s" || fail "$(cat "$s")"
+grep -qxF '### In test code (SAST: listed, never failing the policy; looper#179)' "$s" || fail "$(cat "$s")"
+grep -qxF -e '- CRITICAL codeql rust/hard-coded-cryptographic-value: webapp-login/test/page.test.ts:31: a hard-coded value' "$s" || fail "$(cat "$s")"
+[[ "$(jq -r '[.runs[] | select(.tool.driver.name == "codeql") | .results[] | select(.properties.test) | .level] | unique | join(" ")' "$OUT/security/findings.sarif")" == note ]] ||
+  fail "SARIF: $(cat "$OUT/security/findings.sarif")"
+# Test code's findings alone pass; a secret in a test fails.
+codeql_finds "${IN_TESTS[@]}"
+scan BUILD_SHA="${SHA[scantest]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err" || fail "test code failed it: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+mkdir -p "$TMP/out-$((n + 1))/built/tests"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/built/tests/keys.txt"
+if scan BUILD_SHA="${SHA[scantest]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err"; then fail "a secret in tests/ passed"; fi
+[[ "$(blocking)" == "gitleaks tests/keys.txt:aws-access-token:1 tests/keys.txt:1" ]] || fail "blocking: $(blocking)"
+rm -f "$TMP/codeql.sarif"
 unset 'SCAN_API[-1]'
 pass
 

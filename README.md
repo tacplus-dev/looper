@@ -1274,6 +1274,17 @@ says so).
   not analyzed instead), and a scanner missing from the image;
 - an exception that has expired or is malformed.
 
+**A SAST finding in test code is listed, never failing** (looper#179; Jody, tacplus-dev/oauth#31). A SAST finding
+(CodeQL, gosec, Semgrep, any SAST tool) whose `where` is test code is `test: true` in `findings.json`, a SARIF `note`, and
+listed in the summary ("In test code"), whatever its severity: test code is, by language, Rust's `#[cfg(test)]` modules
+(from the attribute's line to the module's closing brace, as `looper-scan` reads the file: braces in comments, strings
+and character literals count for nothing; a file whose inner `#![cfg(test)]` makes it test code, whole) and any file
+under a `tests/` directory; Go's `*_test.go`; TypeScript's and JavaScript's files under a `test/` directory or named
+`*.test.*`; Java's under `src/test/`. Nothing else is: not `src/tests.rs` or `src/test/x.rs` in Rust, `test/main.go`,
+`web/src/test.ts`, `src/main/java/test/`, a shell script or Python under `tests/`, nor a line after a test module's
+closing brace. A secret, a dependency's vulnerability and a misconfiguration in test code keep their rules: a secret in a
+test is still a secret.
+
 **Accepted exceptions** are the commit's `security-exceptions.yaml`, at its root, in exactly this form:
 
 ```yaml
@@ -1307,9 +1318,9 @@ any other. A file that is not a list of exactly `{tool, id, file, count}` (a cou
 take a fixed finding out, or a new one in, record it again.
 
 **Reports**, the security job's artifact `security/` (90 days): `findings.json` (every finding, normalized: tool,
-kind, id, aliases, severity, fix, where, title, `excepted`, `blocking`, `new`, `baselined`), `findings.sarif` (one SARIF 2.1.0 log,
+kind, id, aliases, severity, fix, where, title, `excepted`, `test`, `blocking`, `new`, `baselined`), `findings.sarif` (one SARIF 2.1.0 log,
 a run per tool), `summary.md` (the counts, what fails, what is **new since the previous run**, how many are baselined, what is accepted, what
-was not analyzed or only in part, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
+is in test code, what was not analyzed or only in part, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
 `sbom.spdx.json`, and `raw/`, each tool's own report (JSON or SARIF) and log.
 
 **A release's SBOM**: `sbom-<repo>` (`looper-build sbom`, in the looper image) runs Syft on the image `publish-<repo>`

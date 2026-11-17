@@ -29,7 +29,8 @@
 # and Trivy (filesystem, Kubernetes manifests, the Dockerfiles' base images).
 #
 # The policy: a secret fails, and so does a HIGH or CRITICAL finding with a
-# fix (a fixed version, or our own code: a SAST finding), unless an unexpired
+# fix (a fixed version, or our own code: a SAST finding outside test code,
+# looper#179, which is listed, never failing), unless an unexpired
 # exception names it; an exception that has expired, or says less than an id,
 # a reason, who decided and an expiry date, fails too. A finding the commit's
 # security-baseline.json records (by tool, rule and file, not line: up to its
@@ -745,6 +746,7 @@ scan_tree() { # src previous-findings started
     for tool in "${tools[@]}"; do log "$tool: $label"; "tool_$tool" "$tree" "$label" "$prefix"; done
   done
   skip_generated_tree "$src"
+  for t in "${trees[@]}"; do IFS='|' read -r tree label prefix <<<"$t"; mark_test_code "$tree" "$label" "$prefix"; done
   if need syft; then
     syft scan -q "dir:$src" -o "cyclonedx-json=$SCAN_OUT/sbom.cdx.json" -o "spdx-json=$SCAN_OUT/sbom.spdx.json" 2>"$SCAN_OUT/raw/syft.log" ||
       problems+=("syft: $(tool_cause "$SCAN_OUT/raw/syft.log")")
@@ -787,8 +789,8 @@ scan_policy() { # dir previous-findings started
     | [.[][]] | unique_by([.tool, .id, .where]) | map(
         . as $f
         | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x)))][0]) as $e
-        | . + {excepted: ($e.id // null),
-               blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix))),
+        | . + {excepted: ($e.id // null), test: (.test == true),
+               blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
                new: ($old[.tool + "|" + .id + "|" + .where] | not)})
     | sort_by(.tool, .id, file_of, line_of)
     | reduce .[] as $f ({q: $quota, out: []};
@@ -859,6 +861,93 @@ skip_generated_tree() { # src
   log "the generated tree ($(scan_gen_list)): $(jq length "$SCAN_OUT/generated.json") SAST finding(s) and secret(s) not counted (tacplus's to scan)"
 }
 
+# Test code (looper#179): a SAST finding there is listed (test: true), never
+# failing the policy; a secret, a dependency or a misconfiguration there keeps
+# its rules. Test code is, by its language: Rust, a #[cfg(test)] module (from
+# its attribute to its closing brace, RUST_TEST_MODULES) or a file under a
+# tests/ directory; Go, a _test.go file; TypeScript and JavaScript, a file
+# under a test/ directory or named *.test.*; Java, a file under src/test/.
+JQ_TEST='
+def test_path: split("/") as $c | $c[-1] as $b | $c[:-1] as $dirs
+  | if $b | endswith(".rs") then any($dirs[]; . == "tests")
+    elif $b | endswith(".go") then $b | test("^.+_test[.]go$")
+    elif $b | test("[.][cm]?[jt]sx?$") then any($dirs[]; . == "test") or ($b | test("^.+[.]test[.][^.]+$"))
+    elif $b | endswith(".java") then [range(0; ($dirs | length) - 1) as $i | $dirs[$i:$i + 2]] | any(. == ["src", "test"])
+    else false end;
+def test_code($modules): file_of as $f | line_of as $l
+  | ($f | test_path) or any($modules[$f][]?; $l >= .[0] and $l <= .[1]);
+'
+# A Rust file's #[cfg(test)] modules, outermost only: "first last", the
+# attribute's line and the closing brace's (an unclosed one, to the end of the
+# file); a file whose own inner #![cfg(test)] makes it test code, "1 last".
+# Comments, strings, raw strings and character literals are blanked first: a
+# brace in one counts for nothing. A `mod name;` declared under #[cfg(test)]
+# is a file this does not follow (PROPOSALS.md).
+RUST_TEST_MODULES='
+function blank(s,    o, i, n, c, t, m) {
+  o = ""; i = 1; n = length(s)
+  while (i <= n) {
+    c = substr(s, i, 1); t = substr(s, i, 2)
+    if (blk) { if (t == "/*") { blk++; i += 2 } else if (t == "*/") { blk--; i += 2; if (!blk) o = o " " } else i++; continue }
+    if (str) { if (c == "\\") i += 2; else { if (c == "\"") { str = 0; o = o "\"\"" } i++ } continue }
+    if (raw != "") { m = index(substr(s, i), raw); if (!m) return o; i += m - 1 + length(raw); raw = ""; o = o "\"\""; continue }
+    if (t == "//") return o
+    if (t == "/*") { blk = 1; i += 2; continue }
+    if (c == "\"") { str = 1; i++; continue }
+    if ((c == "r" || t == "br") && (i == 1 || substr(s, i - 1, 1) !~ /[A-Za-z0-9_]/) && match(substr(s, i), /^b?r#*"/)) {
+      raw = "\"" substr(s, i + 1 + (c == "b"), RLENGTH - 2 - (c == "b")); i += RLENGTH; continue
+    }
+    if (c == "\047" && match(substr(s, i), /^\047(\\.[^\047]*|[^\\\047])\047/)) { o = o "\047 \047"; i += RLENGTH; continue }
+    o = o c; i++
+  }
+  return o
+}
+# The items: st 1 after a #[cfg(test)] (its attributes, visibility and
+# keywords up to mod), 2 after its mod, 3 after the module name.
+function token(t, line) {
+  if (st == 1) { if (t == "mod") { st = 2; return } if (t ~ /^(#|[A-Za-z_][A-Za-z0-9_]*$|[():])/) return; st = 0 }
+  else if (st == 2) { if (t ~ /^[A-Za-z_][A-Za-z0-9_]*$/) { st = 3; return } st = 0 }
+  else if (st == 3) { st = 0; if (t == "{") { if (!open) { open = 1; target = depth; first = start } depth++; return } }
+  if (t == "#test") { if (!open) { st = 1; start = line } }
+  else if (t == "#!test") { if (depth == 0) whole = 1 }
+  else if (t == "{") depth++
+  else if (t == "}") { depth--; if (open && depth == target) { print first, line; open = 0 } }
+}
+function scan(s, line,    i, n, c) {
+  i = 1; n = length(s)
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (attr) {
+      if (c == "[") attr++; else if (c == "]" && !--attr) { gsub(/[ \t]/, "", a); token((a == "cfg(test)" ? (inner ? "#!test" : "#test") : "#"), line); i++; continue }
+      a = a c; i++; continue
+    }
+    if (c == "#" && match(substr(s, i), /^#!?[ \t]*\[/)) { attr = 1; a = ""; inner = substr(s, i + 1, 1) == "!"; i += RLENGTH; continue }
+    if (c ~ /[ \t]/) { i++; continue }
+    if (match(substr(s, i), /^[A-Za-z_][A-Za-z0-9_]*/)) { token(substr(s, i, RLENGTH), line); i += RLENGTH; continue }
+    token(c, line); i++
+  }
+  if (attr) a = a " "
+}
+{ scan(blank($0), NR) }
+END { if (open) print first, NR; if (whole) print 1, NR }
+'
+rust_test_modules() { # file
+  LC_ALL=C awk "$RUST_TEST_MODULES" "$1"
+}
+mark_test_code() { # tree label prefix
+  local f r modules
+  for f in "$SCAN_OUT/norm/"*-"$2".json "$SCAN_OUT/norm/"*-"$2"-*.json; do
+    [[ -f "$f" ]] || continue
+    modules="$(jq -r --arg prefix "$3" "$JQ_BASELINE"'.[] | select(.kind == "sast") | file_of | select(endswith(".rs")) | ltrimstr($prefix)' "$f" |
+      LC_ALL=C sort -u | while IFS= read -r r; do
+        [[ -f "$1/$r" ]] || continue
+        rust_test_modules "$1/$r" | jq -R --arg f "$3$r" '{file: $f, range: (split(" ") | map(tonumber))}'
+      done | jq -sc 'group_by(.file) | map({(.[0].file): map(.range)}) | add // {}')"
+    jq --argjson modules "$modules" "$JQ_BASELINE$JQ_TEST"'map(if .kind == "sast" then . + {test: test_code($modules)} else . end)' "$f" > "$f.tmp"
+    mv "$f.tmp" "$f"
+  done
+}
+
 # The same checks on a directory, as a build would run them on its commit:
 # no credential, no previous run (every finding is new), nothing published.
 cmd_local() { # dir
@@ -898,9 +987,9 @@ write_sarif() {
   jq '{"$schema": "https://json.schemastore.org/sarif-2.1.0.json", version: "2.1.0",
        runs: (group_by(.tool) | map({tool: {driver: {name: .[0].tool, informationUri: "https://github.com/tacplus-dev/looper#security-checks",
          rules: (map({id: .id, properties: {severity: .severity}}) | unique_by(.id))}},
-         results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted or .baselined then "note" else "warning" end),
-           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" else "" end))},
-           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, baselined: .baselined, aliases: .aliases},
+         results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted or .baselined or .test then "note" else "warning" end),
+           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" elif .test then " (in test code)" else "" end))},
+           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, baselined: .baselined, test: .test, aliases: .aliases},
            locations: [{physicalLocation: {artifactLocation: {uri: (.where | sub(":[0-9]+$"; ""))},
              region: {startLine: ((.where | capture(":(?<l>[0-9]+)$").l // "1") | tonumber)}}}]})}))}' \
     "$SCAN_OUT/findings.json"
@@ -910,12 +999,16 @@ write_summary() { # blocking
   local f="$SCAN_OUT/findings.json" p
   echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
   echo
-  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception."' "$f"
+  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
   [[ -z "${SCAN_REPORTS:-}" ]] || { echo; echo "Reports: $SCAN_REPORTS"; }
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
+  if jq -e 'any(.test)' "$f" >/dev/null; then
+    echo; echo "### In test code (SAST: listed, never failing the policy; looper#179)"
+    jq -r '.[] | select(.test) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"
+  fi
   if ((${#SCAN_GEN[@]})); then
     echo; echo "### Not counted: the generated tree ($(scan_gen_list))"
     jq -r 'length as $n | "\($n) SAST finding(s) and secret(s) in the code tacplus generates (security/generated.json): tacplus scans its generated output at the source; its dependencies are checked here (looper#108)."

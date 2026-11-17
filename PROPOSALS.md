@@ -4,6 +4,16 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The nightly scan files no issue for test code's SAST findings** (2026-11-17, #179): `looper-scan` now marks a
+  SAST finding in test code `test: true`, never `blocking`, but the nightly scan's item 1 (`security_item` in
+  `repo-looper`) still files every new HIGH or CRITICAL finding, so oauth's 13 CRITICAL CodeQL findings in its
+  `#[cfg(test)]` modules would still be filed (the suggestion's "no needs-decision issue is filed for them"). Saying
+  "not `test`" there, or listing them in one issue of their own, is a change to the prompt (full gates).
+- **A Rust `#[cfg(test)] mod name;` declaration's file as test code** (2026-11-17, #179): `looper-scan` reads a
+  `#[cfg(test)]` module by its braces in the file that holds it, and a file whose inner `#![cfg(test)]` says so; a
+  module declared `#[cfg(test)] mod tests;` lives in `tests.rs` or `tests/mod.rs` beside it (or under its parent's
+  directory), which is counted as production code. Following the declarations from each crate root would mark them
+  too, if a repository's findings are ever seen there.
 - **Retry a build's failed jobs alone, not the whole build** (2026-11-17, #173): when a land's build fails only
   because of its infrastructure and its gates passed, the manager now builds it again once (`build_again`). That
   runs the gates again (tacplus's full gates take about 3.5h), because the manager's GitLab credentials cannot
