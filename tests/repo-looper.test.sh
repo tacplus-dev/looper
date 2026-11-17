@@ -4128,7 +4128,8 @@ pass
 # requests the plan gave it; nothing on a job with no request (a VM's) or no cgroup to read.
 scenario pod-use
 mkdir -p "$FIX/cg"; echo "usage_usec 1000000" > "$FIX/cg/cpu.stat"; echo $((700 * 1048576)) > "$FIX/cg/memory.peak"
-use() { lib "LOOPER_CGROUP='$FIX/cg'; SECONDS=0; pod_use_mark; echo 'usage_usec 31000000' > '$FIX/cg/cpu.stat'; SECONDS=120; $1 pod_use_log"; }
+# Its clock is a fake one: SECONDS set by hand gains a second whenever one ticks over before it is read (looper#176).
+use() { lib "LOOPER_CGROUP='$FIX/cg'; now=1000; pod_use_clock() { echo \$now; }; pod_use_mark; echo 'usage_usec 31000000' > '$FIX/cg/cpu.stat'; now=1120; $1 pod_use_log"; }
 has "$(use "KUBERNETES_CPU_REQUEST=100m KUBERNETES_MEMORY_REQUEST=512Mi")" "pod use at the end: cpu 250m mean over 120 s, memory 700Mi peak; requested cpu 100m, memory 512Mi"
 echo "usage_usec 1000000" > "$FIX/cg/cpu.stat"; rm "$FIX/cg/memory.peak"; echo $((90 * 1048576)) > "$FIX/cg/memory.current"
 has "$(use "KUBERNETES_CPU_REQUEST=50m KUBERNETES_MEMORY_REQUEST=256Mi")" "pod use at the end: cpu 250m mean over 120 s, memory 90Mi peak; requested cpu 50m, memory 256Mi"

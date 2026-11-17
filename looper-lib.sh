@@ -128,13 +128,14 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 LOOPER_CGROUP="${LOOPER_CGROUP:-/sys/fs/cgroup}"
 POD_USE_MARK=""
 cgroup_cpu_usec() { awk '$1 == "usage_usec" { print $2 }' "$LOOPER_CGROUP/cpu.stat" 2>/dev/null || true; }
-pod_use_mark() { local u; u="$(cgroup_cpu_usec)"; [[ -z "$u" ]] || POD_USE_MARK="$u $SECONDS"; }
+pod_use_clock() { echo "$SECONDS"; } # the seconds it measures in, a function a test fakes
+pod_use_mark() { local u; u="$(cgroup_cpu_usec)"; [[ -z "$u" ]] || POD_USE_MARK="$u $(pod_use_clock)"; }
 pod_use_log() {
   [[ -n "$POD_USE_MARK" && -n "${KUBERNETES_CPU_REQUEST:-}" ]] || return 0
   local u0 s0 u s mem f
   read -r u0 s0 <<<"$POD_USE_MARK"; u="$(cgroup_cpu_usec)"
   [[ "$u" =~ ^[0-9]+$ ]] || return 0
-  s=$(( SECONDS - s0 )); (( s > 0 )) || s=1
+  s=$(( $(pod_use_clock) - s0 )); (( s > 0 )) || s=1
   for f in memory.peak memory.current; do
     mem="$(cat "$LOOPER_CGROUP/$f" 2>/dev/null)" || mem=""; [[ ! "$mem" =~ ^[0-9]+$ ]] || break
   done
