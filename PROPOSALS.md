@@ -14,6 +14,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   module declared `#[cfg(test)] mod tests;` lives in `tests.rs` or `tests/mod.rs` beside it (or under its parent's
   directory), which is counted as production code. Following the declarations from each crate root would mark them
   too, if a repository's findings are ever seen there.
+- **A backed-off issue's reads every pass, and a first run that finds nothing** (2026-11-17, #181): each kicker pass
+  (every 3 minutes) and each plan reads, for every backed-off issue, its repository's main, its comments since and its
+  label events: three requests an issue, about 60 an hour each. At tens of backed-off issues it is worth a
+  pre-filter: the search already returns each issue, and its `updatedAt` after the back-off's since is what a comment
+  or a label change moves (a push to main and a blocker closing do not; main's head could be read once a pass per
+  repository). And a first run that changes nothing and checkpoints a step is resumed once before it backs off, so
+  that a run that plans before it writes is not held a day; if first runs that only re-check prove common, the
+  looper could back those off too. The GitLab paths (notes, resource label events, the branch API) are written to
+  its API's documentation but only the GitHub ones are tested.
 - **Retry a build's failed jobs alone, not the whole build** (2026-11-17, #173): when a land's build fails only
   because of its infrastructure and its gates passed, the manager now builds it again once (`build_again`). That
   runs the gates again (tacplus's full gates take about 3.5h), because the manager's GitLab credentials cannot

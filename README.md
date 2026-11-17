@@ -243,6 +243,30 @@ tests/repo-looper.test.sh      # waiting-on: --wait-on checkpoints "waiting on <
 tests/looper-dispatch.test.sh  # waiting-pipeline-running, waiting-pipeline-finished, waiting-github-run, waiting-unreadable: the kicker starts an issue waiting on a run once it has finished, or LOOPER_WAIT_MAX after its since when it cannot be read; GITLAB_TOKEN from a file descriptor (#171)
 ```
 
+Backing off (looper#181): an approved issue whose run finds nothing to do is not started again every pass. On
+2026-11-17 kernel#66 (about 20 runs that day) and llmproxy#63 (over 10) waited on Debian to ship a fix: each run
+re-scanned, changed nothing, checkpointed a new step and ended, and the kicker started the next minutes later, a model
+run for nothing each time. Now a resumed run (one with a previous run's branch to start from) that ends by itself with
+nothing landed or queued and its checkout's work the tree it started from (`.looper/`, the run record, aside) changed
+nothing since its previous run: it is `backed-off`. The looper comments with its checkpoint and adds `Backed-off:
+until <time> (since <time>, main <sha>)` to the issue's body, until `LOOPER_BACKOFF_MAX` (a day) later, its since the
+forge's time of that comment. The issue stays `approved`, never `looper:stuck`, and is not ready (the kicker, the plan
+and `--list` all read it) until its until has passed or something changed after its since: a comment by a member (an
+OWNER or MEMBER, or anyone with write access; never a bot), a label added or removed (`looper:in-progress` aside), a
+push to its repository's main (main is no longer that sha), or one of its `Blocked-by:` issues closing. A run whose
+wait is outside the looper with a date (a release upstream) runs `repo-looper --repo R --issue N --wait-until <date>
+"<what is left after it>"`: it checkpoints `waiting until <time>: <what is left>`, writes `Waiting-until: <time>` to the
+run's outcome and ends, and the issue backs off until that date the same way (a date past, unreadable or more than
+`LOOPER_WAIT_UNTIL_DAYS`, 30, ahead is refused). The next run takes the line out of the body, and its prompt says what
+changed. What cannot be read changes nothing: the issue waits for its until at most. A first run that changes
+nothing resumes as before (a run that plans before it writes is not held a day), and one that checkpoints no new step
+is still `looper:stuck`.
+
+```sh
+tests/repo-looper.test.sh      # nothing-to-do: an issue ended twice with nothing to do backs off, approved, not stuck, not listed; a stranger's comment does not restart it, a member's does, and its next run's prompt names it; wait-until: --wait-until checkpoints and backs off until the date, a label added restarts it, a date past, too far or unreadable refused (#181)
+tests/looper-dispatch.test.sh  # backed-off-comment, -writer, -push, -label, -blocker, -until: the kicker starts no backed-off issue until a member's or a writer's comment (not a bot's, a stranger's, a read-only collaborator's or one from before), a push to main, a label (not looper:in-progress), a blocker closing after its since, or its until (#181)
+```
+
 Time: a run has `LOOPER_TIMEOUT` (4h); a line `Timeout: <hours>h` in an issue's body gives its runs that
 instead, at most 10h. A report's job is sized for its issue (`repo-looper --job-timeout N`, looper#70): its
 limit and an hour, rounded up to hours, at most `LOOPER_JOB_MAX_HOURS` (11h). Its limit is capped at the job's
@@ -607,7 +631,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
   into `claude.log` as its text, each tool call and the start of each result, so a working run
   always shows output.
 - **Done:** once the run reported on the issue and it is closed, or the run wrote its `Blocked-by:`
-  or `Waiting-on:` outcome (looper#171), the model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run
+  or `Waiting-on:` outcome (looper#171), or its `Waiting-until:` one (looper#181), the model has `LOOPER_DONE_GRACE` (300s) to exit by itself; then it is stopped and the run
   ends as done. The prompt has it comment and close the issue as its last step, after any backport pull
   requests. Closed alone is not done (looper#54): a land's commit can close the issue while the model
   still verifies or writes its report, so its report is a comment since its last land (or since it
@@ -622,6 +646,8 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | asked a question | `needs-decision` |
 | found it waits on other open issues: it pushed the fix and the gates wait, or rightly pushed nothing (looper#22); it writes one `Blocked-by: <issue>` line per issue to the run's `outcome` file | those `Blocked-by:` lines are added to its body and it stays `approved`, with a comment: it is worked again once they are all closed. A land of its still queued stays queued, and the issue `looper:landing` until the manager's verdict; with none, it is no longer `looper:landing` (looper#93), as after every outcome but a land queued. One it names that is closed by now is dropped, and the comment says so (looper#46); one naming only closed issues is not taken, and the issue resumes from its branch, `approved`. An outcome naming a missing issue, or the issue itself, is rejected whole (`looper:stuck`) |
 | waits on another run's result: it ran `--wait-on <url>` (looper#171) | `Waiting-on: <url> (since <time>)` added to its body and a comment with its checkpoint; it stays `approved`, never `looper:stuck`, and is worked again once that run has finished (or `LOOPER_WAIT_MAX` after, when it cannot be read); the next run resumes from its branch, the result named in its prompt. With its land queued too, it is `land-pending` and waits on both |
+| changed nothing since its previous run: resumed, nothing landed or queued, its work what it started from (looper#181) | `backed-off`: a comment with its checkpoint and `Backed-off: until <time> (since <time>, main <sha>)` in its body; it stays `approved`, never `looper:stuck`, and is worked again once something changes (a member's comment, a label, a push to main, a blocker closing) or a day later (Backing off, above) |
+| waits until a date on something outside: it ran `--wait-until <date>` (looper#181) | the same, until that date |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | ended with its land queued and no verdict yet (looper#70): every report that lands, since `--land` queues and returns (the merge train, looper#86), or one its limit stopped | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it (comments and closes, or fixes what came back) |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |

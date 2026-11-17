@@ -58,6 +58,21 @@ if [[ "$cmd" == api\ repos/*/actions/runs/* ]]; then
   r="$FIX/runs/${cmd##*/}.json"; [[ -f "$r" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
   if [[ "${1:-}" == --jq ]]; then jq -r "$2" "$r"; else cat "$r"; fi; exit 0
 fi
+# A back-off's reads (looper#181): main's head, $FIX/main-head (else c...c); an
+# issue's comments ({created_at, user: {login}, author_association}) and
+# events ({event, label: {name}, actor: {login}, created_at}), its file's
+# `comments` and `events`, none by default; a collaborator's permission,
+# $FIX/permissions/<login>, else HTTP 404.
+if [[ "$cmd" == api\ repos/*/branches/main || "$cmd" == api\ repos/*/issues/*/comments* || "$cmd" == api\ repos/*/issues/*/events* || "$cmd" == api\ repos/*/collaborators/*/permission ]]; then
+  q="."; while [[ $# -gt 0 ]]; do [[ "$1" != --jq ]] || { q="$2"; shift; }; shift; done
+  p="${cmd#api repos/*/}"; p="${p%%\?*}"; r="${p%%/*}"; p="${p#*/}"   # alpha, issues/4/comments
+  case "$p" in
+    branches/main) jq -n --arg s "$(cat "$FIX/main-head" 2>/dev/null || printf 'c%.0s' {1..40})" '{commit: {sha: $s}}' ;;
+    collaborators/*) l="${p#collaborators/}"; l="$FIX/permissions/${l%/permission}"
+                     [[ -f "$l" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; jq -n --arg p "$(cat "$l")" '{permission: $p}' ;;
+    *) k="$(cut -d/ -f2 <<<"$p")"; jq "[.${p##*/}[]?]" "$FIX/issues/$r-$k.json" ;;
+  esac | jq -r "$q"; exit 0
+fi
 if [[ "$cmd" == "attestation verify" ]]; then
   echo "$*" >> "$FIX/attest"
   t="${1##*:main-}"
@@ -497,6 +512,85 @@ dispatch run
 issue alpha 4 OPEN $'Fix it.\nWaiting-on: '"$PIPE (since $(now_iso 21700))" approved
 dispatch run
 started || fail "an unreadable wait held its issue past LOOPER_WAIT_MAX: $OUT"
+pass
+
+# Backing off (looper#181): on 2026-11-17 kernel#66 and llmproxy#63 waited on
+# Debian, and every run found nothing to do; the kicker started the next
+# minutes later, ~20 runs of kernel#66 in a day. An issue whose body has a
+# `Backed-off:` line is not started until its until passes or something
+# changes after its since: a member's comment (not a bot's, not a stranger's,
+# not one from before), a label added or removed (not looper:in-progress), a
+# push to its repository's main, a Blocked-by issue closing.
+C40="$(printf 'c%.0s' {1..40})"
+backed() { # until (seconds ahead) since (seconds ago) [extra body line]: alpha#4 backed off
+  issue alpha 4 OPEN "Waiting on Debian's fix.${3:+
+$3}
+Backed-off: until $(now_iso "-$1") (since $(now_iso "$2"), main $C40)" approved
+}
+said() { # login association seconds-ago: a comment on alpha#4
+  jq --arg l "$1" --arg a "$2" --arg t "$(now_iso "$3")" '.comments += [{user: {login: $l}, author_association: $a, created_at: $t, body: "x"}]' \
+    "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+}
+labelled() { # event label seconds-ago: a label event on alpha#4
+  jq --arg e "$1" --arg l "$2" --arg t "$(now_iso "$3")" '.events += [{event: $e, label: {name: $l}, actor: {login: "jody"}, created_at: $t}]' \
+    "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+}
+scenario backed-off-comment
+backed 86000 600
+dispatch run
+! started || fail "started a pipeline for a backed-off issue: $OUT"
+said tacplus-looper[bot] NONE 60; said stranger NONE 60; said jody MEMBER 900
+dispatch run
+! started || fail "a bot's, a stranger's or an older comment restarted a backed-off issue: $OUT"
+mkdir -p "$FIX/permissions"; echo read > "$FIX/permissions/reader"; said reader COLLABORATOR 60
+dispatch run
+! started || fail "a read-only collaborator's comment restarted a backed-off issue: $OUT"
+said jody MEMBER 60
+dispatch run
+started || fail "a member's comment did not restart a backed-off issue: $OUT"
+pass
+
+scenario backed-off-writer
+backed 86000 600
+mkdir -p "$FIX/permissions"; echo write > "$FIX/permissions/owner"; said owner NONE 60   # an org owner whose membership is private
+dispatch run
+started || fail "a writer's comment did not restart a backed-off issue: $OUT"
+pass
+
+scenario backed-off-push
+backed 86000 600
+dispatch run
+! started || fail "started a pipeline for a backed-off issue: $OUT"
+printf 'd%.0s' {1..40} > "$FIX/main-head"
+dispatch run
+started || fail "a push to main did not restart a backed-off issue: $OUT"
+pass
+
+scenario backed-off-label
+backed 86000 600
+labelled labeled looper:in-progress 60; labelled unlabeled looper:in-progress 50; labelled labeled bug 900
+dispatch run
+! started || fail "looper:in-progress, or a label before its since, restarted a backed-off issue: $OUT"
+labelled labeled priority:high 30
+dispatch run
+started || fail "a label added did not restart a backed-off issue: $OUT"
+pass
+
+scenario backed-off-blocker
+backed 86000 600 "Blocked-by: #9"
+issue alpha 9 CLOSED "Debian's fix." bug
+jq --arg t "$(now_iso 900)" '.closedAt = $t' "$FIX/issues/alpha-9.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-9.json"
+dispatch run
+! started || fail "a blocker closed before its since restarted a backed-off issue: $OUT"
+jq --arg t "$(now_iso 60)" '.closedAt = $t' "$FIX/issues/alpha-9.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-9.json"
+dispatch run
+started || fail "its blocker closing did not restart a backed-off issue: $OUT"
+pass
+
+scenario backed-off-until
+backed -10 86400
+dispatch run
+started || fail "a back-off past its until still held its issue: $OUT"
 pass
 
 for held in looper:stuck needs-decision; do

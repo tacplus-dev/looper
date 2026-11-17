@@ -239,7 +239,7 @@ gl_all() { # path?query max
 # GitLab: an issue in gh's shape; its repository from its reference
 # (`seabeam/tools/looper#5`: tools/looper).
 GL_ISSUE='{number: .iid, title, body: (.description // ""), state: (if .state == "opened" then "OPEN" else "CLOSED" end),
-           labels: [.labels[] | {name: .}], createdAt: .created_at,
+           labels: [.labels[] | {name: .}], createdAt: .created_at, closedAt: .closed_at,
            repository: {name: (.references.full // "" | sub("#[0-9]+$"; "") | ltrimstr($org + "/"))}}'
 gl_issues() { jq --arg org "$LOOPER_ORG" "if type == \"array\" then map($GL_ISSUE) else $GL_ISSUE end"; }
 
@@ -372,6 +372,16 @@ forge_issue_comments() { # repo n
   case "$LOOPER_FORGE" in
     github) gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate --jq '.[] | .body | tojson' ;;
     gitlab) gl_all "$(gl_project "$1")/issues/$2/notes?sort=asc&order_by=created_at" 1000 | jq -c '.[] | select(.system | not) | .body' ;;
+  esac
+}
+
+# When an issue's comments were made, oldest first, an epoch a line (on
+# GitLab, the notes a person or the looper wrote).
+forge_issue_comments_times() { # repo n
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate --jq '.[] | .created_at // empty | sub("\\.[0-9]+"; "") | fromdate' ;;
+    gitlab) gl_all "$(gl_project "$1")/issues/$2/notes?sort=asc&order_by=created_at" 1000 \
+              | jq -r '.[] | select(.system | not) | .created_at // empty | sub("\\.[0-9]+"; "") | fromdate' ;;
   esac
 }
 
@@ -602,15 +612,15 @@ issue_state() { # repo n
   forge_issue_view "$1" "$2" state .state
 }
 
-# Ready: approved, not held, every issue it is blocked by closed, and every
-# run it waits on finished (waits_over, looper#171). Any forge error along the
-# way means not ready.
+# Ready: approved, not held, every issue it is blocked by closed, every run
+# it waits on finished (waits_over, looper#171), and not backed off
+# (backoff_over, looper#181). Any forge error along the way means not ready.
 ready() { # repo issue
   local body
   body="$(forge_issue_view "$1" "$2" body .body)" || return 1
-  ready_body "$1" "$body"
+  ready_body "$1" "$body" "$2"
 }
-ready_body() { # repo body
+ready_body() { # repo body issue
   local body="$2" list r n state
   list="$(printf '%s\n' "$body" | parse_blockers "$1")" || return 1
   while read -r r n; do
@@ -618,7 +628,8 @@ ready_body() { # repo body
     state="$(issue_state "$r" "$n" 2>/dev/null)" || return 1
     [[ "$state" == CLOSED ]] || return 1
   done <<<"$list"
-  printf '%s\n' "$body" | waits_over
+  printf '%s\n' "$body" | waits_over || return 1
+  backoff_over "$1" "$3" "$body" >/dev/null
 }
 
 # Ready as the issue itself says, read alone, not as GitHub's search has it
@@ -633,7 +644,7 @@ ready_itself() { # repo issue
   i="$(forge_issue_view "$1" "$2" state,labels,body '.')" || return 1
   jq -e --arg a "$LABEL_APPROVED" --arg p "$LABEL_IN_PROGRESS" --arg s "$LABEL_STUCK" --arg d "$LABEL_DECISION" --arg l "$LABEL_LANDING" \
     '(.state | ascii_upcase) == "OPEN" and any(.labels[]; .name == $a) and all(.labels[].name; IN($p, $s, $d, $l) | not)' <<<"$i" >/dev/null || return 1
-  ready_body "$1" "$(jq -r '.body // ""' <<<"$i")"
+  ready_body "$1" "$(jq -r '.body // ""' <<<"$i")" "$2"
 }
 
 # --- the runs an issue waits on (looper#171) ------------------------------------
@@ -716,6 +727,116 @@ waits_over() {
   return 0
 }
 
+# --- backing off (looper#181) ---------------------------------------------------
+#
+# An approved issue whose run finds nothing to do (kernel#66, llmproxy#63 on
+# 2026-11-17: each waiting on Debian to ship a fix, ~20 and >10 runs in a
+# day, each a model run for nothing) is not started again every pass. A
+# resumed run that ends with nothing landed or queued and its checkout's work
+# what it was when it started backs off: the looper puts `Backed-off: until
+# <ISO time> (since <ISO time>, main <sha>)` in the issue's body, until a day
+# later (LOOPER_BACKOFF_MAX seconds); a run that asks `repo-looper --wait-until
+# <date>` (an external wait) backs off until that date. The issue is not ready
+# until then, or until something changes after its since: a comment by a
+# member (an OWNER or MEMBER, or anyone with write access; no bot), a label
+# added or removed (but looper:in-progress), a push to its repository's main
+# (main is no longer that sha), or one of its Blocked-by issues closing. The
+# next run takes the line out, and its prompt says what changed.
+LOOPER_BACKOFF_MAX="${LOOPER_BACKOFF_MAX:-86400}"
+
+# The text on stdin's (an issue's body) first `Backed-off:` line, as "<until,
+# epoch> <since, epoch> <main sha>"; nothing when it has none or one it
+# cannot read (which holds nothing).
+parse_backoff() {
+  local l u s m
+  l="$(grep -iE '^[[:space:]]*backed-off:' | head -n 1)" || true
+  [[ "$l" =~ until\ ([0-9T:Z.+-]+)\ \(since\ ([0-9T:Z.+-]+),\ main\ ([0-9a-f]{7,40})\) ]] || return 0
+  u="$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null)" && s="$(date -u -d "${BASH_REMATCH[2]}" +%s 2>/dev/null)" || return 0
+  m="${BASH_REMATCH[3]}"
+  echo "$u $s $m"
+}
+
+# A login directs as a member does (looper#40): an OWNER or MEMBER, or anyone
+# with write access (an org owner GitHub calls CONTRIBUTOR or NONE); never a
+# bot. GitLab: a role that may push.
+forge_member() { # repo login association
+  [[ "$2" != *"[bot]" && -n "$2" ]] || return 1
+  [[ "$LOOPER_FORGE" != github ]] || case "$3" in OWNER|MEMBER) return 0 ;; esac
+  forge_writer "$1" "$2"
+}
+
+# The head of a repository's main. Fails when it cannot be read.
+forge_main_head() { # repo
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/branches/main" --jq .commit.sha ;;
+    gitlab) local b; b="$(gl_api GET "$(gl_project "$1")/repository/branches/main")" || return 1
+            jq -er .commit.id <<<"$b" ;;
+  esac
+}
+
+# The comments on an issue created after an epoch, as "<login> <association>"
+# lines (on GitLab, the notes a person wrote, association NONE: forge_member
+# reads the role). Fails when they cannot be read.
+forge_comments_after() { # repo n epoch
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/issues/$2/comments?since=$(date -u -d "@$3" +%FT%TZ)" --paginate \
+              --jq ".[] | select((.created_at // \"\") != \"\") | select((.created_at | sub(\"\\\\.[0-9]+\"; \"\") | fromdate) > $3) | \"\\(.user.login) \\(.author_association)\"" ;;
+    gitlab) local c; c="$(gl_all "$(gl_project "$1")/issues/$2/notes?sort=asc&order_by=created_at" 1000)" || return 1
+            jq -r --argjson t "$3" '.[] | select((.system | not) and (.created_at // "") != "") | select((.created_at | sub("\\.[0-9]+"; "") | fromdate) > $t) | "\(.author.username) NONE"' <<<"$c" ;;
+  esac
+}
+
+# The labels added to or removed from an issue after an epoch, as
+# "<added|removed> <label> <login>" lines. Fails when they cannot be read.
+forge_label_events_after() { # repo n epoch
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/issues/$2/events" --paginate \
+              --jq ".[] | select((.event == \"labeled\" or .event == \"unlabeled\") and (.created_at // \"\") != \"\") | select((.created_at | sub(\"\\\\.[0-9]+\"; \"\") | fromdate) > $3)
+                    | \"\\(if .event == \"labeled\" then \"added\" else \"removed\" end) \\(.label.name) \\(.actor.login // \"\")\"" ;;
+    gitlab) local e; e="$(gl_all "$(gl_project "$1")/issues/$2/resource_label_events?sort=asc" 1000)" || return 1
+            jq -r --argjson t "$3" '.[] | select((.created_at // "") != "") | select((.created_at | sub("\\.[0-9]+"; "") | fromdate) > $t)
+                    | "\(if .action == "add" then "added" else "removed" end) \(.label.name) \(.user.username // "")"' <<<"$e" ;;
+  esac
+}
+
+# The back-off of an issue (its body's `Backed-off:` line) is over: it has
+# none, its until has passed, or something changed after its since. Prints
+# what ended it (nothing for no line); fails while it holds. What cannot be
+# read changed nothing: the issue waits for its until at most.
+backoff_over() { # repo n body
+  local b u s m h c l a ev lb who r k st at
+  b="$(parse_backoff <<<"$3")"; [[ -n "$b" ]] || return 0
+  read -r u s m <<<"$b"
+  if (( $(date +%s) >= u )); then echo "its back-off ended ($(hold_iso "$u"))"; return 0; fi
+  if h="$(forge_main_head "$1" 2>/dev/null)" && [[ "$h" =~ ^[0-9a-f]{7,40}$ && "$h" != "$m"* ]]; then
+    echo "a push to main of $1 (${m::7}..${h::7})"; return 0
+  fi
+  if c="$(forge_comments_after "$1" "$2" "$s" 2>/dev/null)"; then
+    while read -r l a; do
+      [[ -n "$l" ]] || continue
+      if forge_member "$1" "$l" "$a" 2>/dev/null; then echo "a comment by $l"; return 0; fi
+    done <<<"$c"
+  fi
+  if c="$(forge_label_events_after "$1" "$2" "$s" 2>/dev/null)"; then
+    while read -r ev lb who; do
+      [[ -n "$ev" && "$lb" != "$LABEL_IN_PROGRESS" ]] || continue
+      echo "the label $lb $ev${who:+ by $who}"; return 0
+    done <<<"$c"
+  fi
+  while read -r r k; do
+    [[ -n "$r" ]] || continue
+    [[ "$r" == */* && "$LOOPER_FORGE" == github ]] && continue   # no repository of the org's
+    st="$(forge_issue_view "$r" "$k" state,closedAt '"\(.state) \(.closedAt // "")"' 2>/dev/null)" || continue
+    [[ "$st" == CLOSED\ ?* ]] || continue
+    at="$(date -u -d "${st#CLOSED }" +%s 2>/dev/null)" || continue
+    if (( at > s )); then
+      if [[ "$r" == "$1" ]]; then echo "#$k closed"; else echo "$LOOPER_ORG/$r#$k closed"; fi
+      return 0
+    fi
+  done < <(parse_blockers "$1" <<<"$3")
+  return 1
+}
+
 # The first ready issue in a repository (ISSUE_ORDER), or nothing.
 next_ready() { # repo
   local n
@@ -754,13 +875,13 @@ ready_all_by_repo() {
           done <<<"$issues")"
   # The blockers' states: "<repo> <number> <state>".
   states="$(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u | forge_issue_states)" || return 1
-  # Ready: every blocker closed, and every run it waits on finished (looper#171).
-  # The first per repository is its next.
+  # Ready: every blocker closed, every run it waits on finished (looper#171),
+  # and not backed off (looper#181). The first per repository is its next.
   while read -r r n b64; do
     [[ -n "$r" ]] || continue
     if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
          while read -r br bn; do grep -qxF "$br $bn CLOSED" <<<"$states" || exit 1; done
-       } && base64 -d <<<"$b64" | waits_over; then echo "$r $n"; fi
+       } && base64 -d <<<"$b64" | waits_over && backoff_over "$r" "$n" "$(base64 -d <<<"$b64")" >/dev/null; then echo "$r $n"; fi
   done <<<"$issues"
 }
 

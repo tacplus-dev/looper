@@ -31,7 +31,9 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # each lookup recorded in $FIX/permission-lookups (the login); one that holds
 # `fail` fails as GitHub's 5xx does, after printing what it holds.
 # `gh api .../issues/<n>/events` answers the issue's `events` (GitHub's issue
-# events: {event, label: {name}, actor: {login}}), none by default.
+# events: {event, label: {name}, actor: {login}}), none by default. Each
+# comment has its created_at (now, when `gh issue comment` adds it), and
+# `gh api .../branches/main` answers origin's main (looper#181).
 # `gh api graphql` answers forge_issue_states' aliased query from the issues'
 # files (null, and exit 1, for one there is none of), each query appended to
 # $FIX/graphql; $FIX/graphql-fail refuses it as GitHub does when it is down.
@@ -84,11 +86,13 @@ case "$cmd" in
   # A GitHub Actions run an issue waits on (looper#171): $FIX/runs/<id>.json, else HTTP 404.
   api\ repos/*/actions/runs/*)
     r="$FIX/runs/${cmd##*/}.json"; [[ -f "$r" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; jq -r "$q" "$r" ;;
+  # Main's head (looper#181): origin's.
+  api\ repos/*/branches/main) jq -n --arg s "$(git -C "$FIX/origin.git" rev-parse main)" '{commit: {sha: $s}}' | jq -r "$q" ;;
   api\ repos/*/issues/*)
-    p="${cmd#api repos/*/}"; f="$FIX/issues/${p%%/*}-$(cut -d/ -f3 <<<"$p").json"
+    p="${cmd#api repos/*/}"; p="${p%%\?*}"; f="$FIX/issues/${p%%/*}-$(cut -d/ -f3 <<<"$p").json"
     [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
     who='{user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}'
-    if [[ "$p" == */comments ]]; then jq "[.comments[] | {body} + $who]" "$f"
+    if [[ "$p" == */comments ]]; then jq "[.comments[] | {body, created_at} + $who]" "$f"
     elif [[ "$p" == */events ]]; then jq '.events // []' "$f"
     else jq "{number, title, body, comments: (.comments | length)} + $who" "$f"; fi | jq -r "$q" ;;
   api\ repos/*/collaborators/*/permission)
@@ -126,7 +130,7 @@ case "$cmd" in
     [[ -n "$has_body" ]] && t="$(jq --arg b "$body" '.body = $b' <<<"$t")"
     save "$t" ;;
   "issue comment")
-    t="$(jq --arg b "$body" '.comments += [{body: $b}]' "$f")"; save "$t"
+    t="$(jq --arg b "$body" --arg t "$(date -u +%FT%TZ)" '.comments += [{body: $b, created_at: $t}]' "$f")"; save "$t"
     printf '%s#%s %s\n' "$repo" "$n" "$body" >> "$FIX/comments" ;;
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
 esac
@@ -987,6 +991,68 @@ has "$(cat "$FIX/err-done")" "has finished (completed success): it is no wait"
 has "$(cat "$FIX/err-host")" "--wait-on takes the URL of a GitHub Actions run"
 lacks "$(body alpha 4)" "Waiting-on"
 lacks "$OUT" "#4: waiting"
+pass
+
+# Backing off (looper#181): kernel#66 waited on Debian's fix, and each of its
+# ~20 runs on 2026-11-17 re-checked, changed nothing, checkpointed a new step
+# and ended, the next started minutes later. A resumed run that ends with
+# nothing landed or queued and its work what it started from backs off: the
+# issue stays approved, not listed, until something changes, and the next run
+# says what did.
+soon() { date -u -d "@$(( $(date +%s) + 1 ))" +%FT%TZ; } # a time after the back-off's since
+scenario nothing-to-do
+step "Debian has no fix for CVE-2026-1 yet; left: build on it"
+run
+has "$OUT" "#4: ended"   # its first run: no previous run to compare with
+lacks "$(body alpha 4)" "Backed-off"
+: > "$FIX/claude.sh"; step "Rescanned: Debian has no fix yet; left: build on it"
+run
+has "$OUT" "#4: backed-off"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Fix it."
+has "$(body alpha 4)" "Backed-off: until "
+has "$(body alpha 4)" "main $(origin rev-parse main))"
+c="$(others)"; has "$c" "nothing changed since the previous run"; has "$c" "backs off"; lacks "$c" "looper:stuck"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "listed an issue ended twice with nothing to do: $OUT"
+jq --arg t "$(soon)" '.comments += [{body: "Any news?", created_at: $t, author: "stranger", association: "NONE"}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "a stranger's comment restarted a backed-off issue: $OUT"
+jq --arg t "$(soon)" '.comments += [{body: "Debian shipped it.", created_at: $t}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ "$OUT" == 4 ]] || fail "a member's comment did not restart a backed-off issue: $OUT"
+: > "$FIX/claude.sh"; step "Debian shipped it, but not to bookworm; left: build on it"
+run
+p="$(cat "$(ls -d "$FIX"/project/looper-runs/*-issue-4 | tail -n 1)/prompt.md")"
+has "$p" "found nothing to do and backed off"; has "$p" "what changed since: a comment by jody"
+has "$p" "--wait-until <date>"
+has "$OUT" "#4: backed-off"
+[[ "$(body alpha 4 | grep -c Backed-off)" == 1 ]] || fail "body: $(body alpha 4)"
+pass
+
+# A run whose wait is outside, with a date (looper#181): --wait-until
+# checkpoints "waiting until <time>" and ends; the issue backs off until then,
+# or until something changes (here a label added). A date past, too far ahead
+# or unreadable is refused, nothing recorded.
+scenario wait-until
+d="$(date -u -d '+5 days' +%F)"
+echo 'echo x > a.txt' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --wait-until 2020-01-01 2> "$FIX/err-past" && exit 9' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --wait-until 2099-01-01 2> "$FIX/err-far" && exit 9' >> "$FIX/claude.sh"
+echo '"$ROOT/repo-looper" --repo alpha --issue 4 --wait-until "next blue moon" 2> "$FIX/err-what" && exit 9' >> "$FIX/claude.sh"
+echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --wait-until $d \"left: build on Debian's fix\"" >> "$FIX/claude.sh"
+run
+has "$(cat "$FIX/err-past")" "is past"; has "$(cat "$FIX/err-far")" "more than 30 days ahead"; has "$(cat "$FIX/err-what")" "takes a date"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$OUT" "#4: waiting"
+has "$(body alpha 4)" "Backed-off: until ${d}T00:00:00Z (since "
+has "$(origin log -1 --format=%B looper/alpha-4)" "waiting until ${d}T00:00:00Z: left: build on Debian's fix"
+c="$(others)"; has "$c" "waits until ${d}T00:00:00Z"; lacks "$c" "looper:stuck"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "listed an issue waiting until $d: $OUT"
+jq --arg t "$(soon)" '.events += [{event: "labeled", label: {name: "priority:high"}, actor: {login: "jody"}, created_at: $t}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ "$OUT" == 4 ]] || fail "a label added did not restart an issue waiting until $d: $OUT"
 pass
 
 # Done means done: once the run reported on its issue and closed it, the
