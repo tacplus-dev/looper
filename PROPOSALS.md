@@ -795,6 +795,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   would accept it in any binary or tree the scan reads, gosec's or glab's (#159) should they regress. Once the scan
   reads the image's binaries (above: "Scan the looper image's own binaries"), an optional `where` key (a path or
   prefix the finding's `where` must match) would keep an exception to the place it was decided for.
+- **The image scan reads the docker CLI's plugins too** (2026-11-17, nightly scan, #167, #177): `looper-scan image`
+  reads the Go binaries under `/usr/local/bin` only. The base image's `docker-buildx` and `docker-compose` are in
+  `/usr/local/libexec/docker/cli-plugins/`, so their advisories go unread. `trivy image` of
+  `ghcr.io/tacplus-dev/tacplus/build:2.6` lists `github.com/docker/docker v28.5.2+incompatible` in docker-buildx
+  (GO-2026-5746, GO-2026-5617, GO-2026-5668, GO-2026-4883, two of them HIGH). They are moby daemon advisories, so
+  govulncheck's symbol reading would probably find them not called by a client, but no scan says so. Adding
+  `/usr/local/libexec` (or every ELF in the image the `Dockerfile` installs) to the binaries it reads would put them
+  under the same policy. Until #73 removes the CLI, looper-docker refuses `buildx` and `compose` (README), which
+  limits what they can reach.
 
 ## Promoted / declined
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
