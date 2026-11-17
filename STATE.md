@@ -98,7 +98,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   with the image's own tacplus, `TACPLUS_BIN=tacplus`, once the job's image is checked to be the pin, #137), no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status (a red gates or
   security job's why, a red gate's with the gates log's last lines, set by the child pipeline's `gates-failed` and
-  `security-failed`, #148, #144; a manager waits
+  `security-failed`, #148, #144; every build job, the child pipeline's and the fan-out's too, is retried on an image not
+  pulled, `runner_external_dependency_failure`, and on `api_failure`, and a land's build red in its infrastructure alone,
+  its gates green (`security-failed`'s `no security verdict`, or `the build failed` with the pipeline's jobs read with
+  `GITLAB_TOKEN`), is built again once, gates and all, by the manager, which cannot retry jobs alone (#173; reading
+  tacplus-dev/build's jobs needs its bot a Reporter there, else only the first case is told); a manager waits
   its gate set's wait from the build's start, never its trigger: the sum of its sets' `minutes` in the commit's
   `gates.yaml` and `LOOPER_BUILD_MARGIN` (30m), at least `LOOPER_BUILD_WAIT` (3h), #158; a build with no verdict by its job's end leaves the
   land queued and its pipeline, on the build's branch, for the next manager to take up; the recap has each manager's
