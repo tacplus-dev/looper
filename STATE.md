@@ -135,7 +135,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-17 by lo
   `nightly: true`, main's head, no commit status; with no `repo`, one pipeline fanning out to every repository whose
   main pins its build image, each its own child pipeline, #164) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
-  an unexpired `security-exceptions.yaml` entry accepts it; a land (a build with a base) fails only on the blocking
+  an unexpired `security-exceptions.yaml` entry accepts it (only in its `where`, a path or a glob, when it has one; an
+  entry without one accepts its id everywhere and the report warns, #182); a land (a build with a base) fails only on the blocking
   findings it adds: its base commit's (`security-<repo>/<sha>`, each build's findings published as its commit's too)
   are `standing`, reported and the nightly's to file, while a nightly and a release fail on them (#180); a service's generated tree (its root `tacplus.yaml`'s
   `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
