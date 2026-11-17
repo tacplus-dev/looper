@@ -132,3 +132,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-16 looper issue The looper image is not published: the image workflow fails on main (#168)
 - 2026-11-16 looper issue ci/: pin the looper image of a5ea5df, the first published since 75d955c (carries #165, #73 step 1, #166, #168) (#170)
 - 2026-11-16 looper issue A report that waits on a pipeline or workflow goes idle and is marked looper:stuck (twice on 2026-11-16) (#171)
+- 2026-11-17 looper issue Build jobs on the in-cluster build runner fail pulling the looper image (DeadlineExceeded) and are not retried: it cost tacplus#340 a 3.5 h green land (#173)
