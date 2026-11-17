@@ -499,7 +499,7 @@ pin issue (filed by the hub) commits one.
   once every repository is pinned (tacplus, tacplus#340).
 
 ```sh
-tests/repo-looper.test.sh       # build-job-scan: a pinned repository's scan, its model with no docker, reads the nightly build's gates record into its prompt's item 3, none read runs no gates; scan-unpinned-gates: an unpinned one's keeps its gates; build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/repo-looper.test.sh       # build-job-scan: a pinned repository's scan, its model with no docker, reads the nightly build's gates record into its prompt's item 3, none read runs no gates; scan-unpinned-gates: an unpinned one's keeps its gates; build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-infra-once, build-job-infra-pull, build-job-infra-red, build-job-infra-no-token: a land's build red in its infrastructure alone, its gates green (security-failed's no security verdict, or report-fail's the build failed with the pipeline's and its child's jobs read with GITLAB_TOKEN: gates passed, the rest failed but in their script), is built again once and merges on that build's green, its comment saying so; a job failed in its script, or no GITLAB_TOKEN to tell, is red, built once (looper#173); build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-no-trigger: without the trigger the gates run in the manager's job, as before
 tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin; the nightly fan-out: a pinned repository is built, an unpinned, archived or another owner's is not, each child is its repository's nightly and needs its own plan alone, a listing or pin it cannot read fails (looper#164)
 ```
 
@@ -946,7 +946,15 @@ jobs run `looper-build`, from this image.
   `runner_system_failure`. Every job, the child pipeline's too (the parent's `default:` does not reach it), is
   retried twice on `runner_system_failure`, `scheduler_failure` and `unknown_failure`, so the build's verdict
   stays pending through the retry and the manager keeps waiting on it; never on `stuck_or_timeout_failure`: the
-  gates' 11h timeout is their own failure.
+  gates' 11h timeout is their own failure. So is a job whose image its node could not pull
+  (`runner_external_dependency_failure`: tacplus#340's land lost a green 3.5h build to its security jobs' pull,
+  looper#173) or that GitLab's API failed (`api_failure`).
+- **A build red in its infrastructure alone is built again** (looper#173): when a land's build is red and its gates
+  passed, the manager builds it again, once, rather than send the land back. It knows from the verdict: the
+  `security-failed` job's `no security verdict: ...`, which it sets on green gates alone, or `report-fail`'s `the
+  build failed`, no job's reason, once the pipeline's jobs and its child's, read with `GITLAB_TOKEN` (`read_api`),
+  show its `gates` job passed and every job that failed failed but in its script. Its verdict comment says so. Its
+  token cannot retry the failed jobs alone (a trigger token, and `read_api`): the gates run again too.
 - **`pending`, `report-pass`, `report-fail`** set the GitHub commit status, context `tacplus-dev/build`, linking
   the pipeline, with the failure's reason as its description. A failed `gates` job's reason is set by the child's
   **`gates-failed`** job (looper#148), which reads its artifact `build-verdict`: the gates' own reason, or, with
@@ -1019,7 +1027,7 @@ tag names `sha`, runs the gates, and publishes; the looper then creates the GitH
 
 ```sh
 looper-build plan | gates | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
-tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; the retries of the build file's jobs, the child's and the fan-out's, on an image not pulled too (runner_external_dependency_failure, api_failure, looper#173); a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
 ```
 
 **The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A
@@ -1681,8 +1689,9 @@ and what a 4th node costs, for Jody to decide.
 **Retries the GitLab way.** A control job retries twice on `runner_system_failure`, `scheduler_failure` and
 `unknown_failure` (its runner lost), never on its own timeout: a retried report or manager resumes from its checkpoint
 ([A run's work is never lost](#a-runs-work-is-never-lost)). The build pipeline's jobs, on the spot pool, retry twice on
-`runner_system_failure` and `stuck_or_timeout_failure` too (a preemption, a node that never came), its child
-pipeline's gates job on its runner lost alone (its 11h timeout is its own, looper#148; `looper-build`).
+`runner_system_failure` and `stuck_or_timeout_failure` too (a preemption, a node that never came), and
+`runner_external_dependency_failure` and `api_failure` (an image a fresh node did not pull in time, looper#173), its
+child pipeline's jobs all but on their own timeout (the gates' 11h is their own, looper#148; `looper-build`).
 
 **What still runs on the interim VM runners** (below), until it needs no Docker: the reports, verdict and manager of a
 repository that does not yet pin its build image (tacplus, tacplus#340; fleet-seatrials pins since its #42: a

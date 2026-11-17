@@ -657,14 +657,16 @@ grep -qxF "    BUILD_SHA: \"${SHA[pass]}\"" "$y" || fail "not the commit"
 # Its own timeout, a report job's longest (looper#140): not the project's default.
 sed -n '/^gates:$/,/^security-demo:$/p' "$y" > "$TMP/gates.yml"
 grep -qxF '  timeout: 11h' "$TMP/gates.yml" || fail "the gates job sets no 11h timeout: $(head -8 "$TMP/gates.yml")"
-# A job whose runner is lost (a spot VM preempted) runs again (looper#148): the
-# parent's default retry does not reach its child pipeline's jobs. Not on its
-# own timeout: the gates' 11h is their own.
-grep -A3 -xF 'default:' "$y" | paste -sd'|' - | grep -qxF 'default:|  retry:|    max: 2|    when: [runner_system_failure, scheduler_failure, unknown_failure]' ||
+# A job whose runner is lost (a spot VM preempted) runs again (looper#148), and
+# one whose image could not be pulled or whose runner GitLab's API failed
+# (looper#173): the parent's default retry does not reach its child pipeline's
+# jobs. Not on its own timeout: the gates' 11h is their own.
+grep -A3 -xF 'default:' "$y" | paste -sd'|' - | grep -qxF 'default:|  retry:|    max: 2|    when: [runner_system_failure, scheduler_failure, unknown_failure, runner_external_dependency_failure, api_failure]' ||
   fail "the child pipeline's jobs are not retried when their runner is lost: $(head -12 "$y")"
 # The build pipeline's own jobs (ci/build.gitlab-ci.yml), pods on the spot pool (looper#84): retried the GitLab
-# way on a preemption, runner_system_failure and stuck_or_timeout_failure, twice, on the build runner's tags.
-grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml" | paste -sd'|' - | grep -qF '|  tags: [arm64, build]|  retry:|    max: 2|    when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure, unknown_failure]' ||
+# way on a preemption, runner_system_failure and stuck_or_timeout_failure, twice, on the build runner's tags;
+# and on an image not pulled, runner_external_dependency_failure (tacplus#340's land, looper#173), and api_failure.
+grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml" | paste -sd'|' - | grep -qF '|  tags: [arm64, build]|  retry:|    max: 2|    when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure, unknown_failure, runner_external_dependency_failure, api_failure]' ||
   fail "ci/build.gitlab-ci.yml's default is not the build runner with a spot retry: $(grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml")"
 # A failed gates job's verdict, the gates' own or none (its runner lost), is the commit's status, linking this pipeline.
 sed -n '/^gates-failed:$/,/^[^ ]/p' "$y" > "$TMP/gates-failed.yml"
@@ -1480,6 +1482,9 @@ for r in demo late other; do
   ! grep -q '^  needs:\|^  when:\|^  allow_failure:' "$TMP/plan-$r.yml" || fail "nightly-plan-$r waits on another job: $(cat "$TMP/plan-$r.yml")"
 done
 grep -qxF 'stages: [plan, nightly]' "$y" || fail "no stages: $(grep stages "$y")"
+# Its jobs retried as the child's: a job whose image could not be pulled too (looper#173).
+grep -A3 -xF 'default:' "$y" | paste -sd'|' - | grep -qxF 'default:|  retry:|    max: 2|    when: [runner_system_failure, scheduler_failure, unknown_failure, runner_external_dependency_failure, api_failure]' ||
+  fail "the fan-out's jobs are not retried when their runner is lost or their image not pulled: $(head -8 "$y")"
 cp "$y" "$TMP/fanout.yml"
 # demo's plan job, as the child pipeline runs it, writes today's nightly of demo.
 build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "the nightly of demo failed: $(cat "$TMP/err")"

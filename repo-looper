@@ -1001,7 +1001,7 @@ land_work() {
       (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
       if (( grc != 0 )) && build_jobs HEAD .; then
         # Its verdict says which failed: the gates, or their runner on every try (looper#148).
-        { log "nothing landed: its build job failed: $(grep -m 1 -E '^(verdict: failure: |no verdict )' "$out/gates.log" | sed 's/^verdict: failure: //'), on your commits rebased on $(onto_name); its end:"
+        { log "nothing landed: its build job failed: $(grep -E '^(verdict: failure: |no verdict )' "$out/gates.log" | tail -n 1 | sed 's/^verdict: failure: //'), on your commits rebased on $(onto_name); its end:"
           tail -n 30 "$out/gates.log"; } >&2
         exit 4
       elif (( grc != 0 )); then
@@ -1364,6 +1364,40 @@ build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds] [wait, seco
   done
 }
 epoch() { [[ -z "$1" ]] || date -d "$1" +%s 2>/dev/null || true; } # ISO time
+
+# A red build whose gates passed and whose failure was its infrastructure's
+# (looper#173): tacplus#340's land lost a green 3.5h build when its security
+# jobs could not pull their image (runner_external_dependency_failure, after
+# GitLab's retries). The security-failed job's verdict, "no security verdict:
+# ...", says so: it sets one on green gates alone. report-fail's "the build
+# failed", no job's reason, is read in the pipeline's jobs and its child
+# pipeline's, with GITLAB_TOKEN (read_api): its gates job passed, and every job
+# that failed, allowed to or not, failed but in its script. Prints why; fails
+# when it is a red build, or cannot be told.
+build_infra() { # sha pipeline-id
+  local v j c f
+  v="$(build_said "$(build_statuses "$1" "$2")")" || return 1
+  case "$v" in
+    "failure: no security verdict: "*) echo "${v#failure: }"; return 0 ;;
+    "failure: the build failed") ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${GITLAB_TOKEN:-}" ]] || return 1
+  j="$(build_pipeline "$2/jobs")" || return 1
+  for c in $(build_pipeline "$2/bridges" | jq -r '.[].downstream_pipeline.id // empty' 2>/dev/null); do
+    [[ "$c" =~ ^[0-9]+$ ]] || return 1
+    j="$(jq -c --argjson c "$(build_pipeline "$c/jobs")" '. + $c' <<<"$j" 2>/dev/null)" || return 1
+  done
+  jq -e 'any(.[]; .name == "gates" and .status == "success")
+         and all(.[] | select(.status == "failed" and .allow_failure != true); .failure_reason != "script_failure")
+         and any(.[]; .status == "failed" and .allow_failure != true)' <<<"$j" >/dev/null 2>&1 || return 1
+  f="$(jq -r '[.[] | select(.status == "failed" and .allow_failure != true)] | "\(map(.name) | join(", ")) failed in their infrastructure (\(map(.failure_reason // "unknown") | unique | join(", ")))"' <<<"$j")"
+  echo "its gates job passed, and $f"
+}
+# A build pipeline's jobs or trigger jobs (<id>/jobs, <id>/bridges), read with GITLAB_TOKEN.
+build_pipeline() { # id/what
+  curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") "$BUILD_API/projects/$BUILD_PROJECT/pipelines/$1?per_page=100" 2>/dev/null
+}
 # A build's queue time apart from its run time (looper#128), for the recap.
 build_times() { # triggered started|"" until ran|running url
   if [[ -n "$2" ]]; then echo "build times: $5: queued $(( $2 > $1 ? $2 - $1 : 0 )) s, $4 $(( $3 > $2 ? $3 - $2 : 0 )) s"
@@ -1440,7 +1474,9 @@ build_gates() { # base [queued commit]
      r="$(find_build "$c" "$gates" "$1")"; then
     echo "the build job $(cut -d' ' -f2 <<<"$r") of $REPO ${c:0:7}, the gates ${gates:-full} on base ${1:0:7}: reused, the $(reused_what "${r##* }") build of ${c:0:7}, the same tree on the same base"
     # Left to run (3), it is found again by its key: no record.
-    build_verdict "$c" "${r%% *}" "$(cut -d' ' -f2 <<<"$r")" "" "$w"; return
+    build_verdict "$c" "${r%% *}" "$(cut -d' ' -f2 <<<"$r")" "" "$w" || rc=$?
+    if (( rc == 1 )); then rc=0; build_again "$c" "$gates" "$1" "$w" "$(cut -d' ' -f1,2 <<<"$r")" || rc=$?; [[ -n "$AGAIN_P" ]] || rc=1; fi
+    return "$rc"
   else
     t0="$(date +%s)"
     get_build "$sha" "$gates" "$1" git push -q -f origin "$sha:refs/heads/$b" ||
@@ -1453,6 +1489,10 @@ build_gates() { # base [queued commit]
     fi
   fi
   build_verdict "$sha" "${p%% *}" "${p#* }" "$t0" "$w" || rc=$?
+  if (( rc == 1 )); then
+    rc=0; build_again "$sha" "$gates" "$1" "$w" "$p" || rc=$?
+    if [[ -n "$AGAIN_P" ]]; then p="$AGAIN_P"; t0="$AGAIN_T0"; else rc=1; fi
+  fi
   # Left to run at the job's end (3), or not started within BUILD_START
   # (BUILD_NO_RUNNER, looper#113): recorded, for the next manager to take up.
   if (( rc == 3 || rc == BUILD_NO_RUNNER )); then
@@ -1461,6 +1501,24 @@ build_gates() { # base [queued commit]
       git push -q -f origin "$r:refs/heads/$b" || echo "the build's record could not be pushed to $b: the next manager builds again"
   else git push -q origin --delete "$b" >/dev/null 2>&1 || true; fi
   return "$rc"
+}
+
+# A land's red build, red in its infrastructure alone with its gates green
+# (build_infra, looper#173), built again, once: a new build of its key (a red
+# one is reused by nothing), the commit still on the branch it was built from.
+# Its verdict is the land's: build_verdict's exit. AGAIN_P is the new build
+# ("<pipeline id> <URL>") and AGAIN_T0 its trigger's time; both are empty, and
+# it fails, when the build was red, or none could be started.
+build_again() { # sha gates base wait "<pipeline id> <URL>"
+  local why; AGAIN_P=""; AGAIN_T0=""
+  why="$(build_infra "$1" "${5%% *}")" || return 1
+  echo "the build job ${5#* } failed, its gates green: $why; it is built again, once (looper#173)"
+  log "the build job ${5#* } of $REPO ${1:0:7} failed in its infrastructure alone, its gates green: it is built again, once (looper#173)" >&2
+  AGAIN_T0="$(date +%s)"
+  get_build "$1" "$2" "$3" || { echo "nothing built again: $BUILD_P"; AGAIN_T0=""; return 1; }
+  AGAIN_P="$BUILD_P"
+  echo "the build job ${AGAIN_P#* } of $REPO ${1:0:7}, the gates ${2:-full} on base ${3:0:7}"
+  build_verdict "$1" "${AGAIN_P%% *}" "${AGAIN_P#* }" "$AGAIN_T0" "$4"
 }
 
 # The record of a build left to run on branch b (build_gates), its lines
@@ -1672,7 +1730,7 @@ reports_active() {
 # id: merged (green), sent back (a conflict it does not resolve), or not
 # merged (red, or why not).
 verdict_comment() { # issue id rc record-dir sha
-  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build dropped reused
+  local n="$1" id="$2" rc="$3" rec="$4" sha="$5" b url what before="" after="" set="" why="" step regen conflicts build dropped reused again
   b="$(wip_branch "$n")"; url="$(wip_url "$n")"
   regen="$(cat "$rec/regenerated" 2>/dev/null || true)"; conflicts="$(cat "$rec/conflicts" 2>/dev/null || true)"
   dropped="$(cat "$rec/dropped" 2>/dev/null || true)"
@@ -1684,7 +1742,9 @@ verdict_comment() { # issue id rc record-dir sha
     build="$(sed -n 's/^the build job \([^ ]*\) of .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     # One that had built this tree already (looper#134): reused, not built again.
     reused="$(sed -n 's/^the build job [^ ]* of .*: reused, \(.*\)$/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
-    [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}"
+    # Built again after its infrastructure failed it, its gates green (looper#173).
+    again="$(sed -n 's/^the build job \([^ ]*\) failed, its gates green: .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}${again:+, built again after $again failed in its infrastructure alone, its gates green}"
     # Landed in a batch (looper#86): the candidate's one build is every member's.
     local batch; batch="$(cat "$rec/batch" 2>/dev/null || true)"
     [[ -z "$batch" || "$batch" == 1 ]] || batch=" It landed in a batch of $batch lands, with one build of their candidate (the merge train, looper#86)."

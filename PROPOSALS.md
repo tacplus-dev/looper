@@ -4,6 +4,17 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Retry a build's failed jobs alone, not the whole build** (2026-11-17, #173): when a land's build fails only
+  because of its infrastructure and its gates passed, the manager now builds it again once (`build_again`). That
+  runs the gates again (tacplus's full gates take about 3.5h), because the manager's GitLab credentials cannot
+  retry jobs: `BUILD_TRIGGER_TOKEN` is a trigger token and `GITLAB_TOKEN` is `read_api`. A token that may retry jobs
+  in tacplus-dev/build (`POST /pipelines/:id/retry` on the child pipeline) would re-run only the failed security
+  jobs. It is a new write credential for the manager's job, so it is Jody's call.
+- **The control jobs retried on an image not pulled too** (2026-11-17, #173): `ci/tacplus-dev.gitlab-ci.yml`,
+  `ci/instance.gitlab-ci.yml` and the jobs that `looper-dispatch` writes retry on `runner_system_failure`,
+  `scheduler_failure` and `unknown_failure`, but not on `runner_external_dependency_failure`. They pull the same looper
+  image on control nodes. Adding it (and `api_failure`) is the same one-line change as the build's, if a report or
+  manager is ever seen lost to a pull.
 - **The image build's other fetches retried too** (2026-11-16, #169): `go-fetch` retries the Dockerfile's Go
   fetches alone, the failures seen so far; the npm install of the claude CLI, the scanners' pip install and the
   release archives' `curl -fsSL` (cargo-deny, SpotBugs, FindSecBugs) still fail the image build on one reset. curl's

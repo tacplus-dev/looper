@@ -250,6 +250,12 @@ case "$url" in
         (cd "$d/src" && BUILD_STUB=build LOOPER_GATES_BASE="$base" bash -c "$run") >> "$FIX/build-runs.log" 2>&1 ||
         { state=failure; desc="the gates ${gates:-full} (gates.yaml) exited 1 (gates.log)"; }
     fi
+    # $FIX/build-infra: each build takes its first line, the failure its infrastructure gave it, its gates green
+    # (looper#173): "no security verdict: ..." (security-failed's), "the build failed" (report-fail's); empty, none.
+    if [[ -s "$FIX/build-infra" ]]; then
+      l="$(head -n 1 "$FIX/build-infra")"; sed -i 1d "$FIX/build-infra"
+      [[ -z "$l" || "$state" != success ]] || { state=failure; desc="$l"; }
+    fi
     rm -rf "$d"; mkdir -p "$FIX/statuses"; f="$FIX/statuses/$sha.json"; [[ -f "$f" ]] || echo '[]' > "$f"
     now="$(date -u +%FT%TZ)"; hold="$(cat "$FIX/build-hold" 2>/dev/null || true)"; pend="building${gates:+: gates $gates}${base:+ on base $base}"
     st1() { ( flock 7; jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" --arg t "${4:-$now}" \
@@ -269,6 +275,15 @@ case "$url" in
       esac
     fi
     reply 200 "{\"id\": $id, \"web_url\": \"https://gitlab.com/tacplus-dev/build/-/pipelines/$id\"}"
+    exit 0 ;;
+  # A build pipeline's jobs and its trigger jobs (looper#173): $FIX/pipeline-jobs/<id>.json and
+  # $FIX/pipeline-bridges/<id>.json; GITLAB_TOKEN's alone (read_api), else HTTP 404; no file, 404 and [].
+  */projects/tacplus-dev%2Fbuild/pipelines/*/jobs\?*|*/projects/tacplus-dev%2Fbuild/pipelines/*/bridges\?*)
+    k="${url%%\?*}"; id="${k%/*}"; id="${id##*/}"; k="${k##*/}"; f="$FIX/pipeline-$k/$id.json"
+    if [[ "$auth" != PRIVATE-TOKEN ]]; then reply 404 '{"message":"404 Project Not Found"}'
+    elif [[ -f "$f" ]]; then reply 200 "$(cat "$f")"
+    elif [[ "$k" == bridges ]]; then reply 200 '[]'
+    else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
   # A GitLab pipeline an issue waits on (looper#171): $FIX/pipelines/<id>.json, else HTTP 404.
   https://gitlab.com/api/v4/projects/*/pipelines/*)
@@ -3495,6 +3510,77 @@ has "$(cat "$FIX/land-4")" "nothing landed: its build job failed: the gates docs
 [[ -z "$(landed red.md)" ]] || fail "red merged"
 [[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 lacks "$(cat "$FIX/gates-ran")" "here"
+pass
+
+# A build red only in its infrastructure, its gates green, is no red land
+# (looper#173): tacplus#340's land lost a green 3.5h build when its security
+# jobs could not pull their image. The manager builds it again, once: here the
+# security-failed job's verdict, which it sets on green gates alone, the second
+# build's failing too, so the land is not merged after its third.
+scenario build-job-infra-once
+pin_seed; build_model notes.md "the docs"
+nosec="no security verdict: the security job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
+printf '%s\n' "$nosec" "$nosec" "$nosec" > "$FIX/build-infra"
+run "${BUILDS[@]}"
+has "$(cat "$FIX/build-4")" "verdict: failure: $nosec"; has "$(cat "$FIX/build-4")" "rc 1"
+l="$(cat "$FIX/land-4")"
+has "$l" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 failed, its gates green: $nosec; it is built again, once (looper#173)"
+has "$l" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/903 of alpha"
+has "$l" "The manager did not merge"; has "$l" "rc 4"
+[[ "$(wc -l < "$FIX/builds")" == 3 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ -z "$(landed notes.md)" ]] || fail "merged on a red build"
+pass
+
+# report-fail's "the build failed", no job's reason: the manager reads the
+# pipeline's jobs, its child pipeline's too, with GITLAB_TOKEN (read_api). Its
+# gates passed and its security jobs could not pull their image
+# (runner_external_dependency_failure): built again, green, merged.
+scenario build-job-infra-pull
+pin_seed; build_model notes.md "the docs"
+printf '%s\n' "the build failed" "the build failed" > "$FIX/build-infra"
+mkdir -p "$FIX/pipeline-jobs" "$FIX/pipeline-bridges"
+echo '[{"name": "plan", "status": "success"}, {"name": "pending", "status": "success"}, {"name": "report-fail", "status": "success"}]' > "$FIX/pipeline-jobs/902.json"
+echo '[{"name": "gates", "status": "failed", "downstream_pipeline": {"id": 9902}}]' > "$FIX/pipeline-bridges/902.json"
+echo '[{"name": "gates", "status": "success"}, {"name": "security-report", "status": "failed", "failure_reason": "script_failure", "allow_failure": true},
+       {"name": "security-alpha", "status": "failed", "failure_reason": "runner_external_dependency_failure"},
+       {"name": "security-failed", "status": "failed", "failure_reason": "runner_external_dependency_failure"}]' > "$FIX/pipeline-jobs/9902.json"
+run "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+l="$(cat "$FIX/land-4")"
+has "$l" "The manager merged"; has "$l" "rc 0"
+has "$l" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/903), built again after https://gitlab.com/tacplus-dev/build/-/pipelines/902 failed in its infrastructure alone, its gates green: green"
+has "$(cat "$FIX/manager.log")" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 of alpha"
+has "$(cat "$FIX/manager.log")" "failed in its infrastructure alone, its gates green: it is built again, once (looper#173)"
+# The land's record, gates.log, says why.
+has "$(find "$FIX" -name gates.log -exec cat {} +)" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 failed, its gates green: its gates job passed, and security-alpha, security-failed failed in their infrastructure (runner_external_dependency_failure); it is built again, once (looper#173)"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(wc -l < "$FIX/builds")" == 3 ]] || fail "builds: $(cat "$FIX/builds")"
+grep -qxF "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/9902/jobs?per_page=100" "$FIX/gitlab" ||
+  fail "the child pipeline's jobs not read with GITLAB_TOKEN: $(grep pipelines "$FIX/gitlab")"
+pass
+
+# A job that failed in its script is a red build: a security check's findings,
+# its gates green, are no infrastructure failure, and nothing is built again.
+# Nor without GITLAB_TOKEN, when "the build failed" cannot be told apart.
+scenario build-job-infra-red
+pin_seed; build_model notes.md "the docs"
+printf '%s\n' "the build failed" "the build failed" "the build failed" > "$FIX/build-infra"
+mkdir -p "$FIX/pipeline-jobs" "$FIX/pipeline-bridges"
+echo '[{"name": "gates", "status": "failed", "downstream_pipeline": {"id": 9902}}]' > "$FIX/pipeline-bridges/902.json"
+echo '[{"name": "plan", "status": "success"}]' > "$FIX/pipeline-jobs/902.json"
+echo '[{"name": "gates", "status": "success"}, {"name": "security-alpha", "status": "failed", "failure_reason": "script_failure"},
+       {"name": "security-failed", "status": "failed", "failure_reason": "runner_external_dependency_failure"}]' > "$FIX/pipeline-jobs/9902.json"
+run "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+l="$(cat "$FIX/land-4")"
+has "$l" "The manager did not merge"; has "$l" "rc 4"; lacks "$l" "built again"
+[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+pass
+scenario build-job-infra-no-token
+pin_seed; build_model notes.md "the docs"
+printf '%s\n' "the build failed" "the build failed" "the build failed" > "$FIX/build-infra"
+run "${BUILDS[@]}"
+l="$(cat "$FIX/land-4")"
+has "$l" "The manager did not merge"; has "$l" "rc 4"; lacks "$l" "built again"
+[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
 pass
 
 # A diff mapping to two sets asks for both, joined by +: the trigger's form

@@ -380,7 +380,7 @@ write_fanout_pipeline() { # repo...
 default:
   retry:
     max: 2
-    when: [runner_system_failure, scheduler_failure, unknown_failure]
+    when: [runner_system_failure, scheduler_failure, unknown_failure, runner_external_dependency_failure, api_failure]
 stages: [plan, nightly]
 EOF
   for r in "$@"; do
@@ -429,7 +429,7 @@ write_gates_pipeline() { # image
 default:
   retry:
     max: 2
-    when: [runner_system_failure, scheduler_failure, unknown_failure]
+    when: [runner_system_failure, scheduler_failure, unknown_failure, runner_external_dependency_failure, api_failure]
 EOF
   if [[ "${BUILD_VERIFY:-}" != true ]]; then gates_jobs "$1"; fi
   if [[ "${BUILD_VERIFY:-}" == true || -n "${BUILD_TAG:-}" ]]; then verify_jobs "$1"; fi
