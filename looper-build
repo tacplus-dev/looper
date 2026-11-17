@@ -511,6 +511,7 @@ security-$BUILD_REPO:
     BUILD_TAG: "${BUILD_TAG:-}"
     BUILD_ORG: "$BUILD_ORG"
     BUILD_SCAN_KIND: "$(scan_kind)"
+    BUILD_BASE: "${BUILD_BASE:-}"
   script:
     - looper-scan run
   artifacts:

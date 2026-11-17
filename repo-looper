@@ -4152,8 +4152,9 @@ security_item() { # report-dir or ""
   if [[ -n "$1" ]]; then cat <<IT
 1. The build pipeline's deterministic security checks (looper-scan; README: Security checks): the latest
    report of $REPO's build is $1/summary.md, its findings $1/findings.json (each: tool, id, aliases,
-   severity, fix, where, new, baselined, excepted, blocking; a finding the repository's security-baseline.json
-   records is \`baselined\`, never \`new\`). File the findings that are \`new\` and not \`excepted\`
+   severity, fix, where, new, baselined, excepted, blocking, standing; a finding the repository's security-baseline.json
+   records is \`baselined\`, never \`new\`; one a land's base has too is \`standing\`: it did not fail the land,
+   and it is still yours to file). File the findings that are \`new\` and not \`excepted\`
    and that the policy fails (\`blocking\`) or are HIGH or CRITICAL one issue per cause, not per finding:
    findings that share a fix (the same upstream issue, the same generated template, the same dependency bump)
    are one issue listing them all (each one's tool, id and where), its title the cause (looper#129); the other

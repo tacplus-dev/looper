@@ -4,6 +4,19 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The security packages of each commit pruned** (2026-11-17, #180): `looper-scan report` now publishes every
+  build's findings as its commit's too (`security-<repo>/<sha>`), so a land can read its base's. That is a package
+  version a build, branch builds included, in tacplus-dev/build's registry, which grows without end. Only main's
+  commits are ever read as a base; a GitLab package cleanup policy (keep the newest N versions per package), or the
+  report publishing a commit's version only when the build has a base or is a nightly, would bound it.
+- **The nightly scan reads main's findings, not the last build's** (2026-11-17, #180): `security-<repo>/latest` is
+  whatever build published last, a branch's `--build` or a red land's included, and the nightly agent scan files
+  from it. Reading `security-<repo>/<main's head>` (the nightly's own, published as its commit's since #180) would
+  file main's findings alone.
+- **The first land after #180 is strict** (2026-11-17, #180): a base whose build ran before #180 has no findings
+  of its commit published, so the land fails on every blocking finding, as before, until a land has merged with
+  the new report (the summary says so). If main is red then, the nightly (which publishes main's head's) makes
+  its findings standing for the next land.
 - **The nightly scan files no issue for test code's SAST findings** (2026-11-17, #179): `looper-scan` now marks a
   SAST finding in test code `test: true`, never `blocking`, but the nightly scan's item 1 (`security_item` in
   `repo-looper`) still files every new HIGH or CRITICAL finding, so oauth's 13 CRITICAL CodeQL findings in its

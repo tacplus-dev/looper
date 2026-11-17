@@ -35,7 +35,11 @@
 # a reason, who decided and an expiry date, fails too. A finding the commit's
 # security-baseline.json records (by tool, rule and file, not line: up to its
 # count) is baselined, never new; a secret, a HIGH or CRITICAL finding, one
-# the policy fails or an exception accepts is never baselined. A tool that cannot run
+# the policy fails or an exception accepts is never baselined. A land's build
+# (BUILD_BASE: main's commit it is built on, looper#180) fails only on the
+# blocking findings its change adds: one the base's build reported too (by
+# tool, rule and file, up to its count) is standing, reported and not failed,
+# the nightly's to file; a nightly and a release fail on every one. A tool that cannot run
 # fails the run. It runs in the looper image (jq, the scanners), never in the
 # repository's build image; it sources looper-build for the build's
 # credentials (the tacplus-reader app, read-only) and checkout.
@@ -705,6 +709,18 @@ cmd_run() {
   else
     rm -f "$previous"; log "no previous run of $BUILD_REPO to compare with: every finding is new"
   fi
+  # A land's base: the findings of main's commit it is built on (looper#180).
+  local base="$SCAN_WORK/base.json"
+  if [[ "$SCAN_KIND" == build && -n "${BUILD_BASE:-}" ]]; then
+    SCAN_BASE="$BUILD_BASE"
+    if [[ -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] &&
+       curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$base" "$(package_url "$BUILD_BASE" findings.json)" 2>/dev/null &&
+       jq -e 'type == "array"' "$base" >/dev/null 2>&1; then
+      log "compared with the base $BUILD_BASE: its blocking findings are standing"
+    else
+      rm -f "$base"; log "no findings of the base $BUILD_BASE: every blocking finding fails"
+    fi
+  fi
 
   local key="${TACPLUS_READER_APP_KEY:-}"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"')" ||
@@ -727,13 +743,13 @@ cmd_run() {
     [[ -z "$(git -C "$src" status --porcelain --untracked-files=no)" ]] || scan_verdict fail "the gates' built files change tracked files"
     log "with what the gates built ($(find "$BUILD_OUT/built" -type f | wc -l) files)"
   fi
-  scan_tree "$src" "$previous" "$started"
+  scan_tree "$src" "$previous" "$started" "$base"
 }
 
 # The checks, the policy and the reports of a checkout (and of the code its
 # gates generated, in $BUILD_OUT/generated); the verdict ends the run.
-scan_tree() { # src previous-findings started
-  local src="$1" previous="$2" started="$3"
+scan_tree() { # src previous-findings started [base-findings]
+  local src="$1" previous="$2" started="$3" base="${4:-/nonexistent}"
   log "security ($SCAN_KIND): $BUILD_REPO $BUILD_SHA"
 
   # The trees: the commit, and the code its gates generated.
@@ -752,13 +768,21 @@ scan_tree() { # src previous-findings started
       problems+=("syft: $(tool_cause "$SCAN_OUT/raw/syft.log")")
   fi
 
-  scan_policy "$src" "$previous" "$started"
+  scan_policy "$src" "$previous" "$started" "$base"
 }
+
+# A land's base (looper#180): its commit (BUILD_BASE), once asked for; whether
+# its findings were read is whether its base-findings file is there.
+SCAN_BASE=""
+SCAN_BASE_READ=""
 
 # The policy on the run's findings, with dir's security-exceptions.yaml and
 # security-baseline.json (the commit's), the reports; the verdict ends the run.
-scan_policy() { # dir previous-findings started
-  local src="$1" previous="$2" started="$3" t
+# With a base's findings, a finding the base has (by tool, rule and file, up to
+# its count there, in line order) is standing: a blocking one fails no build.
+scan_policy() { # dir previous-findings started [base-findings]
+  local src="$1" previous="$2" started="$3" base="${4:-/nonexistent}" t
+  [[ -f "$base" ]] && SCAN_BASE_READ=1
   # The exceptions, the policy, the comparison.
   local exceptions errs today
   today="$(date -u +%Y-%m-%d)"
@@ -782,10 +806,13 @@ scan_policy() { # dir previous-findings started
   local norms=()
   mapfile -t norms < <(find "$SCAN_OUT/norm" -name '*.json' | LC_ALL=C sort)
   ((${#norms[@]})) || norms=(/dev/null)
-  # The baseline's count of a tool, rule and file goes to its findings in line order.
-  jq -s --argjson exc "$exceptions" --arg today "$today" --argjson base "$baseline" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') "$JQ_BASELINE"'
+  # The baseline's count of a tool, rule and file goes to its findings in line
+  # order, and so does the base's.
+  jq -s --argjson exc "$exceptions" --arg today "$today" --argjson base "$baseline" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') \
+        --slurpfile landbase <(cat "$base" 2>/dev/null || echo '[]') "$JQ_BASELINE"'
     ($prev[0] // [] | map(.tool + "|" + .id + "|" + .where) | map({(.): true}) | add // {}) as $old
     | ($base | map({(.tool + "|" + .id + "|" + .file): .count}) | add // {}) as $quota
+    | ($landbase[0] // [] | map(.tool + "|" + .id + "|" + file_of) | group_by(.) | map({(.[0]): length}) | add // {}) as $standing
     | [.[][]] | unique_by([.tool, .id, .where]) | map(
         . as $f
         | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x)))][0]) as $e
@@ -793,10 +820,11 @@ scan_policy() { # dir previous-findings started
                blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
                new: ($old[.tool + "|" + .id + "|" + .where] | not)})
     | sort_by(.tool, .id, file_of, line_of)
-    | reduce .[] as $f ({q: $quota, out: []};
+    | reduce .[] as $f ({q: $quota, s: $standing, out: []};
         ($f.tool + "|" + $f.id + "|" + ($f | file_of)) as $k
-        | if ($f | baselinable) and (.q[$k] // 0) > 0 then .q[$k] -= 1 | .out += [$f + {baselined: true, new: false}]
-          else .out += [$f + {baselined: false}] end)
+        | ((.s[$k] // 0) > 0) as $st | (if $st then .s[$k] -= 1 else . end)
+        | if ($f | baselinable) and (.q[$k] // 0) > 0 then .q[$k] -= 1 | .out += [$f + {baselined: true, new: false, standing: $st}]
+          else .out += [$f + {baselined: false, standing: $st}] end)
     | .out
     | sort_by(if .blocking then 0 else 1 end, {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}[.severity] // 4, .tool, .id, file_of, line_of)' \
     "${norms[@]}" > "$SCAN_OUT/findings.json" || scan_verdict fail "the findings could not be read together (a tool's report)"
@@ -804,15 +832,17 @@ scan_policy() { # dir previous-findings started
   tool_versions > "$SCAN_OUT/tools.json"
   databases "$started" > "$SCAN_OUT/databases.json"
   write_sarif > "$SCAN_OUT/findings.sarif"
-  local blocking
+  local blocking failing
   blocking="$(jq '[.[] | select(.blocking)] | length' "$SCAN_OUT/findings.json")"
+  failing="$(jq '[.[] | select(.blocking and (.standing | not))] | length' "$SCAN_OUT/findings.json")"
   write_summary "$blocking" > "$SCAN_OUT/summary.md"
   cat "$SCAN_OUT/summary.md" >&2
 
   if ((${#problems[@]})); then scan_verdict fail "${problems[0]}$( ((${#problems[@]} > 1)) && echo " (and $((${#problems[@]} - 1)) more: security/summary.md)")"; fi
-  if ((blocking)); then
-    scan_verdict fail "$blocking security finding(s) the policy fails: $(jq -r '[.[] | select(.blocking) | .id][0:3] | join(", ")' "$SCAN_OUT/findings.json") (security/summary.md)"
+  if ((failing)); then
+    scan_verdict fail "$failing security finding(s) the policy fails$([[ -z "$SCAN_BASE_READ" ]] || echo ", not the base's"): $(jq -r '[.[] | select(.blocking and (.standing | not)) | .id][0:3] | join(", ")' "$SCAN_OUT/findings.json") (security/summary.md)"
   fi
+  ((blocking == 0)) || log "$blocking blocking finding(s), each the base's (standing): main's, the nightly's to file"
   scan_verdict pass
 }
 
@@ -978,7 +1008,11 @@ cmd_local() { # dir
 # The repository's latest findings: a generic package of the build project
 # (its package registry, which a job's token may read and write).
 latest_url() { # file
-  echo "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/security-$BUILD_REPO/latest/$1"
+  package_url latest "$1"
+}
+# A version of them: latest, or a commit's (looper#180: a land's base's).
+package_url() { # version file
+  echo "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/security-$BUILD_REPO/$1/$2"
 }
 
 # One SARIF log, a run per tool, of every finding (the native SARIF of
@@ -988,8 +1022,9 @@ write_sarif() {
        runs: (group_by(.tool) | map({tool: {driver: {name: .[0].tool, informationUri: "https://github.com/tacplus-dev/looper#security-checks",
          rules: (map({id: .id, properties: {severity: .severity}}) | unique_by(.id))}},
          results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted or .baselined or .test then "note" else "warning" end),
-           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" elif .test then " (in test code)" else "" end))},
-           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, baselined: .baselined, test: .test, aliases: .aliases},
+           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" elif .test then " (in test code)" else "" end)
+                            + (if .standing then " (standing: the base has it)" else "" end))},
+           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, baselined: .baselined, test: .test, standing: .standing, aliases: .aliases},
            locations: [{physicalLocation: {artifactLocation: {uri: (.where | sub(":[0-9]+$"; ""))},
              region: {startLine: ((.where | capture(":(?<l>[0-9]+)$").l // "1") | tonumber)}}}]})}))}' \
     "$SCAN_OUT/findings.json"
@@ -1000,9 +1035,15 @@ write_summary() { # blocking
   echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
   echo
   jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
+  if [[ -n "$SCAN_BASE_READ" ]]; then
+    echo; printf '%s finding(s) standing (the base %s'"'"'s), %s of them failing the policy: main'"'"'s, reported and not failed here (the nightly'"'"'s to file); this build fails only on what its change adds (looper#180).\n' \
+      "$(jq '[.[] | select(.standing)] | length' "$f")" "${SCAN_BASE:0:12}" "$(jq '[.[] | select(.blocking and .standing)] | length' "$f")"
+  elif [[ -n "$SCAN_BASE" ]]; then
+    echo; echo "No findings of the base ${SCAN_BASE:0:12} (its build published none): every finding failing the policy fails this build."
+  fi
   [[ -z "${SCAN_REPORTS:-}" ]] || { echo; echo "Reports: $SCAN_REPORTS"; }
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
-  if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"; fi
+  if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)\(if .standing then " (standing)" else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
   if jq -e 'any(.test)' "$f" >/dev/null; then
@@ -1050,13 +1091,16 @@ cmd_report() {
   [[ -f "$SCAN_OUT/summary.md" ]] && cat "$SCAN_OUT/summary.md"
   [[ -f "$SCAN_OUT/findings.json" ]] || { log "the security job left no findings: nothing to publish"; return 0; }
   : "${CI_JOB_TOKEN:?no job token: the report publishes with it}" "${CI_API_V4_URL:?}" "${CI_PROJECT_ID:?}"
-  local f
-  for f in findings.json summary.md; do
-    [[ -f "$SCAN_OUT/$f" ]] || continue
-    curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$SCAN_OUT/$f" "$(latest_url "$f")" ||
-      { log "the package registry refused $f"; exit 1; }
+  local f v
+  # As the latest, and as its commit's: what a land built on it compares with (looper#180).
+  for v in latest "$BUILD_SHA"; do
+    for f in findings.json summary.md; do
+      [[ -f "$SCAN_OUT/$f" ]] || continue
+      curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$SCAN_OUT/$f" "$(package_url "$v" "$f")" ||
+        { log "the package registry refused $f ($v)"; exit 1; }
+    done
   done
-  log "published as security-$BUILD_REPO/latest: the next run's baseline"
+  log "published as security-$BUILD_REPO/latest (the next run's baseline) and security-$BUILD_REPO/$BUILD_SHA (a land on it compares with it)"
 }
 
 # --- baseline -----------------------------------------------------------------------

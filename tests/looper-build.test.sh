@@ -449,6 +449,11 @@ case "\$method \$url" in
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/previous.json" ]] || exit 22
     cp "$TMP/previous.json" "\$out" ;;
+  # A commit's findings (looper#180): a land's base's, \$TMP/base-findings.json.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/"*"/findings.json")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/base-findings.json" ]] || exit 22
+    cp "$TMP/base-findings.json" "\$out" ;;
   # The last formal verification's record (looper#74): \$TMP/verify-record.
   "GET https://gitlab.example/api/v4/projects/42/packages/generic/verify-demo/latest/record")
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
@@ -1440,6 +1445,7 @@ grep -qxF '  image: "ghcr.io/tacplus-dev/looper:main"' "$TMP/sec.yml" || fail "n
 grep -qxF '  needs: [{job: gates, artifacts: true}]' "$TMP/sec.yml" || fail "not after the gates, with their generated code"
 grep -qxF '  when: always' "$TMP/sec.yml" || fail "not run when the gates fail"
 grep -qxF '    BUILD_SCAN_KIND: "build"' "$TMP/sec.yml" || fail "not a build's checks"
+grep -qxF '    BUILD_BASE: ""' "$TMP/sec.yml" || fail "the security job is not given the base: $(cat "$TMP/sec.yml")"
 grep -qxF '    - looper-scan run' "$TMP/sec.yml" || fail "does not run looper-scan"
 grep -qxF '    paths: [gates.log, build-verdict, built/, generated/]' "$y" || fail "the gates keep no generated code"
 sed -n '/^security-report:$/,$p' "$y" | grep -qxF '    - looper-scan report' || fail "no report job"
@@ -1906,6 +1912,41 @@ sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | gr
   fail "$(cat "$OUT/security/summary.md")"
 pass
 
+# A land (looper#180): a build with a base (BUILD_BASE, main's commit) fails
+# only on the blocking findings its change adds; the base's are standing.
+BASE_SHA="${SHA[scanclean]}"
+standing() { jq -r '[.[] | select(.blocking) | "\(.tool) \(.id) \(.standing)"] | unique | join("\n")' "$OUT/security/findings.json"; }
+NAME="security: a land adding no blocking finding passes on a red base, the base's marked standing"
+cp "$TMP/vuln-findings.json" "$TMP/base-findings.json"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err" || fail "the land failed on the base's findings: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+grep -qxF "package-get JOB-TOKEN: glcbt-stub security-demo/$BASE_SHA/findings.json" "$TMP/api.log" ||
+  fail "the base's findings were not asked for with the job token: $(cat "$TMP/api.log")"
+jq -e '[.[] | select(.blocking)] | length >= 2 and all(.standing)' "$OUT/security/findings.json" >/dev/null || fail "standing: $(standing)"
+grep -q "standing (the base ${BASE_SHA:0:12}'s)" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+sed -n '/^### Failing the policy/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH osv-scanner GO-2021-0113: .* (standing)$' ||
+  fail "$(cat "$OUT/security/summary.md")"
+jq -e '[.runs[].results[] | select(.properties.standing)] | length >= 2' "$OUT/security/findings.sarif" >/dev/null || fail "SARIF"
+pass
+
+NAME="security: a land adding a blocking finding fails on it alone"
+jq '[.[] | select(.tool != "govulncheck")]' "$TMP/vuln-findings.json" > "$TMP/base-findings.json"
+if scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: "
+grep -q "security finding(s) the policy fails, not the base's: GO-2021-0113" "$OUT/security/verdict" || fail "$(cat "$OUT/security/verdict")"
+[[ "$(jq -r '[.[] | select(.blocking and (.standing | not)) | .tool] | unique | join(" ")' "$OUT/security/findings.json")" == govulncheck ]] ||
+  fail "$(standing)"
+jq -e '.[] | select(.tool == "osv-scanner" and .id == "GO-2021-0113") | .standing' "$OUT/security/findings.json" >/dev/null || fail "$(standing)"
+pass
+
+NAME="security: standing is by tool, rule and file up to the base's count, wherever the lines move"
+scan BUILD_SHA="${SHA[scanbase]}" -- run 2>"$TMP/err" || fail "$(cat "$OUT/security/verdict")"
+cp "$OUT/security/findings.json" "$TMP/base-findings.json"
+scan BUILD_SHA="${SHA[scanbased]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err" || fail "$(cat "$OUT/security/verdict")"
+[[ "$(jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | [.where, .standing]]' "$OUT/security/findings.json")" == \
+   '[["main.go:8",true],["main.go:9",true],["main.go:10",false]]' ]] || fail "$(jq -c . "$OUT/security/findings.json")"
+pass
+
 NAME="security: a recorded baseline: its findings, by tool, rule and file up to its count, are baselined, not new, wherever their lines move"
 scan BUILD_SHA="${SHA[scanbase]}" -- run 2>"$TMP/err" || fail "MEDIUM findings failed the build: $(cat "$OUT/security/verdict")"
 g306() { jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | {where, new, baselined}]' "$OUT/security/findings.json"; }
@@ -1959,6 +2000,9 @@ scan BUILD_SHA="${SHA[scanvuln]}" BUILD_OUT="$v" -- report 2>"$TMP/err" > "$TMP/
 grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/latest/findings.json $(sha256sum < "$v/security/findings.json" | cut -c1-12)" "$TMP/api.log" ||
   fail "$(cat "$TMP/api.log")"
 grep -q "^package-put JOB-TOKEN: glcbt-stub security-demo/latest/summary.md " "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+# And as its commit's (looper#180): what a land built on that commit compares with.
+grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/${SHA[scanvuln]}/findings.json $(sha256sum < "$v/security/findings.json" | cut -c1-12)" "$TMP/api.log" ||
+  fail "not published as its commit's: $(cat "$TMP/api.log")"
 grep -q '^## Security checks: demo ' "$TMP/report.out" || fail "the summary is not in the job's log"
 pass
 
@@ -2005,6 +2049,22 @@ NAME="security: no release jar, no jar scan"
 : > "$TMP/trivy.log"
 scan "${JAR_PATH[@]}" BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err" || fail "failed: $(cat "$OUT/security/verdict")"
 [[ ! -s "$TMP/trivy.log" ]] || fail "trivy ran: $(cat "$TMP/trivy.log")"
+pass
+
+NAME="security: a nightly and a release fail on a standing finding, and a land with no base's findings on every one"
+cp "$TMP/vuln-findings.json" "$TMP/base-findings.json"
+for kind in nightly release; do
+  e=(BUILD_SCAN_KIND="$kind"); [[ "$kind" == release ]] && e+=(BUILD_TAG=v1.2.3)
+  if scan "${JAR_PATH[@]}" BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$BASE_SHA" "${e[@]}" -- run 2>"$TMP/err"; then fail "$kind passed on a standing finding"; fi
+  scan_verdict_is "fail: "
+  grep -q "security finding(s) the policy fails: " "$OUT/security/verdict" || fail "$kind: $(cat "$OUT/security/verdict")"
+  jq -e 'all(.[]; .standing == false)' "$OUT/security/findings.json" >/dev/null || fail "$kind: $(standing)"
+  ! grep -q "security-demo/$BASE_SHA/" "$TMP/api.log" || fail "$kind asked for the base's findings: $(cat "$TMP/api.log")"
+done
+rm "$TMP/base-findings.json"
+if scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err"; then fail "passed without the base's findings"; fi
+grep -q "security finding(s) the policy fails: " "$OUT/security/verdict" || fail "$(cat "$OUT/security/verdict")"
+grep -q "No findings of the base ${BASE_SHA:0:12}" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
 pass
 
 # looper-scan image (looper#167): the Go binaries of an image's /usr/local/bin,
@@ -2068,7 +2128,7 @@ govulncheck GO-2026-6859 stdlib@go1.26.10 (/usr/local/bin/docker, the base image
 # A stripped binary's findings are every vulnerable function of a package it links: counted, and said.
 jq -e '[.[] | select(.id == "GO-2026-6905")] == [{tool: "govulncheck", kind: "sca", id: "GO-2026-6905", aliases: [], severity: "HIGH", fix: false,
   where: "github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb (/usr/local/bin/sub/plain, read stripped, called: github.com/blakesmith/ar.Next)",
-  title: "the planted GO-2026-6905", excepted: null, test: false, blocking: false, new: true, baselined: false}]' "$OUT/security/findings.json" >/dev/null ||
+  title: "the planted GO-2026-6905", excepted: null, test: false, blocking: false, new: true, baselined: false, standing: false}]' "$OUT/security/findings.json" >/dev/null ||
   fail "$(cat "$OUT/security/findings.json")"
 [[ "$(sort "$TMP/image.log")" == "$(printf '%s\n' "$IMG/usr/local/bin/docker" "$IMG/usr/local/bin/gh" "$IMG/usr/local/bin/ours" "$IMG/usr/local/bin/sub/plain")" ]] ||
   fail "govulncheck read: $(cat "$TMP/image.log")"
