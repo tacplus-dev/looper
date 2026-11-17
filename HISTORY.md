@@ -137,3 +137,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-17 looper issue The kicker starts a pipeline for an issue every 3 min while its report already runs: 14 no-op report jobs for looper#174 in 40 min (#175)
 - 2026-11-17 looper issue The looper image is not published: the image workflow fails on main (#176)
 - 2026-11-17 looper issue GO-2026-6859's exception (security-exceptions.yaml, looper#166) has a fix: docker CLI 29.10.0 (go1.27.4) is docker:29-cli; build:2.6 still ships 29.9.3 (go1.26.10) (#177)
+- 2026-11-17 looper issue looper-scan: a SAST finding in test code is listed, never blocking (#179)
