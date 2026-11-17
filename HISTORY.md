@@ -134,3 +134,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-16 looper issue A report that waits on a pipeline or workflow goes idle and is marked looper:stuck (twice on 2026-11-16) (#171)
 - 2026-11-17 looper issue Build jobs on the in-cluster build runner fail pulling the looper image (DeadlineExceeded) and are not retried: it cost tacplus#340 a 3.5 h green land (#173)
 - 2026-11-17 looper issue ci/: pin the looper image of main at or after f489822 (carries #171, #172's tags, #173) (#174)
+- 2026-11-17 looper issue The kicker starts a pipeline for an issue every 3 min while its report already runs: 14 no-op report jobs for looper#174 in 40 min (#175)
