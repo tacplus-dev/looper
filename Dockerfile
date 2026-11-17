@@ -40,6 +40,16 @@ LABEL org.opencontainers.image.title="looper" \
 ARG BUILD_IMAGE
 RUN mkdir -p /usr/local/share/looper && \
     { echo "# $BUILD_IMAGE"; find /usr/local/bin -type f -exec sha256sum {} + | LC_ALL=C sort -k2; } > /usr/local/share/looper/base-image.sha256
+# The docker CLI, replaced by a fixed release by digest (looper#177): build:2.6
+# ships 29.9.3, built with go1.26.10, whose net/http has GO-2026-6859 (fixed in
+# go1.26.11 and go1.27.4); 29.10.0 is built with go1.27.4. Replaced after the
+# record above, so the scan says it is this image's, not the base's. Drop it when
+# build:2.6 itself carries 29.10.0 or later (or when #73 step 3 removes the CLI).
+COPY --from=docker:29.10.0-cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d /usr/local/bin/docker /usr/local/bin/docker
+RUN v="$(go version /usr/local/bin/docker | sed -n 's|^/usr/local/bin/docker: go||p')"; \
+    test -n "$v" && test "$(printf '%s\n' 1.27.4 "$v" | sort -V | head -n1)" = 1.27.4 || \
+      { echo "docker CLI: go${v:-?}, not go1.27.4 or later (GO-2026-6859)" >&2; exit 1; }; \
+    docker --version | grep -q '^Docker version 29\.10\.0,'
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
 # openssl: the nonce of each prompt (repo-looper, looper#40).
 RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*; }
