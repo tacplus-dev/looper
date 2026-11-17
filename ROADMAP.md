@@ -55,6 +55,7 @@ Done (moved from Next on 2026-11-05):
 - Security: the build scans the Go binaries inside the looper image (`govulncheck -mode=binary`), not only the tree (#167; the gap behind #64, #88, #101, #124, #159, #166). Hub, 2026-11-16 (security first).
 - looper-scan: SAST findings in test code are listed, never blocking (#179). Jody, 2026-11-17 (suggestion accepted).
 - Security floor: a land fails only on blocking findings its change adds; main's standing ones stay the nightly's, releases still fail on them (#180). Jody, 2026-11-17 (suggestion accepted).
+- security-exceptions.yaml: an optional where scopes an exception to a path, so an exception never accepts its rule everywhere (#182; the 2026-11-13 suggestion). Hub, under Jody's 2026-11-17 decisions.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
