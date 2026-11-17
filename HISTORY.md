@@ -139,3 +139,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-17 looper issue GO-2026-6859's exception (security-exceptions.yaml, looper#166) has a fix: docker CLI 29.10.0 (go1.27.4) is docker:29-cli; build:2.6 still ships 29.9.3 (go1.26.10) (#177)
 - 2026-11-17 looper issue looper-scan: a SAST finding in test code is listed, never blocking (#179)
 - 2026-11-17 looper issue The kicker's pass fails the whole kick job on one GitHub 5xx from the search API (2026-11-16 09:03Z, 2026-11-17 14:03Z) (#178)
+- 2026-11-17 looper issue An approved issue whose run finds nothing to do is relaunched every few minutes (kernel#66 ~20 runs, llmproxy#63 >10 on 2026-11-17) (#181)
