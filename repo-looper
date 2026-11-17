@@ -1744,6 +1744,7 @@ verdict_comment() { # issue id rc record-dir sha
     reused="$(sed -n 's/^the build job [^ ]* of .*: reused, \(.*\)$/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     # Built again after its infrastructure failed it, its gates green (looper#173).
     again="$(sed -n 's/^the build job \([^ ]*\) failed, its gates green: .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    [[ -z "$again" ]] || reused=""
     [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}${again:+, built again after $again failed in its infrastructure alone, its gates green}"
     # Landed in a batch (looper#86): the candidate's one build is every member's.
     local batch; batch="$(cat "$rec/batch" 2>/dev/null || true)"
