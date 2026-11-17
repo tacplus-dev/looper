@@ -860,6 +860,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   member size and `Reader.Read` panics; no release fixes it and Syft requires it. An upstream fix (blakesmith/ar, or
   anchore/syft dropping it) is what retires the exception before it expires; a `replace` with a patched fork (as
   gitleaks' xz, #65) is the fallback if it does not come by 2026-12-13.
+- **Scope looper's own GO-2026-6905 exception** (2026-11-17, #182): its entry has no `where`, so it accepts the
+  advisory in every file and the report warns. The build's security job reads `security-exceptions.yaml` with the
+  pinned looper's looper-scan, which refuses `where` until a release carries #182 (its build failed on it:
+  `unknown key "where"`). Once looper pins that release: `where: "github.com/blakesmith/ar@* (/usr/local/bin/syft, **"`
+  (the image's syft binary, read stripped or not). The same holds for every repository's entries (cluster#28,
+  cluster#30, operator#40, oauth#31) and cluster's `ci/security.sh` mirror of `read_exceptions`, which accepts
+  `where` only once it is changed in cluster.
 - **The recap counts dropped STATE.md commits** (2026-11-11, #131): the manager logs `#N: dropped its STATE.md
   commit` when STATE.md was a land's only conflict; `looper-recap` reads `resolved its conflicts by regenerating`
   and `not merged (exit 3)` only, so a drop counts as a plain merge. Counting them beside the sent-backs would show

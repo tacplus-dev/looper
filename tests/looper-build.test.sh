@@ -153,10 +153,11 @@ func main() {
 	t, _ := language.Parse("en-US")
 	fmt.Println(t)
 }')
-exceptions() { # expires [decided_by]
+exceptions() { # expires [decided_by [extra line]]
   printf '# Accepted findings.\nexceptions:\n'
-  printf '  - id: %s\n    reason: "the planted pin of the tests"\n    decided_by: %s\n    expires: %s\n' \
-    GO-2021-0113 "${2:-jodydadescott}" "$1" CVE-2021-38561 "${2:-jodydadescott}" "$1"
+  local extra="${3:+    $3$'\n'}"
+  printf '  - id: %s\n    reason: "the planted pin of the tests"\n    decided_by: %s\n    expires: %s\n%s' \
+    GO-2021-0113 "${2:-jodydadescott}" "$1" "$extra" CVE-2021-38561 "${2:-jodydadescott}" "$1" "$extra"
 }
 scan_commit scanclean
 scan_commit scanvuln "${VULN[@]}"
@@ -164,6 +165,13 @@ scan_commit scansecret deploy/env.txt "aws_access_key_id = $AKIA"
 scan_commit scanexcepted "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31)"
 scan_commit scanexpired "${VULN[@]}" security-exceptions.yaml "$(exceptions 2020-01-31)"
 scan_commit scanbadexc "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 '""')"
+# Exceptions scoped by a where (looper#182): the pin's file, a glob of it,
+# another file; an empty where, and a key the format does not have.
+scan_commit scanscoped "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'where: go.mod')"
+scan_commit scanglob "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'where: "**/*.mod"')"
+scan_commit scanelsewhere "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'where: tools/go.mod')"
+scan_commit scanemptywhere "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'where: ""')"
+scan_commit scanbadkey "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'path: go.mod')"
 # A Java service whose release jar shades a vulnerable dependency (kernel#59:
 # Hazelcast's shaded Jackson, jackson-databind 2.9.8 here), and the exception
 # a repository may take for it.
@@ -1896,6 +1904,46 @@ scan_verdict_is "fail: exception GO-2021-0113 expired on 2020-01-31 (jodydadesco
 blocking | grep -q '^osv-scanner GO-2021-0113' || fail "an expired exception still accepts: $(blocking)"
 if scan BUILD_SHA="${SHA[scanbadexc]}" -- run 2>"$TMP/err"; then fail "an exception without decided_by passed"; fi
 scan_verdict_is "fail: exception GO-2021-0113: it needs a reason and who decided (decided_by)"
+pass
+
+NAME="security: an exception with a where accepts its id in that file (a path or a glob) and not in another; without one it warns"
+scoped=(scanscoped scanglob)
+if ((REAL_SCAN)); then
+  # The real databases name more than the planted findings: an entry for each
+  # the planted pin's run failed on, scoped to its file, then by a glob of it.
+  scoped=()
+  for g in '' '**/'; do
+    git -C "$work" checkout -q scanvuln && git -C "$work" checkout -q -b "scanrealscoped${#scoped[@]}"
+    { printf 'exceptions:\n'
+      jq -r --arg g "$g" 'def file_of: .where | sub(":[0-9]+(-[0-9]+)?$"; "");
+        [.[] | select(.blocking) | {id, file: file_of}] | unique[]
+        | "  - id: \(.id)\n    reason: \"the planted pin of the tests\"\n    decided_by: jodydadescott\n    expires: 2099-12-31\n    where: \"\(if $g == "" then .file else $g + (.file | split("/") | last) end)\""' \
+        "$TMP/vuln-findings.json"; } > "$work/security-exceptions.yaml"
+    git -C "$work" add -A; git -C "$work" commit -qm "scanrealscoped$g"
+    git -C "$work" push -q "$SRV/repos/github.com/tacplus-dev/demo.git" "HEAD:refs/heads/scanrealscoped${#scoped[@]}"
+    c="scanrealscoped${#scoped[@]}"; SHA[$c]="$(git -C "$work" rev-parse HEAD)"; scoped+=("$c")
+  done
+fi
+for c in "${scoped[@]}"; do
+  scan BUILD_SHA="${SHA[$c]}" -- run 2>"$TMP/err" || fail "$c failed: $(cat "$OUT/security/verdict")"
+  scan_verdict_is pass
+  jq -e '[.[] | select(.excepted and .id == "GO-2021-0113") | .tool] | index("osv-scanner")' "$OUT/security/findings.json" >/dev/null ||
+    fail "$c: $(cat "$OUT/security/findings.json")"
+  grep -q '^### Warnings' "$OUT/security/summary.md" && fail "$c: a scoped exception warned: $(cat "$OUT/security/summary.md")"
+done
+# Unscoped, the same entries accept everywhere, and the report says so.
+scan BUILD_SHA="${SHA[scanexcepted]}" -- run 2>"$TMP/err" || ((REAL_SCAN)) || fail "the excepted commit failed: $(cat "$OUT/security/verdict")"
+sed -n '/^### Warnings (none fails the run)/,/^$/p' "$OUT/security/summary.md" |
+  grep -qxF -- "- exception GO-2021-0113 has no where: it accepts GO-2021-0113 in every file (scope it: where)" ||
+  fail "no warning: $(cat "$OUT/security/summary.md")"
+if scan BUILD_SHA="${SHA[scanelsewhere]}" -- run 2>"$TMP/err"; then fail "an exception scoped to another file passed"; fi
+scan_verdict_is "fail: "
+blocking | grep -q '^osv-scanner GO-2021-0113 ' || fail "an exception scoped to tools/go.mod accepts go.mod's: $(blocking)"
+jq -e 'all(.excepted == null)' "$OUT/security/findings.json" >/dev/null || fail "accepted elsewhere: $(cat "$OUT/security/findings.json")"
+if scan BUILD_SHA="${SHA[scanemptywhere]}" -- run 2>"$TMP/err"; then fail "an empty where passed"; fi
+scan_verdict_is "fail: exception GO-2021-0113: its where is empty (a path or a path glob, or no where)"
+if scan BUILD_SHA="${SHA[scanbadkey]}" -- run 2>"$TMP/err"; then fail "an unknown key passed"; fi
+scan_verdict_is "fail: security-exceptions.yaml: line 7: unknown key \"path\""
 pass
 
 NAME="security: findings are compared with the previous run's: the new ones are listed"

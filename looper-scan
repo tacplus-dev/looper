@@ -80,6 +80,14 @@ def baselinable: .excepted == null and (.blocking | not) and .kind != "secret" a
 def file_of: .where | sub(":[0-9]+(-[0-9]+)?$"; "");
 def line_of: (.where | capture(":(?<l>[0-9]+)(-[0-9]+)?$").l // "0") | tonumber;
 '
+# An exception's where (looper#182), a path glob, as a regular expression on a
+# finding's file_of: * and ? match within a path segment, ** across them ("**/"
+# also none); every other character is itself.
+JQ_GLOB='
+def glob_re: "^" + (split("**/") | map(split("**") | map(split("*") | map(split("?")
+    | map(gsub("(?<c>[.+^$()|{}\\[\\]\\\\])"; "\\\(.c)")) | join("[^/]")) | join("[^/]*")) | join(".*")) | join("(.*/)?")) + "$";
+def in_where($glob): file_of | test($glob | glob_re);
+'
 
 scan_usage() {
   cat <<'EOF'
@@ -108,6 +116,8 @@ scan_verdict() { # pass | fail <why>
 # nested in the tree (a fixture, an example) it is listed as not analyzed.
 problems=()
 notes=()
+# What the run reports and does not fail on: an exception not scoped by a where.
+warnings=()
 tool_error() { # tool tree dir what
   if [[ "$3" == "$2" ]]; then problems+=("$1: $4"); else notes+=("$1: ${3#"$2"/}: not analyzed ($4)"); fi
   log "$1: $4 ($3)"
@@ -660,8 +670,10 @@ databases() { # started
 
 # security-exceptions.yaml, read as a strict subset of YAML (no YAML library
 # in the image's shell): a list "exceptions:" of entries with exactly id,
-# reason, decided_by and expires (YYYY-MM-DD). Prints a JSON array; a file it
-# cannot read that way is a problem, never an empty list.
+# reason, decided_by and expires (YYYY-MM-DD), and an optional where (a path
+# or a path glob: the entry accepts its id's findings there only, looper#182).
+# Prints a JSON array; a file it cannot read that way is a problem, never an
+# empty list.
 read_exceptions() { # file
   [[ -f "$1" ]] || { echo '[]'; return 0; }
   awk '
@@ -670,7 +682,7 @@ read_exceptions() { # file
       if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
       gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return "\"" v "\"" }
     function field(s, k, v) { k = s; sub(/:.*/, "", k); v = s; sub(/^[^:]*:/, "", v)
-      if (k !~ /^(id|reason|decided_by|expires)$/) { print "line " NR ": unknown key \"" k "\"" > "/dev/stderr"; bad = 1 }
+      if (k !~ /^(id|reason|decided_by|expires|where)$/) { print "line " NR ": unknown key \"" k "\"" > "/dev/stderr"; bad = 1 }
       cur = cur (n++ ? "," : "{") "\"" k "\":" str(v) }
     BEGIN { printf "[" }
     /^[ \t]*(#|$)/ { next }
@@ -794,8 +806,11 @@ scan_policy() { # dir previous-findings started [base-findings]
       elif ((.reason // "") == "" or (.decided_by // "") == "") then "exception \(.id): it needs a reason and who decided (decided_by)"
       elif ((.expires // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not) then "exception \(.id): expires \(.expires // "" | @json) is not a date YYYY-MM-DD"
       elif .expires < $today then "exception \(.id) expired on \(.expires) (\(.decided_by): \(.reason))"
+      elif has("where") and .where == "" then "exception \(.id): its where is empty (a path or a path glob, or no where)"
       else empty end' <<<"$exceptions")"
   [[ -z "$errs" ]] || while IFS= read -r t; do problems+=("$t"); done <<<"$errs"
+  errs="$(jq -r '.[] | select(has("where") | not) | "exception \(.id) has no where: it accepts \(.id) in every file (scope it: where)"' <<<"$exceptions")"
+  [[ -z "$errs" ]] || while IFS= read -r t; do warnings+=("$t"); done <<<"$errs"
   local baseline='[]'
   if [[ -f "$src/$BASELINE_FILE" ]] && ! baseline="$(jq -ce 'if type == "array" and all(.[]; type == "object" and keys == ["count", "file", "id", "tool"]
            and ([.tool, .id, .file] | all(type == "string")) and (.count | type == "number" and . >= 1 and . == floor)) then . else error end' \
@@ -809,13 +824,14 @@ scan_policy() { # dir previous-findings started [base-findings]
   # The baseline's count of a tool, rule and file goes to its findings in line
   # order, and so does the base's.
   jq -s --argjson exc "$exceptions" --arg today "$today" --argjson base "$baseline" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') \
-        --slurpfile landbase <(cat "$base" 2>/dev/null || echo '[]') "$JQ_BASELINE"'
+        --slurpfile landbase <(cat "$base" 2>/dev/null || echo '[]') "$JQ_BASELINE$JQ_GLOB"'
     ($prev[0] // [] | map(.tool + "|" + .id + "|" + .where) | map({(.): true}) | add // {}) as $old
     | ($base | map({(.tool + "|" + .id + "|" + .file): .count}) | add // {}) as $quota
     | ($landbase[0] // [] | map(.tool + "|" + .id + "|" + file_of) | group_by(.) | map({(.[0]): length}) | add // {}) as $standing
     | [.[][]] | unique_by([.tool, .id, .where]) | map(
         . as $f
-        | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x)))][0]) as $e
+        | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x))
+                          and ((has("where") | not) or (.where != "" and (.where as $w | $f | in_where($w)))))][0]) as $e
         | . + {excepted: ($e.id // null), test: (.test == true),
                blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
                new: ($old[.tool + "|" + .id + "|" + .where] | not)})
@@ -1043,6 +1059,7 @@ write_summary() { # blocking
   fi
   [[ -z "${SCAN_REPORTS:-}" ]] || { echo; echo "Reports: $SCAN_REPORTS"; }
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
+  if ((${#warnings[@]})); then echo; echo "### Warnings (none fails the run)"; for p in "${warnings[@]}"; do echo "- $p"; done; fi
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)\(if .standing then " (standing)" else "" end)"' "$f"; fi
   if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi

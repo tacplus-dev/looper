@@ -1331,9 +1331,15 @@ exceptions:
     reason: "only parses our own tags"   # a secret's: <path>:<rule>:<line>)
     decided_by: jodydadescott
     expires: 2026-12-31              # YYYY-MM-DD; from the day after, the build fails until it is renewed or fixed
+    where: go.mod                    # optional: a path or a path glob, the finding's where without its line number
 ```
 
-Every entry needs all four keys and no other. An accepted finding is still reported (`excepted`), never failed.
+Every entry needs the first four keys, may have `where`, and no other key. With `where` (looper#182) an entry accepts
+its id's findings there only, never its rule everywhere in the repository: `where` is matched against the whole of
+the finding's `where` less its `:LINE` (or `:FROM-TO`), `*` and `?` within a path segment, `**` across them (`**/`
+also none), every other character as itself (`deploy/rbac.yaml`, `charts/*/templates/role.yaml`, `**/go.mod`). An
+entry without `where` still accepts its id in every file, and the report warns about it (`### Warnings`); an empty
+`where` fails the run. An accepted finding is still reported (`excepted`), never failed.
 
 **A recorded baseline** (looper#146; Jody, tacplus-dev/tacplus#585) is the commit's `security-baseline.json`, at its
 root: the findings a repository accepts as its starting point, so only findings new against it are reported as new
@@ -1377,7 +1383,7 @@ are filed the same way; a baselined finding is never new. An issue's run is hand
 ```sh
 looper-scan run | report | local DIR | sbom SOURCE DIR | image ROOT DIR   # the jobs; image: the Go binaries of an image (the Dockerfile's last step); local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them), its reports in a temporary directory its summary names (or BUILD_OUT/security, written once the scan is done): never in the tree it scans (looper#161)
 looper-scan baseline FINDINGS > security-baseline.json  # a run's findings as the repository's recorded baseline
-tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), a land (looper#180: one adding no blocking finding passes on a red base, its findings standing; one adding one fails on it alone; standing by tool, rule and file up to the base's count; a nightly and a release fail on a standing one; no base's findings, every one fails), the report (latest and its commit's), a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
+tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, one scoped by a where accepts there only (a path, a glob; not another file; unscoped warns; an unknown key fails), generated code, the previous run, a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), a land (looper#180: one adding no blocking finding passes on a red base, its findings standing; one adding one fails on it alone; standing by tool, rule and file up to the base's count; a nightly and a release fail on a standing one; no base's findings, every one fails), the report (latest and its commit's), a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
 tests/repo-looper.test.sh    # scan-security-report: the scan reads the report; scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes; issue-security-report: an issue's run is handed it
 tests/go-fetch.test.sh       # the image build's Go fetches: retried, bounded, over HTTP/1.1; every Go step of the Dockerfile fetches through it, then installs from the module cache (looper#169)
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)
