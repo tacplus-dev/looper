@@ -822,7 +822,9 @@ done
   || fail "NONE without write: $(block_of "$p" "Reader says U.")"
 [[ "$(block_of "$p" "Flaky says T.")" == "<<issue-text nonce=$NONCE_T author=flaky association=CONTRIBUTOR role=data>>" ]] \
   || fail "a failed lookup: $(block_of "$p" "Flaky says T.")"
-[[ "$(grep -c . "$FIX/permission-lookups")" == "$(sort -u "$FIX/permission-lookups" | grep -c .)" ]] \
+# The 5xx is tried again, 3 tries in all (looper#178): one lookup.
+[[ "$(grep -cx flaky "$FIX/permission-lookups")" == 3 ]] || fail "flaky's 5xx tried: $(sort "$FIX/permission-lookups" | uniq -c)"
+[[ "$(uniq "$FIX/permission-lookups" | grep -c .)" == "$(sort -u "$FIX/permission-lookups" | grep -c .)" ]] \
   || fail "a permission looked up twice: $(sort "$FIX/permission-lookups" | uniq -c)"
 lacks "$(cat "$FIX/permission-lookups")" "jody"
 lacks "$p" "the looper says"
