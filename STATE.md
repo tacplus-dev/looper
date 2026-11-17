@@ -146,7 +146,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   `Dockerfile`'s last step): `govulncheck -mode=binary` on every one under `/usr/local/bin`, under the same policy and
   `security-exceptions.yaml`, fails the image build (`image.yml`, a release's publish) before a push; a base-image
   binary (by the sha256 recorded after `FROM`) is attributed to tacplus-dev/tacplus, a stripped one said (by hand on
-  main's image of 2026-11-16: the docker CLI's GO-2026-6859 alone fails it, which #166's exception accepts);
+  main's image of 2026-11-16: the docker CLI's GO-2026-6859 alone failed it; the image now takes the CLI from
+  `docker:29.10.0-cli` by digest, go1.27.4, and the build checks its Go, #177);
   tested with stubs shaped as the tools' output and with the real tools,
   and run by hand (`looper-scan local`: its reports in a directory its summary names, never in the tree it scans, #161) on
   tacplus and kernel; this repository's own tree passes its gitleaks, a gate
@@ -307,10 +308,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   no release line yet; the image's Syft carries GO-2026-6905 (github.com/blakesmith/ar, no fixed version: a crafted
   `.deb` panics it and fails the security run closed), accepted in `security-exceptions.yaml` until 2026-12-13 (#142):
   from 2026-12-14 looper's builds fail on it until it is renewed or fixed, and the nightly scan files it again then or
-  once a fixed version is published; the image's docker CLI (29.9.3, from `build:2.6`'s `docker:29-cli`, go1.26.10)
-  carries net/http's GO-2026-6859, a server-side crash a client does not reach, accepted in
-  `security-exceptions.yaml` until 2026-11-30 (#166, the hub's decision): #73 step 3 removes the CLI and the entry;
-  the image build's `looper-scan image` (#167) honours it, and from 2026-12-01 fails main's image build on it until
-  it is renewed or the CLI removed
+  once a fixed version is published; the image replaces `build:2.6`'s docker CLI (29.9.3, go1.26.10, net/http's
+  GO-2026-6859) with 29.10.0's by digest (#177, the #166 exception gone) until `build:2.6` itself carries 29.10.0 or
+  later, or #73 step 3 removes the CLI
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
