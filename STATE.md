@@ -7,7 +7,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-16 by lo
   `build:2.6` environment (#1, #26, #102); no tacplus floor of its own (the `tacplus` wrapper runs each repository's pin, else its floor's newest patch, #27)
 - **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a
   pass every 3 minutes that reads GitHub for the whole org in four requests, never two kicker jobs at once and only the newest (a kick stops once a newer one is queued, #104), nothing on
-  the Mac (#24); it starts the pipeline for a ready issue with no report job, or a
+  the Mac (#24); it starts the pipeline for a ready issue with no report job, that issue read itself first (the search lags: #175, one request more a start; the plan reads each it plans so too), or a
   queued land with no manager, and nothing during the looper's hold (#157, below); the pipeline's plan (`looper-dispatch plan`) starts **one report job per ready
   issue**, every one of them (no per-repository cap: `caps.yaml` is gone, #107), never a second for an issue whose
   report is created, pending, waiting or running, and the repository's **manager** job, the only one that merges
