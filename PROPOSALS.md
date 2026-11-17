@@ -875,3 +875,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   2026-11-16 scheduled run's amd64 build failed its cache-determinism step, rootless BuildKit's `newuidmap` refused on
   the GitHub runner, so no manifest). Once one is (or a tacplus release carries it), pin it by digest there; then no
   build job needs the socket, and the VM build pool and `build-docker` can go (tacplus-dev/cloud#11).
+- **Drop the docker CLI override once build:2.6 carries 29.10.0** (2026-11-17, #177): the `Dockerfile` copies
+  `/usr/local/bin/docker` from `docker:29.10.0-cli` by digest over the base's 29.9.3 (go1.26.10, GO-2026-6859).
+  tacplus's `images/build.Dockerfile` takes `docker:29-cli` unpinned, so the next build:2.6 rebuild (a tacplus 2.6
+  patch) carries 29.10.0; then the `COPY --from` and its check can go, and the CLI is the base's again. A pinned
+  digest also ages: a later docker CLI advisory is not picked up until it is bumped or dropped.
