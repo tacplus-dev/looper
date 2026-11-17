@@ -16,7 +16,10 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   ([Managers and direct reports](#managers-and-direct-reports)). It is the pipeline's kicker schedule (description containing `kicker`), hourly,
   since gitlab.com runs this group's schedules at most once an hour (Free tier): its job, `looper-kick`,
   runs `looper-dispatch run --for 3420`, a pass every `LOOPER_INTERVAL` (180 seconds) for 57 minutes, and
-  fails at the end if a pass failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
+  fails at the end only if every pass failed: a pass that fails is logged and skipped (looper#178). A
+  GitHub read answered with a 5xx or a 429 is tried again, 3 tries in all, 2 then 4 seconds apart, and
+  says so (`gh search issues: HTTP 502; tried again in 2s`); a write never is (`gh` in `looper-lib.sh`),
+  since GitHub may have made one it failed. A pass reads GitHub for the whole org at once (`ready_by_repo` in
   `looper-lib.sh`: one search, one GraphQL query for the blockers' states), since the per-repository
   reads came to about 270 requests a pass, past the token owner's 5000 an hour. The search's index lags an
   issue's labels and body, so before it starts the pipeline for an issue the pass reads that issue itself, and one

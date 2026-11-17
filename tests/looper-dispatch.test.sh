@@ -25,6 +25,14 @@ cat > "$TMP/bin/gh" <<'EOF'
 set -euo pipefail
 cmd="$1 $2"; shift 2
 echo "$cmd" >> "$FIX/gh"
+# $FIX/http-<cmd, spaces as ->: "<count> [<status>]", GitHub answers that many
+# of the command's next calls with that status (default 502), as gh says it (looper#178).
+e="$FIX/http-${cmd//[ \/]/-}"
+if [[ -f "$e" ]] && read -r c s < "$e" && (( c > 0 )); then
+  echo "$((c - 1)) ${s:-502}" > "$e"
+  [[ "$cmd" != api\ * ]] || echo '{"message":"Server Error"}'   # gh api prints the body too
+  echo "HTTP ${s:-502}: Server Error (https://api.github.com/search/issues?q=label%3Aapproved)" >&2; exit 1
+fi
 if [[ "$cmd" == "api graphql" ]]; then
   [[ ! -e "$FIX/rate-limited" ]] || { echo '{"errors":[{"type":"RATE_LIMIT","message":"API rate limit already exceeded"}]}'; exit 1; }
   q="${2#query=}"; data='{}'; rc=0
@@ -650,8 +658,8 @@ for i in $(seq 20); do
 done
 pass
 
-# A pass that fails (GitLab down) does not end the loop; the job fails at its
-# end, so the schedule shows it.
+# A pass that fails (GitLab down) does not end the loop; when every one fails
+# the job fails at its end, so the schedule shows it.
 scenario loop-failing-pass
 in_progress
 rm "$FIX/jobs.json"
@@ -660,6 +668,70 @@ INTERVAL=1 dispatch_fails run --for 2
 grep -q 'pass failed' <<<"$OUT" || fail "log: $OUT"
 ! started || fail "started a pipeline with GitLab down"
 [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "labels $(labels alpha 4)"
+pass
+
+# GitHub's 5xx and 429 pass (looper#178: the search's HTTP 502 failed the
+# kick, 2026-11-16 and 17): a read is tried again, 3 tries in all, 2 then 4
+# seconds apart (the fake clock), and says so; any other error, and a third
+# 5xx, fail it at once.
+scenario github-502-once
+echo 1000 > "$FIX/clock"; echo 1 > "$FIX/http-search-issues"
+dispatch run
+started || fail "no pipeline started after one 502: $OUT"
+grep -q 'gh search issues: HTTP 502; tried again in 2s (looper#178)' <<<"$OUT" || fail "log: $OUT"
+[[ "$(cat "$FIX/clock")" == 1002 ]] || fail "waited until $(cat "$FIX/clock")"
+pass
+
+scenario github-429-twice
+echo 1000 > "$FIX/clock"; echo "2 429" > "$FIX/http-search-issues"
+dispatch run
+started || fail "no pipeline started after two 429s: $OUT"
+[[ "$(cat "$FIX/clock")" == 1006 ]] || fail "waited until $(cat "$FIX/clock")"
+pass
+
+scenario github-502-thrice
+echo 1000 > "$FIX/clock"; echo 3 > "$FIX/http-search-issues"
+dispatch_fails run
+[[ "$(grep -cx 'search issues' "$FIX/gh")" -eq 3 ]] || fail "$(grep -cx 'search issues' "$FIX/gh") searches: $OUT"
+grep -q 'HTTP 502: Server Error' <<<"$OUT" || fail "log: $OUT"
+! started || fail "started a pipeline with the search failing"
+pass
+
+scenario github-404
+echo 1000 > "$FIX/clock"; echo "1 404" > "$FIX/http-search-issues"
+dispatch_fails run
+[[ "$(grep -cx 'search issues' "$FIX/gh")" -eq 1 ]] || fail "a 404 tried again: $(cat "$FIX/gh")"
+pass
+
+# Only reads: a write that GitHub answers with a 502 may still have been made
+# (a comment posted twice), so it is never tried again; a GraphQL query is a
+# read, a mutation is not.
+lib() { env PATH="$TMP/bin:$PATH" FIX="$FIX" bash -c "set -euo pipefail; source '$ROOT/looper-lib.sh'; $1" 2>&1; } # a looper-lib.sh snippet
+scenario github-502-writes
+echo 1000 > "$FIX/clock"
+echo 1 > "$FIX/http-issue-edit"; echo 1 > "$FIX/http-issue-comment"; echo 1 > "$FIX/http-api-repos-tacplus-dev-alpha-issues-4-comments"
+! OUT="$(lib "gh issue edit 4 --repo tacplus-dev/alpha --remove-label approved")" || fail "the edit succeeded: $OUT"
+! OUT="$(lib "gh issue comment 4 --repo tacplus-dev/alpha --body hi")" || fail "the comment succeeded: $OUT"
+! OUT="$(lib "gh api repos/tacplus-dev/alpha/issues/4/comments -f body=hi")" || fail "the POST succeeded: $OUT"
+[[ "$(wc -l < "$FIX/gh")" -eq 3 ]] || fail "a write tried again: $(cat "$FIX/gh")"
+[[ "$(cat "$FIX/clock")" == 1000 ]] || fail "waited until $(cat "$FIX/clock")"
+echo 1 > "$FIX/http-api-graphql"
+! OUT="$(lib "gh api graphql -f query='mutation { pinIssue(input: {issueId: \"x\"}) { issue { number } } }'")" || fail "the mutation succeeded: $OUT"
+[[ "$(grep -cx 'api graphql' "$FIX/gh")" -eq 1 ]] || fail "a mutation tried again: $(cat "$FIX/gh")"
+echo 1 > "$FIX/http-api-graphql"
+OUT="$(lib "gh api graphql -f query='{ a0: repository(owner: \"tacplus-dev\", name: \"alpha\") { issue(number: 4) { state } } }'")" || fail "the query failed: $OUT"
+[[ "$(grep -cx 'api graphql' "$FIX/gh")" -eq 3 ]] || fail "the query not tried again: $(cat "$FIX/gh")"
+grep -q '"OPEN"' <<<"$OUT" || fail "query: $OUT"
+! grep -q 'Server Error' <<<"$OUT" || fail "the failed try's output kept: $OUT"
+pass
+
+# A pass that fails mid-job is logged and skipped: the job fails only if every
+# pass did (looper#178).
+scenario loop-one-failing-pass
+echo 1000 > "$FIX/clock"; echo 3 > "$FIX/http-search-issues"
+INTERVAL=3 dispatch run --for 6
+[[ "$(grep -c 'pass failed' <<<"$OUT")" -eq 1 ]] || fail "log: $OUT"
+started || fail "no pipeline started: $OUT"
 pass
 
 # Per-repository runner tags (looper#55): a repository's report takes

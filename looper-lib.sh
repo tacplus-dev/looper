@@ -152,11 +152,46 @@ pod_use_log() {
 LOOPER_NET_TIMEOUT="${LOOPER_NET_TIMEOUT:-300}"
 export GIT_HTTP_LOW_SPEED_LIMIT="${GIT_HTTP_LOW_SPEED_LIMIT:-1}" GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-$LOOPER_NET_TIMEOUT}" \
   GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
+# A read GitHub answers with a 5xx or a 429 is tried again, 3 tries in all, 2
+# then 4 seconds apart (looper#178: one search's HTTP 502 failed the kick); a
+# write never is, since one GitHub failed may still have been made.
 gh() {
+  local rc try=1 out err
+  gh_read "$@" || { gh_once "$@"; return; }
+  out="$(mktemp)"; err="$(mktemp)"
+  while :; do
+    rc=0; gh_once "$@" > "$out" 2> "$err" || rc=$?
+    (( rc != 0 && try < 3 )) && grep -qE 'HTTP (5[0-9][0-9]|429)' "$err" || break
+    echo "gh $1${2:+ $2}: $(grep -oE 'HTTP (5[0-9][0-9]|429)' "$err" | head -1); tried again in $((2 * try))s (looper#178)" >&2
+    sleep $((2 * try)); try=$((try + 1))
+  done
+  cat "$out"; cat "$err" >&2; rm -f "$out" "$err"
+  return "$rc"
+}
+gh_once() {
   local rc=0
   timeout -k 10 "$LOOPER_NET_TIMEOUT" gh "$@" || rc=$?
   (( rc != 124 && rc != 137 )) || echo "gh $1${2:+ $2}: no answer within ${LOOPER_NET_TIMEOUT}s; stopped (looper#112)" >&2
   return "$rc"
+}
+# A gh call that changes nothing: a search, a view, a list, an attestation's
+# verify, and an api GET or GraphQL query (no method but GET, no field but the
+# query, and that no mutation).
+gh_read() {
+  case "$1 ${2:-}" in
+    search\ *|issue\ view|issue\ list|pr\ view|pr\ list|repo\ view|repo\ list|run\ view|run\ list|release\ view|release\ list|attestation\ verify) return 0 ;;
+    api\ *) ;;
+    *) return 1 ;;
+  esac
+  local graphql="" a; shift
+  for a in "$@"; do
+    case "$a" in
+      graphql) graphql=1 ;;
+      -X|--method|-XPOST|-XPUT|-XPATCH|-XDELETE|--method=*|--input|--input=*|-F|--field|--field=*) return 1 ;;
+      query=*) [[ -n "$graphql" && ! "$a" =~ ^query=[[:space:]]*mutation ]] || return 1 ;;
+      -f|--raw-field|-f*|--raw-field=*) [[ -n "$graphql" ]] || return 1 ;;
+    esac
+  done
 }
 curl() { command curl --connect-timeout 30 --max-time "$LOOPER_NET_TIMEOUT" "$@"; }
 
