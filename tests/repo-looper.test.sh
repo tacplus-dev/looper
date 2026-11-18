@@ -2803,6 +2803,26 @@ has "$(labels alpha 5)" "looper:landing"
 origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
 pass
 
+# A verdict job's green land that pins the build image (looper#193) is its
+# last: it stops before the next land, so that main gets the pin at once and
+# the next batch runs as build jobs, in the manager's batches.
+scenario verdict-pin-stops
+issue alpha 5 OPEN approved,bug "Queued after the pin."
+queue 4 2026-11-03T10:00:00Z build.lock "ghcr.io/tacplus-dev/build@sha256:$(printf 'a%.0s' {1..64})"
+queue 5 2026-11-03T11:00:00Z five.txt 5 "echo ran >> '$FIX/gate-runs'"
+verdict
+[[ "$(origin show looper/staging:build.lock)" == ghcr.io/* ]] || fail "staging: $(origin log --oneline looper/staging)"
+! origin show looper/staging:five.txt >/dev/null 2>&1 || fail "#5 judged after the pin"
+[[ ! -e "$FIX/gate-runs" ]] || fail "#5's gates ran after the pin"
+[[ "$(cut -d' ' -f1,4 "$FIX/verdict/lands")" == "4 0" ]] || fail "lands: $(cat "$FIX/verdict/lands")"
+has "$OUT" "#4: changes the build image's pin (build.lock): the verdict job stops"
+merge
+[[ -n "$(landed build.lock)" && -z "$(landed five.txt)" ]] || fail "main: $(origin log --oneline main)"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "The manager merged"
+! grep -q '^alpha#5 ' "$FIX/comments" || fail "#5 got a verdict: $(cat "$FIX/comments")"
+has "$(labels alpha 5)" "looper:landing"
+pass
+
 # The verdict job takes the queued lands by priority, then oldest (looper#121):
 # a newer priority:high land is on staging before an older unlabelled one.
 scenario split-priority-order

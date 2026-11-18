@@ -2455,8 +2455,16 @@ verdict_dir_fresh() {
   rm -rf "$VERDICT_DIR"
 }
 
+# The pin files a green land's landing changes (its record's last range), if any.
+pin_changed() { # rec-dir
+  local before after files
+  read -r before after _ < <(tail -n 1 "$1/landed" 2>/dev/null) || return 1
+  files="$(git -C "$CHECKOUT" diff --name-only --no-renames "$before" "$after" -- "${PIN_FILES[@]}" 2>/dev/null)" || return 1
+  [[ -n "$files" ]] && paste -sd, - <<<"$files" | sed 's/,/, /g'
+}
+
 verdict_batch() {
-  local q n id sha rc main staging first=1
+  local q n id sha rc main staging pin first=1
   MANAGER_RUN="$VERDICT_DIR"
   verdict_dir_fresh
   mkdir -p "$VERDICT_DIR"; : > "$VERDICT_DIR/lands"
@@ -2492,7 +2500,13 @@ verdict_batch() {
     # once (looper#192): its report rebases while the job goes on. Only a
     # green waits for the manager job, once main has it.
     if (( JUDGE_RC == 0 )); then log "#$n: green"
-    else VERDICT_JOB="${CI_JOB_URL:-}" CI_JOB_URL="" post_land "$n" "$id" "$sha" "$JUDGE_RC" "$VERDICT_DIR/$n-$id"; fi
+    else VERDICT_JOB="${CI_JOB_URL:-}" CI_JOB_URL="" post_land "$n" "$id" "$sha" "$JUDGE_RC" "$VERDICT_DIR/$n-$id"; continue; fi
+    # A green that pins the build image (looper#193) is the batch's last: main
+    # gets the pin at this job's end, and the next batch is the manager's, its
+    # gates build jobs, one build a batch (looper#86), not one a land.
+    if pin="$(pin_changed "$VERDICT_DIR/$n-$id")"; then
+      log "#$n: changes the build image's pin ($pin): the verdict job stops, so that main gets it now; the next batch runs as build jobs"; break
+    fi
   done
   staging="$(git -C "$CHECKOUT" rev-parse "$STAGING_REF")"
   git -C "$CHECKOUT" push -q -f origin "$staging:refs/heads/$STAGING" || die "could not push $STAGING"
