@@ -145,3 +145,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-18 looper issue The verdict job walks the queue it read at its start: a priority:high land queued after it starts waits behind every older one (hours per land for unpinned tacplus) (#184)
 - 2026-11-18 looper issue The nightly fan-out takes every build slot at 03:00Z, so land builds wait: tacplus#340's land got no runner in 15 min and was left queued (#185)
 - 2026-11-18 looper issue A land green on the same tree is gated again because its rebased commit's sha differs: reuse a verdict by tree and base, not by commit (#191)
+- 2026-11-18 looper issue The looper image is not published: the image workflow fails on main (#183)
