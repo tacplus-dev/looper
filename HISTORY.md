@@ -147,3 +147,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-18 looper issue A land green on the same tree is gated again because its rebased commit's sha differs: reuse a verdict by tree and base, not by commit (#191)
 - 2026-11-18 looper issue The looper image is not published: the image workflow fails on main (#183)
 - 2026-11-18 looper issue The looper image's npm 11.21.1 (from build:2.6) bundles ip-address 10.7.2 (GHSA-rxp7-6hxx-x8q5): npm 11.21.3 bundles the fixed 10.7.5 (#186)
+- 2026-11-18 looper issue A land the verdict job drops (conflict or red) keeps looper:landing until the job ends, so its report cannot rebase for hours (#192)
