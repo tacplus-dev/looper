@@ -211,7 +211,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-18 by lo
   main): with the apps, a repository whose gates are not build jobs gets, for each batch, `looper-<repo>-verdict`
   (environment `looper-report`: its queued lands merged onto `looper/staging`, regenerated and gated, with no job
   credential in the gates' environment, staging pushed with the report app's token, the verdict its artifacts, a
-  stale one another job left in the reused project dir cleared, #98) and
+  stale one another job left in the reused project dir cleared, #98; each green recorded as it is given, on
+  `looper/green-<repo>-<n>`, so a land whose rebase gives the same tree on the same base tree, gate set, gates and
+  image by digest, after a job cancelled or a batch not merged, reuses it and runs no gate, #191) and
   `looper-<repo>-manager` (`looper-manager`, `needs:` the verdict: no repository code, staging checked to be the
   commit the verdict named on the main it was built on, main fast-forwarded, the verdicts and HISTORY.md lines
   posted; a main moved by planning files alone, staging rebased onto it, #114; anything else moved or a conflict,
