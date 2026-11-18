@@ -317,6 +317,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-18 by lo
   from 2026-12-14 looper's builds fail on it until it is renewed or fixed, and the nightly scan files it again then or
   once a fixed version is published; the image replaces `build:2.6`'s docker CLI (29.9.3, go1.26.10, net/http's
   GO-2026-6859) with 29.10.0's by digest (#177, the #166 exception gone) until `build:2.6` itself carries 29.10.0 or
-  later, or #73 step 3 removes the CLI
+  later, or #73 step 3 removes the CLI; it replaces `build:2.6`'s npm (11.21.1, ip-address 10.7.2's
+  GHSA-rxp7-6hxx-x8q5) with 11.21.3 (#186) until `build:2.6` itself carries 11.21.3 or later
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
