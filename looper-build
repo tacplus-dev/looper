@@ -68,6 +68,13 @@ BUILD_SCAN_IMAGE="${BUILD_SCAN_IMAGE:-${CI_JOB_IMAGE:-ghcr.io/tacplus-dev/looper
 # BUILD_DOCKER_TAGS, the runners that still mount the Docker socket.
 BUILD_BUILDER_IMAGE="${BUILD_BUILDER_IMAGE:-}"
 BUILD_DOCKER_TAGS="${BUILD_DOCKER_TAGS:-$BUILD_RUNNER_TAGS}"
+# A nightly's jobs (looper#185), the fan-out's and each repository's: a nightly
+# waits on nobody, a land's build waits on a run and blocks a queue, so the
+# nightly never takes every build slot. It runs on BUILD_NIGHTLY_TAGS (a
+# runner entry of its own whose concurrent leaves the pool room; by default
+# the build runner's), and its fan-out BUILD_NIGHTLY_SLOTS repositories at a time.
+BUILD_NIGHTLY_TAGS="${BUILD_NIGHTLY_TAGS:-$BUILD_RUNNER_TAGS}"
+BUILD_NIGHTLY_SLOTS="${BUILD_NIGHTLY_SLOTS:-1}"
 # Host Docker's builder (buildx), and the emulators for a foreign platform, by digest.
 BUILD_BUILDKIT_IMAGE="${BUILD_BUILDKIT_IMAGE:-moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea}"
 BUILD_BINFMT_IMAGE="${BUILD_BINFMT_IMAGE:-tonistiigi/binfmt:qemu-v10.0.4@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541}"
@@ -86,7 +93,8 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build gates-report          a nightly's gates verdict, published as the repository's latest
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_NIGHTLY (true: the
 nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty; with BUILD_REPO
-empty too, the plan's child pipeline is every pinned repository's nightly), BUILD_VERIFY
+empty too, the plan's child pipeline is every pinned repository's nightly, BUILD_NIGHTLY_SLOTS of them at a
+time; a nightly's jobs on BUILD_NIGHTLY_TAGS, default the build runner's), BUILD_VERIFY
 (true: the formal verification of the main branch, likewise; BUILD_VERIFY_SINCE, _RESULT and _RUN: the last
 record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
@@ -282,6 +290,7 @@ cmd_plan() {
     plan_fanout; return 0
   fi
   check_inputs plan
+  [[ "${BUILD_NIGHTLY:-}" != true ]] || BUILD_RUNNER_TAGS="$BUILD_NIGHTLY_TAGS"
   mkdir -p "$BUILD_OUT"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"' "$BUILD_REPO")" ||
     verdict fail "no read-only GitHub token (the tacplus-reader app)"
@@ -327,10 +336,16 @@ cmd_plan() {
 # checks' pipeline that job writes, triggered with strategy: depend. Each
 # trigger needs its own plan alone, so one repository's failure stops no
 # other's; the fan-out is red when one is. Two levels below the build's own
-# pipeline, GitLab's limit. No commit status: no commit's verdict.
+# pipeline, GitLab's limit. No commit status: no commit's verdict. A few at a
+# time (looper#185): the nth repository's plan and trigger hold the resource
+# group nightly-slot-<n mod BUILD_NIGHTLY_SLOTS>, the trigger (strategy:
+# depend) until its child pipeline is done, so the nightly finishes but never
+# fills the build pool; all on BUILD_NIGHTLY_TAGS.
 plan_fanout() {
   mkdir -p "$BUILD_OUT"
   local token list r pinned=() unpinned=()
+  [[ "$BUILD_NIGHTLY_SLOTS" =~ ^[1-9][0-9]*$ ]] && ((BUILD_NIGHTLY_SLOTS <= 100)) ||
+    verdict fail "BUILD_NIGHTLY_SLOTS '$BUILD_NIGHTLY_SLOTS' is not a number of repositories at a time (1 to 100)"
   token="$(reader_token '"contents":"read","metadata":"read"')" || verdict fail "no read-only GitHub token (the tacplus-reader app)"
   list="$(org_repos "$token")" || verdict fail "cannot list the repositories of $BUILD_ORG (the tacplus-reader app's installation)"
   for r in $list; do
@@ -340,7 +355,7 @@ plan_fanout() {
   done
   ((${#pinned[@]})) || verdict fail "no repository of $BUILD_ORG pins its build image on main (tacplus.lock, build.lock)"
   write_fanout_pipeline "${pinned[@]}" > "$BUILD_OUT/build-gates.yml"
-  log "plan: the nightly of ${#pinned[@]} repositories of $BUILD_ORG: ${pinned[*]}; no pin on main: ${unpinned[*]:-none}"
+  log "plan: the nightly of ${#pinned[@]} repositories of $BUILD_ORG, $BUILD_NIGHTLY_SLOTS at a time on $BUILD_NIGHTLY_TAGS: ${pinned[*]}; no pin on main: ${unpinned[*]:-none}"
 }
 
 # The org's repositories the app's installation reads, not archived, by name, sorted.
@@ -374,7 +389,7 @@ pins_build_image() { # token repo
 }
 
 write_fanout_pipeline() { # repo...
-  local r
+  local r slot n=0
   echo "# Written by looper-build plan: the nightly of each repository of $BUILD_ORG whose main pins its build image."
   cat <<'EOF'
 default:
@@ -384,17 +399,20 @@ default:
 stages: [plan, nightly]
 EOF
   for r in "$@"; do
+    slot="nightly-slot-$((n++ % BUILD_NIGHTLY_SLOTS))"
     cat <<EOF
 nightly-plan-$r:
   stage: plan
   image: "$BUILD_SCAN_IMAGE"
-  tags: [$BUILD_RUNNER_TAGS]
+  tags: [$BUILD_NIGHTLY_TAGS]
+  resource_group: $slot
   variables:
     GIT_STRATEGY: none
     BUILD_REPO: "$r"
     BUILD_SHA: ""
     BUILD_ORG: "$BUILD_ORG"
     BUILD_NIGHTLY: "true"
+    BUILD_NIGHTLY_TAGS: "$BUILD_NIGHTLY_TAGS"
   script:
     - looper-build plan
   artifacts:
@@ -404,6 +422,7 @@ nightly-plan-$r:
 nightly-$r:
   stage: nightly
   needs: [nightly-plan-$r]
+  resource_group: $slot
   trigger:
     include:
       - artifact: build-gates.yml

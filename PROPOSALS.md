@@ -4,6 +4,17 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The nightly on a runner entry of its own, at its quietest hour** (2026-11-18, #185): the fan-out now runs
+  `BUILD_NIGHTLY_SLOTS` (1) repositories at a time and every nightly job on `BUILD_NIGHTLY_TAGS`, still the build
+  runner's `arm64, build`. The cluster half: an in-cluster runner entry with the tags `arm64, build-nightly` whose
+  `concurrent` leaves the build pool room (tacplus-dev/cluster's runner file); then `BUILD_NIGHTLY_TAGS: "arm64,
+  build-nightly"` in `ci/build.gitlab-ci.yml` and the hub's copy, never before (no runner would take them). The
+  cloud half: the one nightly schedule (tacplus-dev/cloud#67) at the hour the recap's build hours name the
+  quietest, a week of nights in. One at a time makes the nightly long (tacplus's gates alone take over 3h): if it
+  outlasts the day, 2 slots, or the nightly entry, is the next step.
+- **The verify runs beside the nightly** (2026-11-18, #185): a scheduled verify run (`"verify": true`) waits on
+  nobody either, but runs on the build runner's tags with no slot; once there is a nightly runner entry it could
+  run on `BUILD_NIGHTLY_TAGS` too.
 - **The security packages of each commit pruned** (2026-11-17, #180): `looper-scan report` now publishes every
   build's findings as its commit's too (`security-<repo>/<sha>`), so a land can read its base's. That is a package
   version a build, branch builds included, in tacplus-dev/build's registry, which grows without end. Only main's

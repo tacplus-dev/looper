@@ -69,7 +69,8 @@
 # 10, tacplus-dev/cloud#65). Its plan lists the repositories whose main pins a
 # build image (tacplus.lock or build.lock) and its child pipeline runs each
 # one's nightly, as above, in a pipeline of its own (strategy: depend): one's
-# failure stops no other's.
+# failure stops no other's. BUILD_NIGHTLY_SLOTS of them at a time, on
+# BUILD_NIGHTLY_TAGS (looper#185): the lands' builds never wait behind it.
 #
 # The runner image (looper#43): a web or scheduled run on main with
 # "runner_image": true is a pipeline of one job, runner-image, which bakes the
@@ -185,6 +186,15 @@ variables:
   # lacks.
   BUILD_BUILDER_IMAGE: ""
   BUILD_DOCKER_TAGS: "arm64, build-docker"
+  # The nightly (looper#185): a land's build waits on a run and blocks a
+  # queue, a nightly waits on nobody, so the nightly never takes every build
+  # slot (2026-11-18 03:00Z its children held all of them, and tacplus#340's
+  # land got no runner in 15 min). Its fan-out runs this many repositories at
+  # a time (each a resource group, nightly-slot-<n>), its jobs on these tags:
+  # the build runner's until the cluster's runner file serves a nightly entry
+  # of its own (arm64, build-nightly) whose concurrent leaves the pool room.
+  BUILD_NIGHTLY_SLOTS: "1"
+  BUILD_NIGHTLY_TAGS: "arm64, build"
 
 default:
   image: ghcr.io/tacplus-dev/looper@sha256:ffd21be69119996d2ddf7ca5929475e79fff541afd8cb7074c98bd22d8ab714f

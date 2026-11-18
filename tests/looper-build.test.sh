@@ -1575,6 +1575,65 @@ verdict_is "fail: BUILD_REPO ''"
 rm -rf "$TMP/pins" "$TMP/installation-"*
 pass
 
+# The nightly never takes every build slot (looper#185: at 03:00Z its children
+# held all of them, and tacplus#340's land build got no runner in 15 min): it
+# runs BUILD_NIGHTLY_SLOTS repositories at a time, each one's plan and child
+# pipeline holding its slot's resource group (a trigger with strategy: depend
+# holds it until its pipeline is done), and the next waits for the slot.
+NAME="fan-out: a few repositories at a time, each in its slot's resource group, its plan and its child pipeline (looper#185)"
+fanout_fixture
+build "${FANOUT[@]}" -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+y="$OUT/build-gates.yml"
+for j in nightly-plan-demo nightly-demo nightly-plan-late nightly-late nightly-plan-other nightly-other; do
+  rg="$(sed -n "/^$j:\$/,/^[^ ]/p" "$y" | grep '^  resource_group:')"
+  [[ "$rg" == "  resource_group: nightly-slot-0" ]] || fail "$j is not in the one slot by default: '$rg'"
+done
+grep -q "plan: the nightly of 3 repositories .* 1 at a time" "$TMP/err" || fail "the plan does not say how many at a time: $(cat "$TMP/err")"
+fanout_fixture
+build "${FANOUT[@]}" BUILD_NIGHTLY_SLOTS=2 -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+y="$OUT/build-gates.yml"
+for js in demo:0 late:1 other:0; do
+  for j in "nightly-plan-${js%:*}" "nightly-${js%:*}"; do
+    rg="$(sed -n "/^$j:\$/,/^[^ ]/p" "$y" | grep '^  resource_group:')"
+    [[ "$rg" == "  resource_group: nightly-slot-${js#*:}" ]] || fail "$j is not in slot ${js#*:} of 2: '$rg'"
+  done
+done
+"$ROOT/looper-ci-lint" "$y" > "$TMP/lint" 2>&1 || fail "the fan-out pipeline is not valid GitLab CI: $(cat "$TMP/lint")"
+for s in 0 x -1 101; do
+  fanout_fixture
+  if build "${FANOUT[@]}" BUILD_NIGHTLY_SLOTS="$s" -- plan 2>"$TMP/err"; then fail "fanned out $s at a time"; fi
+  verdict_is "fail: BUILD_NIGHTLY_SLOTS '$s' is not a number of repositories at a time (1 to 100)"
+done
+rm -rf "$TMP/pins" "$TMP/installation-"*
+pass
+
+# Its jobs run on the nightly's tags, BUILD_NIGHTLY_TAGS (default the build
+# runner's): a runner entry of their own, whose concurrent leaves the build
+# pool to the lands (the cluster's runner file). A build, a land's, never does.
+NAME="plan: a nightly's jobs, the fan-out's and each child's, on the nightly's tags; a build's never (looper#185)"
+fanout_fixture
+build "${FANOUT[@]}" BUILD_NIGHTLY_TAGS="arm64, build-nightly" -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+y="$OUT/build-gates.yml"
+[[ "$(grep '^  tags:' "$y" | sort -u)" == "  tags: [arm64, build-nightly]" ]] || fail "the fan-out's jobs not on the nightly's tags: $(grep -n '^  tags:' "$y")"
+grep -qxF '    BUILD_NIGHTLY_TAGS: "arm64, build-nightly"' "$y" || fail "the child plans do not get the nightly's tags: $(cat "$y")"
+build BUILD_SHA= BUILD_NIGHTLY=true BUILD_NIGHTLY_TAGS="arm64, build-nightly" -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+[[ "$(grep '^  tags:' "$OUT/build-gates.yml" | sort -u)" == "  tags: [arm64, build-nightly]" ]] ||
+  fail "a nightly's jobs not on the nightly's tags: $(grep -n '^  tags:' "$OUT/build-gates.yml")"
+build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+[[ "$(grep '^  tags:' "$OUT/build-gates.yml" | sort -u)" == "  tags: [arm64, build]" ]] ||
+  fail "a nightly's jobs not on the build runner's tags by default: $(grep -n '^  tags:' "$OUT/build-gates.yml")"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY_TAGS="arm64, build-nightly" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(grep '^  tags:' "$OUT/build-gates.yml" | sort -u)" == "  tags: [arm64, build]" ]] ||
+  fail "a build's jobs on the nightly's tags: $(grep -n '^  tags:' "$OUT/build-gates.yml")"
+rm -rf "$TMP/pins" "$TMP/installation-"*
+pass
+
+NAME="ci/build.gitlab-ci.yml: the nightly runs one repository at a time, on its tags"
+civar() { sed -n "s/^  $1: \"\(.*\)\"\$/\1/p" "$ROOT/ci/build.gitlab-ci.yml"; }
+[[ "$(civar BUILD_NIGHTLY_SLOTS)" == 1 ]] || fail "BUILD_NIGHTLY_SLOTS is '$(civar BUILD_NIGHTLY_SLOTS)', not 1"
+[[ "$(civar BUILD_NIGHTLY_TAGS)" =~ ^arm64,\ build(-nightly)?$ ]] || fail "BUILD_NIGHTLY_TAGS is '$(civar BUILD_NIGHTLY_TAGS)'"
+pass
+
 NAME="pipeline: a nightly with no repository (a schedule, or the API) is the fan-out, from the sources a nightly has"
 w="$(sed -n '/^workflow:$/,/^[^ w]/p' "$ROOT/ci/build.gitlab-ci.yml")"
 grep -qF '    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO == "" && $BUILD_SHA == "" && $BUILD_NIGHTLY == "true"' <<<"$w" ||

@@ -40,7 +40,9 @@
 #       builds of LOOPER_RECAP_BUILD_PROJECT (looper#134): its gate builds
 #       (each pipeline's name; no nightly, verify run or release) against the
 #       distinct commits they built, and the commits built again; classify
-#       puts the ratio beside the earlier nights'. The
+#       puts the ratio beside the earlier nights'; and by the UTC hour each
+#       was created, which classify sums over the nights for the quietest
+#       hours to start the nightly fan-out in (looper#185). The
 #       concurrency (looper#107: no per-repository cap), from the kicker's
 #       capacity lines, in all and per repository: how many reports were active
 #       and running at once (peak and mean), the hours ready issues waited with
@@ -103,7 +105,8 @@
 # LOOPER_RECAP_VM_WAIT (300 s: a report's wait for room, a VM or a pod's, that counts),
 # LOOPER_RECAP_VM_WAIT_HOURS (1), LOOPER_RECAP_CONTROL_QUEUE (600 s: a
 # control job's queue, its longest, looper#104), LOOPER_RECAP_BUILD_RATIO (1.1:
-# builds of the build project a commit, looper#134), LOOPER_RECAP_REQUEST_RATIO (5: a
+# builds of the build project a commit, looper#134), LOOPER_RECAP_NIGHTLY_HOURS (3: the
+# quietest hours of the builds the nightly should start in, looper#185), LOOPER_RECAP_REQUEST_RATIO (5: a
 # kind's request against its pods' p90 use, looper#165). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing); one more node of the normal pool (looper#84):
@@ -175,6 +178,9 @@ VM = {"machine": ENV.get("LOOPER_RECAP_VM_MACHINE", "t2a-standard-8"), "usd_hour
 # Jody's call from the recap's numbers): its machine and on-demand price an hour (about $65 a month; set it
 # from the billing).
 NODE = {"machine": ENV.get("LOOPER_RECAP_NODE_MACHINE", "c4a-standard-2"), "usd_hour": num("LOOPER_RECAP_NODE_USD_HOUR", 0.089)}
+# The hours the nightly fan-out (tacplus-dev/build) should have quiet (looper#185):
+# its schedule starts it in the quietest so many hours of the lands' builds.
+NIGHTLY_HOURS = max(1, min(24, int(num("LOOPER_RECAP_NIGHTLY_HOURS", 3))))
 
 
 def die(msg, code=2):
@@ -933,7 +939,7 @@ def builds_of(project, tok, rows, items):
     (a nightly's, a verify run's and a release's are no gate build); one that
     cannot be read is counted as unread."""
     pipes = sorted({(j.get("pipeline") or {}).get("id") for j, *_ in rows} - {None})
-    builds, unread = [], 0
+    builds, unread, by_hour = [], 0, [0] * 24
     for pid in pipes:
         try:
             pl = json.loads(gitlab(f"projects/{enc(project)}/pipelines/{pid}", tok))
@@ -944,12 +950,16 @@ def builds_of(project, tok, rows, items):
         if m and not m.group(3):
             builds.append({"repo": m.group(1), "sha": m.group(2), "set": m.group(4) or "full",
                            "url": pl.get("web_url") or f"https://gitlab.com/{project}/-/pipelines/{pid}"})
+            # The hour (UTC) it was created (looper#185): where the nightly, which waits on nobody, should not be.
+            t = when(pl.get("created_at"))
+            if t:
+                by_hour[t.hour] += 1
     per = {}
     for b in builds:
         per.setdefault((b["repo"], b["sha"]), []).append(b)
     n, c = len(builds), len(per)
     again = sorted(((k, v) for k, v in per.items() if len(v) > 1), key=lambda x: (-len(x[1]), x[0]))
-    out = {"builds": n, "commits": c, "duplicates": n - c, "per_commit": whole(round(n / c, 2)) if c else None, "unread": unread,
+    out = {"builds": n, "commits": c, "duplicates": n - c, "per_commit": whole(round(n / c, 2)) if c else None, "unread": unread, "by_hour": by_hour,
            "again": [{"repo": r, "sha": sha[:10], "builds": len(v), "sets": sorted({b["set"] for b in v})} for (r, sha), v in again[:5]]}
     if n > c:
         items.append({"key": "builds/duplicates", "count": n - c, "over": n / c > T["build_ratio"], "recovered": False,
@@ -1412,9 +1422,24 @@ def model_day(day, recap):
             "high_model": high, "high_pct": pct, "over": pct > T["high_share_pct"]}
 
 
+def build_hours(nights):
+    """The gate builds by UTC hour over the nights that have them (looper#185),
+    {night: by_hour}: the quietest NIGHTLY_HOURS for the nightly to start in (the
+    fewest builds, then the fewest in the hours around them, then the earliest)
+    and the busiest hour."""
+    tot = [sum(h[i] for h in nights.values()) for i in range(24)]
+    w = NIGHTLY_HOURS
+
+    def around(start, before, length):
+        return sum(tot[(start - before + i) % 24] for i in range(length))
+    q = min(range(24), key=lambda s: (around(s, 0, w), around(s, w, 3 * w), s))
+    return {"nights": sorted(nights), "by_hour": tot, "builds": sum(tot), "quietest": q, "quietest_builds": around(q, 0, w),
+            "busiest": max(range(24), key=lambda i: (tot[i], -i))}
+
+
 def classify(night, history):
     d = dt.date.fromisoformat(night["night"])
-    before, ratios, days = {}, [], []
+    before, ratios, days, hourly = {}, [], [], {}
     for k in range(1, 7):
         day = (d - dt.timedelta(days=k)).isoformat()
         p = os.path.join(history, f"{day}.json") if history else ""
@@ -1423,6 +1448,8 @@ def classify(night, history):
             before[day] = {x["key"] for x in h.get("items", [])}
             if (h.get("builds") or {}).get("per_commit") is not None:
                 ratios.append({"night": day, "per_commit": h["builds"]["per_commit"]})
+            if len((h.get("builds") or {}).get("by_hour") or []) == 24:
+                hourly[day] = h["builds"]["by_hour"]
             if h.get("models"):
                 days.append(model_day(day, h))
     out = {"night": night["night"], "history": sorted(before), "recurring": [], "transient": [], "once": []}
@@ -1431,6 +1458,11 @@ def classify(night, history):
     if b.get("per_commit") is not None:
         ratios.append({"night": night["night"], "per_commit": b["per_commit"]})
     out["builds_per_commit"] = sorted(ratios, key=lambda x: x["night"])
+    # The gate builds by hour, the nights' sum: the nightly's quietest hours (looper#185).
+    if len(b.get("by_hour") or []) == 24:
+        hourly[night["night"]] = b["by_hour"]
+    if hourly:
+        out["build_hours"] = build_hours(hourly)
     # The runs and tokens per model, day by day (looper#162), the high model's share against tonight's threshold.
     if night.get("models"):
         days.append(model_day(night["night"], night))
@@ -1565,7 +1597,11 @@ def report(night, classes, sdir, cov):
                 ("falling" if b["per_commit"] < last else "rising" if b["per_commit"] > last else "flat")
         L.append(f"Builds (looper#134): {b['builds']} of {b['commits']} commits"
                  + (f", {b['per_commit']} a commit ({b['duplicates']} built a commit again)" if b["per_commit"] is not None else "")
-                 + (f", {b['unread']} pipeline{'s' * (b['unread'] != 1)} not read" if b["unread"] else "") + trend + ".")
+                 + (f", {b['unread']} pipeline{'s' * (b['unread'] != 1)} not read" if b["unread"] else "") + trend + "."
+                 + (f" Build hours (looper#185; the nightly's start, its {NIGHTLY_HOURS} h the quietest): {bh['builds']} gate builds over "
+                    f"{len(bh['nights'])} night{'s' * (len(bh['nights']) != 1)}; quietest from {bh['quietest']:02d}:00Z "
+                    f"({bh['quietest_builds']} builds in {NIGHTLY_HOURS} h), busiest {bh['busiest']:02d}:00Z ({bh['by_hour'][bh['busiest']]})."
+                    if (bh := classes.get("build_hours")) else ""))
     cp = night.get("capacity")
     if cp:
         w, vm, node, full = cp["waiting_for_room"], cp["one_more_vm"], cp["one_more_node"], cp["pool_full"]

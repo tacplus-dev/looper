@@ -169,6 +169,8 @@ has "$(q '.items[].key')" "scan/tacplus"
 # The builds against the commits they built (looper#134): pipeline 77, alpha's 1111111111 on docs.
 [[ "$(q '.builds | "\(.builds) \(.commits) \(.duplicates) \(.per_commit) \(.unread)"')" == "1 1 0 1 0" ]] || fail "builds: $(q .builds)"
 lacks "$(q '.items[].key')" "builds/"
+# The gate builds by the UTC hour their pipeline was created (looper#185): 77's at 14:05Z.
+[[ "$(q '.builds.by_hour | "\(length) \(.[14]) \(add)"')" == "24 1 1" ]] || fail "builds by hour: $(q .builds)"
 # A job outside the window is left out.
 lacks "$(q '.failed_jobs[].id')" 900
 pass
@@ -431,8 +433,10 @@ pass
 NAME=collect-duplicate-builds
 rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; d="$TMP/fx/gitlab/tacplus-dev_build"
 jq '. + [range(78; 82) as $p | .[1] | .id = 2000 + $p | .pipeline.id = $p]' "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json"
-for p in 78:"build alpha $(printf '1%.0s' {1..40})  full" 79:"build beta $(printf '2%.0s' {1..40})  docs+build" 80:"nightly alpha "; do
-  jq -n --arg n "${p#*:}" --argjson i "${p%%:*}" '{id: $i, name: $n, web_url: "https://gitlab.com/tacplus-dev/build/-/pipelines/\($i)"}' > "$d/pipeline-${p%%:*}.json"
+for p in 78:14:"build alpha $(printf '1%.0s' {1..40})  full" 79:04:"build beta $(printf '2%.0s' {1..40})  docs+build" 80:03:"nightly alpha "; do
+  h="${p#*:}"; h="${h%%:*}"
+  jq -n --arg n "${p#*:*:}" --argjson i "${p%%:*}" --arg c "2026-11-01T$h:30:00.000Z" \
+    '{id: $i, name: $n, created_at: $c, web_url: "https://gitlab.com/tacplus-dev/build/-/pipelines/\($i)"}' > "$d/pipeline-${p%%:*}.json"
 done
 FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
 [[ "$(jq -r '.builds | "\(.builds) \(.commits) \(.duplicates) \(.per_commit) \(.unread) \(.again[0].repo) \(.again[0].builds) \(.again[0].sets)"' "$TMP/v.json")" == \
@@ -441,6 +445,16 @@ has "$(jq -r '.items[] | select(.key == "builds/duplicates") | "\(.over) \(.coun
   "true 1 gitlab.com/tacplus-dev/build: 3 builds of 2 commits (1.5 a commit): 1 built a commit again (threshold 1.1 a commit); most: alpha 1111111111 2"
 FX="$TMP/fx" recap classify "$TMP/v.json" --history "$FX/history" > "$TMP/vc.json" || fail "classify"
 has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" "Builds (looper#134): 3 of 2 commits, 1.5 a commit (1 built a commit again), 1 pipeline not read; the nights before: 2026-11-01 1.8, 2026-10-31 2.5: falling."
+# The hours of the gate builds, over the nights that have them (looper#185): the quietest
+# hours for the nightly, which waits on nobody, against the lands' builds, which wait on a run.
+# Tonight 77 and 78 at 14Z, 79 at 04Z (80 is the nightly: no gate build); 2026-11-01 four at 05Z.
+[[ "$(jq -r '.builds.by_hour | "\(.[14]) \(.[4]) \(.[3]) \(add)"' "$TMP/v.json")" == "2 1 0 3" ]] || fail "builds by hour: $(jq -c .builds "$TMP/v.json")"
+jq '.builds.by_hour = [range(24) | if . == 5 then 4 else 0 end]' "$TMP/fx/history/2026-11-01.json" > "$TMP/h.json" && mv "$TMP/h.json" "$TMP/fx/history/2026-11-01.json"
+FX="$TMP/fx" recap classify "$TMP/v.json" --history "$TMP/fx/history" > "$TMP/vc.json" || fail "classify"
+[[ "$(jq -r '.build_hours | "\(.nights | join(",")) \(.by_hour[14]) \(.by_hour[5]) \(.by_hour[4]) \(.quietest) \(.busiest)"' "$TMP/vc.json")" == \
+   "2026-11-01,2026-11-02 2 4 1 18 5" ]] || fail "build hours: $(jq -c .build_hours "$TMP/vc.json")"
+has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" \
+  "Build hours (looper#185; the nightly's start, its 3 h the quietest): 7 gate builds over 2 nights; quietest from 18:00Z (0 builds in 3 h), busiest 05:00Z (4)."
 # The plan pending 100 minutes behind reports (looper#104, 2026-11-06: 1h40m), and a kick
 # 5 hours behind older kicks: each control job's queue its own item, over its threshold.
 NAME=control-queues
