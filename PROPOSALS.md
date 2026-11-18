@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The image scan reads the image's npm packages too** (2026-11-18, nightly scan; #186, #187, #188): the build's
+  image scan (#167) puts only the Go binaries of `/usr/local/bin` under the policy, so the packages bundled in the
+  base image's npm (`/usr/local/lib/node_modules/npm`) are seen by no deterministic check. The nightly scan's model
+  found four advisories there with `trivy rootfs --scanners vuln /usr/local/lib/node_modules` (ip-address, glob,
+  minimatch, picomatch). tacplus's image sweep (tacplus#128) doesn't see them either: it runs HIGH/CRITICAL with
+  `--ignore-unfixed`. The same Trivy run in the image build and in `looper-scan`'s image check, under the same policy and
+  `security-exceptions.yaml`, with the base image's packages attributed to tacplus-dev/tacplus as #167 does for its
+  binaries, would make these build findings, not the nightly model's.
 - **The nightly on a runner entry of its own, at its quietest hour** (2026-11-18, #185): the fan-out now runs
   `BUILD_NIGHTLY_SLOTS` (1) repositories at a time and every nightly job on `BUILD_NIGHTLY_TAGS`, still the build
   runner's `arm64, build`. The cluster half: an in-cluster runner entry with the tags `arm64, build-nightly` whose
