@@ -1,0 +1,139 @@
+= init
+> Bash gh issue view 73 --repo tacplus-dev/looper --comments | tail -40; echo ----; gh issue view 340 --repo tacplus-dev/tacplus --json state,closedAt,title; gh issue view 315 --repo tacplus-dev/tacplus --json state,closedAt,title
+< <!-- looper-land id=20261116T124837Z-73-1915114791 rc=0 landed=5650d08aacae702e613d8046eb46edd1651ba80b..b54ce89eb11dc2e179998d5805d261a9ed54dbc6 set=full --> -- author:	tacplus-looper association:	none edited:	false status:	none -- The looper of looper starts this issue on `claude-opus-5-5`, the de...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; gh issue view 340 --repo tacplus-dev/tacplus --comments | tail -30; gh api repos/tacplus-dev/tacplus/contents/build.lock -H 'Accept: application/vnd.github.raw' | head; ls; git log --oneline -3
+< -- Hub 21:29Z: this land went red at 20:54Z (build 3086002110) **only** on the rotation flake (Rust #877; the Java twin #840 failed it at 17:36Z). Every other gate passed, including current-generation in 3301 s. Nothing in #340 causes it. I'm releasing `looper:landing` by hand (the job posts only at...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; wc -l looper-docker looper-docker-broker repo-looper looper-lib.sh tests/looper-docker.test.sh; grep -rln "looper-docker\|docker-broker\|LOOPER_DOCKER" --exclude-dir=.git . ; cat gates.yaml | head -60
+<    336 looper-docker    166 looper-docker-broker   4720 repo-looper   1022 looper-lib.sh    288 tests/looper-docker.test.sh   6532 total ./Dockerfile ./looper-dispatch ./looper-smoke ./STATE.md ./PROPOSALS.md ./ROADMAP.md ./HISTORY.md ./gates.yaml ./README.md ./looper-docker-broker ./looper-docker ....
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; grep -n "build_jobs\|pinned\|run_claude\|land_work\|looper-docker\|LOOPER_DOCKER\|docker" repo-looper | head -150
+< 82:# starts (docker run, tacplus) is limited to the report's memory, without swap 83:# (looper#41): the model's docker is looper-docker. The gates a land runs are 97:# no container runtime (no docker, no broker): it asks for a build with 99:# pin; an unpinned one keeps the gates here and looper-dock...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; sed -n 1230,1260p repo-looper; grep -n "LOOPER_FORGE" repo-looper | head -30; grep -rn "REPOS\|repositories:" looper-dispatch | head -20; ls ci
+< # there is no gate map. A flat 3h turned tacplus's full gates, declared at 180 # minutes, red while the pipeline went on to its verdict. build_wait() { # [gate set]   local set="${1:-full}" x m=0 any=""   for x in ${set//+/ }; do     [[ "${GM_MIN[$x]:-}" =~ ^[0-9]+$ ]] || continue     m=$(( m + GM_M...
+= thinking_tokens
+= thinking_tokens
+tacplus#340 is closed and tacplus now pins its build image, so step 3 (retiring looper-docker and the broker) is unblocked. I'm mapping where the unpinned path lives before I change anything.
+> Bash cd /builds/looper/looper/issues/73; grep -n "REPO\b\|repo:\|LOOPER_FORGE\|forge" ci/tacplus-dev.gitlab-ci.yml ci/instance.gitlab-ci.yml looper-dispatch | head -40; sed -n 195,215p repo-looper
+< ci/tacplus-dev.gitlab-ci.yml:91:# bash, gh and git, and wait on the forge; 50m CPU from what they use, ci/instance.gitlab-ci.yml:13:# another org's: LOOPER_FORGE (gitlab), LOOPER_ORG (seabeam), ci/instance.gitlab-ci.yml:14:# LOOPER_FORGE_TOKEN (the seabeam bot's: issues and pushes), GITLAB_TOKEN loo...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; sed -n 1,40p ci/instance.gitlab-ci.yml; grep -n -i "seabeam" README.md STATE.md PROPOSALS.md ROADMAP.md | head -30
+< # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # The .gitlab-ci.yml of a looper instance's pipeline project (looper#29): # SeaBeam's, gitlab.com/seabeam/tools/looper, whose code and issues are on # GitLab, in the `seabeam` group. Kept here (github.com/tacplus-dev/looper # ci...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; grep -n "PIN_FILES=" repo-looper looper-dispatch; for r in $(gh repo list tacplus-dev --no-archived --limit 100 --json name -q '.[].name'); do p=no; for f in tacplus.lock build.lock; do gh api repos/tacplus-dev/$r/contents/$f --silent >/dev/null 2>&1 && p=$f; done...
+= task_started
+= task_notification
+< repo-looper:1223:PIN_FILES=(tacplus.lock build.lock) tacplus build.lock looper build.lock llmproxy tacplus.lock fleet-seatrials build.lock cloud build.lock cluster build.lock deploymentproxy build.lock coop tacplus.lock roadmap no eventbus tacplus.lock fleet-dev build.lock mailbox tacplus.lock gatew...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; grep -n "SCAN_REPOS\|onscreen\|chaos\|people\|roadmap" ci/tacplus-dev.gitlab-ci.yml | head; for r in roadmap onscreen chaos people; do echo "== $r"; gh repo view tacplus-dev/$r --json isEmpty,pushedAt,description,isArchived -q '[.isEmpty,.pushedAt,.description]|@t...
+= task_started
+= task_notification
+< 60:# identity in roadmap/items/looper-hierarchy.md): to be exchanged at the 86:# This file's control jobs (looper#84; tacplus-dev/roadmap == roadmap false	2026-11-18T10:27:05Z	tacplus-dev roadmap and decision records (authoritative; moved from SeaBeam 2026-10-27) .github HISTORY.md PRODUCTION.md PRO...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash for r in onscreen chaos people; do echo "== $r"; gh issue list --repo tacplus-dev/$r --state all --search "pin" --json number,state,title -q '.[]|"\(.number) \(.state) \(.title)"'; done; gh search issues "build.lock" --owner tacplus-dev --state open --json repository,number,title -q '.[]|"\(.reposit...
+= task_started
+= task_notification
+< == onscreen 2 OPEN Mac app: full-screen SwiftUI wall display on the generated Swift client; backend only, live Watch, drill-down, read-only == chaos 1 OPEN Chaos: survey Chaos Mesh, then our own controller + privileged wedge on tacplus gRPC (event-traced, fleet-scoped, closed API, auto-revert); nigh...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh api "repos/tacplus-dev/tacplus/contents/images/build.Dockerfile?ref=v2.6.13" -H 'Accept: application/vnd.github.raw' | grep -n -i "buildkit\|image-build\|buildctl" | head; gh issue view 315 --repo tacplus-dev/tacplus --comments | tail -15; cd /builds/looper/looper/issues/73; grep -n "BUILD_BUILDE...
+< **What is left:** - Once #829 makes main green, the next run lands these two commits again. - Once #830 fixes rootless BuildKit on amd64, that run reads the first images.yml run that builds through "Build and push (rootless BuildKit in the build image)" and "Cache determinism". Then it posts the out...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/looper/issues/73; sed -n 1665,1745p repo-looper
+<   fi   printf 'Waiting-until: %s\n' "$iso" >> "$run/outcome"   log "#$ISSUE waits until $iso. Your run ends here: end your reply now. Its next run starts then, or sooner when something changes (a member's comment, a label, a push to main, a Blocked-by closing), and resumes from this checkpoint." }  ...
+> Bash cd /builds/looper/looper/issues/73; sed -n 2950,3015p repo-looper; sed -n 4670,4700p repo-looper
+<     while IFS= read -r l; do log "$l"; done }  # Runs the model with the watchdog beside it. A run dir with an issue is an # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the # watchdog also ends it once the issue is done. # # A report's model (LOOPER_CHILD_MEMORY set, by its job...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cat > /tmp/c73.md <<'EOF' **Step 3 needs a decision before anything lands.** tacplus-dev/tacplus#340 is closed and tacplus pins its build image (`build.lock` = `build:2.6.13@sha256:0387c7dc…`, landed by hand at 22:52Z). This run checked the issue's preconditions again, and two of them do not hold ye...
+= task_started
+= task_notification
+< https://github.com/tacplus-dev/looper/issues/73#issuecomment-6994085976 https://github.com/tacplus-dev/looper/issues/73
+I haven't changed any code. Step 3 (retiring looper-docker and the broker) needs a decision from you first, so I commented on the issue, added `needs-decision`, and stopped as rule 1 asks.
+
+tacplus#340 is closed and tacplus now pins its build image. But the issue's condition that every repository is pinned, and its test, are not met yet:
+
+- **Three repositories have no pin.** `onscreen`, `chaos` and `people` contain only planning files and have approved issues waiting. Once the broker and the unpinned path are gone, their reports would have no `docker` and no `--build`, and their manager could not run any gates. Their first issues could not be verified or landed. `roadmap` has no pin either, but it is docs only and needs nothing.
+- **SeaBeam's GitLab instance (currently parked)** would lose its only way to run gates, because build jobs only work for repositories on GitHub.
+- **The rootless image-build test can't pass yet.** The pinned build image (2.6.13) has no BuildKit, and tacplus#315 is still open, waiting on tacplus#829 and #830. Until then, a release's image is still built with `docker buildx` on the VM runners.
+
+What I recommended in the comment:
+1. The hub adds a `build.lock` to `onscreen`, `chaos` and `people`, and every new repository gets one when it is created.
+2. After the retirement, work in an unpinned repository fails at once with "pin it first" rather than falling back to the old path.
+3. SeaBeam stays parked, with a PROPOSALS.md entry saying it needs its own way to run build jobs on GitLab first.
+4. The removal lands once the three pins are in. The image-build test becomes its own follow-up, blocked by tacplus#315.
+
+The next run does the removal once a member agrees to or changes this and confirms the pins: https://github.com/tacplus-dev/looper/issues/73#issuecomment-6994085976
+= success: I haven't changed any code. Step 3 (retiring looper-docker and the broker) needs a decision from you first, so I commented on the issue, added `needs-decision`, and stopped as rule 1 asks.
+
+tacplus#340 is closed and tacplus now pins its build image. But the issue's condition that every repository is pinned, and its test, are not met yet:
+
+- **Three repositories have no pin.** `onscreen`, `chaos` and `people` contain only planning files and have approved issues waiting. Once the broker and the unpinned path are gone, their reports would have no `docker` and no `--build`, and their manager could not run any gates. Their first issues could not be verified or landed. `roadmap` has no pin either, but it is docs only and needs nothing.
+- **SeaBeam's GitLab instance (currently parked)** would lose its only way to run gates, because build jobs only work for repositories on GitHub.
+- **The rootless image-build test can't pass yet.** The pinned build image (2.6.13) has no BuildKit, and tacplus#315 is still open, waiting on tacplus#829 and #830. Until then, a release's image is still built with `docker buildx` on the VM runners.
+
+What I recommended in the comment:
+1. The hub adds a `build.lock` to `onscreen`, `chaos` and `people`, and every new repository gets one when it is created.
+2. After the retirement, work in an unpinned repository fails at once with "pin it first" rather than falling back to the old path.
+3. SeaBeam stays parked, with a PROPOSALS.md entry saying it needs its own way to run build jobs on GitLab first.
+4. The removal lands once the three pins are in. The image-build test becomes its own follow-up, blocked by tacplus#315.
+
+The next run does the removal once a member agrees to or changes this and confirms the pins: https://github.com/tacplus-dev/looper/issues/73#issuecomment-6994085976
+= usage: {"claude-opus-5-5":{"inputTokens":28,"outputTokens":8652,"cacheReadInputTokens":611389,"cacheCreationInputTokens":51251,"webSearchRequests":0,"costUSD":0.7054377999999999,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":3836,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}
