@@ -2792,6 +2792,24 @@ merge
 [[ "$(origin log --format=%s main | head -n 2 | tac | paste -sd'|')" == "fix 5|fix 4" ]] || fail "main: $(origin log --oneline main)"
 pass
 
+# The verdict job reads the queue again before each land it judges
+# (looper#184): a priority:high land queued while it judges another is judged
+# next, before the older ones it read at its start, and none is judged twice.
+scenario split-priority-requeued
+issue alpha 5 OPEN approved,bug "Unlabelled, newer."; issue alpha 6 OPEN approved,bug,priority:high "High, queued during the job."
+( d="$FIX/q-6"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b looper/alpha-6; echo 6 > "$d/six.txt"
+  git -C "$d" add -A; git -C "$d" commit -qm "fix 6"; mkdir -p "$d/.looper"
+  printf 'id=q6\ngates=true\nstate=queued\nqueued=2026-11-03T12:00:00Z\n' > "$d/.looper/land"
+  git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #6 (land queued)" )
+# #4's gates queue #6, as its report's --land would while the job runs.
+queue 4 2026-11-03T10:00:00Z four.txt 4 "git -C '$FIX/q-6' push -q origin looper/alpha-6"
+queue 5 2026-11-03T11:00:00Z five.txt 5
+verdict
+[[ "$(cut -d' ' -f1 "$FIX/verdict/lands" | paste -sd' ')" == "4 6 5" ]] || fail "lands: $(cat "$FIX/verdict/lands")"
+[[ "$(origin log --format=%s looper/staging | head -n 3 | tac | paste -sd'|')" == "fix 4|fix 6|fix 5" ]] || fail "staging: $(origin log --oneline looper/staging)"
+[[ "$(grep -c '] merging #' <<<"$OUT")" == 3 ]] || fail "a land judged twice: $OUT"
+pass
+
 # The verdict dir is the job's project dir's, which a VM's next job reuses
 # (looper#98): a stale verdict there, another job's (its id recorded, or none
 # from before the record), is cleared and the job runs; one holding this job's

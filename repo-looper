@@ -2383,7 +2383,7 @@ verdict_dir_fresh() {
 }
 
 verdict_batch() {
-  local q n id sha rc main staging
+  local q n id sha rc main staging first=1
   MANAGER_RUN="$VERDICT_DIR"
   verdict_dir_fresh
   mkdir -p "$VERDICT_DIR"; : > "$VERDICT_DIR/lands"
@@ -2398,8 +2398,15 @@ verdict_batch() {
   log "the verdict job of $REPO: its queued lands onto $STAGING, on main ${main:0:7}"
   image_start
   q="$(queued_lands)" || die "could not read $REPO's branches"
-  while read -r _ _ n id sha; do
-    [[ -n "$n" ]] || continue
+  # The queue read again before each land (looper#184): one queued since, at
+  # a higher priority, is judged before the older ones read before it. Each
+  # land taken is JUDGED, whatever its end, so that none is taken twice.
+  while :; do
+    if [[ -n "$first" ]]; then first=""
+    elif ! q="$(queued_lands)"; then log "could not read $REPO's branches again: the verdict job stops, the next batch judges what is left"; break; fi
+    read -r _ _ n id sha <<<"$q" || true
+    [[ -n "$n" ]] || break
+    JUDGED[$id]=1
     # A newer image between batch members (looper#153): the lands judged so far
     # are the verdict's, the rest the next batch's, as when its time is short.
     if image_moved; then log "the verdict job stops: the next batch, on the new image, judges what is left"; break; fi
@@ -2409,7 +2416,7 @@ verdict_batch() {
     (( JUDGE_RC != LAND_NO_RUNNER )) || { log "#$n: left queued: no runner took its build job; the verdict job stops, the next batch judges what is left"; break; }
     echo "$n $id $sha $JUDGE_RC" >> "$VERDICT_DIR/lands"
     if (( JUDGE_RC == 0 )); then log "#$n: green"; else log "#$n: not merged (exit $JUDGE_RC)"; fi
-  done <<<"$q"
+  done
   staging="$(git -C "$CHECKOUT" rev-parse "$STAGING_REF")"
   git -C "$CHECKOUT" push -q -f origin "$staging:refs/heads/$STAGING" || die "could not push $STAGING"
   printf 'main=%s\nstaging=%s\njob=%s\n' "$main" "$staging" "${CI_JOB_URL:-}" > "$VERDICT_DIR/verdict"
