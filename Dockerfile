@@ -53,6 +53,17 @@ RUN v="$(go version /usr/local/bin/docker | sed -n 's|^/usr/local/bin/docker: go
 RUN command -v jq >/dev/null || { apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*; }
 # openssl: the nonce of each prompt (repo-looper, looper#40).
 RUN command -v openssl >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*; }
+# npm, replaced by a fixed release (looper#186): build:2.6 ships npm 11.21.1, whose
+# bundled ip-address 10.7.2 has GHSA-rxp7-6hxx-x8q5 (fixed in 10.7.4); 11.21.3
+# bundles 10.7.5. Replaced before the claude CLI's install, which it runs; the
+# build checks the bundled ip-address is 10.7.4 or later. Drop it when build:2.6
+# itself carries npm 11.21.3 or later.
+ARG NPM_VERSION=11.21.3
+RUN npm install -g "npm@${NPM_VERSION}" && npm cache clean --force && \
+    npm --version | grep -qxF "$NPM_VERSION" && \
+    v="$(jq -r .version "$(npm root -g)/npm/node_modules/ip-address/package.json")"; \
+    test -n "$v" && test "$(printf '%s\n' 10.7.4 "$v" | sort -V | head -n1)" = 10.7.4 || \
+      { echo "npm $(npm --version 2>/dev/null || echo ?): ip-address ${v:-?}, not $NPM_VERSION with 10.7.4 or later (GHSA-rxp7-6hxx-x8q5)" >&2; exit 1; }
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 # glab: the model's way to GitLab issues on a GitLab-hosted instance (SeaBeam's,
 # looper#29), as gh is on GitHub; the looper itself calls GitLab's API with curl.
