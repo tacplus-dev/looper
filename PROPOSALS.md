@@ -4,6 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **CodeQL's pod resized from the nightlies' peaks** (2026-11-18, #189): the security job that runs CodeQL now asks
+  `2 12Gi 3500m 12Gi` (`BUILD_SCAN_CODEQL_REQUESTS`), the build runner's ceilings. That is three times the `--ram`
+  that measurement showed each of eventbus's, stratum's, mailbox's and llmproxy's source trees needs. The generated
+  trees the nightly also scans could not be measured outside a build. A week of nightlies' `### Memory` lines
+  (each analysis's peak against the job's memory) would show the real need. If the peaks sit well under 12Gi, a
+  smaller request frees the spot pool for the lands' builds. If one comes close, the next step is splitting the
+  source and generated trees' analyses into jobs of their own.
 - **The image scan reads the image's npm packages too** (2026-11-18, nightly scan; #186, #187, #188): the build's
   image scan (#167) puts only the Go binaries of `/usr/local/bin` under the policy, so the packages bundled in the
   base image's npm (`/usr/local/lib/node_modules/npm`) are seen by no deterministic check. The nightly scan's model

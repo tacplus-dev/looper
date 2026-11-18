@@ -1193,6 +1193,26 @@ leaves the pool room; a build's jobs never). Its hour is the quietest of the lan
 build hours ([Nightly recap](#nightly-recap)).
 The schedule: `{"nightly": true}`, on `main`. A release's `sbom-<repo>` makes the SBOM of the image `publish-<repo>` pushed.
 
+**CodeQL's memory** (looper#189). Unless it is told, CodeQL gives itself only a fraction of what it reads:
+`codeql resolve ram` in a 4Gi pod is a 1055 MB heap (703 MiB to the evaluator), and the Java extractor gets no `-Xmx`.
+On 2026-11-18 every Java and Rust nightly failed with "CodeQL is out of memory" (eventbus, stratum, mailbox, llmproxy).
+The same failure comes back on eventbus's source tree with CodeQL 2.27.3's defaults. With `--ram 3000` and
+`--threads 1`, all four source trees pass. CodeQL's own process tree peaked at 1.4-2.4 GB extracting and 2.25-2.27 GB
+analyzing, because the evaluator fills the budget it is given. `looper-scan` therefore passes `--ram` and `--threads`
+to both `database create` and `database analyze`, sized to the job's cgroup, never the node's:
+- `--threads` is the CPU limit, rounded down, at least 1.
+- `--ram` is the memory limit less a reserve of 2048 MB or a quarter of the limit, whichever is larger. The reserve
+  covers the JVMs' own memory and the native extractors' (Rust's), which `--ram` does not bound.
+
+`BUILD_CODEQL_RAM` (MB) and `BUILD_CODEQL_THREADS` override them. The job that runs CodeQL, a nightly's or a
+release's `security-<repo>`, asks `BUILD_SCAN_CODEQL_REQUESTS` (`"<cpu> <memory> <cpu limit> <memory limit>"`, default
+`2 12Gi 3500m 12Gi`, the build runner's ceilings). In that pod, CodeQL runs with `--ram 9216` and `--threads 3`: three
+times the budget each source tree needed, for the generated trees the nightly also scans. The memory request is the
+limit, so the pod is never evicted for memory it was promised. A build's job runs no CodeQL and keeps the runner's
+defaults. The summary's `### Memory` gives each analysis's peak (the job's working set: memory.current less its
+inactive page cache, read every second) against the job's memory. That figure is what to resize from. An analysis
+that runs out of memory names its `--ram` in its problem.
+
 | Tool | Version | Pinned by | Runs on |
 |---|---|---|---|
 | [OSV-Scanner](https://github.com/google/osv-scanner) | 2.7.1 | module checksum (`go install`, sum.golang.org), built with Go 1.27.4: the release binary's Go is vulnerable (looper#63); 2.7.1 requires `github.com/klauspost/compress` v1.20.2 (GO-2026-6865, looper#101), which the image build checks | every lockfile: go.mod, Cargo.lock, Maven, pip, npm, NuGet |

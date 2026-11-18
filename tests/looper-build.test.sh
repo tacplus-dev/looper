@@ -1457,8 +1457,23 @@ grep -qxF '    BUILD_BASE: ""' "$TMP/sec.yml" || fail "the security job is not g
 grep -qxF '    - looper-scan run' "$TMP/sec.yml" || fail "does not run looper-scan"
 grep -qxF '    paths: [gates.log, build-verdict, built/, generated/]' "$y" || fail "the gates keep no generated code"
 sed -n '/^security-report:$/,$p' "$y" | grep -qxF '    - looper-scan report' || fail "no report job"
+! grep -q KUBERNETES_ "$TMP/sec.yml" || fail "a build's security job (no CodeQL) is sized: $(cat "$TMP/sec.yml")"
 build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 -- plan 2>"$TMP/err" || fail "release plan failed"
 grep -qxF '    BUILD_SCAN_KIND: "release"' "$OUT/build-gates.yml" || fail "not a release's checks"
+pass
+
+# looper#189: CodeQL ran out of memory in the build runner's default pod.
+NAME="plan: a nightly's and a release's security job (CodeQL's) asks BUILD_SCAN_CODEQL_REQUESTS, a build's the runner's defaults"
+sec_vars() { sed -n '/^security-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep '^    KUBERNETES_' | sed 's/^ *//' | paste -sd' '; }
+build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+[[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "2" KUBERNETES_MEMORY_REQUEST: "12Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
+  fail "nightly: $(sec_vars)"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_SCAN_CODEQL_REQUESTS="1500m 6Gi 3 8Gi" -- plan 2>"$TMP/err" ||
+  fail "release plan failed: $(cat "$TMP/err")"
+[[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "1500m" KUBERNETES_MEMORY_REQUEST: "6Gi" KUBERNETES_CPU_LIMIT: "3" KUBERNETES_MEMORY_LIMIT: "8Gi"' ]] ||
+  fail "release: $(sec_vars)"
+if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_SCAN_CODEQL_REQUESTS="2 12Gi" -- plan 2>"$TMP/err"; then fail "planned with two of four"; fi
+verdict_is "fail: BUILD_SCAN_CODEQL_REQUESTS '2 12Gi' is not"
 pass
 
 NAME="plan: a nightly scans the main branch as it is, and is no release"
@@ -2298,6 +2313,30 @@ rm "$TMP/private"
 [[ ! -s "$TMP/codeql.log" ]] || fail "CodeQL ran on a private repository"
 grep -q "^- codeql: not run: demo is not known to be public" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
 unset 'SCAN_API[-1]'
+pass
+
+# looper#189: CodeQL's default --ram is a fraction of what it reads, and the
+# nightly's Java and Rust analyses ran out of its heap in a job with room.
+NAME="security: CodeQL's --ram and --threads are the job's (its cgroup's limits, a reserve left), or BUILD_CODEQL_RAM and BUILD_CODEQL_THREADS; its peak is in the summary"
+mkdir -p "$TMP/scanbin-nightly" "$TMP/cgroup"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
+SCAN_API+=(PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH" BUILD_SCAN_CGROUP="$TMP/cgroup")
+echo $((5000 * 1048576)) > "$TMP/cgroup/memory.max"; echo "250000 100000" > "$TMP/cgroup/cpu.max"
+echo $((1500 * 1048576)) > "$TMP/cgroup/memory.current"; printf 'anon 1\ninactive_file %d\n' $((300 * 1048576)) > "$TMP/cgroup/memory.stat"
+mem=$(( $(awk '$1 == "MemTotal:" { print int($2 / 1024) }' /proc/meminfo) )); ((mem < 5000)) || mem=5000
+ram=$((mem - (mem / 4 > 2048 ? mem / 4 : 2048))); ((ram > 1024)) || ram=1024
+cpus="$(nproc)"; ((cpus < 2)) || cpus=2
+if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err"; then fail "passed"; fi
+for c in create analyze; do
+  grep -q "^codeql database $c .* --ram=$ram --threads=$cpus\$" "$TMP/codeql.log" || fail "$c not sized to the job ($ram MB, $cpus CPUs): $(cat "$TMP/codeql.log")"
+done
+grep -qxF -e "- codeql: source: go: 1200 MB at its peak of the job's $mem MB (--ram $ram, --threads $cpus)" "$OUT/security/summary.md" ||
+  fail "no peak: $(cat "$OUT/security/summary.md")"
+if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly BUILD_CODEQL_RAM=9000 BUILD_CODEQL_THREADS=3 -- run 2>"$TMP/err"; then fail "passed"; fi
+grep -q "^codeql database analyze .* --ram=9000 --threads=3\$" "$TMP/codeql.log" || fail "not the --ram and --threads asked for: $(cat "$TMP/codeql.log")"
+if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly BUILD_CODEQL_RAM=9g -- run 2>"$TMP/err"; then fail "passed"; fi
+grep -qxF -e "- codeql: BUILD_CODEQL_RAM '9g' is not a size in MB" "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+[[ ! -s "$TMP/codeql.log" ]] || fail "CodeQL ran: $(cat "$TMP/codeql.log")"
+unset 'SCAN_API[-1]' 'SCAN_API[-1]'
 pass
 
 # CodeQL's findings (the stub's SARIF), CRITICAL, at each path:line given.

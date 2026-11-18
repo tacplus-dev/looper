@@ -75,6 +75,12 @@ BUILD_DOCKER_TAGS="${BUILD_DOCKER_TAGS:-$BUILD_RUNNER_TAGS}"
 # the build runner's), and its fan-out BUILD_NIGHTLY_SLOTS repositories at a time.
 BUILD_NIGHTLY_TAGS="${BUILD_NIGHTLY_TAGS:-$BUILD_RUNNER_TAGS}"
 BUILD_NIGHTLY_SLOTS="${BUILD_NIGHTLY_SLOTS:-1}"
+# The security job's requests and limits where it runs CodeQL (a nightly's
+# and a release's, looper#189), as GitLab's KUBERNETES_* job variables:
+# "<cpu> <memory> <cpu limit> <memory limit>", within the build runner's
+# ceilings (3500m, 12Gi); looper-scan sizes CodeQL's --ram and --threads to
+# the limits. A build's job keeps the runner's defaults (no CodeQL).
+BUILD_SCAN_CODEQL_REQUESTS="${BUILD_SCAN_CODEQL_REQUESTS:-2 12Gi 3500m 12Gi}"
 # Host Docker's builder (buildx), and the emulators for a foreign platform, by digest.
 BUILD_BUILDKIT_IMAGE="${BUILD_BUILDKIT_IMAGE:-moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea}"
 BUILD_BINFMT_IMAGE="${BUILD_BINFMT_IMAGE:-tonistiigi/binfmt:qemu-v10.0.4@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541}"
@@ -148,6 +154,19 @@ check_inputs() {
     verdict fail "BUILD_GATES '${BUILD_GATES:-}' is not a gate set (gates.yaml's set names, joined by +)"
   [[ -z "${BUILD_BASE:-}" || "$BUILD_BASE" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_BASE '$BUILD_BASE' is not a full commit hash"
   [[ "${BUILD_WAIT:-}" =~ ^[0-9]*$ ]] || verdict fail "BUILD_WAIT '$BUILD_WAIT' is not a number of seconds"
+  [[ "$BUILD_SCAN_CODEQL_REQUESTS" =~ ^$QUANTITY\ $QUANTITY\ $QUANTITY\ $QUANTITY$ ]] ||
+    verdict fail "BUILD_SCAN_CODEQL_REQUESTS '$BUILD_SCAN_CODEQL_REQUESTS' is not \"<cpu> <memory> <cpu limit> <memory limit>\""
+}
+
+# A Kubernetes quantity, as a request or a limit is (1, 3500m, 12Gi).
+QUANTITY='[0-9]+(\.[0-9]+)?(m|[KMGTPE]i?)?'
+
+# The security job's KUBERNETES_* variables (BUILD_SCAN_CODEQL_REQUESTS) where
+# it runs CodeQL: a nightly's and a release's (looper#189).
+scan_requests() {
+  [[ "$(scan_kind)" != build ]] || return 0
+  local r; read -r -a r <<<"$BUILD_SCAN_CODEQL_REQUESTS"
+  printf '    KUBERNETES_CPU_REQUEST: "%s"\n    KUBERNETES_MEMORY_REQUEST: "%s"\n    KUBERNETES_CPU_LIMIT: "%s"\n    KUBERNETES_MEMORY_LIMIT: "%s"\n' "${r[@]}"
 }
 
 # A run's URL, as a record names it (written into the child pipeline).
@@ -531,6 +550,9 @@ security-$BUILD_REPO:
     BUILD_ORG: "$BUILD_ORG"
     BUILD_SCAN_KIND: "$(scan_kind)"
     BUILD_BASE: "${BUILD_BASE:-}"
+EOF
+  scan_requests
+  cat <<EOF
   script:
     - looper-scan run
   artifacts:

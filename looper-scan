@@ -68,6 +68,12 @@ CODEQL_VERSION="${BUILD_CODEQL_VERSION:-2.27.3}"
 CODEQL_URL="${BUILD_CODEQL_URL:-https://github.com/github/codeql-action/releases/download/codeql-bundle-v$CODEQL_VERSION/codeql-bundle-linux-arm64.tar.gz}"
 CODEQL_SHA256="${BUILD_CODEQL_SHA256:-0c9e32e9fcf65be4ab8df0cf0a7bb83e64aff4099fffc5f4930e84c12a454c8b}"
 CODEQL_DIR="${BUILD_CODEQL_DIR:-${HOME:-/tmp}/.cache/looper-codeql/$CODEQL_VERSION}"
+# CodeQL's memory in MB (its --ram) and threads (its --threads); unset, they
+# are sized to the job's memory and CPUs, never the node's (looper#189).
+CODEQL_RAM="${BUILD_CODEQL_RAM:-}"
+CODEQL_THREADS="${BUILD_CODEQL_THREADS:-}"
+# The job's cgroup, whose limits size SpotBugs and CodeQL.
+SCAN_CGROUP="${BUILD_SCAN_CGROUP:-/sys/fs/cgroup}"
 # The exceptions a repository accepts, at its root.
 EXCEPTIONS_FILE=security-exceptions.yaml
 # The findings a repository accepts as its starting point, at its root (looper#146).
@@ -118,6 +124,8 @@ problems=()
 notes=()
 # What the run reports and does not fail on: an exception not scoped by a where.
 warnings=()
+# The memory CodeQL's analyses took, at their peak (looper#189).
+peaks=()
 tool_error() { # tool tree dir what
   if [[ "$3" == "$2" ]]; then problems+=("$1: $4"); else notes+=("$1: ${3#"$2"/}: not analyzed ($4)"); fi
   log "$1: $4 ($3)"
@@ -501,19 +509,86 @@ JQ_SARIF='
 # memory (its cgroup's limit, else the machine's), never under the launcher's
 # own 768, which kernel's analysis outgrew (looper#149).
 spotbugs_heap() {
-  local f b="" m
+  local m
   if [[ -n "$SPOTBUGS_MAXHEAP" ]]; then
     [[ "$SPOTBUGS_MAXHEAP" =~ ^[1-9][0-9]*$ ]] || return 1
     echo "$SPOTBUGS_MAXHEAP"; return 0
   fi
-  for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+  m=$(($(job_memory_mb) * 3 / 4))
+  echo $((m > 768 ? m : 768))
+}
+
+# The job's memory in MB: its cgroup's limit (v2, else v1), else the machine's.
+job_memory_mb() {
+  local f b="" m
+  for f in "$SCAN_CGROUP/memory.max" "$SCAN_CGROUP/memory/memory.limit_in_bytes"; do
     b="$(cat "$f" 2>/dev/null)" && [[ "$b" =~ ^[0-9]{1,18}$ ]] && break
     b=""
   done
   m="$(awk '$1 == "MemTotal:" { printf "%d", $2 * 1024 }' /proc/meminfo 2>/dev/null)" || m=""
   [[ -n "$b" && ( -z "$m" || "$b" -lt "$m" ) ]] || b="${m:-0}"
-  m=$((b / 1048576 * 3 / 4))
-  echo $((m > 768 ? m : 768))
+  echo $((b / 1048576))
+}
+
+# The job's CPUs, whole: its cgroup's quota (v2's cpu.max, else v1's), else
+# the machine's; at least 1.
+job_cpus() {
+  local q p n
+  if read -r q p 2>/dev/null < "$SCAN_CGROUP/cpu.max" && [[ "$q" =~ ^[0-9]+$ && "$p" =~ ^[1-9][0-9]*$ ]]; then :
+  else q="$(cat "$SCAN_CGROUP/cpu/cpu.cfs_quota_us" 2>/dev/null)"; p="$(cat "$SCAN_CGROUP/cpu/cpu.cfs_period_us" 2>/dev/null)"; fi
+  n="$(nproc 2>/dev/null)" || n=1
+  if [[ "$q" =~ ^[0-9]+$ && "$p" =~ ^[1-9][0-9]*$ ]] && ((q / p < n)); then n=$((q / p)); fi
+  echo $((n > 1 ? n : 1))
+}
+
+# CodeQL's --ram and --threads (looper#189): BUILD_CODEQL_RAM and
+# BUILD_CODEQL_THREADS, else the job's. Its --ram bounds the evaluator's and
+# the Java extractor's heaps, not the JVMs' own memory nor its native
+# extractors' (Rust's): CODEQL_RESERVE_MB of the job's is left them, at least
+# a quarter. Unset, CodeQL reads the node's memory, not the pod's.
+CODEQL_RESERVE_MB=2048
+codeql_ram() {
+  local m r
+  if [[ -n "$CODEQL_RAM" ]]; then
+    [[ "$CODEQL_RAM" =~ ^[1-9][0-9]*$ ]] || return 1
+    echo "$CODEQL_RAM"; return 0
+  fi
+  m="$(job_memory_mb)"; r=$((m / 4 > CODEQL_RESERVE_MB ? m / 4 : CODEQL_RESERVE_MB))
+  echo $((m - r > 1024 ? m - r : 1024))
+}
+codeql_threads() {
+  if [[ -n "$CODEQL_THREADS" ]]; then
+    [[ "$CODEQL_THREADS" =~ ^[1-9][0-9]*$ ]] || return 1
+    echo "$CODEQL_THREADS"; return 0
+  fi
+  job_cpus
+}
+
+# The job's memory in MB at its highest while a command runs (looper#189),
+# into FILE: its working set (the cgroup's memory.current less its inactive
+# page cache, what the kubelet measures against the limit), read every second
+# (nothing else of the job runs then), above what FILE holds; nothing without a
+# cgroup v2.
+working_set_mb() {
+  local c i
+  c="$(cat "$SCAN_CGROUP/memory.current" 2>/dev/null)" && [[ "$c" =~ ^[0-9]+$ ]] || return 1
+  i="$(awk '$1 == "inactive_file" { print $2 }' "$SCAN_CGROUP/memory.stat" 2>/dev/null)"
+  [[ "$i" =~ ^[0-9]+$ && "$i" -le "$c" ]] || i=0
+  echo $(((c - i) / 1048576))
+}
+peak_sample() { # file
+  local p c
+  c="$(working_set_mb)" || return 0
+  p="$(cat "$1" 2>/dev/null)"; [[ "$p" =~ ^[0-9]+$ ]] && ((p >= c)) || echo "$c" > "$1"
+}
+peak_of() { # file command...
+  local f="$1" w rc=0; shift
+  working_set_mb >/dev/null || { "$@"; return; }
+  peak_sample "$f"
+  ( while sleep 1; do peak_sample "$f"; done ) & w=$!
+  "$@" || rc=$?
+  kill "$w" 2>/dev/null; wait "$w" 2>/dev/null || true
+  return "$rc"
 }
 
 # The bytecode SpotBugs reads: every target/classes of the tree, which the
@@ -590,7 +665,7 @@ codeql_bundle() {
 }
 
 tool_codeql() { # tree label prefix
-  local langs=() lang db raw mode
+  local langs=() lang db raw mode ram threads peak rc
   [[ -f "$1/go.mod" ]] && langs+=(go)
   has_files "$1" '*.py' && langs+=(python)
   has_files "$1" '*.java' && langs+=(java)
@@ -604,14 +679,20 @@ tool_codeql() { # tree label prefix
     codeql_bundle || { problems+=("codeql: the pinned bundle $CODEQL_VERSION could not be fetched"); return 0; }
     PATH="$CODEQL_DIR/codeql:$PATH"
   fi
+  ram="$(codeql_ram)" || { problems+=("codeql: BUILD_CODEQL_RAM '$CODEQL_RAM' is not a size in MB"); return 0; }
+  threads="$(codeql_threads)" || { problems+=("codeql: BUILD_CODEQL_THREADS '$CODEQL_THREADS' is not a count"); return 0; }
   for lang in "${langs[@]}"; do
-    db="$SCAN_WORK/codeql-$2-$lang"; raw="$SCAN_OUT/raw/codeql-$2-$lang.sarif"
+    db="$SCAN_WORK/codeql-$2-$lang"; raw="$SCAN_OUT/raw/codeql-$2-$lang.sarif"; peak="$SCAN_WORK/codeql-$2-$lang.peak"
     mode=none; [[ "$lang" == go ]] && mode=autobuild
-    if ! codeql database create "$db" --language="$lang" --build-mode="$mode" --source-root="$1" --overwrite -q \
-           > "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1 ||
-       ! codeql database analyze "$db" "codeql/$lang-queries" --format=sarif-latest --output="$raw" -q \
-           >> "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1; then
-      tool_error codeql "$1" "$1" "$lang: $(tool_cause "$SCAN_OUT/raw/codeql-$2-$lang.log")"; continue
+    log "codeql: $2: $lang: --ram $ram --threads $threads, the job's $(job_memory_mb) MB and $(job_cpus) CPU(s)"
+    rc=0
+    peak_of "$peak" codeql database create "$db" --language="$lang" --build-mode="$mode" --source-root="$1" --overwrite -q \
+      --ram="$ram" --threads="$threads" > "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1 &&
+    peak_of "$peak" codeql database analyze "$db" "codeql/$lang-queries" --format=sarif-latest --output="$raw" -q \
+      --ram="$ram" --threads="$threads" >> "$SCAN_OUT/raw/codeql-$2-$lang.log" 2>&1 || rc=$?
+    [[ ! -f "$peak" ]] || peaks+=("codeql: $2: $lang: $(cat "$peak") MB at its peak of the job's $(job_memory_mb) MB (--ram $ram, --threads $threads)")
+    if ((rc != 0)); then
+      tool_error codeql "$1" "$1" "$lang: $(tool_cause "$SCAN_OUT/raw/codeql-$2-$lang.log") (--ram $ram of the job's $(job_memory_mb) MB)"; continue
     fi
     norm "$SCAN_OUT/norm/codeql-$2-$lang.json" "$JQ_SARIF" "$raw" --arg tool codeql --arg root "$1" --arg prefix "$3"
   done
@@ -1077,6 +1158,7 @@ write_summary() { # blocking
     for p in "${binaries[@]}"; do echo "- $p"; done
   fi
   if ((${#notes[@]})); then echo; echo "### Not analyzed, or in part"; for p in "${notes[@]}"; do echo "- $p"; done; fi
+  if ((${#peaks[@]})); then echo; echo "### Memory"; for p in "${peaks[@]}"; do echo "- $p"; done; fi
   echo; echo "### Checked against"; jq -r 'to_entries[] | "- \(.key): \(.value | to_entries | map("\(.key) \(.value)") | join(", "))"' "$SCAN_OUT/databases.json"
   echo; echo "### Tools"; jq -r 'to_entries[] | "- \(.key) \(.value)"' "$SCAN_OUT/tools.json"
 }
