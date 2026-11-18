@@ -142,3 +142,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-17 looper issue An approved issue whose run finds nothing to do is relaunched every few minutes (kernel#66 ~20 runs, llmproxy#63 >10 on 2026-11-17) (#181)
 - 2026-11-17 looper issue Security floor: a land fails only on blocking findings its change adds; main's standing findings stay the nightly's issues (#180)
 - 2026-11-17 looper issue security-exceptions.yaml: an optional where scopes an exception to a path, so an accepted finding is accepted only where it is (#182)
+- 2026-11-18 looper issue The verdict job walks the queue it read at its start: a priority:high land queued after it starts waits behind every older one (hours per land for unpinned tacplus) (#184)
