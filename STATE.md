@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-17 by looper (#181).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-18 by looper (#185).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -133,7 +133,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-17 by lo
   through its `import:`, kept aside as tacplus's to scan, #108, #149; SpotBugs' heap sized to the job, #149) and
   Trivy on the release jars the gates keep (`trivy rootfs`: the dependencies they shade, #147), a nightly (input
   `nightly: true`, main's head, no commit status; with no `repo`, one pipeline fanning out to every repository whose
-  main pins its build image, each its own child pipeline, #164) and a release add
+  main pins its build image, each its own child pipeline, #164; `BUILD_NIGHTLY_SLOTS`, 1, at a time, each repository's plan and child in the resource group
+  `nightly-slot-<n>`, every nightly job on `BUILD_NIGHTLY_TAGS`, a build's never, so the lands' builds never wait behind it, #185:
+  still the build runner's tags until the cluster serves a nightly runner entry, and the schedule's hour the recap's quietest build hours, PROPOSALS.md) and a release add
   CodeQL (public repositories only) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it (only in its `where`, a path or a glob, when it has one; an
   entry without one accepts its id everywhere and the report warns, #182); a land (a build with a base) fails only on the blocking
