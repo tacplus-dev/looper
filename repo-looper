@@ -2426,11 +2426,12 @@ manage() {
 # rebased on looper/staging (main, then each green land before it; generated
 # files regenerated) and on its own gates, pushes staging and writes the verdict to DIR, its artifacts:
 # `verdict` (main=, staging=, job=), `lands` ("<issue> <id> <sha> <rc>" a line,
-# in order) and each land's record. It comments on no issue and never touches
-# main. The manager job (--merge DIR, looper-manager, the only job with the
+# in order) and each land's record. It never touches main, and comments only
+# on a land it drops (a conflict, red, refused), at once (looper#192): a green's
+# verdict waits for main. The manager job (--merge DIR, looper-manager, the only job with the
 # manager's token) runs no repository code: it checks that looper/staging is
 # the commit the verdict named and that main is still the one it was built on,
-# fast-forwards main to it, and posts each verdict, the HISTORY.md lines and
+# fast-forwards main to it, and posts each verdict not given yet, the HISTORY.md lines and
 # the releases' lines (each tag that came since the verdict job started).
 # A main moved since by planning files alone, which no gate reads, it rebases
 # staging onto first (restage_on_planning, looper#114). Anything else moved,
@@ -2487,7 +2488,11 @@ verdict_batch() {
     (( rc == 0 )) || continue
     (( JUDGE_RC != LAND_NO_RUNNER )) || { log "#$n: left queued: no runner took its build job; the verdict job stops, the next batch judges what is left"; break; }
     echo "$n $id $sha $JUDGE_RC" >> "$VERDICT_DIR/lands"
-    if (( JUDGE_RC == 0 )); then log "#$n: green"; else log "#$n: not merged (exit $JUDGE_RC)"; fi
+    # A land dropped (a conflict, red, refused) gets its verdict and labels at
+    # once (looper#192): its report rebases while the job goes on. Only a
+    # green waits for the manager job, once main has it.
+    if (( JUDGE_RC == 0 )); then log "#$n: green"
+    else VERDICT_JOB="${CI_JOB_URL:-}" CI_JOB_URL="" post_land "$n" "$id" "$sha" "$JUDGE_RC" "$VERDICT_DIR/$n-$id"; fi
   done
   staging="$(git -C "$CHECKOUT" rev-parse "$STAGING_REF")"
   git -C "$CHECKOUT" push -q -f origin "$staging:refs/heads/$STAGING" || die "could not push $STAGING"

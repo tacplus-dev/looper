@@ -2730,8 +2730,12 @@ main_unchanged
 [[ "$(origin show looper/staging:four.txt)" == 4 ]] || fail "staging: $(origin log --oneline looper/staging)"
 ! origin show looper/staging:five.txt >/dev/null 2>&1 || fail "red on staging"
 [[ "$(origin rev-parse looper/staging^)" == "$(origin rev-parse main)" ]] || fail "staging is not main and the green land"
-[[ ! -s "$FIX/comments" ]] || fail "the verdict job commented: $(cat "$FIX/comments")"
-has "$(labels alpha 4)" "looper:landing"; has "$(labels alpha 5)" "looper:landing"
+# The red land's verdict is given at once (looper#192); the green's waits for main.
+[[ "$(grep -c '^alpha#' "$FIX/comments")" == 1 ]] || fail "the verdict job's comments: $(cat "$FIX/comments")"
+has "$(cat "$FIX/comments")" "alpha#5 The manager did not merge [\`looper/alpha-5\`]"
+has "$(cat "$FIX/comments")" "Its gates: job https://gl.test/jobs/90."; lacks "$(cat "$FIX/comments")" "Manager: job"
+has "$OUT" "#5: not merged (exit 4)"
+has "$(labels alpha 4)" "looper:landing"; lacks "$(labels alpha 5)" "looper:landing"
 has "$(cat "$FIX/verdict/verdict")" "staging=$(staging)"; has "$(cat "$FIX/verdict/verdict")" "main=$(origin rev-parse main)"
 # A planning file the repository lacks: the manager job adds it once main is staging.
 mkdir -p "$FIX/templates"; echo '# State' > "$FIX/templates/STATE.md"
@@ -2747,7 +2751,7 @@ has "$c" "alpha#5 The manager did not merge [\`looper/alpha-5\`]"; has "$c" "the
 lacks "$c" "alpha#6 The manager"
 # Its log is the one manager's, which the nightly recap reads (looper#72).
 has "$OUT" "merging #4 (looper/alpha-4, queued 2026-11-03T10:00:00Z)"; has "$OUT" "#4: landed on main: "
-has "$OUT" "#5: not merged (exit 4)"
+has "$OUT" "#5: its verdict is given already"; [[ "$(grep -c '^alpha#5 ' <<<"$c")" == 1 ]] || fail "#5's verdict twice: $c"
 has "$(history)" "- 2026-11-03 looper issue Done. (#6)"
 origin rev-parse -q --verify refs/heads/looper/alpha-4 >/dev/null && fail "the merged branch is left"
 branch_5="$(origin rev-parse -q --verify refs/heads/looper/alpha-5)" || fail "the red branch is gone"
@@ -2757,6 +2761,26 @@ for n in 4 5 6; do lacks "$(labels alpha "$n")" "looper:landing"; done
 : > "$FIX/comments"; m="$(origin rev-parse main)"
 ! OUT="$(looper -- --repo alpha --merge "$FIX/verdict" 2>&1)" || fail "merged a verdict twice: $OUT"
 [[ "$(origin rev-parse main)" == "$m" && ! -s "$FIX/comments" ]] || fail "the second merge: $OUT"
+pass
+
+# A land the verdict job drops gets its verdict at once (looper#192), not at
+# the job's end: its label moves before the next land's gates start, so the
+# kicker starts its report while the job goes on. Only a green waits for main.
+scenario split-dropped-at-once
+issue alpha 5 OPEN approved,bug "Gated after it."
+queue 4 2026-11-03T10:00:00Z a.txt 4
+on_main a.txt main
+queue 5 2026-11-03T11:00:00Z five.txt 5 "cp '$FIX/comments' '$FIX/at-gate'; jq -r '[.labels[].name] | join(\",\")' '$FIX/issues/alpha-4.json' > '$FIX/at-gate-labels'"
+verdict CI_JOB_URL=https://gl.test/jobs/90
+[[ -f "$FIX/at-gate" ]] || fail "#5's gates did not run: $OUT"
+has "$(cat "$FIX/at-gate")" "alpha#4 The manager sent [\`looper/alpha-4\`]"; has "$(cat "$FIX/at-gate")" "conflicts in \`a.txt\`"
+lacks "$(cat "$FIX/at-gate-labels")" "looper:landing"
+lacks "$(cat "$FIX/comments")" "alpha#5 "; has "$(labels alpha 5)" "looper:landing"
+origin rev-parse -q --verify refs/heads/looper/alpha-4 >/dev/null || fail "the conflicted branch is gone"
+merge
+has "$OUT" "#4: its verdict is given already"
+[[ "$(grep -c '^alpha#4 ' "$FIX/comments")" == 1 ]] || fail "#4's verdict twice: $(cat "$FIX/comments")"
+has "$(grep '^alpha#5 ' "$FIX/comments")" "The manager merged"
 pass
 
 # A verdict job that sees a newer image between batch members (looper#153)
@@ -3445,12 +3469,13 @@ verdict
 [[ ! -e "$FIX/ran-gates" ]] || fail "a refused land's gates ran"
 ! origin show looper/staging:ROADMAP.md >/dev/null 2>&1 || fail "a refused land on staging"
 [[ "$(origin show looper/staging:eight.txt)" == 8 ]] || fail "staging: $(origin log --oneline looper/staging)"
+# Refused, it is dropped: its verdict given at once (looper#192).
+has "$OUT" "#4: not merged (exit 7)"
 merge
 ! origin cat-file -e main:ROADMAP.md 2>/dev/null || fail "ROADMAP.md changed on main"
 [[ "$(landed eight.txt)" == 8 ]] || fail "main: $(origin log --oneline main)"
 refused 4 "#4's text does not say it is at Jody's request"; refused 5 "#5 was approved by eve, who has no write access"
 refused 6 "#6's text is eve's (NONE), not a member's"; refused 7 "#7 was approved by tacplus-looper[bot], a bot"
-has "$OUT" "#4: not merged (exit 7)"
 # No retry: the next batch has nothing to judge, and says nothing.
 : > "$FIX/comments"; m="$(origin rev-parse main)"
 verdict; [[ ! -s "$FIX/verdict/lands" ]] || fail "judged again: $(cat "$FIX/verdict/lands")"
