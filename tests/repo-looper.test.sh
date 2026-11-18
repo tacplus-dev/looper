@@ -2810,6 +2810,51 @@ verdict
 [[ "$(grep -c '] merging #' <<<"$OUT")" == 3 ]] || fail "a land judged twice: $OUT"
 pass
 
+# A verdict job's green is recorded as it is given (looper#191): a job
+# cancelled before it pushes staging loses none. The next job's rebase of the
+# same branch onto the same main is a new commit (its committer's time), but
+# the same tree on the same base tree, gate set and image: it reuses that
+# green, its gates not run again, and lands the commit judged green. Another
+# image, or another base, runs them.
+scenario split-verdict-green-reused
+IMG="ghcr.io/tacplus-dev/looper@sha256:$(printf 'a%.0s' {1..64})"
+queue 4 2026-11-03T10:00:00Z four.txt 4 "echo ran >> '$FIX/gate-runs'"
+verdict CI_JOB_IMAGE="$IMG" CI_JOB_URL=https://gl.test/jobs/90 GIT_COMMITTER_DATE=2026-11-18T07:00:00Z
+[[ "$(wc -l < "$FIX/gate-runs")" == 1 ]] || fail "gate runs: $(cat "$FIX/gate-runs")"
+green="$(origin rev-parse looper/staging)"
+[[ "$(origin rev-parse looper/green-alpha-4^)" == "$green" ]] || fail "no record of the green: $(origin branch)"
+# The job cancelled: no staging, no merge.
+origin update-ref -d refs/heads/looper/staging
+verdict CI_JOB_IMAGE="$IMG" CI_JOB_URL=https://gl.test/jobs/91 GIT_COMMITTER_DATE=2026-11-18T10:00:00Z
+[[ "$(wc -l < "$FIX/gate-runs")" == 1 ]] || fail "the gates ran again on the same tree: $OUT"
+has "$OUT" "reused, green in job https://gl.test/jobs/90"
+[[ "$(staging)" == "$green" ]] || fail "staging is not the commit judged green: $(origin log --oneline looper/staging)"
+# Another image: the gates run.
+origin update-ref -d refs/heads/looper/staging
+verdict CI_JOB_IMAGE="${IMG%a}b" GIT_COMMITTER_DATE=2026-11-18T11:00:00Z
+[[ "$(wc -l < "$FIX/gate-runs")" == 2 ]] || fail "the gates did not run on another image: $OUT"
+# Another base: the gates run.
+origin update-ref -d refs/heads/looper/staging
+on_main other.txt other
+verdict CI_JOB_IMAGE="${IMG%a}b" GIT_COMMITTER_DATE=2026-11-18T12:00:00Z
+[[ "$(wc -l < "$FIX/gate-runs")" == 3 ]] || fail "the gates did not run on another base: $OUT"
+lacks "$OUT" "reused, green"
+merge
+[[ "$(landed four.txt)" == 4 ]] || fail "main: $(origin log --oneline main)"
+! origin rev-parse -q --verify refs/heads/looper/green-alpha-4 >/dev/null || fail "the green's record is left"
+pass
+
+# A verdict taken up says whose it is, on the issue.
+scenario split-verdict-green-comment
+queue 4 2026-11-03T10:00:00Z four.txt 4 "echo ran >> '$FIX/gate-runs'"
+verdict CI_JOB_IMAGE="$IMG" CI_JOB_URL=https://gl.test/jobs/90 GIT_COMMITTER_DATE=2026-11-18T07:00:00Z
+origin update-ref -d refs/heads/looper/staging
+verdict CI_JOB_IMAGE="$IMG" CI_JOB_URL=https://gl.test/jobs/91 GIT_COMMITTER_DATE=2026-11-18T10:00:00Z
+merge
+[[ "$(wc -l < "$FIX/gate-runs")" == 1 ]] || fail "gate runs: $(cat "$FIX/gate-runs")"
+has "$(cat "$FIX/comments")" "reused: green in job https://gl.test/jobs/90"
+pass
+
 # The verdict dir is the job's project dir's, which a VM's next job reuses
 # (looper#98): a stale verdict there, another job's (its id recorded, or none
 # from before the record), is cleared and the job runs; one holding this job's

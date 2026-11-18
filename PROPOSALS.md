@@ -945,3 +945,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   tacplus's `images/build.Dockerfile` takes `docker:29-cli` unpinned, so the next build:2.6 rebuild (a tacplus 2.6
   patch) carries 29.10.0; then the `COPY --from` and its check can go, and the CLI is the base's again. A pinned
   digest also ages: a later docker CLI advisory is not picked up until it is bumped or dropped.
+- **A deterministic rebase, and a pinned land's green reused by tree** (2026-11-18, #191): the verdict job's green is
+  now recorded by tree and reused (`looper/green-<repo>-<n>`), but the rebase still gives a new commit each time (its
+  committer's time). `git rebase --committer-date-is-author-date` (or the branch commit's committer date) would make
+  the same branch on the same main the same sha, so the pinned path's build reuse, keyed by commit (#134), would take
+  up a green build of an earlier manager that stopped before merging; today that path reuses by tree only a build
+  left to run (#128's record) or one of the commit queued. It changes the committer dates main carries, so it is
+  proposed, not done.

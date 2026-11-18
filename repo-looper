@@ -983,7 +983,7 @@ land_work() {
         log "nothing landed: $GATES_WHY. Fix it, commit, and land again." >&2
         exit 4
       fi
-      grc=0; t=$SECONDS
+      grc=0; t=$SECONDS; local_gates=""; GREEN_WHY=""
       if build_jobs HEAD .; then
         # A pinned repository's gates are a build job's verdict (looper#71).
         log "landing $BRANCH: a build job of the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
@@ -1004,13 +1004,21 @@ land_work() {
       else
         [[ "$LOOPER_FORGE" != github ]] || ! pinned HEAD . || [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] ||
           log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: the gates run here, not as a build job (looper#71)"
-        log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
-        # A verdict job's gates hold none of the job's credentials: no id_token (looper#90).
-        # Nor the landing lock (fd 8): a process they leave behind would hold it (looper#112).
-        if [[ "$MODE" == verdict ]]; then mapfile -t wh < <(model_env); else wh=(); fi
-        env "${wh[@]+"${wh[@]}"}" LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 8>&- || grc=$?
+        local_gates=1
+        if green_reused "$before"; then
+          # A verdict job's green on this tree, recorded (looper#191): not run again.
+          log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO"): reused, $GREEN_WHY"
+          echo "the gates $GATES_SET on $(git rev-parse --short HEAD): reused, $GREEN_WHY" > "$out/gates.log"
+        else
+          GREEN_WHY=""
+          log "landing $BRANCH: the gates $GATES_SET ($GATES_WHY: $GATES_RUN) on $(git rev-parse --short HEAD), rebased on $(onto_name) $(git rev-parse --short "$ONTO")"
+          # A verdict job's gates hold none of the job's credentials: no id_token (looper#90).
+          # Nor the landing lock (fd 8): a process they leave behind would hold it (looper#112).
+          if [[ "$MODE" == verdict ]]; then mapfile -t wh < <(model_env); else wh=(); fi
+          env "${wh[@]+"${wh[@]}"}" LOOPER_GATES_BASE="$before" bash -c "$GATES_RUN" > "$out/gates.log" 2>&1 8>&- || grc=$?
+        fi
       fi
-      (( grc != 0 )) || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
+      (( grc != 0 )) || [[ -n "$GREEN_WHY" ]] || echo $(( SECONDS - t )) > "$(land_time_file "$GATES_SET")"
       if (( grc != 0 )) && build_jobs HEAD .; then
         # Its verdict says which failed: the gates, or their runner on every try (looper#148).
         { log "nothing landed: its build job failed: $(grep -E '^(verdict: failure: |no verdict )' "$out/gates.log" | tail -n 1 | sed 's/^verdict: failure: //'), on your commits rebased on $(onto_name); its end:"
@@ -1026,6 +1034,7 @@ land_work() {
       fi
       # A verdict job's green land goes on its staging, not main (looper#90).
       if [[ "$ONTO" != origin/main ]] && git update-ref "$ONTO" HEAD "$before"; then
+        [[ -z "$local_gates" || -n "$GREEN_WHY" ]] || green_push "$before"
         echo "$before $(git rev-parse HEAD)${GATES_MAPPED:+ $GATES_SET}" >> "$out/landed"
         printf '%s: %s\n' "$GATES_SET" "$GATES_WHY" >> "$out/gate-sets"
         log "green on staging: $(git rev-parse --short "$before")..$(git rev-parse --short HEAD), on the gates $GATES_SET ($GATES_WHY)"
@@ -1546,6 +1555,64 @@ build_record() { # branch
   printf '%s\n' "$m"
 }
 
+# A verdict job's green, recorded as it is given (looper#191): a job cancelled
+# before it pushes staging, or whose manager job merges nothing, loses no
+# green. The next job's rebase of the same branch onto the same main is
+# another commit (its committer's time), but the same gates on the same
+# input: the same tree on the same base tree, with the same gate set, the
+# same gates and the same image. Such a land reuses that green and runs no
+# gate. The record is a commit on top of the green one, on the branch
+# looper/green-NAME-N (never the issue's: that is the report's queue), its
+# lines sha=, base=, base_tree=, tree=, gates=, run= (the gates' command's
+# sha256), image= and job= (the job that judged it); post_land deletes it.
+# Only gates run in the job are recorded: a build job's verdict is reused by
+# its own key (looper#134). Its trust is the verdict job's own (README: Only
+# the manager writes main: a report's test can claim a green it did not
+# earn), and the manager job still checks staging as it does any. An image
+# that cannot be told (a tag whose digest is unread) records and reuses none.
+green_branch() { echo "looper/green-$REPO-$ISSUE"; }
+# The image the gates run in, by digest: the job's (GitLab's CI_JOB_IMAGE),
+# else LOOPER_JOB_IMAGE's, else its tag's at the job's start; fails when none.
+green_image() {
+  if [[ "${CI_JOB_IMAGE:-}" == *@sha256:* ]]; then echo "$CI_JOB_IMAGE"
+  elif [[ "$JOB_IMAGE" == *@sha256:* ]]; then echo "$JOB_IMAGE"
+  elif [[ -n "$IMAGE_STARTED" ]]; then echo "${JOB_IMAGE%:*}@$IMAGE_STARTED"
+  else return 1; fi
+}
+# What a green is keyed by, at HEAD rebased on base, choose_gates' set and gates.
+green_key() { # base
+  local img; img="$(green_image)" || return 1
+  printf 'base_tree=%s\ntree=%s\ngates=%s\nrun=%s\nimage=%s' "$(git rev-parse "$1^{tree}")" "$(git rev-parse 'HEAD^{tree}')" \
+    "$GATES_SET" "$(printf '%s' "$GATES_RUN" | sha256sum | cut -d' ' -f1)" "$img"
+}
+green_push() { # base
+  local k r; k="$(green_key "$1")" || return 0
+  r="$(git commit-tree "HEAD^{tree}" -p HEAD -m "looper: the green of $(git rev-parse --short HEAD) on ${1:0:7}, for the verdict jobs after this one (looper#191)" \
+         -m "$(printf 'sha=%s\nbase=%s\n%s\njob=%s' "$(git rev-parse HEAD)" "$1" "$k" "${CI_JOB_URL:-}")")" &&
+    git push -q -f origin "$r:refs/heads/$(green_branch)" >/dev/null 2>&1 ||
+    log "the green's record could not be pushed to $(green_branch): a verdict job after this one runs its gates again"
+}
+# The green recorded for HEAD on base, with its key; GREEN_WHY says whose.
+# On the same base commit, with the same commits but for their committer's
+# time, HEAD becomes the commit judged green: its sha repeats.
+green_reused() { # base
+  local b r m k sha job; GREEN_WHY=""; b="$(green_branch)"
+  k="$(green_key "$1")" || return 1
+  r="$(git ls-remote origin "refs/heads/$b" 2>/dev/null | cut -f1)"; [[ -n "$r" ]] || return 1
+  git fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b" 2>/dev/null || return 1
+  m="$(git log -1 --format=%b "$r" 2>/dev/null)" || return 1
+  sha="$(sed -n 's/^sha=//p' <<<"$m")"
+  [[ -n "$sha" && "$sha" == "$(git rev-parse -q --verify "$r^" 2>/dev/null)" &&
+     "$(git rev-parse "$sha^{tree}")" == "$(git rev-parse 'HEAD^{tree}')" &&
+     "$(grep -E '^(base_tree|tree|gates|run|image)=' <<<"$m")" == "$k" ]] || return 1
+  if [[ "$(sed -n 's/^base=//p' <<<"$m")" == "$1" ]] && git merge-base --is-ancestor "$1" "$sha" &&
+     [[ "$(git log --format='%an %ae %at%n%B' "$1..$sha")" == "$(git log --format='%an %ae %at%n%B' "$1..HEAD")" ]]; then
+    git reset -q --hard "$sha"
+  fi
+  job="$(sed -n 's/^job=//p' <<<"$m")"
+  GREEN_WHY="green${job:+ in job $job} on ${sha:0:7}, the same tree on the same base tree, gate set, gates and image (looper#191)"
+}
+
 # --wait-on URL [MSG], the model's step when what is left waits on another
 # run's result (a pipeline, a workflow run, a job: looper#171): the model does
 # not wait for it. A run that has finished already is no wait: it says so and
@@ -1784,6 +1851,8 @@ verdict_comment() { # issue id rc record-dir sha
     again="$(sed -n 's/^the build job \([^ ]*\) failed, its gates green: .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     [[ -z "$again" ]] || reused=""
     [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}${again:+, built again after $again failed in its infrastructure alone, its gates green}"
+    # A verdict job's green on this tree, taken up (looper#191): its gates not run again.
+    [[ -n "$build" ]] || build="$(sed -n 's/^the gates [^ ]* on [^ ]*: reused, \(.*\)$/, reused: \1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     # Landed in a batch (looper#86): the candidate's one build is every member's.
     local batch; batch="$(cat "$rec/batch" 2>/dev/null || true)"
     [[ -z "$batch" || "$batch" == 1 ]] || batch=" It landed in a batch of $batch lands, with one build of their candidate (the merge train, looper#86)."
@@ -2195,6 +2264,9 @@ post_land() { # issue id sha rc rec-dir
         && log "#$n: deleted $b" || log "#$n: $b is not deleted: its report pushed to it since"
     fi
   fi
+  # Its green's record (looper#191), judged now.
+  [[ -z "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/looper/green-$REPO-$n" 2>/dev/null)" ]] ||
+    git -C "$CHECKOUT" push -q origin --delete "looper/green-$REPO-$n" >/dev/null 2>&1 || true
   # A refused ROADMAP.md change needs a person (looper#123).
   if (( rc == ROADMAP_RC )); then forge_issue_edit "$REPO" "$n" --add-label "$LABEL_DECISION" --remove-label "$LABEL_LANDING" >/dev/null || true
   else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true; fi

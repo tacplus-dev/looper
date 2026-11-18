@@ -1654,6 +1654,14 @@ repository code, and the plan gives a repository two jobs for a batch, both on m
   deletes the merged branches, and adds the `HISTORY.md` lines: the closed issues', and a release's for each tag that
   came after the verdict job started. If anything else moved, or that rebase conflicts, it merges nothing and gives no
   verdict. The lands stay queued, and the kicker's next batch judges them again.
+- **A green is recorded as the verdict job gives it** (looper#191): a commit on top of the green one, on
+  `looper/green-<repo>-<n>`, keyed by the base's tree, the tree, the gate set, the gates' command and the job's image
+  by digest (`CI_JOB_IMAGE`). A job cancelled before it pushes staging, or whose manager job merges nothing, loses no
+  green: the next job's rebase of the same branch onto the same main is another commit (its committer's time), but the
+  same key, so it reuses that green and runs no gate; on the same base commit it lands the very commit judged green.
+  Another tree, base tree, gate set, gates or image runs them; an image it cannot tell by digest records and reuses
+  none. The manager job deletes the record with the land's verdict. A build job's verdict is reused by its own key
+  (looper#134), not by this record.
 - A batch under way (its verdict or manager job active) gets no second pair; the kicker starts the next once it is done.
   A report that starts while its verdict job waits for a runner yields to it (looper#75).
 - **A pinned repository keeps its one manager**, whose gates are build jobs (looper#71). The plan splits every other
