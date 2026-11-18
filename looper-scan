@@ -88,11 +88,14 @@ def line_of: (.where | capture(":(?<l>[0-9]+)(-[0-9]+)?$").l // "0") | tonumber;
 '
 # An exception's where (looper#182), a path glob, as a regular expression on a
 # finding's file_of: * and ? match within a path segment, ** across them ("**/"
-# also none); every other character is itself.
+# also none); every other character is itself. A dependency's where is its
+# package and, in parentheses, its file ("golang.org/x/text@0.3.0 (go.mod)",
+# govulncheck's "(go.mod, called: ...)"): that file matches too (looper#183).
 JQ_GLOB='
 def glob_re: "^" + (split("**/") | map(split("**") | map(split("*") | map(split("?")
     | map(gsub("(?<c>[.+^$()|{}\\[\\]\\\\])"; "\\\(.c)")) | join("[^/]")) | join("[^/]*")) | join(".*")) | join("(.*/)?")) + "$";
-def in_where($glob): file_of | test($glob | glob_re);
+def in_where($glob): ($glob | glob_re) as $re
+  | (file_of | test($re)) or any(.where | capture("^[^ ]+ \\((?<p>[^,)]+)[,)]").p; test($re));
 '
 
 scan_usage() {

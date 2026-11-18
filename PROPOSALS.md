@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **looper-build's tests run with the stub scanners in the build gates too** (2026-11-18, #183): in the build image
+  every scanner is installed, so `tests/looper-build.test.sh` runs the security tests with the real scanners
+  (`REAL_SCAN=1`). The image workflow's GitHub runner has none, so there they run with the stubs. The stub branch
+  of a test is first run on main, by the `image` workflow: #182's scoped exceptions passed their land's build and
+  failed every `image` run after it (#183), and no image was published for a day. A gate that runs the same file
+  with `REAL_SCAN=0` forced (an env override the test reads) would catch a stub-only failure before the land.
 - **CodeQL's pod resized from the nightlies' peaks** (2026-11-18, #189): the security job that runs CodeQL now asks
   `2 12Gi 3500m 12Gi` (`BUILD_SCAN_CODEQL_REQUESTS`), the build runner's ceilings. That is three times the `--ram`
   that measurement showed each of eventbus's, stratum's, mailbox's and llmproxy's source trees needs. The generated

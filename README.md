@@ -1369,7 +1369,8 @@ exceptions:
 
 Every entry needs the first four keys, may have `where`, and no other key. With `where` (looper#182) an entry accepts
 its id's findings there only, never its rule everywhere in the repository: `where` is matched against the whole of
-the finding's `where` less its `:LINE` (or `:FROM-TO`), `*` and `?` within a path segment, `**` across them (`**/`
+the finding's `where` less its `:LINE` (or `:FROM-TO`), or a dependency's file, the path in its `where`'s parentheses
+(`go.mod` in `golang.org/x/text@0.3.0 (go.mod)`, looper#183), `*` and `?` within a path segment, `**` across them (`**/`
 also none), every other character as itself (`deploy/rbac.yaml`, `charts/*/templates/role.yaml`, `**/go.mod`). An
 entry without `where` still accepts its id in every file, and the report warns about it (`### Warnings`); an empty
 `where` fails the run. An accepted finding is still reported (`excepted`), never failed.

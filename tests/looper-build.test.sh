@@ -1984,12 +1984,13 @@ NAME="security: an exception with a where accepts its id in that file (a path or
 scoped=(scanscoped scanglob)
 if ((REAL_SCAN)); then
   # The real databases name more than the planted findings: an entry for each
-  # the planted pin's run failed on, scoped to its file, then by a glob of it.
+  # the planted pin's run failed on, scoped to its file (a dependency's, the
+  # path in its where's parentheses: looper#183), then by a glob of it.
   scoped=()
   for g in '' '**/'; do
     git -C "$work" checkout -q scanvuln && git -C "$work" checkout -q -b "scanrealscoped${#scoped[@]}"
     { printf 'exceptions:\n'
-      jq -r --arg g "$g" 'def file_of: .where | sub(":[0-9]+(-[0-9]+)?$"; "");
+      jq -r --arg g "$g" 'def file_of: .where | sub(":[0-9]+(-[0-9]+)?$"; "") | (capture("^[^ ]+ \\((?<p>[^,)]+)[,)]").p // .);
         [.[] | select(.blocking) | {id, file: file_of}] | unique[]
         | "  - id: \(.id)\n    reason: \"the planted pin of the tests\"\n    decided_by: jodydadescott\n    expires: 2099-12-31\n    where: \"\(if $g == "" then .file else $g + (.file | split("/") | last) end)\""' \
         "$TMP/vuln-findings.json"; } > "$work/security-exceptions.yaml"
