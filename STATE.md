@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-18 by looper (#185).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-19 by looper (#195).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -109,7 +109,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-18 by lo
   build queue time apart from its run time, #128; a build with no status at all, not even pending, within
   `LOOPER_BUILD_START` (15m) of its trigger is "no runner", never red and no wait without a bound: `--build` says so and
   exits 4, a land stays queued with no verdict, its pipeline recorded for the next manager as #128's, and its issue is
-  told once, #113; a pending or green status names its key, gate set and base: a build
+  told once, #113; a report's `--build` is asked for with `report: true` and its gates job holds the resource group
+  `report-slot-<pipeline id mod BUILD_REPORT_SLOTS>` (4), a land's none, so report builds never take every build slot
+  and a land's build finds a runner (#195; in effect once the hub copies `ci/build.gitlab-ci.yml`, until then the
+  input refused and the build started again without it); a pending or green status names its key, gate set and base: a build
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
   linking it; the nightly recap counts builds against the commits they built, #134), and on a release
