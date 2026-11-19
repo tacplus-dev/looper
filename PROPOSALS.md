@@ -143,6 +143,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   The issue's other reading, asking for it only when the batch touches `.github/workflows/`, would need the token
   minted per land rather than per job (the set is chosen at `looper-token start`, refreshed every 45 minutes), and
   would still be a 422 while the app lacks it: not worth it until the grant exists, and then the variable is simpler.
+  Since #194 (2026-11-19) the refusal is no longer a red that bisects the batch: the land changing a workflow is
+  sent back at once, `needs-decision`, the rest land. #194's other option, staging such a land in a batch of its
+  own pushed with a token holding the permission when its issue carries `looper:workflows`, is this entry's per-land
+  token, and waits on the same grant. Until `tacplus-manager` holds it, each such land is a person's push.
 - **The prompt warns of `.github/workflows/` before the model changes it** (2026-11-06, #99): the report's App
   cannot push a change under `.github/workflows/` (no `workflows` permission), so a run that changes one checkpoints
   nothing from then on; #99 makes that failure loud, but only after the work is done. A prompt rule naming the limit

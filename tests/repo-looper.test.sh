@@ -2167,7 +2167,7 @@ close_all() { echo 'jq ".state = \"CLOSED\"" "$FIX/issues/alpha-$ISSUE.json" > "
 queue() { # issue queued-time file content [gates]
   local n="$1" b="looper/alpha-$1" d="$FIX/q-$1"
   rm -rf "$d"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b "$b"
-  printf '%s\n' "$4" > "$d/$3"; git -C "$d" add -A; git -C "$d" commit -qm "fix $n"
+  mkdir -p "$(dirname "$d/$3")"; printf '%s\n' "$4" > "$d/$3"; git -C "$d" add -A; git -C "$d" commit -qm "fix $n"
   mkdir -p "$d/.looper"; printf 'id=q%s\ngates=%s\nstate=queued\nqueued=%s\n' "$n" "${5:-true}" "$2" > "$d/.looper/land"
   git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #$n (land queued)"; git -C "$d" push -q origin "$b"
   jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-$n.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-$n.json"
@@ -3809,17 +3809,26 @@ has "$(cat "$FIX/land-4")" "The manager merged"
 pass
 
 # GitLab's refusal says why: the trigger's response body reaches the report's
-# --build and the manager's verdict, redacted (looper#127).
+# --build and the land's issue, redacted (looper#127). Nothing built is no red
+# (looper#194): the land stays queued, its issue told why, and the manager stops.
 scenario build-job-refused
-pin_seed; build_model notes.md "the docs"
+pin_seed
+cat >> "$FIX/claude.sh" <<'EOS'
+echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+timeout 20 "$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
 echo '{"message":{"base":["gates input: not declared"]},"token":"glptt-build"}' > "$FIX/trigger-refuses"
 run "${BUILDS[@]}"
 b="$(cat "$FIX/build-4")"
 has "$b" "the looper did not start the build: GitLab refused to start the build: "; has "$b" "gates input: not declared"; has "$b" "error: 422"
 lacks "$b" "glptt-build"
-has "$(cat "$FIX/land-4")" "gates input: not declared"; lacks "$(cat "$FIX/land-4")" "glptt-build"
-has "$(cat "$FIX/land-4")" "The manager did not merge"
+c="$(grep '^alpha#4 Nothing could be built' "$FIX/comments")"
+has "$c" "nothing built: GitLab refused to start the build: "; has "$c" "gates input: not declared"; lacks "$c" "glptt-build"; has "$c" "the land stays queued"
+l="$(cat "$FIX/land-4")"; has "$l" "the manager could build nothing of looper/alpha-4's batch yet: nothing built: GitLab refused"; lacks "$l" "glptt-build"
+has "$(cat "$FIX/manager.log")" "the manager stops: nothing could be built"; lacks "$(cat "$FIX/manager.log")" "not merged"
 [[ -z "$(landed notes.md)" ]] || fail "merged unbuilt"
+grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued"
 pass
 
 # Without the trigger a pinned repository keeps today's path: the model's
@@ -4086,7 +4095,7 @@ EOF
   git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm pinned && git -C "$FIX/seed" push -q origin main
 }
 train_issues() { local n; for n in "$@"; do issue alpha "$n" OPEN approved,bug "Fix $n."; done; }
-builds_of() { wc -l < "$FIX/builds" 2>/dev/null || echo 0; } # the builds the stub ran
+builds_of() { wc -l 2>/dev/null < "$FIX/builds" || echo 0; } # the builds the stub ran
 # Every commit main pointed at had a green build of exactly that commit (the
 # stub build's success status on it); origin's reflog of main, which train_seed
 # turns on, lists them. The manager's own HISTORY.md lines are docs, not built.
@@ -4179,6 +4188,103 @@ for n in 4 6; do has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 2 lan
 lacks "$(labels alpha 5)" "looper:landing"
 has "$OUT" "a batch of 2 lands (#4, #6) on main"
 main_green
+pass
+
+# A candidate whose build branch origin refuses (looper#194: the manager's
+# token without the workflows permission, a land changing .github/workflows/)
+# is nothing built, not red: no bisection. The land that changes a workflow is
+# sent back at once with why, needs-decision (a person grants the permission
+# or the change leaves it out); the rest land as the next batch, one build.
+refuse_build_push() { # [workflows]: origin refuses pushes to looper/build-*, of a workflow change or any
+  cat > "$FIX/origin.git/hooks/pre-receive" <<EOF
+#!/usr/bin/env bash
+while read -r old new ref; do
+  [[ "\$ref" == refs/heads/looper/build-* && "\$new" != 0000000000000000000000000000000000000000 ]] || continue
+  if [[ "${1:-}" == workflows ]]; then
+    f="\$(git diff --name-only main "\$new" -- .github/workflows/ | head -1)"
+    [[ -z "\$f" ]] || { echo "refusing to allow a GitHub App to create or update workflow \\\`\$f\\\` without \\\`workflows\\\` permission"; exit 1; }
+  else echo "the disk is full"; exit 1; fi
+done
+EOF
+  chmod +x "$FIX/origin.git/hooks/pre-receive"
+}
+scenario train-unbuilt-workflows
+train_seed; train_issues 5 6
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+queue 5 2026-11-03T11:00:00Z .github/workflows/ci.yml "on: push"
+queue 6 2026-11-03T12:00:00Z f6.txt 6
+refuse_build_push workflows
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds" 2>/dev/null)"
+lacks "$OUT" "bisecting"; lacks "$OUT" "is red"
+[[ "$(landed f4.txt)" == 4 && "$(landed f6.txt)" == 6 ]] || fail "main: $(origin log --oneline main)"
+[[ -z "$(landed .github/workflows/ci.yml)" ]] || fail "the workflow change landed"
+c="$(grep '^alpha#5 ' "$FIX/comments")"
+has "$c" "The manager sent [\`looper/alpha-5\`]"; has "$c" "nothing built"; has "$c" "\`.github/workflows/ci.yml\`"
+has "$c" "without \`workflows\` permission"; has "$c" "LOOPER_MANAGER_WORKFLOWS"; lacks "$c" "red, nothing merges"
+[[ "$(grep -c '^alpha#5 ' "$FIX/comments")" == 1 ]] || fail "#5 told more than once: $(grep '^alpha#5 ' "$FIX/comments")"
+has "$(labels alpha 5)" "needs-decision"; lacks "$(labels alpha 5)" "looper:landing"
+origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
+for n in 4 6; do has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 2 lands"; done
+has "$OUT" "nothing built: "; has "$OUT" "#5: changes .github/workflows/ (.github/workflows/ci.yml), which origin refused: sent back"
+has "$OUT" "a batch of 2 lands (#4, #6) on main"
+main_green
+pass
+
+# Nothing built for any other reason (looper#194): no bisection, no verdict;
+# the lands stay queued, each issue told once why, and the manager stops; once
+# origin takes the push, the next manager lands them in one build.
+scenario train-unbuilt
+train_seed; train_issues 5
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+queue 5 2026-11-03T11:00:00Z f5.txt 5
+refuse_build_push
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 0 ]] || fail "builds: $(cat "$FIX/builds")"
+lacks "$OUT" "bisecting"; lacks "$OUT" "is red"; lacks "$OUT" "not merged"
+main_unchanged
+has "$OUT" "#4: left queued: nothing built: "; has "$OUT" "the disk is full"; has "$OUT" "the manager stops: nothing could be built"
+for n in 4 5; do
+  c="$(grep "^alpha#$n " "$FIX/comments")"
+  has "$c" "nothing built: "; has "$c" "the disk is full"; has "$c" "the land stays queued"; lacks "$c" "looper-land id="
+  grep -qx state=queued <<<"$(origin show "looper/alpha-$n:.looper/land")" || fail "#$n is not queued"
+  has "$(labels alpha "$n")" "looper:landing"
+done
+manage "${BUILDS[@]}"
+[[ "$(grep -c '^alpha#4 ' "$FIX/comments")" == 1 ]] || fail "told more than once: $(cat "$FIX/comments")"
+rm "$FIX/origin.git/hooks/pre-receive"
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(landed f4.txt)" == 4 && "$(landed f5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+main_green
+pass
+
+# A verdict job's land as a build job (looper#194) the same: a workflow change
+# origin refused is sent back at once, needs-decision, no red, and the lands
+# after it go on; nothing built for any other reason leaves the land queued,
+# its issue told, and the verdict job stops.
+scenario verdict-unbuilt
+train_seed; train_issues 5 6
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+queue 5 2026-11-03T11:00:00Z .github/workflows/ci.yml "on: push"
+queue 6 2026-11-03T12:00:00Z f6.txt 6
+refuse_build_push workflows
+verdict "${BUILDS[@]}"
+[[ "$(cut -d' ' -f1,4 "$FIX/verdict/lands" | paste -sd'|')" == "4 0|5 78|6 0" ]] || fail "lands: $(cat "$FIX/verdict/lands")"
+c="$(grep '^alpha#5 ' "$FIX/comments")"
+has "$c" "back to its report, nothing built: it changes \`.github/workflows/ci.yml\`"; has "$c" "without \`workflows\` permission"; lacks "$c" "red, nothing merges"
+has "$(labels alpha 5)" "needs-decision"; lacks "$(labels alpha 5)" "looper:landing"
+merge
+[[ "$(landed f4.txt)" == 4 && "$(landed f6.txt)" == 6 && -z "$(landed .github/workflows/ci.yml)" ]] || fail "main: $(origin log --oneline main)"
+# Any other refusal: #4 stays queued, told once; the verdict job judges no further.
+train_issues 7 8; queue 7 2026-11-03T13:00:00Z f7.txt 7; queue 8 2026-11-03T14:00:00Z f8.txt 8
+refuse_build_push
+verdict "${BUILDS[@]}"
+[[ ! -s "$FIX/verdict/lands" ]] || fail "lands: $(cat "$FIX/verdict/lands")"
+has "$OUT" "#7: left queued: nothing built: the disk is full; the verdict job stops"
+c="$(grep '^alpha#7 ' "$FIX/comments")"; has "$c" "nothing built: the disk is full"; has "$c" "the land stays queued"
+! grep -q '^alpha#8 ' "$FIX/comments" || fail "#8 judged: $(grep '^alpha#8 ' "$FIX/comments")"
+for n in 7 8; do grep -qx state=queued <<<"$(origin show "looper/alpha-$n:.looper/land")" || fail "#$n is not queued"; done
 pass
 
 # --- gates scaled to the diff (looper#48) ------------------------------------------

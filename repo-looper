@@ -955,7 +955,7 @@ onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging
 # when a gate map chose it, and the set and why in its `gate-sets`.
 land_work() {
   no_repo_code "a land's gates"
-  local gates out queued; gates="$(land_gates)"
+  local gates out queued wf; gates="$(land_gates)"
   [[ -n "$gates" || -f "$CHECKOUT/$GATE_MAP" ]] || die "no gates to re-run before landing: $REPO has no $GATE_MAP, no justfile and LOOPER_GATES is unset; pass the command you verified with as --gates CMD"
   cd "$CHECKOUT"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land lands its commits"
@@ -996,6 +996,16 @@ land_work() {
         elif (( grc == BUILD_NO_RUNNER )); then
           { log "nothing landed, and no verdict: $(grep '^no runner: ' "$out/gates.log" | tail -n 1); the land stays queued, and the next manager takes the build's verdict up"; } >&2
           exit "$LAND_NO_RUNNER"
+        elif (( grc == BUILD_UNBUILT )); then
+          # Nothing built is no red (looper#194): a workflow change origin refused is sent back, anything else stays queued.
+          wf="$(git diff --name-only "$before" HEAD -- .github/workflows/ | paste -sd' ' -)"
+          if [[ -n "$wf" ]] && grep -q "$WORKFLOWS_REFUSED" "$out/gates.log"; then
+            echo "$wf" > "$out/workflows"
+            log "nothing landed: nothing built: $(unbuilt_why "$out/gates.log"); $BRANCH changes .github/workflows/ ($wf), and origin refused the push of its build's commit" >&2
+            exit "$WORKFLOWS_RC"
+          fi
+          log "nothing landed, and no verdict: nothing built: $(unbuilt_why "$out/gates.log"); the land stays queued for the next batch" >&2
+          exit "$LAND_UNBUILT"
         fi
       elif [[ -n "$MANAGER_TOKEN" ]]; then
         # Its gates would run beside the manager's token (looper#90).
@@ -1114,12 +1124,16 @@ land_request() {
     return 0
   fi
   log "waiting for its verdict (--wait). If your time runs out first, it still lands it after you."
-  local said=""
+  local said="" unbuilt=""
   until v="$(land_verdict "$n" "$id")"; do
-    # No runner for the manager's build (looper#113): said, and still waited for.
+    # No runner for the manager's build (looper#113), or nothing built of it
+    # (looper#194): said, and still waited for.
     if [[ -z "$said" ]] && forge_issue_comments "$REPO" "$n" 2>/dev/null | jq -rs --arg m "$(no_runner_marker "$id")" 'any(.[]; contains($m))' | grep -qx true; then
       log "no runner has taken the manager's build job of $BRANCH yet: no verdict, the land stays queued and the next manager takes the build's verdict up; waiting for its verdict"
       said=1
+    fi
+    if [[ -z "$unbuilt" ]] && unbuilt="$(forge_issue_comments "$REPO" "$n" 2>/dev/null | jq -rs --arg m "$(unbuilt_marker "$id")" '[.[] | select(contains($m))] | first // empty')" && [[ -n "$unbuilt" ]]; then
+      log "the manager could build nothing of $BRANCH's batch yet: $(grep -o 'nothing built: .*' <<<"$unbuilt" | head -n 1 | sed 's/\. This is no verdict.*//'); no verdict, the land stays queued; waiting for its verdict"
     fi
     sleep "$LAND_POLL"
   done
@@ -1219,6 +1233,11 @@ BUILD_START="${LOOPER_BUILD_START:-900}"
 BUILD_SAY="${LOOPER_BUILD_SAY:-600}"   # between build_verdict's lines on what it waits for (looper#112)
 BUILD_NO_RUNNER=4   # build_verdict's exit when no runner took the build within BUILD_START (looper#113)
 LAND_NO_RUNNER=76   # a land whose build no runner took (looper#113): it stays queued
+BUILD_UNBUILT=5   # build_gates' exit when no build could be had, its commit's push refused, say (looper#194): nothing built, no red
+LAND_UNBUILT=77   # a land nothing could be built of (looper#194): no verdict, it stays queued
+WORKFLOWS_RC=78   # a land sent back: origin refused its change under .github/workflows/ to the build's push (looper#194)
+# Origin's refusal of a push that changes .github/workflows/ without the workflows permission (GitHub's words).
+WORKFLOWS_REFUSED='refusing to allow .* to create or update workflow'
 BUILD_MAX="${LOOPER_BUILD_MAX:-30}"   # a report run's builds, at most
 PIN_FILES=(tacplus.lock build.lock)
 
@@ -1493,6 +1512,8 @@ build_capped() { # run-dir
 # the commit queued, before its rebase, when the rebase left its tree as it was
 # (a merge commit linearized): the same tree, gate set and base, so the same
 # gates. Its verdict is that build's, on that commit; nothing is built again.
+# No build had (its commit's push refused, a trigger that failed) is no red:
+# BUILD_UNBUILT, its last lines "nothing built: <why>" (looper#194).
 build_gates() { # base [queued commit]
   local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates="" t0 r w c="${2:-}"; sha="$(git rev-parse HEAD)"
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
@@ -1512,7 +1533,7 @@ build_gates() { # base [queued commit]
   else
     t0="$(date +%s)"
     get_build "$sha" "$gates" "$1" git push -q -f origin "$sha:refs/heads/$b" ||
-      { echo "nothing built: $BUILD_P"; git push -q origin --delete "$b" >/dev/null 2>&1 || true; return 1; }
+      { echo "nothing built: $BUILD_P"; git push -q origin --delete "$b" >/dev/null 2>&1 || true; return "$BUILD_UNBUILT"; }
     p="$BUILD_P"
     if [[ -n "$BUILD_REUSED" ]]; then
       echo "the build job ${p#* } of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${1:0:7}: reused, the $(reused_what "$BUILD_REUSED") build of ${sha:0:7}, the same tree on the same base"
@@ -1891,6 +1912,8 @@ $(sed 's/^/> /' <<<"$step")"
     what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates, and PROPOSALS.md and HISTORY.md it unions; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
   elif [[ "$rc" == "$ROADMAP_RC" ]]; then
     what="The manager refused [\`$b\`]($url): it changes ROADMAP.md, which is Jody's, changed only by an agent at his request, and $(cat "$rec/roadmap" 2>/dev/null || echo "this land is not"). A land may change ROADMAP.md only when its issue carries \`$LABEL_APPROVED\` from a member and its own text, a member's, says it is at Jody's request (looper#123). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. If Jody asked for it, say so in the issue's text, then remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise drop the ROADMAP.md change and propose it in PROPOSALS.md."
+  elif [[ "$rc" == "$WORKFLOWS_RC" ]]; then
+    what="The manager sent [\`$b\`]($url) back to its report, nothing built: it changes $(sed 's/ /`, `/g; s/^/`/; s/$/`/' < "$rec/workflows"), and origin refused the push of its build's commit: $(unbuilt_why "$rec/gates.log" | redact). This is no red: no gate ran. The token that pushes the build's commit pushes a change under \`.github/workflows/\` only with the workflows permission (the manager's: once \`tacplus-manager\` holds it, the project variable \`LOOPER_MANAGER_WORKFLOWS=write\`, looper#112). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. Once the token holds it, remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise a person pushes the workflow change, and the land leaves it out (looper#194)."
   elif [[ "$rc" == 4 ]]; then
     what="The manager did not merge [\`$b\`]($url): red, nothing merges without green gates. Nothing of it is merged; the branch stays, and it is sent back with the failure: this issue stays $LABEL_APPROVED, and its next report fixes it (the merge train, looper#86). The end of its output:
 
@@ -2031,7 +2054,8 @@ plural() { (( $1 == 1 )) || echo s; } # count
 # found, the green prefix before it landed, that land sent back, the rest left
 # queued for the next batch. LAND_DEFERRED when no prefix's build fits the job
 # or a build has no verdict by its end (a green prefix found by then lands
-# first); 1 when a build could not be had.
+# first); 1 when a build could not be had. A candidate nothing could be built
+# of is no red, and is not bisected (batch_unbuilt, looper#194).
 BATCH_OVER=8   # batch_gates: the candidate's gates would outlast the job (looper#38): a shorter batch is tried
 batch_judge() { # main
   local main="$1" n=${#TR_N[@]} k=${#TR_N[@]} lo=0 hi rc=0 mid c red
@@ -2043,6 +2067,7 @@ batch_judge() { # main
     log "#${TR_N[c]}: left queued for the next manager: this job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $OVER_SET takes about $(hours "$(land_estimate "$OVER_SET")")"
   done
   (( k > 0 )) || return "$LAND_DEFERRED"
+  if (( rc == LAND_UNBUILT )); then batch_unbuilt 0 "$k"; return; fi
   hi=$k
   log "a batch of $k land$(plural "$k") ($(batch_names "$k")) on main ${main:0:7}: one build of the candidate ${TR_AFTER[k-1]:0:7}$( (( k == n )) || echo " (the $(( n - k )) after it wait for the next manager)")"
   if (( rc == 0 )); then batch_land "$main" "$k"; return; fi
@@ -2060,6 +2085,7 @@ batch_judge() { # main
       case "$rc" in
         0) lo=$mid; log "bisecting: the first $mid of $k are green" ;;
         4) hi=$mid; red="$BATCH_OUT"; log "bisecting: the first $mid of $k are red" ;;
+        "$LAND_UNBUILT") (( lo == 0 )) || batch_land "$main" "$lo" || return 1; batch_unbuilt "$lo" "$mid"; return ;;
         *) (( lo == 0 )) || batch_land "$main" "$lo"; (( rc != BATCH_OVER )) || rc=$LAND_DEFERRED; return "$rc" ;;
       esac
     done
@@ -2072,6 +2098,46 @@ batch_judge() { # main
   } > "${TR_REC[c]}/out"
   log "#${TR_N[c]}: the land that breaks the batch: sent back with the failure$( (( k - hi > 0 )) && echo "; $(( k - hi )) land$(plural "$(( k - hi ))") after it ($(for (( mid = hi; mid < k; mid++ )); do printf '%s#%s' "$( (( mid > hi )) && echo ', ')" "${TR_N[mid]}"; done)) stay queued for the next batch")"
   post_land "${TR_N[c]}" "${TR_ID[c]}" "${TR_SHA[c]}" 4 "${TR_REC[c]}"
+}
+# The lands from..to-1 of a candidate nothing could be built of (BATCH_OUT,
+# looper#194). Origin refused its build's push for a change under
+# .github/workflows/ (the token lacks the workflows permission): each land that
+# changes one is sent back at once, WORKFLOWS_RC (needs-decision: a person
+# grants the permission, or the change leaves it out), and the rest stay
+# queued for the next batch, built without them. Any other why: no verdict,
+# the lands stay queued, each issue told once, LAND_UNBUILT.
+batch_unbuilt() { # from to
+  local i wf sent="" why; why="$(unbuilt_why "$BATCH_OUT/gates.log")"
+  if grep -q "$WORKFLOWS_REFUSED" "$BATCH_OUT/gates.log"; then
+    for (( i = $1; i < $2; i++ )); do
+      wf="$(git -C "$CHECKOUT" diff --name-only "${TR_BEFORE[i]}" "${TR_AFTER[i]}" -- .github/workflows/ | paste -sd' ' -)"
+      [[ -n "$wf" ]] || continue
+      echo "$wf" > "${TR_REC[i]}/workflows"; cp "$BATCH_OUT/gates.log" "${TR_REC[i]}/gates.log" 2>/dev/null || true
+      { cat "$BATCH_OUT/out"; log "nothing landed: #${TR_N[i]} changes .github/workflows/ ($wf), and origin refused the push of its build's commit: nothing built"; } > "${TR_REC[i]}/out"
+      log "#${TR_N[i]}: changes .github/workflows/ ($wf), which origin refused: sent back, nothing built"
+      post_land "${TR_N[i]}" "${TR_ID[i]}" "${TR_SHA[i]}" "$WORKFLOWS_RC" "${TR_REC[i]}"; sent=1
+    done
+    if [[ -n "$sent" ]]; then
+      for (( i = $1; i < $2; i++ )); do [[ -s "${TR_REC[i]}/workflows" ]] || log "#${TR_N[i]}: left queued for the next batch, built without the workflow changes origin refused"; done
+      return 0
+    fi
+  fi
+  log "nothing landed, and no verdict: nothing built: $why; the lands stay queued for the next manager"
+  for (( i = $1; i < $2; i++ )); do
+    log "#${TR_N[i]}: left queued: nothing built: $why"
+    unbuilt_comment "${TR_N[i]}" "${TR_ID[i]}" "$why"
+  done
+  return "$LAND_UNBUILT"
+}
+# Why nothing was built: build_gates' "nothing built: " line, its first (origin's words, git's "remote: " off).
+unbuilt_why() { sed -n '/^nothing built: /{s///;s/^remote: *//;s/[[:space:]]*$//;p;q;}' "$1" 2>/dev/null; } # gates.log
+# A land nothing could be built of (looper#194): its issue told, once a land, that it stays queued with no verdict.
+unbuilt_marker() { echo "<!-- looper-unbuilt id=$1 -->"; } # land id
+unbuilt_comment() { # issue id why
+  forge_issue_comments "$REPO" "$1" 2>/dev/null | jq -rs --arg m "$(unbuilt_marker "$2")" 'any(.[]; contains($m))' | grep -qx true && return 0
+  forge_issue_comment "$REPO" "$1" "Nothing could be built of the batch holding [\`$(wip_branch "$1")\`]($(wip_url "$1")): nothing built: $(redact <<<"$3"). This is no verdict, and no red: nothing is merged, and the land stays queued; the next manager builds it again (looper#194).${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}
+
+$(unbuilt_marker "$2")" >/dev/null || log "#$1: could not say that nothing was built"
 }
 bisect_builds() { local n=$1 b=0; while (( n > 1 )); do n=$(( (n + 1) / 2 )); b=$(( b + 1 )); done; echo "$b"; } # count: ceil(log2)
 
@@ -2092,6 +2158,7 @@ batch_choose() { # dir main count
 # repository (build_gates, on the branch looper/build-NAME-train), else the
 # gates in this job, in a scratch worktree at the candidate. Its record is
 # BATCH_OUT (gates.log, out: the lines a red verdict quotes). 0 green, 4 red,
+# LAND_UNBUILT when nothing could be built of it (looper#194),
 # 6 when the gates would run beside the manager's token (looper#90),
 # BATCH_OVER when its gates would outlast the job (OVER_SET: the set),
 # LAND_DEFERRED when the build has no verdict by the job's end, LAND_NO_RUNNER
@@ -2135,6 +2202,10 @@ batch_gates() { # main count
         no_runner_comment "${TR_N[i]}" "${TR_ID[i]}" "${TR_REC[i]}"
       done
       drop_worktree "$wt"; return "$LAND_NO_RUNNER"
+    elif (( grc == BUILD_UNBUILT )); then
+      # Nothing built (looper#194: the build's push refused) is no red: the batch is not bisected.
+      log "the candidate ${cand:0:7} of $count land$(plural "$count"): nothing built: $(unbuilt_why "$BATCH_OUT/gates.log")" | tee "$BATCH_OUT/out"
+      drop_worktree "$wt"; return "$LAND_UNBUILT"
     fi
     (( grc == 0 )) || { log "nothing landed: its build job failed: $(grep -m 1 -E '^(verdict: failure: |no verdict )' "$BATCH_OUT/gates.log" | sed 's/^verdict: failure: //'), on your commits rebased on main; its end:"; tail -n 30 "$BATCH_OUT/gates.log"; } > "$BATCH_OUT/out"
   elif [[ -n "$MANAGER_TOKEN" ]]; then
@@ -2278,8 +2349,8 @@ post_land() { # issue id sha rc rec-dir
   # Its green's record (looper#191), judged now.
   [[ -z "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/looper/green-$REPO-$n" 2>/dev/null)" ]] ||
     git -C "$CHECKOUT" push -q origin --delete "looper/green-$REPO-$n" >/dev/null 2>&1 || true
-  # A refused ROADMAP.md change needs a person (looper#123).
-  if (( rc == ROADMAP_RC )); then forge_issue_edit "$REPO" "$n" --add-label "$LABEL_DECISION" --remove-label "$LABEL_LANDING" >/dev/null || true
+  # A refused ROADMAP.md change needs a person (looper#123), and so does a workflow change origin refused (looper#194).
+  if (( rc == ROADMAP_RC || rc == WORKFLOWS_RC )); then forge_issue_edit "$REPO" "$n" --add-label "$LABEL_DECISION" --remove-label "$LABEL_LANDING" >/dev/null || true
   else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true; fi
   return 0
 }
@@ -2409,6 +2480,7 @@ manage() {
       rc=0; train "$q" || rc=$?
       (( rc != LAND_DEFERRED )) || { log "the manager stops: its job's time is short; the next manager merges what is queued"; return 0; }
       (( rc != LAND_NO_RUNNER )) || { log "the manager stops: no runner takes build jobs; the lands stay queued for the next manager"; return 0; }
+      (( rc != LAND_UNBUILT )) || { log "the manager stops: nothing could be built; the lands stay queued for the next manager"; return 0; }
     fi
     clear_stale_landing "$labelled" "$q"
     new=()
@@ -2506,6 +2578,10 @@ verdict_batch() {
     (( rc != LAND_DEFERRED )) || { log "the verdict job stops: its time is short; the next batch judges what is left"; break; }
     (( rc == 0 )) || continue
     (( JUDGE_RC != LAND_NO_RUNNER )) || { log "#$n: left queued: no runner took its build job; the verdict job stops, the next batch judges what is left"; break; }
+    if (( JUDGE_RC == LAND_UNBUILT )); then
+      log "#$n: left queued: nothing built: $(unbuilt_why "$VERDICT_DIR/$n-$id/gates.log"); the verdict job stops, the next batch judges what is left"
+      unbuilt_comment "$n" "$id" "$(unbuilt_why "$VERDICT_DIR/$n-$id/gates.log")"; break
+    fi
     echo "$n $id $sha $JUDGE_RC" >> "$VERDICT_DIR/lands"
     # A land dropped (a conflict, red, refused) gets its verdict and labels at
     # once (looper#192): its report rebases while the job goes on. Only a

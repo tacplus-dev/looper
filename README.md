@@ -393,6 +393,13 @@ lander are gone. One job per issue needs none of them.
   build; one with one bad change lands 4, sends 1 back and builds at most 1 + 2·log2(5) times. The candidate's
   build runs on the build pool like any other, so a batch whose build would outlast the manager's job, or has no
   verdict by its end, leaves its lands queued for the next manager, which takes a build left running up by its tree.
+  A candidate **nothing could be built of** is no red and is never bisected (looper#194: tacplus's first batch of 40
+  was called red in seconds and bisected, origin having refused its build branch's push). When origin refused the
+  push for a change under `.github/workflows/` (the token lacks the `workflows` permission, `LOOPER_MANAGER_WORKFLOWS`
+  below), each land that changes one is sent back at once with origin's words, `needs-decision` (a person grants the
+  permission, or the land leaves the workflow out), and the rest go on as the next batch; for any other reason the
+  lands stay queued with no verdict, each issue told once (`nothing built: <why>`), and the manager stops. A verdict
+  job's land as a build job is judged the same, the verdict job stopping where the manager would.
   - **Conflicts are its call.** A rebase that conflicts only in files the repository's `generated.yaml` maps
     (lock files, generated code: the gate map's format, each set the command that regenerates its paths) it
     resolves itself, never by a hand merge: main's side of each, then the set's command, then the rebase goes on
@@ -441,7 +448,7 @@ lander are gone. One job per issue needs none of them.
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): a build-jobs repository's reports and manager on `arm64, control` with their kind's requests, a repository moving on its pin with its VM override unread, an unpinned one's jobs and scan on the VM tags, a pinned one's scan on `control` with a report's requests (#73), the pipeline file's control jobs on `.control`; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-bisects (one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch)
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-bisects (one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch), train-unbuilt-workflows, train-unbuilt and verdict-unbuilt (#194: a candidate whose build branch origin refuses is not bisected; a land changing .github/workflows/ sent back needs-decision, the rest landed in one build; any other refusal leaves the lands queued, each issue told once)
 ```
 
 ### Build jobs
