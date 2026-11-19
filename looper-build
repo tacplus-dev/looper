@@ -115,7 +115,7 @@ record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
 LOOPER_GATES_BASE, a full hash), BUILD_BUILDER_IMAGE (the build image a release's publish runs in, with
 rootless BuildKit; empty: the looper image, host Docker, on BUILD_DOCKER_TAGS), BUILD_WAIT (the requester's wait, in seconds: a gates job whose pipeline
-is older runs no gates), BUILD_GATES_IDLE (gates silent this many seconds are stopped, red; default 3600), the tacplus-reader
+is older runs no gates, and gates running longer are stopped, red), BUILD_GATES_IDLE (gates silent this many seconds are stopped, red; default 3600), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
 EOF
@@ -793,9 +793,14 @@ span() { # seconds
 # The gates' command, in the commit's checkout, its output in gates.log and on
 # stderr; returns its exit status. Gates silent (gates.log unchanged) for
 # BUILD_GATES_IDLE seconds are hung (looper#195): their process group, the
-# gates and all they started, is stopped and the verdict is red.
+# gates and all they started, is stopped and the verdict is red. So are gates
+# still running BUILD_WAIT seconds after they started (looper#198): their
+# requester waits that long from the build's start and then gives up, and the
+# trigger token cannot cancel the pipeline; a nightly's and a release's have
+# no wait.
 run_gates() { # src command
-  local log="$BUILD_OUT/gates.log" idle=$((10#$BUILD_GATES_IDLE)) pid rc=0 last
+  local log="$BUILD_OUT/gates.log" idle=$((10#$BUILD_GATES_IDLE)) pid rc=0 last t0 why=""
+  t0="$(date +%s)"
   : > "$log"
   # Job control: the gates run in a process group of their own, whose id is $!.
   set -m
@@ -805,13 +810,18 @@ run_gates() { # src command
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1
     last="$(stat -c %Y "$log" 2>/dev/null || date +%s)"
-    if (( $(date +%s) - last >= idle )) && kill -0 "$pid" 2>/dev/null; then
-      log "gates: nothing printed for $(span "$idle"): stopping them (BUILD_GATES_IDLE)"
+    if (( $(date +%s) - last >= idle )); then why="printed nothing for $(span "$idle"): stopped (BUILD_GATES_IDLE)"
+    elif [[ -n "${BUILD_WAIT:-}" ]] && (( $(date +%s) - t0 >= 10#$BUILD_WAIT )); then
+      why="ran past their requester's wait of $(span "$((10#$BUILD_WAIT))"): stopped (BUILD_WAIT)"
+    fi
+    if [[ -n "$why" ]] && kill -0 "$pid" 2>/dev/null; then
+      log "gates: ${why%%: stopped*}: stopping them"
       kill -TERM -- "-$pid" 2>/dev/null || true
       sleep 5; kill -KILL -- "-$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
-      verdict fail "the gates printed nothing for $(span "$idle"): stopped (BUILD_GATES_IDLE): $(log_tail "$log")"
+      verdict fail "the gates $why: $(log_tail "$log")"
     fi
+    why=""
   done
   wait "$pid" || rc=$?
   return "$rc"

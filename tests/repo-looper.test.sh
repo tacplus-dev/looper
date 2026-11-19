@@ -291,6 +291,12 @@ case "$url" in
     elif [[ "$k" == bridges ]]; then reply 200 '[]'
     else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
+  # A build pipeline's own status (looper#198): $FIX/pipeline-status/<id>, else running; GITLAB_TOKEN's alone, else HTTP 404.
+  */projects/tacplus-dev%2Fbuild/pipelines/[0-9]*\?*)
+    id="${url%%\?*}"; id="${id##*/}"
+    if [[ "$auth" != PRIVATE-TOKEN ]]; then reply 404 '{"message":"404 Project Not Found"}'
+    else reply 200 "{\"id\": $id, \"status\": \"$(cat "$FIX/pipeline-status/$id" 2>/dev/null || echo running)\"}"; fi
+    exit 0 ;;
   # A GitLab pipeline an issue waits on (looper#171): $FIX/pipelines/<id>.json, else HTTP 404.
   https://gitlab.com/api/v4/projects/*/pipelines/*)
     if [[ -f "$FIX/pipelines/${url##*/}.json" ]]; then reply 200 "$(cat "$FIX/pipelines/${url##*/}.json")"; else reply 404 '{"message":"404 Not found"}'; fi
@@ -3956,6 +3962,42 @@ EOS
 run "${BUILDS[@]}" LOOPER_BUILD_START=1 LOOPER_BUILD_WAIT=4
 b="$(cat "$FIX/build-4")"
 has "$b" "no verdict within 1m of its start"; has "$b" "rc 2"; lacks "$b" "no runner"
+pass
+
+# A build pipeline cancelled, or failed, before its report jobs ran
+# (looper#198: tacplus's batch build hung, the hub cancelled it, and the
+# manager waited on, its report-pass and report-fail left created, the build's
+# status pending): with GITLAB_TOKEN the pipeline's own status is read, and it
+# is red, saying so, at once; a request after it reuses no such build, its
+# status pending still, but builds again. Without GITLAB_TOKEN it cannot be
+# told: the build is waited for, as before.
+scenario build-job-cancelled
+pin_seed; build_model notes.md "the docs"; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold"
+mkdir -p "$FIX/pipeline-status"; echo canceled > "$FIX/pipeline-status/901"; echo failed > "$FIX/pipeline-status/902"
+start=$SECONDS
+run "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+(( SECONDS - start < 120 )) || fail "waited $(( SECONDS - start ))s"
+b="$(cat "$FIX/build-4")"
+has "$b" "verdict: failure: the build was cancelled before a verdict: its pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/901 is canceled, and no report job set one"
+has "$b" "rc 1"
+l="$(cat "$FIX/land-4")"
+has "$l" "The manager did not merge"; has "$l" "rc 4"
+has "$l" "nothing landed: its build job failed: the build failed before a verdict: its pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/902 is failed"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+grep -qxF "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/901?per_page=100" "$FIX/gitlab" ||
+  fail "the pipeline's status not read with GITLAB_TOKEN: $(grep pipelines "$FIX/gitlab")"
+pass
+scenario build-job-cancelled-no-token
+pin_seed; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold"
+mkdir -p "$FIX/pipeline-status"; echo canceled > "$FIX/pipeline-status/901"
+cat >> "$FIX/claude.sh" <<'EOS'
+echo "the docs" > notes.md && git add -A && git commit -qm "change notes.md"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+EOS
+run "${BUILDS[@]}" LOOPER_BUILD_WAIT=4
+b="$(cat "$FIX/build-4")"
+has "$b" "no verdict within 1m of its start"; has "$b" "rc 2"; lacks "$b" "cancelled"
 pass
 
 # Builds run on spot, a few at a time (looper#128): a build still queued for a

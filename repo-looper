@@ -1324,13 +1324,14 @@ start_build() { # sha gates base wait
 BUILD_RECORDS="$WORK/builds"
 
 # The build of the key to reuse, as "<pipeline id> <URL> green|running"
-# (running: queued or running); fails when there is none.
+# (running: queued or running, its pipeline not ended: build_ended); fails
+# when there is none.
 find_build() { # sha gates base
   local s r f
   s="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$1/statuses?per_page=100" 2>/dev/null)" || s='[]'
   f="$BUILD_RECORDS/$1-${2:-_}-$3"
   ! record_live "$f" || r="$(cut -d' ' -f1,2 "$f")"
-  jq -re --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg key "${2:+: gates $2} on base $3" --arg rec "${r:-}" '
+  jq -r --arg c "$BUILD_CONTEXT" --arg who "$BUILD_CREATOR" --arg key "${2:+: gates $2} on base $3" --arg rec "${r:-}" '
     def id: .target_url | capture("/pipelines/(?<id>[0-9]+)$").id;
     # Each pipeline its newest status (GitHub lists them newest first), then the build to reuse.
     [.[] | select(.context == $c and .creator.login == $who and ((.target_url // "") | test("/pipelines/[0-9]+$")))]
@@ -1340,7 +1341,12 @@ find_build() { # sha gates base
        + (if $rec == "" then [] else ($rec | split(" ")) as [$i, $u]
           | [$last[] | select(.target_url == $u)] as $st
           | if $st == [] or $st[0].state == "pending" then ["\($rec) running"] elif $st[0].state == "success" then ["\($rec) green"] else [] end end))
-    | first // empty' <<<"$s" 2>/dev/null
+    | .[]' <<<"$s" 2>/dev/null | {
+    # One whose pipeline ended with no verdict, its status pending still, is no build to reuse (looper#198).
+    while read -r r; do
+      ! [[ "${r##* }" == running ]] || ! build_ended "${r%% *}" >/dev/null || continue
+      echo "$r"; exit 0
+    done; exit 1; }
 }
 
 # A build's record not past its wait (an older one, with none: LOOPER_BUILD_WAIT).
@@ -1394,15 +1400,27 @@ reused_what() { if [[ "$1" == green ]]; then echo green; else echo "queued or ru
 # <description>", "failure: <why>") and the build's times ("build times:
 # <url>: queued <s> s, ran <s> s"); 0 on success, 1 on a failure, 2 when none
 # came within its wait of its start, 3 when left, BUILD_NO_RUNNER when no
-# runner took it.
+# runner took it. A pipeline that ended, cancelled or failed, with no verdict
+# (its report jobs never ran: looper#198, a hung build the hub cancelled,
+# waited on for hours) is a failure at once, "the build was cancelled before
+# a verdict", read with GITLAB_TOKEN (build_ended); without it, it is waited
+# for as any other.
 build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds] [wait, seconds]
-  local t0="${4:-$(date +%s)}" wait="${5:-$BUILD_WAIT}" end s v started="" fin now said
+  local t0="${4:-$(date +%s)}" wait="${5:-$BUILD_WAIT}" end s v started="" fin now said ended
   end="$(job_end)"; said="$(date +%s)"
   while :; do
     s="$(build_statuses "$1" "$2")" || s=""
     v="$(build_said "$s")" || v=""
     [[ -n "$started" ]] || started="$(build_started "$s")"
     now="$(date +%s)"
+    if [[ -z "$v" ]] && ended="$(build_ended "$2")"; then
+      # Ended with no verdict, the statuses read again after: a report job's, set meanwhile, is the verdict.
+      s="$(build_statuses "$1" "$2")" || s=""; v="$(build_said "$s")" || v=""
+      if [[ -z "$v" ]]; then
+        echo "verdict: failure: the build $(if [[ "$ended" == canceled ]]; then echo was cancelled; else echo "$ended"; fi) before a verdict: its pipeline ${3:-$2} is $ended, and no report job set one"
+        build_times "$t0" "$started" "$now" ran "${3:-$2}"; return 1
+      fi
+    fi
     if [[ -n "$v" ]]; then
       fin="$(epoch "$(jq -r 'map(select(.state != "pending") | .created_at // empty) | first // empty' <<<"$s")")"
       echo "verdict: $v"; build_times "$t0" "$started" "${fin:-$now}" ran "${3:-$2}"
@@ -1461,6 +1479,17 @@ build_infra() { # sha pipeline-id
 build_pipeline() { # id/what
   curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") "$BUILD_API/projects/$BUILD_PROJECT/pipelines/$1?per_page=100" 2>/dev/null
 }
+# A build pipeline that has ended (looper#198): its own status, read with
+# GITLAB_TOKEN, canceled, failed or skipped (printed); fails while it runs, is
+# queued, passed, or cannot be read. A report's model holds no GITLAB_TOKEN:
+# its looper reads the status for it (build_server) into BUILD_ENDED_FILE.
+build_ended() { # pipeline-id
+  local st
+  if [[ -z "${GITLAB_TOKEN:-}" ]]; then [[ -n "${BUILD_ENDED_FILE:-}" && -s "$BUILD_ENDED_FILE" ]] && cat "$BUILD_ENDED_FILE"; return; fi
+  st="$(build_status "$1")" || return 1
+  case "$st" in canceled|failed|skipped) echo "$st" ;; *) return 1 ;; esac
+}
+build_status() { [[ -n "${GITLAB_TOKEN:-}" && "$1" =~ ^[0-9]+$ ]] && build_pipeline "$1" | jq -re '.status // empty' 2>/dev/null; } # pipeline-id
 # A build's queue time apart from its run time (looper#128), for the recap.
 build_times() { # triggered started|"" until ran|running url
   if [[ -n "$2" ]]; then echo "build times: $5: queued $(( $2 > $1 ? $2 - $1 : 0 )) s, $4 $(( $3 > $2 ? $3 - $2 : 0 )) s"
@@ -1489,7 +1518,7 @@ build_started() { epoch "$(jq -r 'map(.created_at // empty) | min // empty' <<<"
 # verdict, `no verdict within ...` once its wait is over, or `no verdict: no
 # runner ...` (build_capped). Statuses that cannot be read count as none yet.
 build_pending() { # run-dir
-  local s b sha st v started w rc=1
+  local s b sha st v started w e rc=1
   for s in "$1"/builds/*.started; do
     [[ -f "$s" ]] || continue
     b="${s%.started}"; [[ ! -e "$b.ended" ]] || continue
@@ -1498,6 +1527,7 @@ build_pending() { # run-dir
     v="$(build_said "$st")" || v=""; started="$(build_started "$st")"
     w="$(cat "$b.wait" 2>/dev/null)" || true; [[ "$w" =~ ^[0-9]+$ ]] || w="$BUILD_WAIT"
     if [[ -n "$v" ]]; then echo "$v" > "$b.ended"
+    elif e="$(build_ended "$(cut -d' ' -f1 "$s")")"; then echo "failure: the build's pipeline is $e, with no verdict" > "$b.ended"
     elif [[ -n "$started" ]] && (( $(date +%s) >= started + w )); then echo "no verdict within $(hours "$w") of its start" > "$b.ended"
     elif [[ -z "$started" ]] && (( $(date +%s) >= $(stat -c %Y "$s") + BUILD_START )); then echo "no verdict: no runner has taken it within $(hours "$BUILD_START") of its request" > "$b.ended"
     else rc=0; fi
@@ -1751,7 +1781,7 @@ model_build() { # builds-dir sha gates base
   [[ ! -s "$d/$id.refused" ]] || { BUILD_P="the looper did not start the build: $(cat "$d/$id.refused")"; return 5; }
   [[ -s "$d/$id.started" ]] || { BUILD_P="the looper did not start the build within 5 minutes"; return 5; }
   echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}$([[ ! -s "$d/$id.reused" ]] || echo " (reused: $(reused_what "$(cat "$d/$id.reused")"): this key's build, looper#134)")"
-  build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")" "" "$(cat "$d/$id.wait" 2>/dev/null)"
+  BUILD_ENDED_FILE="$d/$id.cancelled" build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")" "" "$(cat "$d/$id.wait" 2>/dev/null)"
 }
 
 # The gate map of the commit sha in the checkout, read (GM_*): none when it has
@@ -1767,8 +1797,12 @@ commit_map() { # sha
 # second until killed: each, checked, is started with the trigger the model
 # never holds, and answered with the pipeline (its id and URL) or why not, and
 # its wait (<id>.wait: build_wait, from the commit's own gates.yaml, looper#158).
+# Every LOOPER_BUILD_POLL it reads each started build's pipeline status with
+# GITLAB_TOKEN, which its model lacks (looper#198): one cancelled, failed or
+# skipped is written to <id>.cancelled, for the model's wait (build_verdict);
+# one passed, or past its wait, is read no more (<id>.over).
 build_server() { # run-dir
-  local d="$1/builds" r id sha gates base p k=0 z=""
+  local d="$1/builds" r id sha gates base p k=0 z="" polled=0 st w
   trap 'kill "$z" 2>/dev/null; exit 0' TERM
   while :; do
     for r in "$d"/*.request; do
@@ -1791,6 +1825,19 @@ build_server() { # run-dir
         echo "$BUILD_P" > "$d/$id.refused"; log "a build of $REPO ${sha:0:7} for its model: $BUILD_P"
       fi
     done
+    if [[ -n "${GITLAB_TOKEN:-}" ]] && (( SECONDS - polled >= BUILD_POLL )); then
+      polled=$SECONDS
+      for r in "$d"/*.started; do
+        id="${r%.started}"; [[ -f "$r" && ! -e "$id.cancelled" && ! -e "$id.over" ]] || continue
+        w="$(cat "$id.wait" 2>/dev/null)" || true; [[ "$w" =~ ^[0-9]+$ ]] || w="$BUILD_WAIT"
+        if (( $(date +%s) - $(stat -c %Y "$r") > w + BUILD_START )); then : > "$id.over"; continue; fi
+        st="$(build_status "$(cut -d' ' -f1 "$r")")" || continue
+        case "$st" in
+          canceled|failed|skipped) echo "$st" > "$id.cancelled"; log "the build $(cut -d' ' -f2- "$r") for its model: its pipeline is $st" ;;
+          success) : > "$id.over" ;;
+        esac
+      done
+    fi
     sleep 1 & z=$!; wait "$z"
   done
 }

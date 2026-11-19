@@ -952,6 +952,22 @@ if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_IDLE=1h -- gates 2>"$TMP/err"; the
 verdict_is "fail: BUILD_GATES_IDLE '1h' is not a number of seconds (1 or more)"
 pass
 
+# A build past its ceiling (looper#198: tacplus's batch build ran 2h22m, its
+# gates hung, until the hub cancelled it; the trigger token cannot cancel
+# one): gates still running BUILD_WAIT seconds after they started, the wait
+# its requester gave up at, are stopped, printing or not, with a verdict.
+NAME="gates: gates still running after their requester's wait are stopped, with a verdict; a nightly's never"
+start=$SECONDS
+if build BUILD_SHA="${SHA[chatty]}" BUILD_WAIT=2 -- gates 2>"$TMP/err"; then fail "gates past their wait passed"; fi
+(( SECONDS - start < 30 )) || fail "the gates ran $(( SECONDS - start ))s"
+grep -q "^fail: the gates ran past their requester's wait of 2s: stopped (BUILD_WAIT): still going [0-9]" "$OUT/build-verdict" || fail "verdict: $(cat "$OUT/build-verdict")"
+grep -qx "still going 1" "$OUT/gates.log" && ! grep -qx "still going 5" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
+build BUILD_SHA="${SHA[chatty]}" BUILD_WAIT=10800 -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+build BUILD_SHA="${SHA[chatty]}" BUILD_WAIT= -- gates 2>"$TMP/err" || fail "gates with no wait failed: $(cat "$TMP/err")"
+verdict_is pass
+pass
+
 # A land's build moves main; a report's only tells its run early (looper#195:
 # tacplus's 18-land batch build waited 11 min behind six report builds holding
 # every build slot ~55 min each). A report's gates job holds a resource group,
