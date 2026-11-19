@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-19 by looper (#195).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-19 by looper (#198).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -113,7 +113,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-19 by lo
   `report-slot-<pipeline id mod BUILD_REPORT_SLOTS>` (4), a land's none, so report builds never take every build slot
   and a land's build finds a runner (#195; in effect once the hub copies `ci/build.gitlab-ci.yml`, until then the
   input refused and the build started again without it); gates silent for `BUILD_GATES_IDLE` (1h) are stopped, their
-  process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a pending or green status names its key, gate set and base: a build
+  process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a build whose pipeline was cancelled or failed with no verdict is red at once, its status read with `GITLAB_TOKEN` (a report's model told by its looper), and reused by no request, and gates still running their requester's wait after they started are stopped, red (#198: the manager waited on a cancelled build for hours); a pending or green status names its key, gate set and base: a build
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
   linking it; the nightly recap counts builds against the commits they built, #134), and on a release
