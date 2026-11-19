@@ -12,6 +12,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   share a slot while another is free (a GitLab-side counter, or a group per runner, would spread them evenly); and a
   land that reuses its report's still-queued build (#134) waits in that slot. If either shows up, a land could start
   its own build instead of reusing a report build that hasn't started.
+- **A report in a pinned repository asks for no full build** (2026-11-19, #195; Jody on #195, 04:01Z): a land build
+  (42 lands) once waited 41 min behind 31 report builds, each a full build, while the pool runs about 4 at once. With
+  every pinned land gated by the batch's one build and, since #196, by the pre-land gate on current main, a report's
+  own full `--build` only tells its run early. A report's `--build` in a pinned repository could run its `pre-land`
+  set alone (full only where the map names none), cutting build demand by about the batch size. It changes what a
+  run's prompt (rule 4) and `--build` promise, so it wants Jody's yes and a ROADMAP.md entry.
 - **looper-build's tests run with the stub scanners in the build gates too** (2026-11-18, #183): in the build image
   every scanner is installed, so `tests/looper-build.test.sh` runs the security tests with the real scanners
   (`REAL_SCAN=1`). The image workflow's GitHub runner has none, so there they run with the stubs. The stub branch

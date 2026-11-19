@@ -57,6 +57,10 @@ case_commit push 'gates:
     git push origin HEAD:refs/heads/evil' "$LOCK"
 case_commit nogates 'build:
     echo hi' "$LOCK"
+case_commit hang 'gates:
+    echo "a gate starts"; sleep 60; echo "never printed"' "$LOCK"
+case_commit chatty 'gates:
+    for i in 1 2 3 4 5; do echo "still going $i"; sleep 1; done' "$LOCK"
 case_commit nopin "$PASS_GATES"
 case_commit tagpin "$PASS_GATES" "tacplus: 2.6.1
 build_image: us-docker.pkg.dev/jody1-328023/tacplus/build:2.6"
@@ -927,6 +931,25 @@ build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 -- gates 2>"$TMP/err" || fail "g
 verdict_is pass
 if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=3h -- gates 2>"$TMP/err"; then fail "built"; fi
 verdict_is "fail: BUILD_WAIT '3h' is not a number of seconds"
+pass
+
+# A gate that hangs (looper#195: a report build's job sat 1h52m with no output
+# after its test gate, holding a build slot until the hub cancelled it): gates
+# that print nothing for BUILD_GATES_IDLE seconds are stopped, the whole of
+# their process group, and the verdict says so.
+NAME="gates: gates silent for BUILD_GATES_IDLE are stopped, with a verdict; gates that keep printing are not"
+start=$SECONDS
+if build BUILD_SHA="${SHA[hang]}" BUILD_GATES_IDLE=3 -- gates 2>"$TMP/err"; then fail "a hung gate passed"; fi
+(( SECONDS - start < 30 )) || fail "a hung gate ran $(( SECONDS - start ))s"
+verdict_is "fail: the gates printed nothing for 3s: stopped (BUILD_GATES_IDLE): echo \"a gate starts\"; sleep 60; echo \"never printed\"; a gate starts"
+grep -qx "a gate starts" "$OUT/gates.log" && ! grep -qx "never printed" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
+! pgrep -u "$(id -u)" -f "sleep 60" >/dev/null || fail "the hung gate's sleep still runs"
+build BUILD_SHA="${SHA[chatty]}" BUILD_GATES_IDLE=3 -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass; grep -q "still going 5" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
+if build BUILD_SHA="${SHA[fail]}" BUILD_GATES_IDLE=3 -- gates 2>"$TMP/err"; then fail "red passed"; fi
+verdict_is "fail: just gates exited 3"
+if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_IDLE=1h -- gates 2>"$TMP/err"; then fail "built"; fi
+verdict_is "fail: BUILD_GATES_IDLE '1h' is not a number of seconds (1 or more)"
 pass
 
 # A land's build moves main; a report's only tells its run early (looper#195:

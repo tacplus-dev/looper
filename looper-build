@@ -80,6 +80,10 @@ BUILD_NIGHTLY_SLOTS="${BUILD_NIGHTLY_SLOTS:-1}"
 # once and the rest of the build pool is the lands' (an 18-land batch build
 # once waited behind six report builds holding every slot ~55 min each).
 BUILD_REPORT_SLOTS="${BUILD_REPORT_SLOTS:-4}"
+# Gates that print nothing for BUILD_GATES_IDLE seconds are hung, and stopped
+# (looper#195: a report build's job sat 1h52m silent after its test gate,
+# holding a build slot until the hub cancelled it by hand).
+BUILD_GATES_IDLE="${BUILD_GATES_IDLE:-3600}"
 # The security job's requests and limits where it runs CodeQL (a nightly's
 # and a release's, looper#189), as GitLab's KUBERNETES_* job variables:
 # "<cpu> <memory> <cpu limit> <memory limit>", within the build runner's
@@ -111,7 +115,7 @@ record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
 LOOPER_GATES_BASE, a full hash), BUILD_BUILDER_IMAGE (the build image a release's publish runs in, with
 rootless BuildKit; empty: the looper image, host Docker, on BUILD_DOCKER_TAGS), BUILD_WAIT (the requester's wait, in seconds: a gates job whose pipeline
-is older runs no gates), the tacplus-reader
+is older runs no gates), BUILD_GATES_IDLE (gates silent this many seconds are stopped, red; default 3600), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
 EOF
@@ -159,6 +163,8 @@ check_inputs() {
     verdict fail "BUILD_GATES '${BUILD_GATES:-}' is not a gate set (gates.yaml's set names, joined by +)"
   [[ -z "${BUILD_BASE:-}" || "$BUILD_BASE" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_BASE '$BUILD_BASE' is not a full commit hash"
   [[ "${BUILD_WAIT:-}" =~ ^[0-9]*$ ]] || verdict fail "BUILD_WAIT '$BUILD_WAIT' is not a number of seconds"
+  [[ "$BUILD_GATES_IDLE" =~ ^[0-9]{1,9}$ ]] && ((10#$BUILD_GATES_IDLE >= 1)) ||
+    verdict fail "BUILD_GATES_IDLE '$BUILD_GATES_IDLE' is not a number of seconds (1 or more)"
   [[ "${BUILD_REPORT:-}" =~ ^(true|false)?$ ]] || verdict fail "BUILD_REPORT '$BUILD_REPORT' is not true or false"
   if [[ "${BUILD_REPORT:-}" == true ]]; then
     [[ -z "${BUILD_TAG:-}" && "${BUILD_NIGHTLY:-}" != true && "${BUILD_VERIFY:-}" != true ]] ||
@@ -774,9 +780,41 @@ check_wanted() {
   created="$(date -u -d "$CI_PIPELINE_CREATED_AT" +%s 2>/dev/null)" ||
     { log "the pipeline's creation time '$CI_PIPELINE_CREATED_AT' cannot be read: it builds"; return 0; }
   (( $(date +%s) - created > BUILD_WAIT )) || return 0
-  m=$(( (BUILD_WAIT + 59) / 60 ))   # as repo-looper's hours: 3h, 2h30m, 10m
-  if (( m < 60 )); then m="${m}m"; elif (( m % 60 )); then m="$(( m / 60 ))h$(( m % 60 ))m"; else m="$(( m / 60 ))h"; fi
-  verdict fail "abandoned: no verdict wanted after $m"
+  verdict fail "abandoned: no verdict wanted after $(span "$BUILD_WAIT")"
+}
+
+# Seconds as repo-looper's hours: 3h, 2h30m, 10m (rounded up), under a minute 45s.
+span() { # seconds
+  local m=$(( ($1 + 59) / 60 ))
+  if (( $1 < 60 )); then echo "$1s"; elif (( m < 60 )); then echo "${m}m"
+  elif (( m % 60 )); then echo "$(( m / 60 ))h$(( m % 60 ))m"; else echo "$(( m / 60 ))h"; fi
+}
+
+# The gates' command, in the commit's checkout, its output in gates.log and on
+# stderr; returns its exit status. Gates silent (gates.log unchanged) for
+# BUILD_GATES_IDLE seconds are hung (looper#195): their process group, the
+# gates and all they started, is stopped and the verdict is red.
+run_gates() { # src command
+  local log="$BUILD_OUT/gates.log" idle=$((10#$BUILD_GATES_IDLE)) pid rc=0 last
+  : > "$log"
+  # Job control: the gates run in a process group of their own, whose id is $!.
+  set -m
+  { (cd "$1" && LOOPER_GATES_BASE="${BUILD_BASE:-}" exec bash -c "$2") 2>&1 | tee "$log" >&2; exit "${PIPESTATUS[0]}"; } &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    last="$(stat -c %Y "$log" 2>/dev/null || date +%s)"
+    if (( $(date +%s) - last >= idle )) && kill -0 "$pid" 2>/dev/null; then
+      log "gates: nothing printed for $(span "$idle"): stopping them (BUILD_GATES_IDLE)"
+      kill -TERM -- "-$pid" 2>/dev/null || true
+      sleep 5; kill -KILL -- "-$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      verdict fail "the gates printed nothing for $(span "$idle"): stopped (BUILD_GATES_IDLE): $(log_tail "$log")"
+    fi
+  done
+  wait "$pid" || rc=$?
+  return "$rc"
 }
 
 cmd_gates() {
@@ -819,7 +857,7 @@ cmd_gates() {
     run="just gates"; what="just gates"
   fi
   log "gates: $BUILD_REPO $BUILD_SHA: $what"
-  (cd "$src" && LOOPER_GATES_BASE="${BUILD_BASE:-}" bash -c "$run") 2>&1 | tee "$BUILD_OUT/gates.log" >&2 || rc="${PIPESTATUS[0]}"
+  run_gates "$src" "$run" || rc=$?
   changed="$(git -C "$src" status --porcelain --untracked-files=no)"
   [[ -z "$changed" ]] || verdict fail "the build changed tracked files: $(echo "$changed" | head -20 | tr '\n' ' ')"
   [[ "$(git -C "$src" rev-parse HEAD)" == "$BUILD_SHA" ]] || verdict fail "the build moved HEAD off $BUILD_SHA"
