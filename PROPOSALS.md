@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Report builds' slots, after the copy** (2026-11-19, #195): a report's `--build` now asks for `report: true`, and its
+  gates job holds one of `BUILD_REPORT_SLOTS` (4) resource groups, so the lands' builds find a runner. It takes effect
+  once the hub copies `ci/build.gitlab-ci.yml` into tacplus-dev/build: until then GitLab refuses the input and
+  `repo-looper` starts the build again without it (one refused request a report build). After the copy that fallback
+  can go. Two things to watch in the recap's queue times: a slot is the pipeline id mod 4, so two report builds can
+  share a slot while another is free (a GitLab-side counter, or a group per runner, would spread them evenly); and a
+  land that reuses its report's still-queued build (#134) waits in that slot. If either shows up, a land could start
+  its own build instead of reusing a report build that hasn't started.
 - **looper-build's tests run with the stub scanners in the build gates too** (2026-11-18, #183): in the build image
   every scanner is installed, so `tests/looper-build.test.sh` runs the security tests with the real scanners
   (`REAL_SCAN=1`). The image workflow's GitHub runner has none, so there they run with the stubs. The stub branch

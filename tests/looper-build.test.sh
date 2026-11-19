@@ -929,6 +929,46 @@ if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=3h -- gates 2>"$TMP/err"; then fail
 verdict_is "fail: BUILD_WAIT '3h' is not a number of seconds"
 pass
 
+# A land's build moves main; a report's only tells its run early (looper#195:
+# tacplus's 18-land batch build waited 11 min behind six report builds holding
+# every build slot ~55 min each). A report's gates job holds a resource group,
+# report-slot-<its pipeline's id mod BUILD_REPORT_SLOTS>, so at most that many
+# report gates run at once and the rest of the pool is the lands'; a land's
+# build (no report input) holds none.
+NAME="plan: a report's gates job holds one of BUILD_REPORT_SLOTS resource groups; a land's none (looper#195)"
+rg_of() { sed -n "/^$1:\$/,/^[^ ]/p" "$OUT/build-gates.yml" | sed -n 's/^  resource_group: //p'; } # job
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true CI_PIPELINE_ID=3086905974 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+[[ "$(rg_of gates)" == report-slot-2 ]] || fail "a report's gates not in slot 2 of 4 (the default): '$(rg_of gates)'"
+grep -q "plan: a report's build: its gates in report-slot-2, 4 report builds at a time" "$TMP/err" || fail "the plan does not say its slot: $(cat "$TMP/err")"
+"$ROOT/looper-ci-lint" "$OUT/build-gates.yml" > "$TMP/lint" 2>&1 || fail "the report's pipeline is not valid GitLab CI: $(cat "$TMP/lint")"
+for j in gates-failed security-demo; do [[ -z "$(rg_of "$j")" ]] || fail "$j holds a slot: '$(rg_of "$j")'"; done
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_REPORT_SLOTS=5 CI_PIPELINE_ID=3086905974 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(rg_of gates)" == report-slot-4 ]] || fail "a report's gates not in slot 4 of 5: '$(rg_of gates)'"
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(rg_of gates)" == report-slot-0 ]] || fail "a report's gates with no pipeline id not in slot 0: '$(rg_of gates)'"
+for r in "" false; do
+  build BUILD_SHA="${SHA[pass]}" BUILD_REPORT="$r" CI_PIPELINE_ID=3086905974 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+  ! grep -q '^  resource_group:' "$OUT/build-gates.yml" || fail "a land's build (report '$r') holds a slot: $(grep -n resource_group "$OUT/build-gates.yml")"
+done
+for s in 0 x -1 101; do
+  if build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_REPORT_SLOTS="$s" -- plan 2>"$TMP/err"; then fail "planned $s report builds at a time"; fi
+  verdict_is "fail: BUILD_REPORT_SLOTS '$s' is not a number of report builds at a time (1 to 100)"
+done
+if build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=yes -- plan 2>"$TMP/err"; then fail "planned"; fi
+verdict_is "fail: BUILD_REPORT 'yes' is not true or false"
+if build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_REPORT=true -- plan 2>"$TMP/err"; then fail "planned"; fi
+verdict_is "fail: a report's build is not a release, a nightly or a verify run"
+if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_REPORT=true -- plan 2>"$TMP/err"; then fail "planned"; fi
+verdict_is "fail: a report's build is not a release, a nightly or a verify run"
+pass
+
+NAME="ci/build.gitlab-ci.yml: the report input, passed to the plan, and four report builds at a time (looper#195)"
+c="$ROOT/ci/build.gitlab-ci.yml"
+sed -n '/^spec:$/,/^---$/p' "$c" | grep -A3 '^    report:$' | grep -qxF '      type: boolean' || fail "no boolean input report: $(sed -n '/^spec:$/,/^---$/p' "$c")"
+grep -qxF '  BUILD_REPORT: "$[[ inputs.report ]]"' "$c" || fail "the plan does not get the report input"
+[[ "$(sed -n 's/^  BUILD_REPORT_SLOTS: "\(.*\)"$/\1/p' "$c")" == 4 ]] || fail "BUILD_REPORT_SLOTS is not 4"
+pass
+
 NAME="plan: the gates job has a build's wait; a nightly's and a release's never"
 build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 -- plan 2>"$TMP/err" || fail "plan failed"
 grep -qxF '    BUILD_WAIT: "10800"' <(sed -n '/^gates:$/,/^security-demo:$/p' "$OUT/build-gates.yml") || fail "no wait: $(head -16 "$OUT/build-gates.yml")"

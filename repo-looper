@@ -1256,15 +1256,26 @@ build_jobs() { # rev [dir]
 # asked for as full (without a gates.yaml looper-build runs `just gates` for
 # it), and an empty base is left out (the input's default). It passes the wait
 # for its verdict too (build_wait, looper#158): a build whose gates would start
-# later runs none (looper#130). A refusal keeps GitLab's response, redacted: it says why.
+# later runs none (looper#130). A report's build (BUILD_REPORT set: its
+# looper's build_server) says so, report: its gates take one of the build
+# project's few report slots, and the rest of the pool is the lands' (looper#195);
+# a refusal of it (a project whose CI file does not declare report yet) starts
+# the build again without it. A refusal keeps GitLab's response, redacted: it says why.
 start_build() { # sha gates base wait
-  local r id url base=()
+  local r id url base=() report=()
   [[ -z "$3" ]] || base=(--data-urlencode "inputs%5Bbase%5D=$3")
-  r="$(printf '%s' "$BUILD_TRIGGER_TOKEN" |
-       curl -sS --fail-with-body --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data-urlencode token@- \
-         --data-urlencode ref=main --data-urlencode "inputs%5Brepo%5D=$REPO" --data-urlencode "inputs%5Bsha%5D=$1" \
-         --data-urlencode "inputs%5Bgates%5D=${2:-full}" "${base[@]}" --data-urlencode "inputs%5Bwait%5D=${4:-$BUILD_WAIT}" 2>&1)" ||
-    { echo "GitLab refused to start the build: $(redact <<<"$r" | tr -s '\n' ' ' | head -c 600)"; return 1; }
+  [[ -z "${BUILD_REPORT:-}" ]] || report=(--data-urlencode "inputs%5Breport%5D=true")
+  while :; do
+    r="$(printf '%s' "$BUILD_TRIGGER_TOKEN" |
+         curl -sS --fail-with-body --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data-urlencode token@- \
+           --data-urlencode ref=main --data-urlencode "inputs%5Brepo%5D=$REPO" --data-urlencode "inputs%5Bsha%5D=$1" \
+           --data-urlencode "inputs%5Bgates%5D=${2:-full}" "${base[@]}" --data-urlencode "inputs%5Bwait%5D=${4:-$BUILD_WAIT}" "${report[@]}" 2>&1)" && break
+    if ((${#report[@]})); then
+      log "GitLab refused the build of ${1:0:7} with the input report ($(redact <<<"$r" | tr -s '\n' ' ' | head -c 300)): its CI file may not declare it yet (looper#195); started again without it" >&2
+      report=(); continue
+    fi
+    echo "GitLab refused to start the build: $(redact <<<"$r" | tr -s '\n' ' ' | head -c 600)"; return 1
+  done
   id="$(jq -r '.id // empty' <<<"$r" 2>/dev/null)"; url="$(jq -r '.web_url // empty' <<<"$r" 2>/dev/null)"
   [[ "$id" =~ ^[0-9]+$ ]] || { echo "GitLab started no pipeline: $(redact <<<"$r" | head -c 300)"; return 1; }
   echo "$id ${url:-$BUILD_API/projects/$BUILD_PROJECT/pipelines/$id}"
@@ -1722,7 +1733,7 @@ build_server() { # run-dir
       base="$(sed -n 's/^base=//p' "$d/$id.taken" | head -n 1)"
       if ! [[ "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]]; then
         echo "not a build request (sha=, gates=, base=)" > "$d/$id.refused"
-      elif commit_map "$sha"; BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
+      elif commit_map "$sha"; BUILD_REPORT=1 BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
         echo "$BUILD_W" > "$d/$id.wait"
         # A build of the same key, green or queued or running, is reused (looper#134).
         if [[ -n "$BUILD_REUSED" ]]; then

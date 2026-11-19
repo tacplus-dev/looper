@@ -228,7 +228,7 @@ case "$url" in
   # input checked as GitLab does (HTTP 422), an input given empty refused as
   # tacplus-dev/build's trigger refused gateway's (HTTP 422, looper#127), and
   # $FIX/trigger-refuses refusing any (HTTP 422, its content the body); recorded
-  # in $FIX/builds as "<token> <repo> <sha> <gates> <base> <wait>"; the build itself, at
+  # in $FIX/builds as "<token> <repo> <sha> <gates> <base> <wait>[ report=true]"; the build itself, at
   # once: the commit's gate set from origin, as looper-build runs it
   # (BUILD_STUB=build in its environment), and its commit status by the reader
   # app, linking the pipeline. $FIX/forge-status adds a success linking it too,
@@ -245,7 +245,9 @@ case "$url" in
     for kv in ${form//&/ }; do [[ "$kv" == *= ]] && { reply 422 "{\"message\":{\"base\":[\"$(dec "${kv%=}"): empty\"]}}"; exit 0; }; done
     # tacplus-dev/build's gates input (ci/build.gitlab-ci.yml): else HTTP 422.
     [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || { reply 422 '{"message":{"base":["gates input does not match the regex"]}}'; exit 0; }
-    echo "$(v token) $(v 'inputs[repo]') $sha $gates $base $(v 'inputs[wait]')" >> "$FIX/builds"
+    # $FIX/trigger-no-report: the project's CI file declares no input report yet (looper#195).
+    [[ ! -e "$FIX/trigger-no-report" || -z "$(v 'inputs[report]')" ]] || { reply 400 '{"message":{"base":["unknown input arguments: report"]}}'; exit 0; }
+    echo "$(v token) $(v 'inputs[repo]') $sha $gates $base $(v 'inputs[wait]')$(r="$(v 'inputs[report]')"; echo "${r:+ report=$r}")" >> "$FIX/builds"
     id=$(( $(wc -l < "$FIX/builds") + 900 )); d="$(mktemp -d)"; state=success; desc="pass${gates:+: gates $gates}${base:+ on base $base}"
     if ! git clone -q "$FIX/origin.git" "$d/src" 2>/dev/null || ! git -C "$d/src" -c advice.detachedHead=false checkout -q "$sha" 2>/dev/null; then
       state=failure; desc="tacplus-dev/alpha has no commit $sha"
@@ -3577,8 +3579,9 @@ lacks "$p" "looper-docker"; lacks "$p" "DOCKER_HOST="; lacks "$p" "BUILD_TRIGGER
 b="$(cat "$FIX/build-4")"
 has "$b" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha $(cut -c1-7 "$FIX/head"), the gates docs"
 has "$b" "verdict: success: pass: gates docs on base $main0"; has "$b" "rc 0"
-# With the requester's wait (looper#130): past it, the build runs no gates.
-[[ "$(head -n 1 "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0 7200" ]] || fail "the build asked for: $(cat "$FIX/builds")"
+# With the requester's wait (looper#130): past it, the build runs no gates. A
+# report's build says so (looper#195): its gates take one of the report slots.
+[[ "$(head -n 1 "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0 7200 report=true" ]] || fail "the build asked for: $(cat "$FIX/builds")"
 has "$(cat "$FIX/land-4")" "The manager merged"; has "$(cat "$FIX/land-4")" "rc 0"
 [[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
 # The manager's gates: a build job's verdict on the rebased commit, never the gates here. Its
@@ -3596,6 +3599,21 @@ lacks "$pr" "limited to 2048m of memory"
 [[ "$pr" == *"1 on a failure, 2 with none
    within its wait, 3 with none by this job's end, 4 when no runner took it within 15m: no verdict yet, and a later --build of the same commit takes it up). You
    have no container runtime"*"you may run yourself. The full gates are "*". Long builds: "* ]] || fail "rule 4: $(grep -A7 '^4\. ' <<<"$pr")"
+pass
+
+# A build project whose CI file does not declare the input report yet
+# (looper#195: the image lands before the hub copies ci/build.gitlab-ci.yml)
+# refuses a report's build with it: the build is started again without it, as
+# a land's, and the report gets its verdict.
+scenario build-job-report-undeclared
+pin_seed; build_model notes.md "the docs"; : > "$FIX/trigger-no-report"
+main0="$(origin rev-parse main)"
+run "${BUILDS[@]}"
+b="$(cat "$FIX/build-4")"
+has "$b" "verdict: success: pass: gates docs on base $main0"; has "$b" "rc 0"
+[[ "$(cat "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0 7200" ]] || fail "builds: $(cat "$FIX/builds")"
+has "$OUT" "GitLab refused the build of $(cut -c1-7 "$FIX/head") with the input report"; has "$OUT" "started again without it"
+has "$(cat "$FIX/land-4")" "The manager merged"
 pass
 
 # The nightly scan of a pinned repository (looper#73): its model has no
@@ -3657,7 +3675,7 @@ for i in 1 2; do "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/buil
 EOS
 main0="$(origin rev-parse main)"
 run "${BUILDS[@]}"
-[[ "$(cat "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0 7200" ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(cat "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0 7200 report=true" ]] || fail "builds: $(cat "$FIX/builds")"
 for i in 1 2 3; do
   has "$(cat "$FIX/build-$i")" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha $(cut -c1-7 "$FIX/head"), the gates docs"
   has "$(cat "$FIX/build-$i")" "verdict: success: pass: gates docs on base $main0"
@@ -3994,7 +4012,7 @@ jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-4.json" > "$FIX/x"
 # Its last land on the set was quick: the manager starts it (land_fits).
 mkdir -p "$FIX/work/alpha"; echo 0 > "$FIX/work/alpha/land-seconds.docs+images"
 manage "${BUILDS[@]}" LOOPER_BUILD_WAIT=3600 LOOPER_LAND_MARGIN=15 CI_JOB_TIMEOUT=40 CI_JOB_STARTED_AT="$(date -u +%FT%TZ)"
-[[ "$(cut -d' ' -f4,6 "$FIX/builds")" == "docs+images 10800" ]] || fail "the build asked for: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f4,6- "$FIX/builds")" == "docs+images 10800" ]] || fail "the build asked for: $(cat "$FIX/builds")"   # a land's: no report (looper#195)
 has "$OUT" "#4: left queued for the next manager: its build https://gitlab.com/tacplus-dev/build/-/pipelines/901 has no verdict yet"
 lacks "$(cat "$FIX/comments")" "alpha#4 "; has "$(labels alpha 4)" "looper:landing"
 [[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"

@@ -75,6 +75,11 @@ BUILD_DOCKER_TAGS="${BUILD_DOCKER_TAGS:-$BUILD_RUNNER_TAGS}"
 # the build runner's), and its fan-out BUILD_NIGHTLY_SLOTS repositories at a time.
 BUILD_NIGHTLY_TAGS="${BUILD_NIGHTLY_TAGS:-$BUILD_RUNNER_TAGS}"
 BUILD_NIGHTLY_SLOTS="${BUILD_NIGHTLY_SLOTS:-1}"
+# A report's build (BUILD_REPORT, looper#195): a land's moves main, a report's
+# only tells its run early, so at most BUILD_REPORT_SLOTS report gates run at
+# once and the rest of the build pool is the lands' (an 18-land batch build
+# once waited behind six report builds holding every slot ~55 min each).
+BUILD_REPORT_SLOTS="${BUILD_REPORT_SLOTS:-4}"
 # The security job's requests and limits where it runs CodeQL (a nightly's
 # and a release's, looper#189), as GitLab's KUBERNETES_* job variables:
 # "<cpu> <memory> <cpu limit> <memory limit>", within the build runner's
@@ -154,6 +159,13 @@ check_inputs() {
     verdict fail "BUILD_GATES '${BUILD_GATES:-}' is not a gate set (gates.yaml's set names, joined by +)"
   [[ -z "${BUILD_BASE:-}" || "$BUILD_BASE" =~ ^[0-9a-f]{40}$ ]] || verdict fail "BUILD_BASE '$BUILD_BASE' is not a full commit hash"
   [[ "${BUILD_WAIT:-}" =~ ^[0-9]*$ ]] || verdict fail "BUILD_WAIT '$BUILD_WAIT' is not a number of seconds"
+  [[ "${BUILD_REPORT:-}" =~ ^(true|false)?$ ]] || verdict fail "BUILD_REPORT '$BUILD_REPORT' is not true or false"
+  if [[ "${BUILD_REPORT:-}" == true ]]; then
+    [[ -z "${BUILD_TAG:-}" && "${BUILD_NIGHTLY:-}" != true && "${BUILD_VERIFY:-}" != true ]] ||
+      verdict fail "a report's build is not a release, a nightly or a verify run"
+    [[ "$BUILD_REPORT_SLOTS" =~ ^[1-9][0-9]*$ ]] && ((BUILD_REPORT_SLOTS <= 100)) ||
+      verdict fail "BUILD_REPORT_SLOTS '$BUILD_REPORT_SLOTS' is not a number of report builds at a time (1 to 100)"
+  fi
   [[ "$BUILD_SCAN_CODEQL_REQUESTS" =~ ^$QUANTITY\ $QUANTITY\ $QUANTITY\ $QUANTITY$ ]] ||
     verdict fail "BUILD_SCAN_CODEQL_REQUESTS '$BUILD_SCAN_CODEQL_REQUESTS' is not \"<cpu> <memory> <cpu limit> <memory limit>\""
 }
@@ -337,6 +349,8 @@ cmd_plan() {
   else
     log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE${BUILD_TAG:+, the formal verification}"
   fi
+  [[ "${BUILD_REPORT:-}" != true ]] ||
+    log "plan: a report's build: its gates in $(report_slot), $BUILD_REPORT_SLOTS report builds at a time; a land's build holds no slot"
   if [[ -n "${BUILD_TAG:-}" && -n "$BUILD_BUILDER_IMAGE" ]]; then
     log "plan: publish in $BUILD_BUILDER_IMAGE (rootless BuildKit) on $BUILD_RUNNER_TAGS"
   elif [[ -n "${BUILD_TAG:-}" ]]; then
@@ -488,14 +502,25 @@ EOF
 EOF
 }
 
+# A report's build's slot (looper#195): the resource group its gates job
+# holds, report-slot-<its pipeline's id mod BUILD_REPORT_SLOTS>. GitLab starts
+# one job of a resource group at a time, and one waiting for it holds no
+# runner, so a land's build, queued later, still finds one.
+report_slot() {
+  local id="${CI_PIPELINE_ID:-0}"; [[ "$id" =~ ^[0-9]{1,18}$ ]] || id=0
+  echo "report-slot-$(( 10#$id % BUILD_REPORT_SLOTS ))"
+}
+
 gates_jobs() { # image
   # The gates' own timeout, a report job's longest (repo-looper's
   # JOB_MAX_HOURS): tacplus's full gates take over 3h, and the project's
-  # default ended them at 1h (looper#140).
+  # default ended them at 1h (looper#140). A report's holds its slot (looper#195).
+  local slot=""; [[ "${BUILD_REPORT:-}" != true ]] || slot="
+  resource_group: $(report_slot)"
   cat <<EOF
 gates:
   image: "$1"
-  tags: [$BUILD_RUNNER_TAGS]
+  tags: [$BUILD_RUNNER_TAGS]$slot
   timeout: 11h
   variables:
     GIT_STRATEGY: none
