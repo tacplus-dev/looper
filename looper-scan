@@ -901,20 +901,23 @@ scan_policy() { # dir previous-findings started [base-findings]
          "$src/$BASELINE_FILE" 2>/dev/null)"; then
     problems+=("$BASELINE_FILE: not a list of {tool, id, file, count} (looper-scan baseline writes it)"); baseline='[]'
   fi
+  # As files, never arguments: a baseline of thousands is past what one
+  # argument may hold (looper#201).
+  printf '%s\n' "$exceptions" > "$SCAN_WORK/exceptions.json"; printf '%s\n' "$baseline" > "$SCAN_WORK/baseline.json"
 
   local norms=()
   mapfile -t norms < <(find "$SCAN_OUT/norm" -name '*.json' | LC_ALL=C sort)
   ((${#norms[@]})) || norms=(/dev/null)
   # The baseline's count of a tool, rule and file goes to its findings in line
   # order, and so does the base's.
-  jq -s --argjson exc "$exceptions" --arg today "$today" --argjson base "$baseline" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') \
+  jq -s --slurpfile exc "$SCAN_WORK/exceptions.json" --arg today "$today" --slurpfile base "$SCAN_WORK/baseline.json" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') \
         --slurpfile landbase <(cat "$base" 2>/dev/null || echo '[]') "$JQ_BASELINE$JQ_GLOB"'
     ($prev[0] // [] | map(.tool + "|" + .id + "|" + .where) | map({(.): true}) | add // {}) as $old
-    | ($base | map({(.tool + "|" + .id + "|" + .file): .count}) | add // {}) as $quota
+    | ($base[0] | map({(.tool + "|" + .id + "|" + .file): .count}) | add // {}) as $quota
     | ($landbase[0] // [] | map(.tool + "|" + .id + "|" + file_of) | group_by(.) | map({(.[0]): length}) | add // {}) as $standing
     | [.[][]] | unique_by([.tool, .id, .where]) | map(
         . as $f
-        | ([$exc[] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x))
+        | ([$exc[0][] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x))
                           and ((has("where") | not) or (.where != "" and (.where as $w | $f | in_where($w)))))][0]) as $e
         | . + {excepted: ($e.id // null), test: (.test == true),
                blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
@@ -1073,7 +1076,7 @@ mark_test_code() { # tree label prefix
         [[ -f "$1/$r" ]] || continue
         rust_test_modules "$1/$r" | jq -R --arg f "$3$r" '{file: $f, range: (split(" ") | map(tonumber))}'
       done | jq -sc 'group_by(.file) | map({(.[0].file): map(.range)}) | add // {}')"
-    jq --argjson modules "$modules" "$JQ_BASELINE$JQ_TEST"'map(if .kind == "sast" then . + {test: test_code($modules)} else . end)' "$f" > "$f.tmp"
+    jq --slurpfile modules <(printf '%s\n' "$modules") "$JQ_BASELINE$JQ_TEST"'map(if .kind == "sast" then . + {test: test_code($modules[0])} else . end)' "$f" > "$f.tmp"
     mv "$f.tmp" "$f"
   done
 }

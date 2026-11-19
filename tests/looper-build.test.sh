@@ -306,6 +306,11 @@ $WRITES
 }" security-baseline.json "$G306_BASELINE"
 scan_commit scanvulnbase "${VULN[@]}" security-baseline.json '[{"tool":"osv-scanner","id":"GO-2021-0113","file":"golang.org/x/text@0.3.0 (go.mod)","count":1},
  {"tool":"osv-scanner","id":"GO-2026-5970","file":"golang.org/x/text@0.3.0 (go.mod)","count":1}]'
+# A baseline as large as a generated tree's (tacplus#854: 8827 findings,
+# looper#201): 20000 entries besides the two, past what one argument may hold.
+BIG_BASELINE="$(jq -nc '[{count: 2, file: "main.go", id: "G306", tool: "gosec"}]
+  + [range(20000) | {count: 1, file: "gen/f\(.).go", id: "G104", tool: "gosec"}]')"
+scan_commit scanbigbase main.go "$(git -C "$work" show "${SHA[scanbased]}:main.go")" security-baseline.json "$BIG_BASELINE"
 scan_commit scanbadbase security-baseline.json '[{"tool":"gosec","id":"G306","file":"main.go"}]'
 # A Rust service as tacplus's are (gateway, looper#126): its Cargo.toml
 # path-depends on the crates its tacplus.yaml output-dir holds, which only a
@@ -2170,6 +2175,12 @@ sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | gr
   fail "$(cat "$OUT/security/summary.md")"
 [[ "$(jq -c '[.runs[] | select(.tool.driver.name == "gosec") | .results[] | select(.ruleId == "G306") | [.level, .properties.baselined]]' "$OUT/security/findings.sarif")" == \
    '[["note",true],["note",true],["warning",false]]' ]] || fail "SARIF: $(jq -c . "$OUT/security/findings.sarif")"
+pass
+
+NAME="security: a baseline of 20000 entries is read: its findings are baselined (looper#201)"
+scan BUILD_SHA="${SHA[scanbigbase]}" -- run 2>"$TMP/err" || fail "$(cat "$OUT/security/verdict"): $(tail -3 "$TMP/err")"
+[[ "$(jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | .baselined]' "$OUT/security/findings.json")" == '[true,true,false]' ]] ||
+  fail "$(jq -c . "$OUT/security/findings.json")"
 pass
 
 NAME="security: a baseline never takes a HIGH finding nor one the policy fails, and a baseline without counts fails the run"
