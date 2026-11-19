@@ -149,3 +149,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-18 looper issue The looper image's npm 11.21.1 (from build:2.6) bundles ip-address 10.7.2 (GHSA-rxp7-6hxx-x8q5): npm 11.21.3 bundles the fixed 10.7.5 (#186)
 - 2026-11-18 looper issue A land the verdict job drops (conflict or red) keeps looper:landing until the job ends, so its report cannot rebase for hours (#192)
 - 2026-11-18 looper issue A verdict job stops after a green land that pins the repository's build image, so main gets the pin and the next manager lands in batches (#193)
+- 2026-11-19 looper issue A merge-train candidate that changes .github/workflows is called red in seconds (its build branch push refused?) and the whole batch is bisected (#194)
