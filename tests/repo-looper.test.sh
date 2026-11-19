@@ -3612,7 +3612,8 @@ run "${BUILDS[@]}"
 b="$(cat "$FIX/build-4")"
 has "$b" "verdict: success: pass: gates docs on base $main0"; has "$b" "rc 0"
 [[ "$(cat "$FIX/builds")" == "glptt-build alpha $(cat "$FIX/head") docs $main0 7200" ]] || fail "builds: $(cat "$FIX/builds")"
-has "$OUT" "GitLab refused the build of $(cut -c1-7 "$FIX/head") with the input report"; has "$OUT" "started again without it"
+l="$(cat "$FIX"/project/looper-runs/*-issue-4/builds.log)"
+has "$l" "GitLab refused the build of $(cut -c1-7 "$FIX/head") with the input report"; has "$l" "started again without it"
 has "$(cat "$FIX/land-4")" "The manager merged"
 pass
 
