@@ -588,6 +588,40 @@ read from that tree.
   [build pipeline](#build-pipeline)'s release build, which always runs `just gates`) runs them before it ships,
   and the build pipeline's verdict is always the full gates.
 
+#### The pre-land gate
+
+A land written against an older main can break only under a check that landed on main after it (tacplus,
+2026-11-19, looper#196: three such lands turned two batches of 18 and 20 red in their unit tests, an hour's build
+each and a bisect, where the unit tests, ~3.5 minutes on the main of the moment, would have caught each). A
+repository's map may name its fast unit gate, the set **`pre-land`**, with no `paths` (no path calls for it):
+
+```yaml
+pre-land:
+  run: just test
+  minutes: 5
+```
+
+A land on **full** (the expensive build a red batch wastes) runs it on its commits **rebased onto current main**
+before it reaches a batch, twice at most:
+
+- **At the report's `--land`, before it queues:** a build job of the rebased commit in a pinned repository (the
+  report's looper starts it, as `--build`'s, from the branch `looper/pre-land-<repo>-<issue>`, deleted after), else
+  in the report's job. **Red queues nothing:** `--land` exits 4 with the failure, and the model fixes it at once.
+  Green, the land records the main it was green on (`.looper/land`'s `pre-land=`). The prompt's rule 5 says so when
+  main's map names one.
+- **At the manager, before it stages a batch** (the merge train), for each land whose report's was not green on the
+  main the batch starts from: started all at once, a build each, then their verdicts; a red one is **sent back with
+  the failure** (its verdict, exit 4) before any batch, and the rest are staged. A verdict job
+  ([the manager split in two](#managers-and-direct-reports)) judges each land on its own gates already, and runs none.
+
+None runs when main's map has no `pre-land`, the rebase conflicts (the manager's verdict says what comes of it), the
+land is not on full, or the manager would run it beside its token; one with no verdict (no runner, past its wait,
+red in its infrastructure alone) lets the land go on: the batch's build judges it, as before.
+
+```sh
+tests/repo-looper.test.sh   # pre-land-*: the report's red queues nothing and says why, its green on the same main is not run again; as a build job of the rebased commit, its branch deleted; the manager's for lands not green on its main, the red one sent back before the batch; the map's pre-land takes no paths
+```
+
 This repository's own map is [`gates.yaml`](gates.yaml): the planning files check for `*.md`, each script's own
 test for the scripts no other test drives, and full for `repo-looper`, `looper-lib.sh` and the rest.
 Its gates run in looper jobs (a land, the nightly scan), whose environment holds the apps, the job tags, gh's

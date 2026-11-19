@@ -970,3 +970,17 @@ the looper then marks it `promoted` or `declined` here with the date.
   up a green build of an earlier manager that stopped before merging; today that path reuses by tree only a build
   left to run (#128's record) or one of the commit queued. It changes the committer dates main carries, so it is
   proposed, not done.
+- **tacplus's `pre-land` set** (2026-11-19, #196): the pre-land gate runs only where a repository's `gates.yaml` names
+  one, and tacplus's does not yet: `pre-land:` with `run: just test` (its `go test ./...` with generation and
+  soundness, the `test` step of `scripts/gates.sh`) and `minutes: 5`. It must land in tacplus only once the looper
+  image carrying #196 runs its manager and reports: an older looper reads a set with no `paths:` as a map it cannot
+  read, and lands nothing. The issue for it is #196's closing run's to open in tacplus.
+- **A pre-land build without the security checks** (2026-11-19, #196): a pinned repository's pre-land gate is a build
+  job of tacplus-dev/build, which runs the security checks beside the gates and gives its verdict after both, so a
+  ~3.5-minute unit gate waits on the scanners too, and a scanner's infrastructure failure is no verdict. A
+  `security: false` input (gates only, no status but the gates') for a pre-land build would make it as fast as its
+  gate; the batch's build still runs them all.
+- **The manager's pre-land re-run on a re-staged land** (2026-11-19, #196): the manager runs a land's pre-land on each
+  new main its report's was not green on, so a land that waits through several batches runs it once a batch. A
+  green recorded by tree (as #191's verdict-job greens are) would skip it when main moved by files the gate cannot
+  read (the planning files).

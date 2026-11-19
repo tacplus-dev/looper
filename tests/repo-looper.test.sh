@@ -4439,4 +4439,141 @@ echo "usage_usec 1000000" > "$FIX/cg/cpu.stat"
 [[ -z "$(lib "LOOPER_CGROUP='$FIX/none'; KUBERNETES_CPU_REQUEST=100m; pod_use_mark; pod_use_log")" ]] || fail "a use line with no cgroup"
 pass
 
+# --- the pre-land gate (looper#196) ------------------------------------------------
+# A land written against an older main can break only under a check main got
+# since (tacplus, 2026-11-19: two of three batch builds red only in `test`).
+# A repository's fast unit gate, gates.yaml's `pre-land`, runs on the land
+# rebased onto current main before it reaches a batch: at the report's --land,
+# which queues nothing on red, and at the manager, for a land whose report's
+# pre-land was not green on the main it stages onto, red sent back at once.
+# The seed's map: full and pre-land; pre-land, red on any *.txt holding "red"
+# once main has a file `strict` (a repository-wide check that landed after),
+# records each run, where, and the base and commit it ran on.
+pre_land_seed() { # [pin]: pinned, its gates build jobs
+  [[ -z "${1:-}" ]] || printf 'build_image: ghcr.io/tacplus-dev/looper:main@sha256:%s\n' "$(printf 'a%.0s' {1..64})" > "$FIX/seed/build.lock"
+  cat > "$FIX/seed/gates.yaml" <<'EOF'
+full:
+  run: 'echo "full ${BUILD_STUB:-here} $(git rev-parse HEAD)" >> "$FIX/gates-ran"'
+pre-land:
+  run: 'echo "pre-land ${BUILD_STUB:-here} $LOOPER_GATES_BASE $(git rev-parse HEAD)" >> "$FIX/pre-ran" && ! { [[ -e strict ]] && grep -qs red -- *.txt; }'
+  minutes: 4
+docs:
+  run: 'echo "docs ${BUILD_STUB:-here}" >> "$FIX/gates-ran"'
+  paths: ["*.md"]
+EOF
+  origin config core.logAllRefUpdates true
+  git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "pre-land" && git -C "$FIX/seed" push -q origin main
+}
+# A queued land's .looper/land gets one line more, as a report's --land would write it.
+land_more() { # issue line
+  local d="$FIX/q-$1"; printf '%s\n' "$2" >> "$d/.looper/land"
+  git -C "$d" commit -qam "looper: work in progress on #$1 (land queued)" && git -C "$d" push -q origin "looper/alpha-$1"
+}
+# A claude.sh line: main gets `strict`, as another land's new check would leave it.
+strict_on_main() { echo 'git -C "$FIX/seed" pull -q && touch "$FIX/seed/strict" && git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm "main: strict" && git -C "$FIX/seed" push -q origin main' >> "$FIX/claude.sh"; }
+
+# The report's --land runs the pre-land gate on its commits rebased onto
+# current main, here in its job (unpinned): red, nothing is queued and the
+# model is told why at once; fixed, it is green, and the land records the main
+# it was green on, so the manager, on that same main, does not run it again.
+scenario pre-land-report
+pre_land_seed
+cat > "$FIX/claude.sh" <<'EOS'
+echo red > f.txt && git add -A && git commit -qm "f red"
+EOS
+strict_on_main
+cat >> "$FIX/claude.sh" <<'EOS'
+git -C "$FIX/origin.git" rev-parse main > "$FIX/main-at-land"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land > "$FIX/land-red" 2>&1; echo "rc $?" >> "$FIX/land-red"
+git show HEAD:.looper/land > "$FIX/land-file-red" 2>&1 || true
+git ls-remote origin refs/heads/looper/alpha-4 > "$FIX/branch-red"; git -C "$FIX/origin.git" show refs/heads/looper/alpha-4:.looper/land >> "$FIX/branch-red" 2>&1 || true
+jq -r '[.labels[].name] | join(",")' "$FIX/issues/alpha-4.json" > "$FIX/labels-red"
+echo ok > f.txt && git commit -qam "f ok"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+close_it
+run
+r="$(cat "$FIX/land-red")"; m="$(cat "$FIX/main-at-land")"
+has "$r" "nothing queued: the pre-land gate (gates.yaml's pre-land) failed on your commits rebased on main ${m:0:7}"
+has "$r" "rc 4"; lacks "$r" "queued: the manager of alpha lands"
+lacks "$(cat "$FIX/branch-red")" "state=queued"; lacks "$(cat "$FIX/labels-red")" "looper:landing"
+[[ "$(landed f.txt)" == ok ]] || fail "main: $(origin log --oneline main); $(cat "$FIX/land-4")"
+has "$(cat "$FIX/land-4")" "the pre-land gate (gates.yaml's pre-land) on your commits rebased on main ${m:0:7}: green"
+has "$(cat "$FIX/land-4")" "rc 0"
+# Twice in the report (red, then green), never at the manager: main had not moved since.
+[[ "$(wc -l < "$FIX/pre-ran")" == 2 ]] || fail "pre-land ran: $(cat "$FIX/pre-ran")"
+[[ "$(cut -d' ' -f2 "$FIX/pre-ran" | sort -u)" == here ]] || fail "pre-land ran: $(cat "$FIX/pre-ran")"
+lacks "$(cat "$FIX/manager.log")" "the pre-land gate"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "Before it queues a land on the full gates, it runs this repository's fast unit gate (gates.yaml's pre-land:"
+has "$p" "on your commits rebased onto current main, and queues nothing when it is red:"
+[[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
+pass
+
+# Pinned, the report's pre-land gate is a build job, its looper's (the model
+# holds no trigger), of the rebased commit pushed to a branch of its own,
+# deleted after; the manager's batch build of the same main runs no pre-land.
+scenario pre-land-report-build
+pre_land_seed pin
+cat > "$FIX/claude.sh" <<'EOS'
+echo fine > f.txt && git add -A && git commit -qm "f fine"
+EOS
+strict_on_main
+cat >> "$FIX/claude.sh" <<'EOS'
+git -C "$FIX/origin.git" rev-parse main > "$FIX/main-at-land"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+close_it
+run "${BUILDS[@]}"
+m="$(cat "$FIX/main-at-land")"
+[[ "$(landed f.txt)" == fine ]] || fail "main: $(origin log --oneline main); $(cat "$FIX/land-4")"
+l="$(cat "$FIX/land-4")"
+has "$l" "the pre-land gate (gates.yaml's pre-land) on your commits rebased on main ${m:0:7}: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901"
+has "$l" ": green"; has "$l" "rc 0"
+[[ "$(cut -d' ' -f4,5 "$FIX/builds" | paste -sd'|')" == "pre-land $m|full $m" ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f2,3 "$FIX/pre-ran")" == "build $m" ]] || fail "pre-land ran: $(cat "$FIX/pre-ran")"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "on your commits rebased onto current main, as a build job, and queues nothing when it is red:"
+[[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
+main_green
+pass
+
+# The manager runs the pre-land gate of each land whose report's was not green
+# on the main it stages onto (here: none recorded, or on an older main), all of
+# them at once, before the batch: the red one is sent back with the failure,
+# and the rest are the batch, one build. A land green on this very main runs none.
+scenario pre-land-train
+pre_land_seed pin; train_issues 5 6 7
+old="$(origin rev-parse main)"
+touch "$FIX/seed/strict"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm "main: strict"; git -C "$FIX/seed" push -q origin main
+m="$(origin rev-parse main)"
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+queue 5 2026-11-03T11:00:00Z f5.txt red; land_more 5 "pre-land=$old"
+queue 6 2026-11-03T12:00:00Z f6.txt 6
+queue 7 2026-11-03T13:00:00Z f7.txt 7; land_more 7 "pre-land=$m"
+manage "${BUILDS[@]}"
+[[ "$(cut -d' ' -f4 "$FIX/builds" | paste -sd' ')" == "pre-land pre-land pre-land full" ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f5 "$FIX/builds" | sort -u)" == "$m" ]] || fail "builds: $(cat "$FIX/builds")"
+[[ -z "$(landed f5.txt)" ]] || fail "the red change landed"
+for n in 4 6 7; do [[ "$(landed "f$n.txt")" == "$n" ]] || fail "main lacks f$n.txt: $(origin log --oneline main)"; has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 3 lands"; done
+c="$(grep '^alpha#5 ' "$FIX/comments")"
+has "$c" "The manager did not merge [\`looper/alpha-5\`]"; has "$c" "sent back with the failure"
+c="$(cat "$FIX/comments")"
+has "$c" "its pre-land gate (gates.yaml's pre-land) failed on its commits rebased on main ${m:0:7}, before any batch (looper#196)"
+has "$c" "the gates pre-land (gates.yaml) exited 1"
+origin rev-parse -q --verify refs/heads/looper/alpha-5 >/dev/null || fail "#5's branch is gone"
+lacks "$(labels alpha 5)" "looper:landing"
+has "$OUT" "#7: its pre-land gate was green on main ${m:0:7} already"
+has "$OUT" "#5: its pre-land gate on main ${m:0:7} is red: sent back"
+has "$OUT" "a batch of 3 lands (#4, #6, #7) on main"
+[[ -z "$(origin for-each-ref refs/heads/looper/pre-land-*)" ]] || fail "pre-land branches left: $(origin for-each-ref refs/heads/looper/)"
+main_green
+pass
+
+# The gate map's pre-land names no paths: no path calls for it.
+scenario pre-land-map
+[[ "$(lib "$(sed -n '/^read_gate_map() {/,/^}/p; /^read_sets() {/,/^}/p' "$ROOT/repo-looper"); PRE_LAND=pre-land; declare -A GM_RUN GM_MIN GM_MEM GM_PATHS; GM_SETS=()
+  printf 'full:\n  run: a\npre-land:\n  run: b\n' > '$FIX/g1'; read_gate_map '$FIX/g1' && echo ok1
+  printf 'full:\n  run: a\npre-land:\n  run: b\n  paths: [x]\n' > '$FIX/g2'; read_gate_map '$FIX/g2' 2>&1 || true")" == "ok1"$'\n'"pre-land: no paths: it runs on every land on full, before it is queued and before a batch" ]] || fail "the map's pre-land"
+pass
+
 echo "repo-looper: all scenarios pass"

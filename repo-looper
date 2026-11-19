@@ -717,7 +717,12 @@ land_gates() {
 # gates.yaml itself changed, and when nothing changed. A repository without a
 # gates.yaml runs land_gates; one whose gates.yaml cannot be read lands nothing.
 # The map is read from the tree being landed. Comments are lines of their own.
+# The set named pre-land (looper#196), with no paths, is the repository's
+# fast unit gate, which no path calls for: it runs on a land on full rebased
+# onto current main before the land reaches a batch (pre_land_report,
+# pre_land_train).
 GATE_MAP=gates.yaml
+PRE_LAND=pre-land
 GM_SETS=(); declare -A GM_RUN=() GM_MIN=() GM_MEM=() GM_PATHS=()
 read_gate_map() { # file: GM_SETS (in order), GM_RUN, GM_MIN, GM_MEM, GM_PATHS (patterns, one per line)
   local s
@@ -725,6 +730,10 @@ read_gate_map() { # file: GM_SETS (in order), GM_RUN, GM_MIN, GM_MEM, GM_PATHS (
   [[ -n "${GM_RUN[full]:-}" ]] || { echo "no full gate set with a run: command" >&2; return 1; }
   for s in "${GM_SETS[@]}"; do
     [[ -n "${GM_RUN[$s]}" ]] || { echo "$s: no run: command" >&2; return 1; }
+    if [[ "$s" == "$PRE_LAND" ]]; then
+      [[ -z "${GM_PATHS[$s]}" ]] || { echo "$s: no paths: it runs on every land on full, before it is queued and before a batch" >&2; return 1; }
+      continue
+    fi
     [[ "$s" == full || -n "${GM_PATHS[$s]}" ]] || { echo "$s: no paths:" >&2; return 1; }
   done
 }
@@ -1101,11 +1110,14 @@ land_request() {
     log "a land of $BRANCH is already queued ($id); waiting for its verdict"
   else
     state_last "$n"
+    # Its fast unit gate on current main first (looper#196): red queues nothing.
+    pre_land_report "$run" || exit 4
     id="$(date -u +%Y%m%dT%H%M%SZ)-$n-$RANDOM$RANDOM"
     # Before the land, whose merge can close the issue while the model still
     # works: what it wrote until now is no closing report (looper#54, #143).
     [[ -z "${LOOPER_RUN:-}" ]] || comments_mark "$n" "$run"
-    printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n' "$id" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run/land"
+    printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n%s' "$id" "$gates" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "${PRE_LANDED:+pre-land=$PRE_LANDED$'\n'}" > "$run/land"
     checkpoint "$n" "land queued" "$run" || true
     fetch . "+refs/heads/$b:refs/remotes/origin/$b" || true
     m="$(git show "origin/$b:.looper/land" 2>/dev/null)" || m=""
@@ -1710,7 +1722,7 @@ wait_until_request() {
 # within LOOPER_BUILD_START of its trigger (looper#113): the build stays queued,
 # and a later --build of the same commit takes it up (build_verdict).
 build_request() {
-  local run="${LOOPER_RUN:-}" d sha base gates="" id i
+  local run="${LOOPER_RUN:-}" d sha base gates=""
   d="$run/builds"
   [[ -n "$run" && -d "$d" ]] || die "no build jobs in this run: $REPO's main pins no build image (tacplus.lock, build.lock), or its job holds no build trigger; verify as your prompt's rule 4 says"
   cd "$CHECKOUT"
@@ -1720,12 +1732,24 @@ build_request() {
   choose_gates . "$base" "" || die "nothing built: $GATES_WHY"
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
   checkpoint "$ISSUE" "a build" "$run" || die "nothing built: the build job builds $(wip_branch "$ISSUE"), and the checkpoint to it did not push"
+  log "build requested: $REPO ${sha:0:7}, the gates ${gates:-full}${GATES_WHY:+ ($GATES_WHY)}"
+  local rc=0; model_build "$d" "$sha" "$gates" "$base" || rc=$?
+  (( rc != 5 )) || die "$BUILD_P"
+  return "$rc"
+}
+
+# A build the report's model asks its looper for (build_server): the request
+# in the run's builds/ directory, the build started (or why not), and its
+# verdict, build_verdict's lines and exit. Fails 5, BUILD_P saying why, when
+# the looper started none.
+model_build() { # builds-dir sha gates base
+  local d="$1" sha="$2" gates="$3" base="$4" id i
+  BUILD_P=""
   id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
   printf 'sha=%s\ngates=%s\nbase=%s\n' "$sha" "$gates" "$base" > "$d/$id.new" && mv "$d/$id.new" "$d/$id.request"
-  log "build requested: $REPO ${sha:0:7}, the gates ${gates:-full}${GATES_WHY:+ ($GATES_WHY)}"
   for (( i = 0; i < 300; i++ )); do [[ -s "$d/$id.started" || -s "$d/$id.refused" ]] && break; sleep 1; done
-  [[ ! -s "$d/$id.refused" ]] || die "the looper did not start the build: $(cat "$d/$id.refused")"
-  [[ -s "$d/$id.started" ]] || die "the looper did not start the build within 5 minutes"
+  [[ ! -s "$d/$id.refused" ]] || { BUILD_P="the looper did not start the build: $(cat "$d/$id.refused")"; return 5; }
+  [[ -s "$d/$id.started" ]] || { BUILD_P="the looper did not start the build within 5 minutes"; return 5; }
   echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}$([[ ! -s "$d/$id.reused" ]] || echo " (reused: $(reused_what "$(cat "$d/$id.reused")"): this key's build, looper#134)")"
   build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")" "" "$(cat "$d/$id.wait" 2>/dev/null)"
 }
@@ -1768,6 +1792,165 @@ build_server() { # run-dir
       fi
     done
     sleep 1 & z=$!; wait "$z"
+  done
+}
+
+# --- the pre-land gate (looper#196) ----------------------------------------------
+#
+# A land written against an older main can break only under a check that
+# landed on main since (tacplus, 2026-11-19: three such lands turned two
+# batches of 18 and 20 red in their unit tests after an hour's build, which
+# ~3.5 minutes of those tests on the main of the moment would have caught). A
+# repository's gates.yaml may name its fast unit gate, the set pre-land (no
+# paths); a land on full, whose batch is the expensive build a red one wastes,
+# runs it on its commits rebased onto current main (rebase_on_main) before it
+# reaches a batch:
+#
+# - the report's --land, before it queues (pre_land_report): a build job in a
+#   pinned repository with build jobs (its looper starts it, as --build's, of
+#   the rebased commit pushed to looper/pre-land-NAME-N, deleted after), else
+#   in the report's job. Red queues nothing: --land exits 4 with the failure,
+#   and the model fixes it at once. Green, the land records the main it was
+#   green on (.looper/land's pre-land=).
+# - the manager's merge train, before it stages a batch (pre_land_train), for
+#   each land whose report's was not green on the main the batch starts from:
+#   all of them at once (one build each, in parallel), each red one sent back
+#   with the failure, the rest staged. A verdict job (looper#90) judges each
+#   land on its own gates already: it runs none.
+#
+# Main's gates.yaml without a pre-land, a rebase that conflicts, a land not on
+# full, no verdict (no runner, past its wait, an infrastructure failure), or a
+# manager that would run it beside its token runs none: the batch's build
+# judges the land, as before. Trust: a report's green is its own claim, as its
+# gates always were (README: Only the manager writes main); the batch's build
+# of exactly the candidate is still what lands it.
+
+# Main's gate map names a pre-land.
+pre_land_mapped() { local m; m="$(git -C "$CHECKOUT" show "$1:$GATE_MAP" 2>/dev/null)" && grep -q "^$PRE_LAND:[[:space:]]*$" <<<"$m"; } # main
+
+# PL_WT: a worktree at the commit rebased onto origin/main, a report's in its
+# own TMPDIR, a manager's under its work directory; fails, none left, when the
+# rebase conflicts (CONFLICTS).
+pre_land_tree() { # commit
+  local ONTO=origin/main rc=0
+  if [[ "$MODE" == land ]]; then PL_WT="$(mktemp -d)"; else PL_WT="$(scratch_dir)"; fi
+  rm -rf "$PL_WT"
+  git -C "$CHECKOUT" worktree add -q -f --detach "$PL_WT" "$1" >/dev/null 2>&1 || { CONFLICTS=""; rm -rf "$PL_WT"; return 1; }
+  pushd "$PL_WT" >/dev/null
+  rebase_on_main || rc=$?
+  popd >/dev/null
+  (( rc == 0 )) || { drop_worktree "$PL_WT"; return 1; }
+}
+
+# In the rebased worktree: it has commits to land (not a HISTORY.md request
+# alone), on full, and its map has a pre-land (GM_RUN[pre-land] its command).
+pre_land_due() { # main
+  [[ "$(git rev-list --count "$1..HEAD")" != 0 ]] || return 1
+  choose_gates . "$1" "" 2>/dev/null || return 1
+  [[ -n "$GATES_MAPPED" && "$GATES_SET" == full && -n "${GM_RUN[$PRE_LAND]:-}" ]]
+}
+
+# A build's red that is its infrastructure's alone, its gates green: no verdict
+# on the land (looper#173), said.
+pre_land_infra() { # sha pipeline-id log
+  local why
+  if grep -q '^verdict: failure: no security verdict: ' "$3"; then why="$(sed -n 's/^verdict: failure: //p' "$3" | tail -n 1)"
+  else why="$(build_infra "$1" "$2")" || return 1; fi
+  echo "$why" >> "$3"
+}
+
+# Why a pre-land gate has no verdict, from its log.
+pre_land_why() { grep -E '^(no verdict|no runner|verdict: |its gates job passed|the looper did not)' "$1" | tail -n 1 | grep . || tail -n 1 "$1"; } # log
+
+# The report's pre-land gate, before --land queues (looper#196). 0 to queue:
+# green (PRE_LANDED the main it was green on), none due, or no verdict, each
+# said; 1 red, the failure said: nothing is queued.
+pre_land_report() { # run-dir
+  local run="$1" main sha out rc=0 b what url
+  PRE_LANDED=""
+  main="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  pre_land_mapped "$main" || return 0
+  if ! pre_land_tree "$(git -C "$CHECKOUT" rev-parse HEAD)"; then
+    log "the pre-land gate is not run: rebasing your commits onto main ${main:0:7} conflicts${CONFLICTS:+ in $CONFLICTS}; the manager's verdict says what comes of it"
+    return 0
+  fi
+  pushd "$PL_WT" >/dev/null
+  if ! pre_land_due "$main"; then popd >/dev/null; drop_worktree "$PL_WT"; return 0; fi
+  sha="$(git rev-parse HEAD)"; out="$run/pre-land.log"
+  what="the pre-land gate ($GATE_MAP's $PRE_LAND) on your commits rebased on main ${main:0:7}"
+  log "$what: running it before the land is queued (looper#196)"
+  if [[ -d "$run/builds" ]]; then
+    # A build job of the rebased commit (looper#71), on a branch of its own for the build to fetch.
+    b="looper/$PRE_LAND-$REPO-$ISSUE"
+    if git push -q -f origin "$sha:refs/heads/$b" > "$out" 2>&1; then
+      model_build "$run/builds" "$sha" "$PRE_LAND" "$main" > "$out" 2>&1 || rc=$?
+      git push -q origin --delete "$b" >/dev/null 2>&1 || true
+      (( rc != 1 )) || ! pre_land_infra "$sha" "$(sed -n 's|^the build job .*/pipelines/\([0-9]*\) of .*|\1|p' "$out" | tail -n 1)" "$out" || rc=2
+    else rc=5; fi
+    url="$(sed -n 's/^the build job \([^ ]*\) of .*/\1/p' "$out" | tail -n 1)"
+  else
+    LOOPER_GATES_BASE="$main" bash -c "${GM_RUN[$PRE_LAND]}" < /dev/null > "$out" 2>&1 || rc=1
+  fi
+  popd >/dev/null; drop_worktree "$PL_WT"
+  case "$rc" in
+    0) PRE_LANDED="$main"; log "$what${url:+: the build job $url}: green" ;;
+    1) { log "nothing queued: the pre-land gate ($GATE_MAP's $PRE_LAND) failed on your commits rebased on main ${main:0:7} (looper#196): a check main has now fails on them, and the land would turn its batch red. Rebase on main (git fetch origin && git rebase origin/main), fix it, commit, verify and land again. Its end:"
+         tail -n 30 "$out"; } >&2
+       return 1 ;;
+    *) log "$what${url:+: the build job $url}: no verdict ($(pre_land_why "$out")); the land is queued all the same, and the manager runs its pre-land gate before the batch" ;;
+  esac
+}
+
+# The manager's pre-land gates (looper#196), before a batch is staged on main:
+# of each queued land whose report's was not green on that main, all started,
+# then their verdicts. PRE_Q is the queue (queued_lands' lines) without the
+# red ones, which are sent back with the failure (post_land, exit 4).
+pre_land_train() { # queued lands, main
+  local q="$1" main="$2" n id sha m r rec b i rc
+  local -a pn=() pid=() psha=() pr=() pp=() pt=() pw=() prc=()
+  PRE_Q="$q"
+  pre_land_mapped "$main" || return 0
+  while read -r _ _ n id sha; do
+    [[ -n "$n" ]] || continue
+    m="$(git -C "$CHECKOUT" show "$sha:.looper/land" 2>/dev/null | sed -n "s/^$PRE_LAND=//p")" || m=""
+    if [[ "$m" == "$main" ]]; then log "#$n: its pre-land gate was green on main ${main:0:7} already, at its report's --land"; continue; fi
+    pre_land_tree "$sha^" || continue   # a conflict: stage_land sends it back
+    pushd "$PL_WT" >/dev/null
+    if pre_land_due "$main"; then
+      r="$(git rev-parse HEAD)"; rec="$MANAGER_RUN/$n-$id"; mkdir -p "$rec"
+      if build_jobs HEAD .; then
+        b="looper/$PRE_LAND-$REPO-$n"
+        if get_build "$r" "$PRE_LAND" "$main" git push -q -f origin "$r:refs/heads/$b"; then
+          log "#$n: its pre-land gate on main ${main:0:7}: the build job ${BUILD_P#* }${BUILD_REUSED:+ (reused, $(reused_what "$BUILD_REUSED"))}"
+          pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=("$BUILD_P"); pt+=("$(date +%s)"); pw+=("$BUILD_W"); prc+=("")
+        else
+          log "#$n: its pre-land gate is not run: $BUILD_P"; git push -q origin --delete "$b" >/dev/null 2>&1 || true
+        fi
+      elif [[ -z "$MANAGER_TOKEN" ]]; then
+        # In this job, as the batch's gates would be (never beside the manager's token, looper#90).
+        rc=0; LOOPER_GATES_BASE="$main" bash -c "${GM_RUN[$PRE_LAND]}" < /dev/null > "$rec/pre-land.log" 2>&1 || rc=1
+        pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=(""); pt+=(""); pw+=(""); prc+=("$rc")
+      fi
+    fi
+    popd >/dev/null; drop_worktree "$PL_WT"
+  done <<<"$q"
+  for i in "${!pn[@]}"; do
+    n="${pn[i]}"; rec="$MANAGER_RUN/$n-${pid[i]}"; rc="${prc[i]}"
+    if [[ -z "$rc" ]]; then
+      rc=0; build_verdict "${pr[i]}" "${pp[i]%% *}" "${pp[i]#* }" "${pt[i]}" "${pw[i]}" > "$rec/pre-land.log" 2>&1 || rc=$?
+      git -C "$CHECKOUT" push -q origin --delete "looper/$PRE_LAND-$REPO-$n" >/dev/null 2>&1 || true
+      (( rc != 1 )) || ! pre_land_infra "${pr[i]}" "${pp[i]%% *}" "$rec/pre-land.log" || rc=2
+    fi
+    case "$rc" in
+      0) log "#$n: its pre-land gate on main ${main:0:7} is green" ;;
+      1) { log "nothing landed: its pre-land gate ($GATE_MAP's $PRE_LAND) failed on its commits rebased on main ${main:0:7}, before any batch (looper#196): a check main has now fails on them. Its end:"
+           tail -n 30 "$rec/pre-land.log"; } > "$rec/out"
+         cp "$rec/pre-land.log" "$rec/gates.log"
+         log "#$n: its pre-land gate on main ${main:0:7} is red: sent back with the failure, before the batch"
+         post_land "$n" "${pid[i]}" "${psha[i]}" 4 "$rec"
+         PRE_Q="$(grep -vF " ${pid[i]} " <<<"$PRE_Q" || true)" ;;
+      *) log "#$n: its pre-land gate on main ${main:0:7} has no verdict ($(pre_land_why "$rec/pre-land.log")): the batch's build judges it" ;;
+    esac
   done
 }
 
@@ -1973,6 +2156,8 @@ train() { # queued lands
   GREEN_SET=(); GREEN_WHY=(); GREEN_MAPPED=(); GREEN_OUT=()
   fetch "$CHECKOUT" main || { log "could not fetch main; nothing landed"; return 1; }
   main="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  # Each land's fast unit gate on this main first (looper#196): a red one never reaches the batch.
+  pre_land_train "$q" "$main"; q="$PRE_Q"
   git -C "$CHECKOUT" update-ref "$STAGING_REF" "$main"
   ONTO="$STAGING_REF"
   while read -r _ _ n id sha; do
@@ -3597,6 +3782,16 @@ land_command() { # issue
   fi
 }
 
+# Rule 5's line on the pre-land gate (looper#196), when main's gate map names one.
+pre_land_rule() {
+  commit_map origin/main
+  [[ -n "${GM_RUN[$PRE_LAND]:-}" ]] || return 0
+  printf '\n   %s\n   %s\n   %s' \
+    "Before it queues a land on the full gates, it runs this repository's fast unit gate ($GATE_MAP's $PRE_LAND:" \
+    "\`${GM_RUN[$PRE_LAND]}\`) on your commits rebased onto current main$([[ -z "${BUILD_JOBS:-}" ]] || echo ", as a build job"), and queues nothing when it is red:" \
+    "it exits 4 with the failure (a check main got since fails on your change); fix it and land again (looper#196). That takes minutes: run it detached and poll, as a long build."
+}
+
 # What every prompt that may open an issue says about opening one.
 opening_rule() { # [its number in the prompt]
   cat <<EOF
@@ -3919,7 +4114,7 @@ Rules:
    candidate once (with a $GATE_MAP, the gate set the batch's combined diff calls for, full for any path the
    map does not name or a change to the map itself), fast-forwards main on green and deletes the branches;
    on red it bisects the batch and sends the change that breaks it back, with the failure. Its verdict on
-   your land is a comment on this issue, and names the batch and the gate set.
+   your land is a comment on this issue, and names the batch and the gate set.$(pre_land_rule)
    Once your land is queued, your run is done: end it (rule 8). If something you must still do waits on the
    verdict, say so in your last checkpoint (rule 10): the next run of this issue, after the verdict, does it.
    A push to main any other way is refused. When it merges nothing it says why: the rebase conflicts in files
@@ -4710,7 +4905,8 @@ child_memory() {
         GATES_SET=full
     elif read_gate_map "$CHECKOUT/$GATE_MAP" 2>/dev/null; then GATES_SET=full
     else GATES_SET=""; fi
-    for s in ${GATES_SET//+/ }; do
+    # A land on full runs the pre-land gate too, in the report when it has no build jobs (looper#196).
+    for s in ${GATES_SET//+/ } $([[ "$GATES_SET" != full ]] || echo "$PRE_LAND"); do
       if [[ -n "${GM_MEM[$s]:-}" ]] && awk -v a="${m:-0}" -v b="${GM_MEM[$s]}" 'BEGIN { exit !(b > a) }'; then m="${GM_MEM[$s]}"; fi
     done
   fi
