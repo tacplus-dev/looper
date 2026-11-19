@@ -152,3 +152,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-19 looper issue A merge-train candidate that changes .github/workflows is called red in seconds (its build branch push refused?) and the whole batch is bisected (#194)
 - 2026-11-19 looper issue A report queues its land without running the unit tests on current main: lands written before a new repo-wide check land red in the batch (#196)
 - 2026-11-19 looper issue A merge-train batch's build queues FIFO behind single-report builds in tacplus-dev/build: an 18-land build waited with 6 report builds ahead (#195)
+- 2026-11-19 looper issue The manager waits forever on a build pipeline that was cancelled: no verdict, no bisect (#198)
