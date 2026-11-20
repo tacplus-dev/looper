@@ -158,3 +158,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-20 looper issue ci/: the build pipeline pins the looper image of f489822, before #179, #180 and #182: lands fail on main's standing findings (#200)
 - 2026-11-20 looper issue build.lock pins the looper image of a691d64 (2026-11-03): looper's gates run with 134 HIGH/CRITICAL advisories that main's image has fixed (#203)
 - 2026-11-20 looper issue The recap's queue time is GitLab's queued_duration (a job's wait for a runner), not started minus created (#206)
+- 2026-11-20 looper issue Fewer full builds and more at once: a pinned report's --build runs its pre-land set; the build runner's concurrent follows the spot pool's room (#204)
