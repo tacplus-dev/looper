@@ -24,6 +24,7 @@ Done (moved from Next on 2026-11-05):
 - Recap: read tacplus-dev/build's jobs; drop the Cloud Build source (#85). Agent, at Jody's request, 2026-11-04 (`tacplus-dev/roadmap:suggestions/2026-11-04-let-the-recap-see-the-build-pipeline.md`).
 
 ## Next
+- A red merge-train batch judged in one round, a build per land at once, not a bisection (#205); fewer full builds per report, the build runner's concurrent from the spot pool's room (#204). Hub, at Jody's request (accepted suggestions), 2026-11-20.
 - Gates scaled to the diff: a per-repo gate map picks what a land runs; unmapped paths, gate-map changes, nightly and releases run everything (#48) (Jody, 2026-11-01)
 - GitLab forge backend; a SeaBeam instance (kicker, runner, credentials) in the seabeam group (#29)
 - Retire GitHub Actions in every repo; a gate refuses any workflow file (#18, after #17)
