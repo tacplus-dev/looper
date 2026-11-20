@@ -142,7 +142,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-19 by lo
   still the build runner's tags until the cluster serves a nightly runner entry, and the schedule's hour the recap's quietest build hours, PROPOSALS.md) and a release add
   CodeQL (public repositories only; its `--ram` and `--threads` sized to the job's cgroup, a 2048 MB or quarter reserve
   left, its job `BUILD_SCAN_CODEQL_REQUESTS`, `2 12Gi 3500m 12Gi`, each analysis's peak in the summary's `### Memory`, #189:
-  CodeQL's own default heap ran the Java and Rust nightlies out of memory) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
+  CodeQL's own default heap ran the Java and Rust nightlies out of memory; the gates job `BUILD_GATES_REQUESTS_<repo>`, unset the runner's defaults, both within `BUILD_RUNNER_CEILINGS`, `3500m 12Gi`, #202: tacplus's gates were OOM-killed at 8Gi) and Trivy; the policy fails a secret and a HIGH/CRITICAL finding with a fix unless
   an unexpired `security-exceptions.yaml` entry accepts it (only in its `where`, a path or a glob, when it has one, a dependency's
   file too: `go.mod` for `golang.org/x/text@0.3.0 (go.mod)`, #183; an entry without one accepts its id everywhere and the report warns, #182); a land (a build with a base) fails only on the blocking
   findings it adds: its base commit's (`security-<repo>/<sha>`, each build's findings published as its commit's too)
