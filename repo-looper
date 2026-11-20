@@ -55,9 +55,12 @@
 # that order onto a candidate from main (refs/looper/staging), builds the
 # candidate once on the gate set the batch's combined diff calls for
 # (looper#48), fast-forwards main to it on green and deletes the branches; on
-# red it bisects the batch on its prefixes, sends the land that breaks it back
-# with the failure, lands the green prefix and leaves the rest for the next
-# batch. A rebase that conflicts only in files the
+# red it builds each land on its own, all at once (looper#205), sends each red
+# one back with its own failure and lands the rest as one batch, and bisects a
+# batch whose lands are each green on their own (or one with no round:
+# LOOPER_RED_ROUND, its gates in the job) on its prefixes, sends the land that
+# breaks it back with the failure, lands the green prefix and leaves the rest
+# for the next batch. A rebase that conflicts only in files the
 # repository's generated.yaml maps it resolves by regenerating them (main's
 # side, then the set's command: never a hand merge); PROPOSALS.md and
 # HISTORY.md, append-only, it unions (git's union merge, looper#105); a
@@ -2179,7 +2182,9 @@ $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 # diff since main calls for. Green: main fast-forwards to the candidate
 # (batch_land: nothing reaches main without a green build of exactly that
 # commit), and each land gets its verdict, its branch deleted, its HISTORY.md
-# line. Red: the batch is bisected on its prefixes (batch_judge: the candidate
+# line. Red: the batch's lands are each built on their own, at once, first
+# (red_round, looper#205): the red ones sent back, the rest staged again as one
+# batch. Red with no land red on its own, it is bisected on its prefixes (batch_judge: the candidate
 # after the first half of the batch is built; green, the breaking change is in
 # the second half, red, in the first; and so on, about log2(n) builds): the
 # land that breaks it is sent back with the failure (exit 4: the issue stays
@@ -2192,7 +2197,8 @@ $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 #
 # Its log, for the recap (looper#72): `a batch of K lands (#a, #b): one build
 # of ...`, `batch: its build <url>: queued S s, ran S s` (or `the batch's gates
-# ran S s` in this job), `bisecting the batch of K: ...`, and each land's
+# ran S s` in this job), `judging each of its K lands on its own` (a round),
+# `bisecting the batch of K: ...`, and each land's
 # `merging #N (..., queued T)` when staged and `#N: landed on main: ...` when
 # main has it, as before.
 TR_N=(); TR_ID=(); TR_SHA=(); TR_BEFORE=(); TR_AFTER=(); TR_REC=(); TR_GATES=(); TR_ROADMAP=()
@@ -2201,27 +2207,35 @@ declare -A GREEN_SET=() GREEN_WHY=() GREEN_MAPPED=() GREEN_OUT=()   # a green ca
 drop_worktree() { git -C "$CHECKOUT" worktree remove -f "$1" 2>/dev/null || rm -rf "$1"; git -C "$CHECKOUT" worktree prune; }
 
 # One batch of the queued lands given (queued_lands' lines): staged, built once,
-# landed, bisected. LAND_DEFERRED when its build would outlast the job or has no
+# landed, judged in a round, bisected. LAND_DEFERRED when its build would outlast the job or has no
 # verdict by its end; 1 when it could not be judged (nothing posted either way).
 train() { # queued lands
-  local q="$1" n id sha rc=0 main
-  TR_N=(); TR_ID=(); TR_SHA=(); TR_BEFORE=(); TR_AFTER=(); TR_REC=(); TR_GATES=(); TR_ROADMAP=()
-  GREEN_SET=(); GREEN_WHY=(); GREEN_MAPPED=(); GREEN_OUT=()
+  local q="$1" rc=0 main
+  RED_ROUND_DONE=""
   fetch "$CHECKOUT" main || { log "could not fetch main; nothing landed"; return 1; }
   main="$(git -C "$CHECKOUT" rev-parse origin/main)"
   # Each land's fast unit gate on this main first (looper#196): a red one never reaches the batch.
   pre_land_train "$q" "$main"; q="$PRE_Q"
-  git -C "$CHECKOUT" update-ref "$STAGING_REF" "$main"
-  ONTO="$STAGING_REF"
-  while read -r _ _ n id sha; do
-    [[ -n "$n" ]] || continue
-    stage_land "$n" "$id" "$sha" "$MANAGER_RUN/$n-$id" || true
-  done <<<"$q"
-  ONTO=origin/main
+  stage_batch "$q" "$main"
   (( ${#TR_N[@]} > 0 )) || return 0
   batch_judge "$main" || rc=$?
   git -C "$CHECKOUT" update-ref -d "$STAGING_REF" 2>/dev/null || true
   return "$rc"
+}
+
+# Stages the queued lands given (queued_lands' lines), in their order, on a
+# candidate fresh from main: the batch (TR_*).
+stage_batch() { # queued lands, main
+  local n id sha
+  TR_N=(); TR_ID=(); TR_SHA=(); TR_BEFORE=(); TR_AFTER=(); TR_REC=(); TR_GATES=(); TR_ROADMAP=()
+  GREEN_SET=(); GREEN_WHY=(); GREEN_MAPPED=(); GREEN_OUT=()
+  git -C "$CHECKOUT" update-ref "$STAGING_REF" "$2"
+  ONTO="$STAGING_REF"
+  while read -r _ _ n id sha; do
+    [[ -n "$n" ]] || continue
+    stage_land "$n" "$id" "$sha" "$MANAGER_RUN/$n-$id" || true
+  done <<<"$1"
+  ONTO=origin/main
 }
 
 # Stages one queued land on the candidate: its commits (the parent of the
@@ -2288,7 +2302,8 @@ batch_names() { local i s=""; for (( i = 0; i < $1; i++ )); do s+="${s:+, }#${TR
 plural() { (( $1 == 1 )) || echo s; } # count
 
 # Judges the batch (TR_*, on main): one build of the whole candidate, landed
-# on green; on red, bisected on its prefixes until the land that breaks it is
+# on green; on red, judged in one round (red_round, looper#205), and when the
+# round sends none back, or there is none, bisected on its prefixes until the land that breaks it is
 # found, the green prefix before it landed, that land sent back, the rest left
 # queued for the next batch. LAND_DEFERRED when no prefix's build fits the job
 # or a build has no verdict by its end (a green prefix found by then lands
@@ -2315,6 +2330,19 @@ batch_judge() { # main
   fi
   (( rc == 4 )) || return "$rc"
   red="$BATCH_OUT"
+  # Judged in one round first (looper#205): the red ones sent back, the rest staged again as one batch.
+  if (( k > 1 )) && round_due "$k"; then
+    red_round "$main" "$k"
+    if (( ROUND_SENT > 0 )); then
+      RED_ROUND_DONE=1
+      [[ -n "$ROUND_KEEP" ]] || { log "the round sent all $k back: nothing is left to stage"; return 0; }
+      log "the round sent $ROUND_SENT of $k back: the other $(( k - ROUND_SENT )) are staged again as one batch, on main ${main:0:7}"
+      stage_batch "$ROUND_KEEP" "$main"
+      (( ${#TR_N[@]} > 0 )) || return 0
+      batch_judge "$main"; return
+    fi
+    log "the round found no land red on its own: the batch's red is between its lands, or a flake; bisecting it"
+  fi
   if (( k > 1 )); then
     log "the batch is red: bisecting the batch of $k (the candidate after its first half is built next; about $(bisect_builds "$k") build$(plural "$(bisect_builds "$k")") find the land that breaks it)"
     while (( hi - lo > 1 )); do
@@ -2337,6 +2365,78 @@ batch_judge() { # main
   log "#${TR_N[c]}: the land that breaks the batch: sent back with the failure$( (( k - hi > 0 )) && echo "; $(( k - hi )) land$(plural "$(( k - hi ))") after it ($(for (( mid = hi; mid < k; mid++ )); do printf '%s#%s' "$( (( mid > hi )) && echo ', ')" "${TR_N[mid]}"; done)) stay queued for the next batch")"
   post_land "${TR_N[c]}" "${TR_ID[c]}" "${TR_SHA[c]}" 4 "${TR_REC[c]}"
 }
+
+# The red batch's round (looper#205): tacplus's batch of 20, red from an OOM or
+# a timing flake, was bisected one hour-long full build after another while the
+# build pool had room, and its job died mid-bisection with nothing merged. A
+# red batch of more than one land whose builds are build jobs, RED_ROUND lands
+# at most (0: none; a pool with no room bisects), is judged in one round
+# instead: each land's commits alone rebased onto main (pre_land_tree), a build
+# job each of the gate set its own diff calls for, all started, then their
+# verdicts (the fan-out of pre_land_train). Not the pre-land set: each land's
+# was green on this main before the batch was staged (pre_land_train), so it
+# would say nothing of the batch's red. A land red on its own is sent back
+# with its own failure; one green, or with no verdict on its own (its rebase
+# alone conflicts, no runner, past its wait, its infrastructure's red, a build
+# that would outlast the job), stays, and those are staged again from main as
+# one batch, judged as any (its round done: red again, it is bisected). A
+# round that sends nothing back (two lands that break only together, a flake)
+# is followed by the bisection, as before it.
+RED_ROUND="${LOOPER_RED_ROUND:-40}"
+RED_ROUND_DONE=""
+round_due() { # count
+  [[ "$RED_ROUND" =~ ^[0-9]+$ ]] && (( RED_ROUND > 0 && $1 <= RED_ROUND )) && [[ -z "$RED_ROUND_DONE" ]] && build_jobs "${TR_AFTER[$1-1]}"
+}
+# The round of the first count lands (TR_*): ROUND_SENT the lands sent back,
+# ROUND_KEEP the rest as queued_lands' lines, in their order.
+red_round() { # main count
+  local main="$1" k="$2" i j n rec r gates b rc
+  local -a ri=() rr=() rp=() rt=() rw=() sent=()
+  ROUND_SENT=0; ROUND_KEEP=""
+  log "the batch is red: judging each of its $k lands on its own, at once (looper#205): a build of each, its commits alone rebased on main ${main:0:7}, then their verdicts"
+  for (( i = 0; i < k; i++ )); do
+    n="${TR_N[i]}"
+    if ! pre_land_tree "${TR_SHA[i]}^"; then log "#$n: not judged on its own: rebasing it alone onto main ${main:0:7} conflicts${CONFLICTS:+ in $CONFLICTS}; it stays in the batch"; continue; fi
+    pushd "$PL_WT" >/dev/null
+    r="$(git rev-parse HEAD)"; gates=""; rc=0
+    choose_gates . "$main" "${TR_GATES[i]}" 2>/dev/null || rc=1
+    [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
+    if (( rc != 0 )); then log "#$n: not judged on its own: $GATES_WHY; it stays in the batch"
+    elif ! land_fits "$GATES_SET"; then
+      log "#$n: not judged on its own: this job ends in $(hours "$(( $(job_end) - $(date +%s) ))"), a land on the gates $GATES_SET takes about $(hours "$(land_estimate "$GATES_SET")"); it stays in the batch"
+    else
+      b="looper/round-$REPO-$n"
+      if get_build "$r" "$gates" "$main" git push -q -f origin "$r:refs/heads/$b"; then
+        log "#$n: on its own, the gates ${gates:-full} on main ${main:0:7}: the build job ${BUILD_P#* }${BUILD_REUSED:+ (reused, $(reused_what "$BUILD_REUSED"))}"
+        ri+=("$i"); rr+=("$r"); rp+=("$BUILD_P"); rt+=("$(date +%s)"); rw+=("$BUILD_W")
+      else
+        log "#$n: not judged on its own: $BUILD_P; it stays in the batch"; git push -q origin --delete "$b" >/dev/null 2>&1 || true
+      fi
+    fi
+    popd >/dev/null; drop_worktree "$PL_WT"
+  done
+  for j in "${!ri[@]}"; do
+    i="${ri[j]}"; n="${TR_N[i]}"; rec="${TR_REC[i]}"
+    rc=0; build_verdict "${rr[j]}" "${rp[j]%% *}" "${rp[j]#* }" "${rt[j]}" "${rw[j]}" > "$rec/round.log" 2>&1 || rc=$?
+    git -C "$CHECKOUT" push -q origin --delete "looper/round-$REPO-$n" >/dev/null 2>&1 || true
+    (( rc != 1 )) || ! pre_land_infra "${rr[j]}" "${rp[j]%% *}" "$rec/round.log" || rc=2
+    sed -n 's/^build times: /#'"$n"': its build /p' "$rec/round.log" | tail -n 1 | while IFS= read -r l; do log "$l"; done
+    case "$rc" in
+      0) log "#$n: green on its own" ;;
+      1) { log "nothing landed: red on its own: its commits alone rebased on main ${main:0:7}, in the round of a red batch of $k lands (each built on its own, at once, looper#205): $(grep -m 1 '^verdict: failure: ' "$rec/round.log" | sed 's/^verdict: failure: //'); its end:"
+           tail -n 30 "$rec/round.log"; } > "$rec/out"
+         cp "$rec/round.log" "$rec/gates.log"
+         log "#$n: red on its own: sent back with its failure"
+         post_land "$n" "${TR_ID[i]}" "${TR_SHA[i]}" 4 "$rec"
+         sent[i]=1; ROUND_SENT=$(( ROUND_SENT + 1 )) ;;
+      *) log "#$n: no verdict on its own ($(pre_land_why "$rec/round.log")): it stays in the batch" ;;
+    esac
+  done
+  for (( i = 0; i < k; i++ )); do
+    [[ -n "${sent[i]:-}" ]] || ROUND_KEEP+="0 0 ${TR_N[i]} ${TR_ID[i]} ${TR_SHA[i]}"$'\n'
+  done
+}
+
 # The lands from..to-1 of a candidate nothing could be built of (BATCH_OUT,
 # looper#194). Origin refused its build's push for a change under
 # .github/workflows/ (the token lacks the workflows permission): each land that
@@ -4171,7 +4271,7 @@ Rules:
    batches: it rebases every queued branch, in order, onto a candidate from the current main, builds the
    candidate once (with a $GATE_MAP, the gate set the batch's combined diff calls for, full for any path the
    map does not name or a change to the map itself), fast-forwards main on green and deletes the branches;
-   on red it bisects the batch and sends the change that breaks it back, with the failure. Its verdict on
+   on red it builds each change on its own, at once, and sends those red on their own back, with the failure. Its verdict on
    your land is a comment on this issue, and names the batch and the gate set.$(pre_land_rule)
    Once your land is queued, your run is done: end it (rule 8). If something you must still do waits on the
    verdict, say so in your last checkpoint (rule 10): the next run of this issue, after the verdict, does it.

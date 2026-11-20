@@ -224,10 +224,11 @@ done
 has "$(q '.items[] | select(.key == "manager/tacplus/sent-back") | "\(.over) \(.recovered) \(.summary)"')" "false true tacplus: the manager sent 1 branch back on a conflict, resolved 1 by regenerating; redone: #21"
 lacks "$(q '.items[].key')" "manager/alpha"
 # The merge train's numbers (looper#86): gamma's manager landed 2 of 3 lands in 2 batches (of 3, then 1),
-# red on the first, bisected (2 builds) to #31, sent back; 4 builds for 2 landed changes.
-[[ "$(q '.managers.gamma | "\(.batches) \(.batch_size.p50) \(.batch_size.max) \(.bisections) \(.builds) \(.merged) \(.builds_per_land) \(.red_gates) \(.report_to_merge_minutes.p50)"')" == "2 1 3 1 4 2 2 1 150" ]] ||
+# red on the first, its round (looper#205) with no land built on its own, bisected (2 builds) to #31,
+# sent back; 4 builds for 2 landed changes.
+[[ "$(q '.managers.gamma | "\(.batches) \(.batch_size.p50) \(.batch_size.max) \(.bisections) \(.rounds) \(.builds) \(.merged) \(.builds_per_land) \(.red_gates) \(.report_to_merge_minutes.p50)"')" == "2 1 3 1 1 4 2 2 1 150" ]] ||
   fail "gamma's train: $(q .managers.gamma)"
-[[ "$(q '.managers.tacplus | "\(.batches) \(.batch_size) \(.bisections) \(.builds_per_land)"')" == "0 null 0 1" ]] || fail "tacplus's train numbers: $(q .managers.tacplus)"
+[[ "$(q '.managers.tacplus | "\(.batches) \(.batch_size) \(.bisections) \(.rounds) \(.builds_per_land)"')" == "0 null 0 0 1" ]] || fail "tacplus's train numbers: $(q .managers.tacplus)"
 # The concurrency (looper#107: no caps), from the kicker's 39 passes, 3 minutes each: trace-1500's
 # 25 (the kicker's before looper#107, its cap= not read), tacplus's 6 reports with 6 running in 20 and
 # 2 in 5, alpha's and kernel's 1; trace-1501's 14 (pre-looper#92: no running=, every report running),
@@ -339,7 +340,7 @@ has "$R" "Not read: gitlab:tacplus-dev/cluster"
 [[ "$(c '[.builds_per_commit[] | "\(.night) \(.per_commit)"] | join(", ")')" == "2026-10-31 2.5, 2026-11-01 1.8, 2026-11-02 1" ]] || fail "trend: $(c .builds_per_commit)"
 has "$R" "Builds (looper#134): 1 of 1 commits, 1 a commit (0 built a commit again); the nights before: 2026-11-01 1.8, 2026-10-31 2.5: falling."
 # The managers' scores, the concurrency and the capacity numbers (looper#72, looper#107).
-has "$R" "Managers: alpha 1 merged (queued to landed p50 7, p90 7 min), 1 builds a landed change, conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; gamma 2 merged (queued to landed p50 150, p90 160 min) in 2 batches (sizes p50 1, max 3), 2 builds a landed change, 1 bisection, conflicts resolved 0 against 0 sent back, red gates 1, main red after 0, reverts 0, redone 0, 4 builds queued p50 5, p90 10 min, ran p50 25, p90 30 min; tacplus 3 merged (queued to landed p50 80, p90 240 min), 1 builds a landed change, conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
+has "$R" "Managers: alpha 1 merged (queued to landed p50 7, p90 7 min), 1 builds a landed change, conflicts resolved 0 against 0 sent back, red gates 0, main red after 0, reverts 0, redone 0, 1 left for the next, 1 build queued p50 20, p90 20 min, 1 not started; gamma 2 merged (queued to landed p50 150, p90 160 min) in 2 batches (sizes p50 1, max 3), 2 builds a landed change, 1 bisection, 1 red round, conflicts resolved 0 against 0 sent back, red gates 1, main red after 0, reverts 0, redone 0, 4 builds queued p50 5, p90 10 min, ran p50 25, p90 30 min; tacplus 3 merged (queued to landed p50 80, p90 240 min), 1 builds a landed change, conflicts resolved 1 against 1 sent back, red gates 1, main red after 1 (3333333), reverts 1, redone 1 (#21), 1 left for the next, 3 builds queued p50 10, p90 120 min, ran p50 30, p90 50 min."
 has "$R" "Concurrency (no caps, looper#107): over the kicker's 39 passes, at most 8 reports at once (mean 6.92), 8 running (mean 6.41); ready issues waited 2.25 h with no report job. alpha at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 0; kernel at most 1 (mean 0.64), 1 running, waited 0 h, merge backlog p90 3; tacplus at most 6 (mean 5.64), 6 running, waited 2.25 h (#25, #26), merge backlog p90 2."
 lacks "$R" "Caps:"; lacks "$R" "caps.yaml"
 # The runs and tokens per model (looper#136), the most runs first.

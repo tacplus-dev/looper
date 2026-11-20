@@ -878,6 +878,7 @@
    },
    "resolved": 0,
    "reverts": [],
+   "rounds": 0,
    "sent_back": 0,
    "waited_hours": 0.03
   },
@@ -937,6 +938,7 @@
    },
    "resolved": 0,
    "reverts": [],
+   "rounds": 1,
    "sent_back": 0,
    "waited_hours": 3.68
   },
@@ -1008,6 +1010,7 @@
      "url": "https://github.com/tacplus-dev/tacplus/commit/5555555555555555555555555555555555555555"
     }
    ],
+   "rounds": 0,
    "sent_back": 1,
    "waited_hours": 2.58
   }

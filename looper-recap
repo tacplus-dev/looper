@@ -353,10 +353,12 @@ TOKENS = re.compile(r"\] tokens: (\S+) input=(\d+) output=(\d+) cache_read=(\d+)
 TOKEN_KINDS = ("input", "output", "cache_read", "cache_write")
 # A land's build (looper#128): its queue time apart from its run time; a batch's, the merge train's (looper#86).
 M_BUILD = re.compile(r"\] (?:#(\d+)|batch): its build (\S+): queued (\d+) s, (?:(?:ran|running) (\d+) s|not started)")
-# The merge train (looper#86): each batch's size, its gates run in the manager's job (no build job), and a bisection.
+# The merge train (looper#86): each batch's size, its gates run in the manager's job (no build job), a bisection,
+# and a red batch's round (looper#205: each land built on its own, at once).
 M_BATCH = re.compile(r"\] a batch of (\d+) lands? \(")
 M_BATCH_GATES = re.compile(r"\] the batch's gates ran (\d+) s")
 M_BISECT = re.compile(r"\] the batch is red: bisecting the batch of (\d+)")
+M_ROUND = re.compile(r"\] the batch is red: judging each of its (\d+) lands on its own")
 CAPACITY = re.compile(r"\] capacity: (.*)$")
 CAP_REPO = re.compile(r"(\S+) reports=(\d+)(?: running=(\d+))?(?: cap=\d+)? waiting=([\d,]*) landing=(\d+|\?)")
 # The job's executor (looper#84: the in-cluster runners' is "kubernetes", the VM runners' "docker-autoscaler"),
@@ -520,9 +522,9 @@ def read_manager(text):
     it left queued for the next manager; each land's or batch's build, its
     queue time (trigger to start) apart from its run time (looper#128); and
     the merge train's batches (looper#86): each batch's size, the gates it ran
-    in the job (a build all the same, for the builds per landed change) and
-    each bisection. A land staged again in a later batch keeps its queued time."""
-    out = {"lands": [], "deferred": [], "builds": [], "batches": [], "gates_runs": 0, "bisections": 0}
+    in the job (a build all the same, for the builds per landed change), each
+    bisection and each red batch's round (looper#205). A land staged again in a later batch keeps its queued time."""
+    out = {"lands": [], "deferred": [], "builds": [], "batches": [], "gates_runs": 0, "bisections": 0, "rounds": 0}
     cur, resolved = {}, {}
     for now, line in lines_at(text):
         m = MERGING.search(line)
@@ -540,6 +542,10 @@ def read_manager(text):
         m = M_BISECT.search(line)
         if m:
             out["bisections"] += 1
+            continue
+        m = M_ROUND.search(line)
+        if m:
+            out["rounds"] += 1
             continue
         m = M_RESOLVED.search(line)
         if m:
@@ -758,7 +764,7 @@ def collect(until):
             lp["jobs"] += 1
             if kind == "manager":
                 mg = managers.setdefault(repo, {"jobs": 0, "lands": [], "deferred": [], "builds": [], "urls": [],
-                                                "batches": [], "gates_runs": 0, "bisections": 0})
+                                                "batches": [], "gates_runs": 0, "bisections": 0, "rounds": 0})
                 mg["jobs"] += 1
                 mg["lands"] += [dict(x, url=url) for x in lg["manager"]["lands"]]
                 mg["deferred"] += lg["manager"]["deferred"]
@@ -766,6 +772,7 @@ def collect(until):
                 mg["batches"] += lg["manager"]["batches"]
                 mg["gates_runs"] += lg["manager"]["gates_runs"]
                 mg["bisections"] += lg["manager"]["bisections"]
+                mg["rounds"] += lg["manager"]["rounds"]
                 mg["urls"].append(url)
             if kind == "scan" and rn is not None:
                 lp["scans"].append(rn)
@@ -1041,6 +1048,7 @@ def managers_of(managers, start, until, sources, items):
         sc = out[repo] = {
             "batches": len(mg.get("batches") or []), "batch_size": bs or None,
             "builds_per_land": whole(round(nb / len(merged), 2)) if merged else None, "bisections": mg.get("bisections", 0),
+            "rounds": mg.get("rounds", 0),
             "jobs": mg["jobs"], "lands": len(lands), "merged": len(merged), "sent_back": len(by("sent_back")),
             "resolved": sum(1 for x in lands if x["resolved"]), "red_gates": len(by("red")), "failed": len(by("failed")),
             "deferred": len(mg["deferred"]), "redone": sorted(redone),
@@ -1575,6 +1583,7 @@ def report(night, classes, sdir, cov):
                    + (f" in {m['batches']} batch{'es' * (m['batches'] != 1)} (sizes p50 {bs['p50']}, max {bs['max']})" if bs else "")
                    + (f", {m['builds_per_land']} builds a landed change" if m.get("builds_per_land") is not None else "")
                    + (f", {m['bisections']} bisection{'s' * (m['bisections'] != 1)}" if m.get("bisections") else "")
+                   + (f", {m['rounds']} red round{'s' * (m['rounds'] != 1)}" if m.get("rounds") else "")
                    + f", conflicts resolved {m['resolved']} against {m['sent_back']} sent back, red gates {m['red_gates']}"
                    + f", main red after {len(m['red_main'])}" + (f" ({', '.join(m['red_main'])})" if m["red_main"] else "")
                    + f", reverts {'?' if m['reverts'] is None else len(m['reverts'])}"

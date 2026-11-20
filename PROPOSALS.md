@@ -4,6 +4,20 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The merge-train decision's red path, after #205** (2026-11-20, #205): tacplus-dev/roadmap
+  `decisions/merge-train-2026-11-04.md` still describes a red batch as bisected; since #205 a red batch with build
+  jobs is first judged in one round (each land built on its own, at once; reds sent back, the rest one batch), the
+  bisection kept for a round that sends nothing back and for `LOOPER_RED_ROUND=0`. The record wants a line saying so,
+  in roadmap (not this repository's to change).
+- **The red round's gate set** (2026-11-20, #205): the accepted suggestion asked for each land's `pre-land` set in the
+  round when `gates.yaml` names one; the round runs the set each land's own diff calls for instead, because the
+  manager's pre-land gate (#196) already ran `pre-land` on every land on that same main before the batch was staged,
+  so a `pre-land` round would be green for all and say nothing of the batch's red (then a second build of the same
+  batch, then the bisection). If a cheaper round is wanted (tacplus's lands' own sets are full), the round could run
+  `pre-land` only for the lands whose pre-land gate had no verdict.
+- **The red round sized by the pool's room** (2026-11-20, #205): `LOOPER_RED_ROUND` (40) caps the lands a round builds
+  at once, a fixed number. The suggestion's evidence read the pool's room from the recap (`capacity.pool_full`): the
+  manager could read it at the round's start (the build project's pending pipelines) and bisect when the pool is full.
 - **Report builds' slots, after the copy** (2026-11-19, #195): a report's `--build` now asks for `report: true`, and its
   gates job holds one of `BUILD_REPORT_SLOTS` (4) resource groups, so the lands' builds find a runner. It takes effect
   once the hub copies `ci/build.gitlab-ci.yml` into tacplus-dev/build: until then GitLab refuses the input and

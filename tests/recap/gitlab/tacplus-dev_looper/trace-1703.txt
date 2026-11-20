@@ -10,6 +10,11 @@
 [2026-11-01T23:00:12Z] the candidate 7777774 of 3 lands: a build job of the gates full (src/lib.rs matches no gate set), on main 7777771
 [2026-11-01T23:40:00Z] batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/50: queued 600 s, ran 1800 s
 [2026-11-01T23:40:00Z] the candidate 7777774 is red
+[2026-11-01T23:40:00Z] the batch is red: judging each of its 3 lands on its own, at once (looper#205): a build of each, its commits alone rebased on main 7777771, then their verdicts
+[2026-11-01T23:40:00Z] #30: not judged on its own: GitLab refused to start the build: 429 Too Many Requests; it stays in the batch
+[2026-11-01T23:40:00Z] #31: not judged on its own: GitLab refused to start the build: 429 Too Many Requests; it stays in the batch
+[2026-11-01T23:40:00Z] #32: not judged on its own: GitLab refused to start the build: 429 Too Many Requests; it stays in the batch
+[2026-11-01T23:40:00Z] the round found no land red on its own: the batch's red is between its lands, or a flake; bisecting it
 [2026-11-01T23:40:00Z] the batch is red: bisecting the batch of 3 (the candidate after its first half is built next; about 2 builds find the land that breaks it)
 [2026-11-01T23:40:01Z] the candidate 7777772 of 1 land: a build job of the gates full (src/lib.rs matches no gate set), on main 7777771
 [2026-11-02T00:10:00Z] batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/51: queued 300 s, ran 1500 s

@@ -4173,15 +4173,78 @@ has "$OUT" "a batch of 5 lands, one build"; has "$OUT" "batch: its build https:/
 main_green
 pass
 
+# A red batch of 5 with one bad change (the third) is judged in one round
+# (looper#205): a build of each land, its commits alone rebased on main, all
+# 5 started before any verdict is read; the red one is sent back with its own
+# failure, and the 4 green ones land as one batch, in one build more: 7 builds,
+# none of them a bisection's. Main never points at a commit without a green
+# build of it.
+scenario train-red-round
+train_seed; train_issues 5 6 7 8
+for n in 4 5 6 7 8; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$( [[ "$n" == 6 ]] && echo red || echo "$n" )"; done
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 7 ]] || fail "builds: $(cat "$FIX/builds")"
+m="$(git -C "$FIX/seed" rev-parse HEAD)"
+# The round's 5: each land's own commits on the main the batch started from, one change each.
+[[ "$(sed -n 2,6p "$FIX/builds" | cut -d' ' -f4,5 | sort -u)" == "full $m" ]] || fail "the round's builds: $(cat "$FIX/builds")"
+for i in 2 3 4 5 6; do
+  [[ "$(origin diff --name-only "$m" "$(sed -n "${i}p" "$FIX/builds" | cut -d' ' -f3)" | paste -sd' ')" == "f$(( i + 2 )).txt" ]] || fail "build $i is not #$(( i + 2 ))'s alone: $(cat "$FIX/builds")"
+done
+lacks "$OUT" "bisecting"
+[[ "$(origin log --format=%s main | grep -v '^HISTORY' | head -n 4 | tac | paste -sd'|')" == "fix 4|fix 5|fix 7|fix 8" ]] || fail "main: $(origin log --oneline main)"
+[[ -z "$(landed f6.txt)" ]] || fail "the red change landed"
+c="$(grep '^alpha#6 ' "$FIX/comments")"
+has "$c" "The manager did not merge [\`looper/alpha-6\`]"; has "$c" "sent back with the failure"; has "$c" "stays approved"
+c="$(cat "$FIX/comments")"
+has "$c" "the gates full (gates.yaml) exited 1"; has "$c" "red on its own: its commits alone rebased on main ${m:0:7}"
+origin rev-parse -q --verify refs/heads/looper/alpha-6 >/dev/null || fail "#6's branch is gone"
+[[ "$(labels alpha 6)" == approved,bug ]] || fail "#6's labels: $(labels alpha 6)"
+for n in 4 5 7 8; do
+  has "$(grep "^alpha#$n " "$FIX/comments")" "The manager merged [\`looper/alpha-$n\`]"
+  has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 4 lands"
+done
+has "$OUT" "the batch is red: judging each of its 5 lands on its own, at once (looper#205)"
+has "$OUT" "#6: red on its own: sent back with its failure"; has "$OUT" "#4: green on its own"
+has "$OUT" "the round sent 1 of 5 back: the other 4 are staged again as one batch"
+has "$OUT" "a batch of 4 lands (#4, #5, #7, #8) on main"
+# At once: every land's build started before the round read any verdict.
+s="$(grep -n ': on its own, the gates ' <<<"$OUT" | tail -n 1 | cut -d: -f1)"; v="$(grep -n ' on its own$\|: red on its own: ' <<<"$OUT" | head -n 1 | cut -d: -f1)"
+[[ "$(grep -c ': on its own, the gates ' <<<"$OUT")" == 5 ]] && (( s < v )) || fail "the round's builds were not all started first: $(grep -n 'on its own' <<<"$OUT")"
+[[ -z "$(origin for-each-ref refs/heads/looper/round-*)" ]] || fail "round branches left: $(origin for-each-ref refs/heads/looper/)"
+main_green
+pass
+
+# A red batch whose lands are each green on their own (two changes that break
+# only together, or a flake) is bisected after its round: the round sends
+# nothing back, and the bisection finds the land that breaks it.
+scenario train-red-round-none
+train_seed; train_issues 5 6
+# Red only with #5's f5.txt and #6's f5d.txt: the two together.
+sed -i 's/ && ! grep -qs red -- \*.txt/ \&\& ! { [[ -e f5.txt \&\& -e f5d.txt ]]; }/' "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" commit -qam "gates: together" && git -C "$FIX/seed" push -q origin main
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+queue 5 2026-11-03T11:00:00Z f5.txt 5
+queue 6 2026-11-03T12:00:00Z f5d.txt 6
+manage "${BUILDS[@]}"
+has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (looper#205)"
+has "$OUT" "the round found no land red on its own: the batch's red is between its lands, or a flake; bisecting it"
+has "$OUT" "the batch is red: bisecting the batch of 3"
+has "$OUT" "#6: the land that breaks the batch: sent back with the failure"
+[[ "$(landed f4.txt)" == 4 && "$(landed f5.txt)" == 5 && -z "$(landed f5d.txt)" ]] || fail "main: $(origin log --oneline main)"
+main_green
+pass
+
 # A batch of 5 with one bad change (the third) lands 4 and sends 1 back, with
 # the failure, in at most 1 + 2*log2(5) builds: the batch (red), the bisection
 # (the first 2: green; the first 3: red, the culprit), and the rest (#7, #8) as
 # a new batch on the new main. Main never points at a commit without a green
-# build of it.
+# build of it. A manager with no room for a round (LOOPER_RED_ROUND=0, a pool
+# with none) bisects, as one whose gates run in its own job does.
 scenario train-bisects
 train_seed; train_issues 5 6 7 8
 for n in 4 5 6 7 8; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$( [[ "$n" == 6 ]] && echo red || echo "$n" )"; done
-manage "${BUILDS[@]}"
+manage "${BUILDS[@]}" LOOPER_RED_ROUND=0
+lacks "$OUT" "judging each of its"
 b="$(builds_of)"; (( b <= 5 )) || fail "$b builds, more than 1 + 2*log2(5): $(cat "$FIX/builds")"
 [[ "$(origin log --format=%s main | grep -v '^HISTORY' | head -n 4 | tac | paste -sd'|')" == "fix 4|fix 5|fix 7|fix 8" ]] || fail "main: $(origin log --oneline main)"
 [[ -z "$(landed f6.txt)" ]] || fail "the red change landed"

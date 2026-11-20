@@ -385,12 +385,22 @@ lander are gone. One job per issue needs none of them.
   verdict** in a repository that pins its build image ([Build jobs](#build-jobs), looper#71), the gates in the
   manager's job in any other. **Green:** main fast-forwards to the candidate (nothing reaches main without a green
   build of exactly that commit), each land gets its verdict (naming the batch), its branch is deleted and its
-  HISTORY.md line added. **Red:** the batch is **bisected** on its prefixes (the candidate after its first half is
-  built: green, the breaking change is in the second half, red, in the first; about log2(n) builds), the land that
-  breaks it is **sent back with the failure** (its issue stays `approved`, the branch stays, and its next report
-  fixes it), the green prefix before it lands as a batch of its own, and the lands after it stay queued: the next
-  batch, from the new main, takes them. A batch of one that is red is just sent back. A batch of 5 green lands is 1
-  build; one with one bad change lands 4, sends 1 back and builds at most 1 + 2·log2(5) times. The candidate's
+  HISTORY.md line added. **Red**, a batch of n > 1 lands whose builds are build jobs is **judged in one round**
+  (looper#205: tacplus's red batch of 20, an OOM or a timing flake, was bisected one hour-long full build after
+  another while the pool had room, and its job died mid-bisection, nothing merged): each land's commits alone,
+  rebased onto main, get a build job of the gate set their own diff calls for (not the `pre-land` set: each land's
+  was green on this main before the batch), **all started at once**, then their verdicts; each land red on its own
+  is **sent back with its own failure** (its issue stays `approved`, the branch stays, and its next report fixes
+  it), and the rest (green, or with no verdict on their own) are staged again from main as **one batch**, one build
+  more. A batch of 5 with one bad change is 1 + 5 + 1 builds, the 5 at once, in about three builds' time. A round
+  that sends nothing back (two lands that break only together, a flake), a batch of more than `LOOPER_RED_ROUND`
+  lands (40; 0 for none, a pool with no room), the gates in the manager's job, and a batch staged again after its
+  round that is red again are **bisected** on their prefixes (the candidate after its first half is built: green,
+  the breaking change is in the second half, red, in the first; about log2(n) builds, one after another): the land
+  that breaks it is sent back with the failure, the green prefix before it lands as a batch of its own, and the
+  lands after it stay queued: the next batch, from the new main, takes them. A batch of one that is red is just
+  sent back. A batch of 5 green lands is 1 build; one with one bad change, bisected, lands 4, sends 1 back and
+  builds at most 1 + 2·log2(5) times. The candidate's
   build runs on the build pool like any other, so a batch whose build would outlast the manager's job, or has no
   verdict by its end, leaves its lands queued for the next manager, which takes a build left running up by its tree.
   A candidate **nothing could be built of** is no red and is never bisected (looper#194: tacplus's first batch of 40
@@ -448,7 +458,7 @@ lander are gone. One job per issue needs none of them.
 
 ```sh
 tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): a build-jobs repository's reports and manager on `arm64, control` with their kind's requests, a repository moving on its pin with its VM override unread, an unpinned one's jobs and scan on the VM tags, a pinned one's scan on `control` with a report's requests (#73), the pipeline file's control jobs on `.control`; plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
-tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-bisects (one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch), train-unbuilt-workflows, train-unbuilt and verdict-unbuilt (#194: a candidate whose build branch origin refuses is not bisected; a land changing .github/workflows/ sent back needs-decision, the rest landed in one build; any other refusal leaves the lands queued, each issue told once)
+tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-red-round (#205: one bad change of 5, each land built on its own, the 5 at once: 1 sent back with its own failure, 4 land in one build more, no bisection), train-red-round-none (each green on its own, red together: bisected after the round), train-bisects (`LOOPER_RED_ROUND=0`: one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-one-red (just sent back), train-conflict-drops-one (only that branch), train-unbuilt-workflows, train-unbuilt and verdict-unbuilt (#194: a candidate whose build branch origin refuses is not bisected; a land changing .github/workflows/ sent back needs-decision, the rest landed in one build; any other refusal leaves the lands queued, each issue told once)
 ```
 
 ### Build jobs
@@ -931,7 +941,8 @@ login; a secret it cannot read is named in `sources` and the project is not read
   `batch_size`: `a batch of K lands (...)`), the **builds per landed change** (`builds_per_land`: its build jobs,
   `batch: its build <url>: queued S s, ran S s`, and the gates runs in its job, `the batch's gates ran S s`,
   against the lands merged; the target is well under 1), the **bisections** (`bisections`: `the batch is red:
-  bisecting the batch of K`) and the time from **queued to landed** (`report_to_merge_minutes`, a land's `merging
+  bisecting the batch of K`), the **red rounds** (`rounds`, looper#205: `the batch is red: judging each of its K lands
+  on its own`) and the time from **queued to landed** (`report_to_merge_minutes`, a land's `merging
   #N (..., queued T)` to its `landed on main` line). Items:
   a red main and a revert always; a queued-to-landed p90 over `LOOPER_RECAP_MERGE_MINUTES` (120); 3 send-backs.
 - **Concurrency** (`concurrency`, looper#107, from the kicker's `capacity:` lines, each standing for the time to the
