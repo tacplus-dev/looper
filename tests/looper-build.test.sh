@@ -1558,6 +1558,34 @@ build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUI
   fail "release: $(sec_vars)"
 if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_SCAN_CODEQL_REQUESTS="2 12Gi" -- plan 2>"$TMP/err"; then fail "planned with two of four"; fi
 verdict_is "fail: BUILD_SCAN_CODEQL_REQUESTS '2 12Gi' is not"
+if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_SCAN_CODEQL_REQUESTS="2 16Gi 3500m 16Gi" -- plan 2>"$TMP/err"; then fail "planned past the ceilings"; fi
+verdict_is "fail: BUILD_SCAN_CODEQL_REQUESTS '2 16Gi 3500m 16Gi' is past the build runner's ceilings (3500m 12Gi)"
+pass
+
+# looper#202: tacplus's gates were OOM-killed in the runner's default pod (8Gi).
+NAME="plan: the gates job asks BUILD_GATES_REQUESTS_<repo>, else the runner's defaults"
+gates_vars() { sed -n '/^gates:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep '^    KUBERNETES_' | sed 's/^ *//' | paste -sd' '; }
+build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ -z "$(gates_vars)" ]] || fail "unset, the gates job is sized: $(gates_vars)"
+build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_other="1 1Gi 1 1Gi" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ -z "$(gates_vars)" ]] || fail "another repository's setting sized it: $(gates_vars)"
+build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_demo="3 12Gi 3500m 12Gi" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(gates_vars)" == 'KUBERNETES_CPU_REQUEST: "3" KUBERNETES_MEMORY_REQUEST: "12Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
+  fail "build: $(gates_vars)"
+sed -n '/^security-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep -q KUBERNETES_ && fail "the security job took the gates' size"
+build BUILD_SHA= BUILD_NIGHTLY=true BUILD_GATES_REQUESTS_demo="1500m 10Gi 3 10Gi" -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+[[ "$(gates_vars)" == 'KUBERNETES_CPU_REQUEST: "1500m" KUBERNETES_MEMORY_REQUEST: "10Gi" KUBERNETES_CPU_LIMIT: "3" KUBERNETES_MEMORY_LIMIT: "10Gi"' ]] ||
+  fail "nightly: $(gates_vars)"
+if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_demo="2 12Gi" -- plan 2>"$TMP/err"; then fail "planned with two of four"; fi
+verdict_is "fail: BUILD_GATES_REQUESTS_demo '2 12Gi' is not \"<cpu> <memory> <cpu limit> <memory limit>\""
+if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_demo="2 12Gi 4 12Gi" -- plan 2>"$TMP/err"; then fail "planned past the CPU ceiling"; fi
+verdict_is "fail: BUILD_GATES_REQUESTS_demo '2 12Gi 4 12Gi' is past the build runner's ceilings (3500m 12Gi)"
+if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_demo="2 13000Mi 3 13000Mi" -- plan 2>"$TMP/err"; then fail "planned past the memory ceiling"; fi
+verdict_is "fail: BUILD_GATES_REQUESTS_demo '2 13000Mi 3 13000Mi' is past the build runner's ceilings"
+if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_demo="3 8Gi 2 8Gi" -- plan 2>"$TMP/err"; then fail "planned a request over its limit"; fi
+verdict_is "fail: BUILD_GATES_REQUESTS_demo '3 8Gi 2 8Gi' asks more than its limit"
+build BUILD_SHA="${SHA[pass]}" BUILD_RUNNER_CEILINGS="8 32Gi" BUILD_GATES_REQUESTS_demo="4 16G 8 32Gi" -- plan 2>"$TMP/err" ||
+  fail "plan failed within BUILD_RUNNER_CEILINGS: $(cat "$TMP/err")"
 pass
 
 NAME="plan: a nightly scans the main branch as it is, and is no release"

@@ -90,6 +90,14 @@ BUILD_GATES_IDLE="${BUILD_GATES_IDLE:-3600}"
 # ceilings (3500m, 12Gi); looper-scan sizes CodeQL's --ram and --threads to
 # the limits. A build's job keeps the runner's defaults (no CodeQL).
 BUILD_SCAN_CODEQL_REQUESTS="${BUILD_SCAN_CODEQL_REQUESTS:-2 12Gi 3500m 12Gi}"
+# The gates job's (looper#202: tacplus's gates were OOM-killed in the
+# runner's default 8Gi pod), per repository: BUILD_GATES_REQUESTS_<repo> (its
+# name with any character but [A-Za-z0-9_] as _), in the same form; unset,
+# the runner's defaults. A build project variable, so a nightly's fan-out
+# plans read it too.
+# The build runner's ceilings, "<cpu> <memory>" (tacplus-dev/cluster's
+# gitlab-runner: its *_limit_overwrite_max_allowed), that both are within.
+BUILD_RUNNER_CEILINGS="${BUILD_RUNNER_CEILINGS:-3500m 12Gi}"
 # Host Docker's builder (buildx), and the emulators for a foreign platform, by digest.
 BUILD_BUILDKIT_IMAGE="${BUILD_BUILDKIT_IMAGE:-moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea}"
 BUILD_BINFMT_IMAGE="${BUILD_BINFMT_IMAGE:-tonistiigi/binfmt:qemu-v10.0.4@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541}"
@@ -115,7 +123,9 @@ record's verified commit, its result and run, which the plan reads), BUILD_GATES
 (the commit's gates.yaml sets to run, joined by +; empty: its full, else just gates) and BUILD_BASE (their
 LOOPER_GATES_BASE, a full hash), BUILD_BUILDER_IMAGE (the build image a release's publish runs in, with
 rootless BuildKit; empty: the looper image, host Docker, on BUILD_DOCKER_TAGS), BUILD_WAIT (the requester's wait, in seconds: a gates job whose pipeline
-is older runs no gates, and gates running longer are stopped, red), BUILD_GATES_IDLE (gates silent this many seconds are stopped, red; default 3600), the tacplus-reader
+is older runs no gates, and gates running longer are stopped, red), BUILD_GATES_IDLE (gates silent this many seconds are stopped, red; default 3600),
+BUILD_GATES_REQUESTS_<repo> (the gates job's "<cpu> <memory> <cpu limit> <memory limit>"; unset, the runner's
+defaults) within BUILD_RUNNER_CEILINGS ("<cpu> <memory>", default 3500m 12Gi), the tacplus-reader
 app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
 outputs go to BUILD_OUT (default: here).
 EOF
@@ -172,19 +182,57 @@ check_inputs() {
     [[ "$BUILD_REPORT_SLOTS" =~ ^[1-9][0-9]*$ ]] && ((BUILD_REPORT_SLOTS <= 100)) ||
       verdict fail "BUILD_REPORT_SLOTS '$BUILD_REPORT_SLOTS' is not a number of report builds at a time (1 to 100)"
   fi
-  [[ "$BUILD_SCAN_CODEQL_REQUESTS" =~ ^$QUANTITY\ $QUANTITY\ $QUANTITY\ $QUANTITY$ ]] ||
-    verdict fail "BUILD_SCAN_CODEQL_REQUESTS '$BUILD_SCAN_CODEQL_REQUESTS' is not \"<cpu> <memory> <cpu limit> <memory limit>\""
+  [[ "$BUILD_RUNNER_CEILINGS" =~ ^$QUANTITY\ $QUANTITY$ ]] ||
+    verdict fail "BUILD_RUNNER_CEILINGS '$BUILD_RUNNER_CEILINGS' is not \"<cpu> <memory>\""
+  check_requests BUILD_SCAN_CODEQL_REQUESTS
+  [[ -z "${!GATES_REQUESTS:-}" ]] || check_requests "$GATES_REQUESTS"
 }
 
 # A Kubernetes quantity, as a request or a limit is (1, 3500m, 12Gi).
 QUANTITY='[0-9]+(\.[0-9]+)?(m|[KMGTPE]i?)?'
 
+# The variable that sizes this repository's gates job (BUILD_GATES_REQUESTS_<repo>).
+GATES_REQUESTS="BUILD_GATES_REQUESTS_${BUILD_REPO:-}"; GATES_REQUESTS="${GATES_REQUESTS//[^A-Za-z0-9_]/_}"
+
+# A quantity in thousandths of its unit (of a CPU, of a byte).
+units() { # quantity
+  awk -v q="$1" 'BEGIN {
+    n = q; sub(/[A-Za-z]+$/, "", n); s = substr(q, length(n) + 1)
+    f["m"] = 0.001; f[""] = 1; f["K"] = 1e3; f["M"] = 1e6; f["G"] = 1e9; f["T"] = 1e12; f["P"] = 1e15; f["E"] = 1e18
+    f["Ki"] = 2^10; f["Mi"] = 2^20; f["Gi"] = 2^30; f["Ti"] = 2^40; f["Pi"] = 2^50; f["Ei"] = 2^60
+    printf "%.0f\n", n * f[s] * 1000 }'
+}
+le() { awk -v a="$(units "$1")" -v b="$(units "$2")" 'BEGIN { exit !(a + 0 <= b + 0) }'; } # quantity quantity
+
+# A job's "<cpu> <memory> <cpu limit> <memory limit>", in the variable named:
+# four quantities, each request within its limit, the limits within the
+# build runner's ceilings (a job past them is refused when it starts).
+check_requests() { # variable
+  local v="${!1}" r c
+  [[ "$v" =~ ^$QUANTITY\ $QUANTITY\ $QUANTITY\ $QUANTITY$ ]] ||
+    verdict fail "$1 '$v' is not \"<cpu> <memory> <cpu limit> <memory limit>\""
+  read -r -a r <<<"$v"; read -r -a c <<<"$BUILD_RUNNER_CEILINGS"
+  le "${r[0]}" "${r[2]}" && le "${r[1]}" "${r[3]}" || verdict fail "$1 '$v' asks more than its limit"
+  le "${r[2]}" "${c[0]}" && le "${r[3]}" "${c[1]}" || verdict fail "$1 '$v' is past the build runner's ceilings ($BUILD_RUNNER_CEILINGS)"
+}
+
+# A job's KUBERNETES_* variables, of "<cpu> <memory> <cpu limit> <memory limit>".
+k8s_requests() { # requests
+  local r; read -r -a r <<<"$1"
+  printf '    KUBERNETES_CPU_REQUEST: "%s"\n    KUBERNETES_MEMORY_REQUEST: "%s"\n    KUBERNETES_CPU_LIMIT: "%s"\n    KUBERNETES_MEMORY_LIMIT: "%s"\n' "${r[@]}"
+}
+
 # The security job's KUBERNETES_* variables (BUILD_SCAN_CODEQL_REQUESTS) where
 # it runs CodeQL: a nightly's and a release's (looper#189).
 scan_requests() {
   [[ "$(scan_kind)" != build ]] || return 0
-  local r; read -r -a r <<<"$BUILD_SCAN_CODEQL_REQUESTS"
-  printf '    KUBERNETES_CPU_REQUEST: "%s"\n    KUBERNETES_MEMORY_REQUEST: "%s"\n    KUBERNETES_CPU_LIMIT: "%s"\n    KUBERNETES_MEMORY_LIMIT: "%s"\n' "${r[@]}"
+  k8s_requests "$BUILD_SCAN_CODEQL_REQUESTS"
+}
+
+# The gates job's (BUILD_GATES_REQUESTS_<repo>, looper#202); unset, none: the
+# runner's defaults.
+gates_requests() {
+  [[ -z "${!GATES_REQUESTS:-}" ]] || k8s_requests "${!GATES_REQUESTS}"
 }
 
 # A run's URL, as a record names it (written into the child pipeline).
@@ -538,6 +586,7 @@ gates:
     BUILD_BASE: "${BUILD_BASE:-}"
     BUILD_WAIT: "$([[ -n "${BUILD_TAG:-}" || "${BUILD_NIGHTLY:-}" == true ]] || echo "${BUILD_WAIT:-}")"
 EOF
+  gates_requests
   embedded_script gates
   cat <<'EOF'
   artifacts:
