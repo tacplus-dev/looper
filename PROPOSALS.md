@@ -886,6 +886,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   `/usr/local/libexec` (or every ELF in the image the `Dockerfile` installs) to the binaries it reads would put them
   under the same policy. Until #73 removes the CLI, looper-docker refuses `buildx` and `compose` (README), which
   limits what they can reach.
+- **The recap says when `build.lock` lags main's image** (2026-11-20, nightly scan, #203; like #163 and #200 for
+  `ci/`): `build.lock` pinned the image of a691d64 (2026-11-03) for 17 days, with 134 HIGH/CRITICAL advisories that
+  main's image had fixed, and no check noticed. The build's security checks scan the source and the Dockerfiles'
+  base images, never the image that pin names, and the recap's image check compares `:main` with `main-<sha7>` only.
+  The recap (or `looper-scan`'s nightly) could read the pin's `org.opencontainers.image.revision` and say how many of
+  main's commits, and how many days, it is behind main's attested image, past a threshold (a week, say). It could
+  also trivy-scan the pinned image under the image build's policy, so a stale pin is a finding instead of a scanner's
+  chance discovery. The same holds for `ci/`'s pins.
 
 ## Promoted / declined
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
