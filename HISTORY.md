@@ -154,3 +154,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-19 looper issue A merge-train batch's build queues FIFO behind single-report builds in tacplus-dev/build: an 18-land build waited with 6 report builds ahead (#195)
 - 2026-11-19 looper issue The manager waits forever on a build pipeline that was cancelled: no verdict, no bisect (#198)
 - 2026-11-19 looper issue looper-scan passes findings to jq as arguments: a large baseline (tacplus#854, 8827 findings) fails the security verdict with 'Argument list too long' (#201)
+- 2026-11-20 looper issue looper-build plan sizes the gates job: a per-repository BUILD_GATES_REQUESTS (tacplus's gates are OOM-killed at 8Gi) (#202)
