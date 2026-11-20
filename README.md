@@ -629,8 +629,14 @@ None runs when main's map has no `pre-land`, the rebase conflicts (the manager's
 land is not on full, or the manager would run it beside its token; one with no verdict (no runner, past its wait,
 red in its infrastructure alone) lets the land go on: the batch's build judges it, as before.
 
+**A report's `--build`** in a pinned repository, on a diff that calls for full, builds the `pre-land` set instead
+(looper#204): every such land's full gates are its batch's build, which sends it back with the failure, so a
+report's own full build (about 55 minutes of a build slot) would only tell its run early. Its `--land`'s pre-land
+gate, on the same commit and main (main not moved since), reuses that build. A map without a `pre-land` builds full, as before; the
+prompt's rule 4 says which.
+
 ```sh
-tests/repo-looper.test.sh   # pre-land-*: the report's red queues nothing and says why, its green on the same main is not run again; as a build job of the rebased commit, its branch deleted; the manager's for lands not green on its main, the red one sent back before the batch; the map's pre-land takes no paths
+tests/repo-looper.test.sh   # pre-land-*: the report's red queues nothing and says why, its green on the same main is not run again; as a build job of the rebased commit, its branch deleted; pre-land-report-build-set: a pinned report's `--build` on full builds pre-land, its `--land` reuses it, the batch builds full once (looper#204), build-job-report-full: without a pre-land it builds full; the manager's for lands not green on its main, the red one sent back before the batch; the map's pre-land takes no paths
 ```
 
 This repository's own map is [`gates.yaml`](gates.yaml): the planning files check for `*.md`, each script's own

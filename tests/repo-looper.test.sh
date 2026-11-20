@@ -4579,6 +4579,41 @@ has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "on your commits reb
 main_green
 pass
 
+# A pinned report's --build on a diff that calls for full builds the map's
+# pre-land set instead (looper#204): the batch's build runs full, which a
+# report's full build would only tell its run early. Its --land's pre-land
+# gate, on the same commit and main, reuses that build; the batch builds full,
+# once. The prompt's rule 4 says so. A map with no pre-land builds full, as before.
+scenario pre-land-report-build-set
+pre_land_seed pin
+cat > "$FIX/claude.sh" <<'EOS'
+echo fine > f.txt && git add -A && git commit -qm "f fine"
+git -C "$FIX/origin.git" rev-parse main > "$FIX/main-at-land"
+"$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-4" 2>&1; echo "rc $?" >> "$FIX/build-4"
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+close_it
+run "${BUILDS[@]}"
+m="$(cat "$FIX/main-at-land")"
+b="$(cat "$FIX/build-4")"
+has "$b" "build requested: alpha "; has "$b" ", the gates pre-land (f.txt matches no gate set: the full gates are the batch's build, a report's its pre-land set, looper#204)"
+has "$b" "the gates pre-land on base ${m:0:7}"; has "$b" "verdict: success: pass: gates pre-land on base $m"; has "$b" "rc 0"
+[[ "$(landed f.txt)" == fine ]] || fail "main: $(origin log --oneline main); $(cat "$FIX/land-4")"
+[[ "$(cut -d' ' -f4,5 "$FIX/builds" | paste -sd'|')" == "pre-land $m|full $m" ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(wc -l < "$FIX/pre-ran")" == 1 ]] || fail "pre-land ran: $(cat "$FIX/pre-ran")"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "your committed HEAD in the build image this repository pins, on the gate set your diff since main calls for, as the"
+has "$p" "Where that is full, it builds this repository's fast unit gate (gates.yaml's pre-land) instead: the full gates are the"
+main_green
+pass
+
+scenario build-job-report-full
+pin_seed; build_model f.txt "a file"
+run "${BUILDS[@]}"
+has "$(cat "$FIX/build-4")" "the gates full on base"; has "$(cat "$FIX/build-4")" "rc 0"
+lacks "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "gates.yaml's pre-land"
+pass
+
 # The manager runs the pre-land gate of each land whose report's was not green
 # on the main it stages onto (here: none recorded, or on an older main), all of
 # them at once, before the batch: the red one is sent back with the failure,

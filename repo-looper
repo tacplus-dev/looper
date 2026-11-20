@@ -1743,7 +1743,9 @@ wait_until_request() {
 
 # --build, the model's step in a report of a pinned repository (looper#71): a
 # build job of its committed HEAD, with the gate set its diff since main calls
-# for, as the manager's merge would run it. The model holds no trigger: its
+# for, as the manager's merge would run it; where that is full and its gate map
+# names a pre-land, that set instead (looper#204): the batch's build runs full,
+# and a report's full build would only tell its run early. The model holds no trigger: its
 # looper does, and starts the build (the run's builds/ directory: a request,
 # then the pipeline or why not) once the checkpoint has put the commit on the
 # issue's branch. Prints the verdict; exits 0 on a pass, 1 on a failure, 2
@@ -1761,6 +1763,10 @@ build_request() {
   sha="$(git rev-parse HEAD)"; base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse origin/main)"
   choose_gates . "$base" "" || die "nothing built: $GATES_WHY"
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
+  # Full, and the map names a pre-land: the batch's build runs full (looper#204).
+  if [[ "$gates" == full && -n "${GM_RUN[$PRE_LAND]:-}" ]]; then
+    gates="$PRE_LAND"; GATES_WHY="${GATES_WHY:+$GATES_WHY: }the full gates are the batch's build, a report's its $PRE_LAND set, looper#204"
+  fi
   checkpoint "$ISSUE" "a build" "$run" || die "nothing built: the build job builds $(wip_branch "$ISSUE"), and the checkpoint to it did not push"
   log "build requested: $REPO ${sha:0:7}, the gates ${gates:-full}${GATES_WHY:+ ($GATES_WHY)}"
   local rc=0; model_build "$d" "$sha" "$gates" "$base" || rc=$?
@@ -4022,6 +4028,11 @@ verify_rule() { # issue
     "within its wait, 3 with none by this job's end, 4 when no runner took it within $(hours "$BUILD_START"): no verdict yet, and a later --build of the same commit takes it up). You" \
     "have no container runtime (no \`docker\`, so no \`tacplus\` here either): agents never build (looper#71). What needs" \
     "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
+  commit_map origin/main
+  [[ -n "${GM_RUN[$PRE_LAND]:-}" ]] || return 0
+  printf '\n   %s\n   %s' \
+    "Where that is full, it builds this repository's fast unit gate ($GATE_MAP's $PRE_LAND) instead: the full gates are the" \
+    "merge-train batch's build, whose verdict sends a land that breaks them back with the failure (looper#204)."
 }
 
 # Rule 2's word on tacplus: none in a report with no container runtime (looper#71).

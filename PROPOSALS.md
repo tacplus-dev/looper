@@ -17,7 +17,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   every pinned land gated by the batch's one build and, since #196, by the pre-land gate on current main, a report's
   own full `--build` only tells its run early. A report's `--build` in a pinned repository could run its `pre-land`
   set alone (full only where the map names none), cutting build demand by about the batch size. It changes what a
-  run's prompt (rule 4) and `--build` promise, so it wants Jody's yes and a ROADMAP.md entry.
+  run's prompt (rule 4) and `--build` promise, so it wants Jody's yes and a ROADMAP.md entry. **Done** (#204): it
+  gains nothing until a pinned repository's map names a `pre-land`, and none does yet: this repository's `gates.yaml`
+  has none (its fast unit gate, which of its tests, is to choose), tacplus's waits on the entry below (#196). The
+  build runner's concurrent from the spot pool's room, #204's other half, is tacplus-dev/cluster#41.
+- **`--build --full`** (2026-11-20, #204): a pinned report's `--build` on full builds its `pre-land` set, so a run
+  fixing a land the batch sent back for a gate outside that set cannot see the fix pass before it lands again: the
+  next batch's build tells it. A `--full` flag (the full set, as before #204) would let it ask, at a full build's cost.
 - **Trivy and gosec built on `golang.org/x/net` v0.62.0** (2026-11-20, #203): moving `build.lock` to d37ff98's image
   drops CVE-2026-78661 (HIGH, fixed in x/net 0.62.0) from gh, osv-scanner and syft. It stays in `usr/local/bin/trivy`
   (x/net v0.60.0) and `usr/local/bin/gosec` (v0.61.0), which the `Dockerfile` builds from source. #203 says
