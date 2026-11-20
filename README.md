@@ -881,9 +881,11 @@ rule for rejected ones.
 
 **Collection, with no model** (`looper-recap collect`): before the model runs, the looper gathers the 24 hours to now
 into the run's `context/recap.json`; the same inputs give the same file. For every finished job of
-`LOOPER_SUGGEST_PROJECTS` plus `tacplus-dev/cluster` (or `LOOPER_RECAP_PROJECTS`): its queue (created to started),
-prepare (started to "Running on", runner-image measure's method) and run times, its status, a failure's class
-(`runner_system_failure`, `image_pull`, `timeout`, `gate_failure`, `script_failure`) and whether a retry recovered it.
+`LOOPER_SUGGEST_PROJECTS` plus `tacplus-dev/cluster` (or `LOOPER_RECAP_PROJECTS`): its queue (its wait for a runner,
+GitLab's `queued_duration`, looper#206: a job waiting on its `needs` is not queued; created to started without it),
+what it waited in all (`waited_s`, created to started), prepare (started to "Running on", runner-image measure's
+method) and run times, its status, a failure's class (`runner_system_failure`, `image_pull`, `timeout`, `gate_failure`,
+`script_failure`) and whether a retry recovered it.
 From the looper jobs' logs, per repository: slot use (each plan's children against its capacity), the lands' minutes
 by gate set and the deferred lands, how long each scan held the repository, and **the hours each ready issue waited,
 and why**: no free slot, a conflict (and the plan's overlapping paths), the job's time left (its limit would outlast

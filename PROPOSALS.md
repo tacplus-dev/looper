@@ -1011,3 +1011,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   new main its report's was not green on, so a land that waits through several batches runs it once a batch. A
   green recorded by tree (as #191's verdict-job greens are) would skip it when main moved by files the gate cannot
   read (the planning files).
+- **The recap's history of queue figures before #206** (2026-11-20, #206): from the night after #206 lands, a job's
+  queue is GitLab's `queued_duration` and created to started is `waited_s`; the kept nights of tacplus-dev/roadmap's
+  `suggestions/recap/` hold only the per-project distributions and the five longest queues, not each job's
+  `queued_duration`, so they cannot be recomputed from that JSON. Their `queue/tacplus-dev/build` items (7 of 7 nights,
+  p90 107.6 min on 2026-11-20) were largely the gates' runs seen from the jobs behind them; classify still counts them
+  as seen nights, so until they age out (6 nights) a new `queue/tacplus-dev/build` over the threshold reads as
+  recurring at once. Recomputing them means re-reading the jobs API for those windows (`looper-recap collect --until`
+  each night's end, while GitLab still lists the jobs) and rewriting the roadmap's files: the roadmap's change, or let
+  them age out.

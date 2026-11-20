@@ -15,7 +15,9 @@
 #       (stdout without --out): the same inputs give the same file. For every
 #       finished job of LOOPER_RECAP_PROJECTS (default LOOPER_SUGGEST_PROJECTS,
 #       else tacplus-dev/looper tacplus-dev/build, plus tacplus-dev/cluster):
-#       its queue (created to started), prepare (started to "Running on", the
+#       its queue (its wait for a runner, GitLab's queued_duration, looper#206;
+#       created to started without it) and what it waited (created to started:
+#       a job's needs too), prepare (started to "Running on", the
 #       method of runner-image measure) and run times, its status and a failed
 #       one's class (runner_system_failure, image_pull, timeout, gate_failure,
 #       script_failure, or other:<GitLab's reason>), and whether a retry of it
@@ -687,22 +689,26 @@ def collect(until):
         by_name = {}
         for j, lg, c, s, f in rows:
             by_name.setdefault(((j.get("pipeline") or {}).get("id"), j.get("name")), []).append(j)
-        p = {"jobs": len(rows), "status": {}, "failures": {}, "queue_s": None, "prepare_s": None, "run_s": None}
-        qs, ps, rs = [], [], []
+        p = {"jobs": len(rows), "status": {}, "failures": {}, "queue_s": None, "waited_s": None, "prepare_s": None, "run_s": None}
+        qs, ws, ps, rs = [], [], [], []
         fails = {}
         for j, lg, c, s, f in rows:
             st = j.get("status") or "?"
             p["status"][st] = p["status"].get(st, 0) + 1
-            q, pr, rn = secs(c, s), secs(s, lg["prepare_at"]), secs(s, f)
+            w, pr, rn = secs(c, s), secs(s, lg["prepare_at"]), secs(s, f)
+            # Its queue is its wait for a runner, GitLab's queued_duration (looper#206): a job that waits
+            # on its needs (a security-report behind the gates) is not queued meanwhile; created to started
+            # is what it waited in all. One without it (canceled while pending) is queued created to started.
+            q = w if j.get("queued_duration") is None else int(j["queued_duration"])
             # A pod's wait for a node with room (looper#84) is the capacity's (capacity_of), not a slow
             # preparation: its prepare time stays its pool's boot_to_ready_s below.
-            qs.append(q); ps.append(None if lg["pod_pending"] else pr); rs.append(rn)
+            qs.append(q); ws.append(w); ps.append(None if lg["pod_pending"] else pr); rs.append(rn)
             url = j.get("web_url") or ""
             if q is not None:
                 queues.append({"project": project, "job": j.get("name"), "s": q, "url": url})
             if j.get("name") in control:
                 # One canceled before it started waited until then (the hub cancels a stale one).
-                cq = q if s is not None else secs(c, f) if st == "canceled" else None
+                cq = w if s is not None else secs(c, f) if st == "canceled" else None
                 if cq is not None:
                     control[j["name"]].append({"s": cq, "url": url, "started": s is not None})
             # A job no runner took (canceled while pending) is in no pool.
@@ -769,7 +775,7 @@ def collect(until):
             pool = (j.get("runner") or {}).get("description")
             if kind == "work" and pool:
                 lp["pools"][pool] = lp["pools"].get(pool, 0) + 1
-            if kind == "work" and q is not None:
+            if kind == "work" and w is not None:
                 # A pod's wait for a node with room (looper#84) is its executor's preparation, when it waited Pending.
                 lp["queued"].append((int(m.group(1)), j.get("name"), c, s, url, pool,
                                      "pod" if lg["executor"] == "kubernetes" else "vm", (pr or 0) if lg["pod_pending"] else 0, lg["pod_full"]))
@@ -787,7 +793,7 @@ def collect(until):
                 lp["lands"].append(ld)
                 lands.append({"repo": repo, "issue": ld["issue"], "set": ld["set"] or "failed", "s": ld["s"], "url": url})
             lp["deferred_lands"] += lg["deferred"]
-        p["queue_s"], p["prepare_s"], p["run_s"] = dist(qs), dist(ps), dist(rs)
+        p["queue_s"], p["waited_s"], p["prepare_s"], p["run_s"] = dist(qs), dist(ws), dist(ps), dist(rs)
         out["projects"][project] = p
         if project == ENV.get("LOOPER_RECAP_BUILD_PROJECT", "tacplus-dev/build"):
             out["builds"] = builds_of(project, tok, rows, items)
@@ -1541,9 +1547,9 @@ def report(night, classes, sdir, cov):
          f"The 24 hours to {night['window']['until']}, gathered by `looper-recap collect` and classified against "
          f"{len(classes['history'])} earlier night{'s' * (len(classes['history']) != 1)} (tacplus-dev/looper#57). "
          f"The data: [{n}.json]({n}.json).", "", "## Summary", "",
-         "| Project | Jobs | Failed | Queue p90 (min) | Prepare p90 (min) | Run p90 (min) |", "|---|---|---|---|---|---|"]
+         "| Project | Jobs | Failed | Queue p90 (min) | Waited p90 (min) | Prepare p90 (min) | Run p90 (min) |", "|---|---|---|---|---|---|---|"]
     for p, d in sorted(night["projects"].items()):
-        L.append(f"| {p} | {d['jobs']} | {d['status'].get('failed', 0)} | {fmt(d['queue_s'])} | {fmt(d['prepare_s'])} | {fmt(d['run_s'])} |")
+        L.append(f"| {p} | {d['jobs']} | {d['status'].get('failed', 0)} | {fmt(d['queue_s'])} | {fmt(d.get('waited_s'))} | {fmt(d['prepare_s'])} | {fmt(d['run_s'])} |")
     fails = {}
     for d in night["projects"].values():
         for c, k in d["failures"].items():

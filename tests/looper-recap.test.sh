@@ -123,7 +123,7 @@ q() { jq -r "$1" "$J"; }
   fail "build: $(q '.projects["tacplus-dev/build"]')"
 has "$(q '.items[].key')" "failures/tacplus-dev/build/gate_failure"
 lacks "$(q 'keys | join(" ")')" cloud
-# Queue (created to started) and prepare (started to Running on): looper-tacplus-16 queued 97 minutes
+# Queue (created to started: the fixtures have no queued_duration) and prepare (started to Running on): looper-tacplus-16 queued 97 minutes
 # behind the scan, looper-kernel-4 50 minutes, looper-tacplus-12 20 minutes, prepared in 2.
 [[ "$(q '[.longest.queues[0:3][] | "\(.job) \(.minutes)"] | join(", ")')" == "looper-tacplus-16 97, looper-kernel-4 50, looper-tacplus-12 20" ]] || fail "longest queue: $(q .longest.queues)"
 [[ "$(q '.projects["tacplus-dev/looper"].queue_s | "\(.max) \(.p90)"')" == "5820 1200" ]] || fail "queue: $(q '.projects["tacplus-dev/looper"].queue_s')"
@@ -455,6 +455,24 @@ FX="$TMP/fx" recap classify "$TMP/v.json" --history "$TMP/fx/history" > "$TMP/vc
    "2026-11-01,2026-11-02 2 4 1 18 5" ]] || fail "build hours: $(jq -c .build_hours "$TMP/vc.json")"
 has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" \
   "Build hours (looper#185; the nightly's start, its 3 h the quietest): 7 gate builds over 2 nights; quietest from 18:00Z (0 builds in 3 h), busiest 05:00Z (4)."
+# A job's queue is its wait for a runner, GitLab's queued_duration (looper#206): a security-report created
+# with its pipeline that waits 11 hours on its needs (the gates) is queued 30 s once they finish, not
+# 660 min; created to started is its "waited" figure. A job without queued_duration (canceled while
+# pending, an older API) is queued created to started.
+NAME=queue-is-queued-duration
+rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; d="$TMP/fx/gitlab/tacplus-dev_build"
+jq '. + [.[0] | .id = 2003 | .name = "security-report" | .status = "success" | .queued_duration = 30.4
+         | .created_at = "2026-11-01T11:00:00.000Z" | .started_at = "2026-11-01T22:00:00.000Z" | .finished_at = "2026-11-01T22:05:00.000Z"
+         | .web_url = "https://gitlab.com/tacplus-dev/build/-/jobs/2003"]' "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(v '.projects["tacplus-dev/build"] | "\(.queue_s.n) \(.queue_s.max) \(.waited_s.n) \(.waited_s.max)"')" == "3 30 3 39600" ]] || fail "build: $(v '.projects["tacplus-dev/build"]')"
+lacks "$(v '.longest.queues[].job')" security-report
+lacks "$(v '.items[].key')" "queue/tacplus-dev/build"
+[[ "$(v .capacity.queue_minutes.max)" == 97 ]] || fail "capacity: $(v .capacity.queue_minutes)"
+FX="$TMP/fx" recap classify "$TMP/v.json" --history "$FX/history" > "$TMP/vc.json" || fail "classify"
+has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" "| tacplus-dev/build | 3 | 1 | 0.5 | 660 |"
+pass
+
 # The plan pending 100 minutes behind reports (looper#104, 2026-11-06: 1h40m), and a kick
 # 5 hours behind older kicks: each control job's queue its own item, over its threshold.
 NAME=control-queues

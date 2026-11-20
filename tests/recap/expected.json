@@ -1075,6 +1075,12 @@
    "status": {
     "failed": 1,
     "success": 1
+   },
+   "waited_s": {
+    "max": 30,
+    "n": 2,
+    "p50": 20,
+    "p90": 30
    }
   },
   "tacplus-dev/looper": {
@@ -1106,6 +1112,12 @@
     "canceled": 1,
     "failed": 8,
     "success": 16
+   },
+   "waited_s": {
+    "max": 5820,
+    "n": 24,
+    "p50": 60,
+    "p90": 1200
    }
   }
  },
