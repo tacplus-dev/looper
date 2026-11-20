@@ -211,7 +211,7 @@ variables:
   BUILD_NIGHTLY_TAGS: "arm64, build"
 
 default:
-  image: ghcr.io/tacplus-dev/looper@sha256:ffd21be69119996d2ddf7ca5929475e79fff541afd8cb7074c98bd22d8ab714f
+  image: ghcr.io/tacplus-dev/looper@sha256:cd7d3689ff60cc9721ba9c451a6495535d5b91d0474f06558c7349ff63352516
   tags: [arm64, build]
   retry:
     max: 2
