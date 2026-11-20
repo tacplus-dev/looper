@@ -18,6 +18,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   own full `--build` only tells its run early. A report's `--build` in a pinned repository could run its `pre-land`
   set alone (full only where the map names none), cutting build demand by about the batch size. It changes what a
   run's prompt (rule 4) and `--build` promise, so it wants Jody's yes and a ROADMAP.md entry.
+- **Trivy and gosec built on `golang.org/x/net` v0.62.0** (2026-11-20, #203): moving `build.lock` to d37ff98's image
+  drops CVE-2026-78661 (HIGH, fixed in x/net 0.62.0) from gh, osv-scanner and syft. It stays in `usr/local/bin/trivy`
+  (x/net v0.60.0) and `usr/local/bin/gosec` (v0.61.0), which the `Dockerfile` builds from source. #203 says
+  govulncheck finds it unreachable in both. A `-require golang.org/x/net@v0.62.0` in the trivy build, and the same
+  for gosec's (the way syft once had `SYFT_XNET_VERSION`, #142), would clear it from the image trivy scans. Seven
+  more of #203's 134 advisories remain only in base-image packages that have no Debian fix yet: sqlite's
+  CVE-2026-119373/119374/119379 and util-linux's CVE-2026-76642/78408/78409/78410.
 - **looper-build's tests run with the stub scanners in the build gates too** (2026-11-18, #183): in the build image
   every scanner is installed, so `tests/looper-build.test.sh` runs the security tests with the real scanners
   (`REAL_SCAN=1`). The image workflow's GitHub runner has none, so there they run with the stubs. The stub branch
