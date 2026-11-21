@@ -1,0 +1,37 @@
+= init
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short && git log --stat --format='%h %s' 3b912c9..899f641 && date -u && gh issue view 189 --repo tacplus-dev/looper --comments | tail -20
+< 899f641 STATE.md: the nightly scan relocks pins behind their line, a bug the merge train lands (#212)   STATE.md | 9 +++++++--  1 file changed, 7 insertions(+), 2 deletions(-) c00a902 The nightly scan relocks pins behind their line, a bug the merge train lands (#212)   PROPOSALS.md              |  1...
+The push (#212) changes repo-looper's nightly scan pin relocking, not looper-scan or the security job. Nothing to do; back off.
+> Bash /usr/local/bin/repo-looper --repo looper --issue 189 --wait-until 2026-11-22T10:00:00Z "Done: 58cbdbf+a142f91 merged on main (8180689..72f0d3f, gates docs+build, build pipeline 3083771156 green); the nightlies run image cd7d3689 (revision e8653dd, has 64f61b5) since cloud#82 set build_ci_commit e877...
+< [2026-11-21T19:24:44Z] checkpoint of #189 (waiting until 2026-11-22T10:00:00Z) pushed to looper/looper-189:  2 files changed, 731 insertions(+) [2026-11-21T19:24:44Z] #189 waits until 2026-11-22T10:00:00Z. Your run ends here: end your reply now. Its next run starts then, or sooner when something cha...
+= thinking_tokens
+= thinking_tokens
+There was nothing to do on #189 in this run, so it is waiting until 2026-11-22T10:00Z.
+
+**Why nothing changed:** this run started because of the push to main 3b912c9..899f641 (#212). That push changes how repo-looper's nightly scan relocks pins, plus its tests, README, PROPOSALS.md and STATE.md. It does not touch looper-scan, the security job, or the memory (`--ram`) and thread (`--threads`) limits this issue gives CodeQL. No new comment on the issue asks for anything either.
+
+**Where the issue stands:** the fix (58cbdbf, a142f91) is merged on main (8180689..72f0d3f, gates docs+build, build pipeline 3083771156 green). The nightlies run the image that has it (cd7d3689) since cloud#82 pinned it. What is still unproven is the done-when: the nightly security jobs running green.
+
+**Next run:**
+- **Read the reports.** It reads the 2026-11-22 nightly security summaries of eventbus, stratum, mailbox, llmproxy, redo, kernel, tenantecho and messaging. Each must be a fresh report, with no CodeQL out-of-memory problem and memory peaks under the 12Gi limit.
+- **If they pass,** it posts the outcome comment and closes #189.
+- **If the reports are still stale,** the issue waits on #210, the bug where a security job that publishes nothing leaves the old report in place.
+- **If one still runs out of memory,** it sizes CodeQL from that report's peak and lands again.
+
+The checkpoint reported "2 files changed, 731 insertions" pushed to `looper/looper-189`, although the checkout showed no changes at the start of this run. I did not look at what those files were.
+= success: There was nothing to do on #189 in this run, so it is waiting until 2026-11-22T10:00Z.
+
+**Why nothing changed:** this run started because of the push to main 3b912c9..899f641 (#212). That push changes how repo-looper's nightly scan relocks pins, plus its tests, README, PROPOSALS.md and STATE.md. It does not touch looper-scan, the security job, or the memory (`--ram`) and thread (`--threads`) limits this issue gives CodeQL. No new comment on the issue asks for anything either.
+
+**Where the issue stands:** the fix (58cbdbf, a142f91) is merged on main (8180689..72f0d3f, gates docs+build, build pipeline 3083771156 green). The nightlies run the image that has it (cd7d3689) since cloud#82 pinned it. What is still unproven is the done-when: the nightly security jobs running green.
+
+**Next run:**
+- **Read the reports.** It reads the 2026-11-22 nightly security summaries of eventbus, stratum, mailbox, llmproxy, redo, kernel, tenantecho and messaging. Each must be a fresh report, with no CodeQL out-of-memory problem and memory peaks under the 12Gi limit.
+- **If they pass,** it posts the outcome comment and closes #189.
+- **If the reports are still stale,** the issue waits on #210, the bug where a security job that publishes nothing leaves the old report in place.
+- **If one still runs out of memory,** it sizes CodeQL from that report's peak and lands again.
+
+The checkpoint reported "2 files changed, 731 insertions" pushed to `looper/looper-189`, although the checkout showed no changes at the start of this run. I did not look at what those files were.
+= usage: {"claude-opus-5-5":{"inputTokens":6,"outputTokens":1506,"cacheReadInputTokens":154062,"cacheCreationInputTokens":59485,"webSearchRequests":0,"costUSD":0.5368364,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":119,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}
