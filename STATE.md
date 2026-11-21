@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-21 by looper (#212).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-21 by looper (#214).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -123,7 +123,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-21 by lo
   not started within `LOOPER_BUILD_START` while other builds run (read with `GITLAB_TOKEN`) is waited on, not "no
   runner" (#209: four non-land builds held the spot pool's 2 nodes and a 24-land batch's manager gave up; preemption,
   a `build-report` runner with a low PriorityClass, is tacplus-dev/cluster#42); gates silent for `BUILD_GATES_IDLE` (1h) are stopped, their
-  process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a build whose pipeline was cancelled or failed with no verdict is red at once (a land's cancelled one built again, once, and cancelled again no red but left queued, nothing built; in a red round no verdict on its own: #209), its status read with `GITLAB_TOKEN` (a report's model told by its looper), and reused by no request, and gates still running their requester's wait after they started are stopped, red (#198: the manager waited on a cancelled build for hours); a pending or green status names its key, gate set and base: a build
+  process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a build whose pipeline was cancelled or failed with no verdict is red at once (a land's cancelled one built again, once, and cancelled again no red but left queued, nothing built; in a red round no verdict on its own: #209; so is a land's build whose `gates` job failed `runner_system_failure` with no gates verdict, the pool having had no room, a batch built again as one, never fanned out per land: #214), its status read with `GITLAB_TOKEN` (a report's model told by its looper), and reused by no request, and gates still running their requester's wait after they started are stopped, red (#198: the manager waited on a cancelled build for hours); a pending or green status names its key, gate set and base: a build
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
   linking it; the nightly recap counts builds against the commits they built, #134), and on a release
