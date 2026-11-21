@@ -297,6 +297,11 @@ case "$url" in
     if [[ "$auth" != PRIVATE-TOKEN ]]; then reply 404 '{"message":"404 Project Not Found"}'
     else reply 200 "{\"id\": $id, \"status\": \"$(cat "$FIX/pipeline-status/$id" 2>/dev/null || echo running)\"}"; fi
     exit 0 ;;
+  # The build project's running pipelines (looper#209): $FIX/pipelines-running, else []; GITLAB_TOKEN's alone, else HTTP 404.
+  */projects/tacplus-dev%2Fbuild/pipelines\?status=running\&*)
+    if [[ "$auth" != PRIVATE-TOKEN ]]; then reply 404 '{"message":"404 Project Not Found"}'
+    else reply 200 "$(cat "$FIX/pipelines-running" 2>/dev/null || echo '[]')"; fi
+    exit 0 ;;
   # A GitLab pipeline an issue waits on (looper#171): $FIX/pipelines/<id>.json, else HTTP 404.
   https://gitlab.com/api/v4/projects/*/pipelines/*)
     if [[ -f "$FIX/pipelines/${url##*/}.json" ]]; then reply 200 "$(cat "$FIX/pipelines/${url##*/}.json")"; else reply 404 '{"message":"404 Not found"}'; fi
@@ -4031,6 +4036,37 @@ has "$OUT" "batch: its build https://gitlab.com/tacplus-dev/build/-/pipelines/90
 [[ -z "$(origin for-each-ref refs/heads/looper/build-alpha-train)" ]] || fail "the build's branch is left"
 pass
 
+# A batch's build no runner has started within LOOPER_BUILD_START while the
+# build project runs other builds (looper#209: tacplus's 24-land batch got no
+# pod for 15 min, report builds holding both build nodes, and its manager gave
+# up) is in a full pool, not one without runners: the manager says so and waits
+# on, and merges on its verdict once it has run. With no other build running,
+# read with GITLAB_TOKEN, it is no runner, as before.
+scenario build-queued-pool-full
+pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo queued > "$FIX/build-hold"
+echo '[{"id": 901, "status": "running"}, {"id": 877, "status": "running"}, {"id": 878, "status": "running"}]' > "$FIX/pipelines-running"
+( for (( i = 0; i < 60; i++ )); do [[ -s "$FIX/builds" ]] && break; sleep 1; done; sleep 8; s="$(cut -d' ' -f3 "$FIX/builds")"
+  jq -n --arg t0 "$(date -u -d '1 minute ago' +%FT%TZ)" --arg t1 "$(date -u +%FT%TZ)" --arg u https://gitlab.com/tacplus-dev/build/-/pipelines/901 \
+    '[{state: "success", context: "tacplus-dev/build", description: "pass: gates docs", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t1},
+      {state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t0}]' > "$FIX/statuses/$s.json.new" &&
+    mv "$FIX/statuses/$s.json.new" "$FIX/statuses/$s.json" ) > /dev/null 2>&1 &
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_START=2 LOOPER_BUILD_SAY=1
+wait
+has "$OUT" "has not started within 1m, and the build pool runs 2 other builds: it is full, not without runners; waiting on while it is (looper#209)"
+lacks "$OUT" "no runner:"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+grep -qxF "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines?status=running&per_page=100" "$FIX/gitlab" ||
+  fail "the running pipelines not read with GITLAB_TOKEN: $(grep pipelines "$FIX/gitlab")"
+# The pool emptied, the build still not started: no runner.
+pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo queued > "$FIX/build-hold"
+echo '[{"id": 901, "status": "running"}]' > "$FIX/pipelines-running"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_START=2
+has "$OUT" "#4: left queued: no runner took its build job; no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 has not started within"
+lacks "$OUT" "it is full, not without runners"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+pass
+
 # A build that has run past LOOPER_BUILD_WAIT since its start is red.
 scenario build-running-past-bound
 pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo "running $(date -u -d '2 hours ago' +%FT%TZ)" > "$FIX/build-hold"
@@ -4187,6 +4223,8 @@ manage "${BUILDS[@]}"
 m="$(git -C "$FIX/seed" rev-parse HEAD)"
 # The round's 5: each land's own commits on the main the batch started from, one change each.
 [[ "$(sed -n 2,6p "$FIX/builds" | cut -d' ' -f4,5 | sort -u)" == "full $m" ]] || fail "the round's builds: $(cat "$FIX/builds")"
+# Each a report build, the batches' not (looper#209): the round's take the report slots, a batch's never.
+[[ "$(cut -d' ' -f7 "$FIX/builds" | paste -sd' ')" == " report=true report=true report=true report=true report=true " ]] || fail "the builds' report input: $(cat "$FIX/builds")"
 for i in 2 3 4 5 6; do
   [[ "$(origin diff --name-only "$m" "$(sed -n "${i}p" "$FIX/builds" | cut -d' ' -f3)" | paste -sd' ')" == "f$(( i + 2 )).txt" ]] || fail "build $i is not #$(( i + 2 ))'s alone: $(cat "$FIX/builds")"
 done
@@ -4669,6 +4707,8 @@ l="$(cat "$FIX/land-4")"
 has "$l" "the pre-land gate (gates.yaml's pre-land) on your commits rebased on main ${m:0:7}: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901"
 has "$l" ": green"; has "$l" "rc 0"
 [[ "$(cut -d' ' -f4,5 "$FIX/builds" | paste -sd'|')" == "pre-land $m|full $m" ]] || fail "builds: $(cat "$FIX/builds")"
+# A run's own pre-queue build is a report build, the batch's not (looper#209).
+[[ "$(cut -d' ' -f7 "$FIX/builds" | paste -sd'|')" == "report=true|" ]] || fail "the builds' report input: $(cat "$FIX/builds")"
 [[ "$(cut -d' ' -f2,3 "$FIX/pre-ran")" == "build $m" ]] || fail "pre-land ran: $(cat "$FIX/pre-ran")"
 has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "on your commits rebased onto current main, as a build job, and queues nothing when it is red:"
 [[ -z "$(origin for-each-ref refs/heads/looper/)" ]] || fail "branches left: $(origin for-each-ref refs/heads/looper/)"
@@ -4725,6 +4765,7 @@ queue 6 2026-11-03T12:00:00Z f6.txt 6
 queue 7 2026-11-03T13:00:00Z f7.txt 7; land_more 7 "pre-land=$m"
 manage "${BUILDS[@]}"
 [[ "$(cut -d' ' -f4 "$FIX/builds" | paste -sd' ')" == "pre-land pre-land pre-land full" ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f7 "$FIX/builds" | paste -sd'|')" == "report=true|report=true|report=true|" ]] || fail "the builds' report input (looper#209): $(cat "$FIX/builds")"
 [[ "$(cut -d' ' -f5 "$FIX/builds" | sort -u)" == "$m" ]] || fail "builds: $(cat "$FIX/builds")"
 [[ -z "$(landed f5.txt)" ]] || fail "the red change landed"
 for n in 4 6 7; do [[ "$(landed "f$n.txt")" == "$n" ]] || fail "main lacks f$n.txt: $(origin log --oneline main)"; has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 3 lands"; done

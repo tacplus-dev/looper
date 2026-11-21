@@ -4,6 +4,18 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A land's build preempts report builds** (2026-11-21, #209): every build but a land's is now `report: true`, its
+  slots held below `BUILD_POOL_NODES` (2), and its child jobs on `BUILD_REPORT_TAGS`; a land's build not started within
+  `LOOPER_BUILD_START` waits on while other builds run. Preemption itself is the cluster's: a `build-report` runner
+  entry with a low PriorityClass (tacplus-dev/cluster#42, a `feature`), then the hub sets `BUILD_REPORT_TAGS` to
+  `arm64, build-report`. Until then a land's build waits up to a report build's run (~55 min for tacplus) when the
+  free node is taken by another land's or a nightly's. Three things left out: `BUILD_POOL_NODES` is a fixed number the
+  hub keeps in step with the spot pool (cloud's `max_nodes`, or the nodes it runs: a plan reading the pool's size
+  would need a Kubernetes token in the build project); the manager cancelling report builds instead (its
+  `GITLAB_TOKEN` reads the build project, it cannot cancel, and a cancelled report build is red to its model); and a
+  verify run's `verify-<repo>` job (6h at most) holds no report slot, so it could fill a node at night beside the
+  nightly. Also: a red round's builds (#205) now share the report slots, one at a time on two nodes, so a 24-land
+  round takes far longer than at once; if that shows in the recap, the round could take a slot class of its own.
 - **tacplus's security job sized in the cloud stack** (2026-11-21, #207): a build's `security-<repo>` now asks
   `BUILD_SCAN_REQUESTS_<repo>`, else `BUILD_SCAN_REQUESTS` (`2 8Gi 3500m 12Gi`), and runs its scanners as many at a
   time as it has CPUs. tacplus-dev/cloud's `stacks/gitlab` sets `BUILD_GATES_REQUESTS_tacplus` and its `ci/policy.sh`

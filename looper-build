@@ -80,6 +80,16 @@ BUILD_NIGHTLY_SLOTS="${BUILD_NIGHTLY_SLOTS:-1}"
 # once and the rest of the build pool is the lands' (an 18-land batch build
 # once waited behind six report builds holding every slot ~55 min each).
 BUILD_REPORT_SLOTS="${BUILD_REPORT_SLOTS:-4}"
+# The build pool's nodes (looper#209: tacplus's gates pod takes a whole node,
+# and the spot pool ran 2 when four report builds' gates filled it and a
+# 24-land batch's first jobs got no pod for 15 min): report builds take at most
+# one fewer, never under one, so a node is left to a land's build. Empty: no
+# bound but BUILD_REPORT_SLOTS.
+BUILD_POOL_NODES="${BUILD_POOL_NODES:-}"
+# A report build's jobs (looper#209), on a runner entry of their own whose pods
+# a land's build may preempt (a PriorityClass below the build runner's,
+# tacplus-dev/cluster#42); by default the build runner's.
+BUILD_REPORT_TAGS="${BUILD_REPORT_TAGS:-$BUILD_RUNNER_TAGS}"
 # Gates that print nothing for BUILD_GATES_IDLE seconds are hung, and stopped
 # (looper#195: a report build's job sat 1h52m silent after its test gate,
 # holding a build slot until the hub cancelled it by hand).
@@ -186,8 +196,12 @@ check_inputs() {
   if [[ "${BUILD_REPORT:-}" == true ]]; then
     [[ -z "${BUILD_TAG:-}" && "${BUILD_NIGHTLY:-}" != true && "${BUILD_VERIFY:-}" != true ]] ||
       verdict fail "a report's build is not a release, a nightly or a verify run"
+  fi
+  if report_slotted; then
     [[ "$BUILD_REPORT_SLOTS" =~ ^[1-9][0-9]*$ ]] && ((BUILD_REPORT_SLOTS <= 100)) ||
       verdict fail "BUILD_REPORT_SLOTS '$BUILD_REPORT_SLOTS' is not a number of report builds at a time (1 to 100)"
+    [[ -z "$BUILD_POOL_NODES" ]] || { [[ "$BUILD_POOL_NODES" =~ ^[1-9][0-9]{0,2}$ ]] ||
+      verdict fail "BUILD_POOL_NODES '$BUILD_POOL_NODES' is not a number of build pool nodes (1 to 999)"; }
   fi
   [[ "$BUILD_RUNNER_CEILINGS" =~ ^$QUANTITY\ $QUANTITY$ ]] ||
     verdict fail "BUILD_RUNNER_CEILINGS '$BUILD_RUNNER_CEILINGS' is not \"<cpu> <memory>\""
@@ -388,6 +402,7 @@ cmd_plan() {
   fi
   check_inputs plan
   [[ "${BUILD_NIGHTLY:-}" != true ]] || BUILD_RUNNER_TAGS="$BUILD_NIGHTLY_TAGS"
+  [[ "${BUILD_REPORT:-}" != true ]] || BUILD_RUNNER_TAGS="$BUILD_REPORT_TAGS"
   mkdir -p "$BUILD_OUT"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"' "$BUILD_REPO")" ||
     verdict fail "no read-only GitHub token (the tacplus-reader app)"
@@ -415,8 +430,8 @@ cmd_plan() {
   else
     log "plan: $BUILD_REPO $BUILD_SHA${BUILD_TAG:+ ($BUILD_TAG)} gates in $image, security checks ($(scan_kind)) in $BUILD_SCAN_IMAGE${BUILD_TAG:+, the formal verification}"
   fi
-  [[ "${BUILD_REPORT:-}" != true ]] ||
-    log "plan: a report's build: its gates in $(report_slot), $BUILD_REPORT_SLOTS report builds at a time; a land's build holds no slot"
+  ! report_slotted ||
+    log "plan: $(if [[ "${BUILD_NIGHTLY:-}" == true ]]; then echo "a nightly"; else echo "a report's build"; fi): its gates in $(report_slot), $(report_slots) report builds at a time$(report_bound), its jobs on $BUILD_RUNNER_TAGS; a land's build holds no slot"
   if [[ -n "${BUILD_TAG:-}" && -n "$BUILD_BUILDER_IMAGE" ]]; then
     log "plan: publish in $BUILD_BUILDER_IMAGE (rootless BuildKit) on $BUILD_RUNNER_TAGS"
   elif [[ -n "${BUILD_TAG:-}" ]]; then
@@ -512,6 +527,8 @@ nightly-plan-$r:
     BUILD_ORG: "$BUILD_ORG"
     BUILD_NIGHTLY: "true"
     BUILD_NIGHTLY_TAGS: "$BUILD_NIGHTLY_TAGS"
+    BUILD_REPORT_SLOTS: "$BUILD_REPORT_SLOTS"
+    BUILD_POOL_NODES: "$BUILD_POOL_NODES"
   script:
     - looper-build plan
   artifacts:
@@ -569,19 +586,36 @@ EOF
 }
 
 # A report's build's slot (looper#195): the resource group its gates job
-# holds, report-slot-<its pipeline's id mod BUILD_REPORT_SLOTS>. GitLab starts
+# holds, report-slot-<its pipeline's id mod report_slots>. GitLab starts
 # one job of a resource group at a time, and one waiting for it holds no
 # runner, so a land's build, queued later, still finds one.
 report_slot() {
   local id="${CI_PIPELINE_ID:-0}"; [[ "$id" =~ ^[0-9]{1,18}$ ]] || id=0
-  echo "report-slot-$(( 10#$id % BUILD_REPORT_SLOTS ))"
+  echo "report-slot-$(( 10#$id % $(report_slots) ))"
+}
+# A build whose gates hold a report slot: no land's (looper#209), a report's
+# (BUILD_REPORT) or a repository's nightly, never a release or a verify run.
+report_slotted() {
+  [[ -z "${BUILD_TAG:-}" && "${BUILD_VERIFY:-}" != true ]] && [[ "${BUILD_REPORT:-}" == true || "${BUILD_NIGHTLY:-}" == true ]]
+}
+# The report builds at a time: BUILD_REPORT_SLOTS, below BUILD_POOL_NODES when
+# it is set (looper#209), and at least one.
+report_slots() {
+  local s="$BUILD_REPORT_SLOTS"
+  if [[ -n "$BUILD_POOL_NODES" ]] && (( BUILD_POOL_NODES - 1 < s )); then s=$(( BUILD_POOL_NODES > 1 ? BUILD_POOL_NODES - 1 : 1 )); fi
+  echo "$s"
+}
+report_bound() {
+  [[ "$(report_slots)" != "$BUILD_REPORT_SLOTS" ]] || return 0
+  echo " (BUILD_REPORT_SLOTS $BUILD_REPORT_SLOTS, held below the build pool's $BUILD_POOL_NODES nodes, BUILD_POOL_NODES: a node is left to a land's build)"
 }
 
 gates_jobs() { # image
   # The gates' own timeout, a report job's longest (repo-looper's
   # JOB_MAX_HOURS): tacplus's full gates take over 3h, and the project's
-  # default ended them at 1h (looper#140). A report's holds its slot (looper#195).
-  local slot=""; [[ "${BUILD_REPORT:-}" != true ]] || slot="
+  # default ended them at 1h (looper#140). A report's holds its slot (looper#195),
+  # and so does a nightly's (looper#209).
+  local slot=""; ! report_slotted || slot="
   resource_group: $(report_slot)"
   cat <<EOF
 gates:

@@ -1290,15 +1290,18 @@ build_jobs() { # rev [dir]
 # asked for as full (without a gates.yaml looper-build runs `just gates` for
 # it), and an empty base is left out (the input's default). It passes the wait
 # for its verdict too (build_wait, looper#158): a build whose gates would start
-# later runs none (looper#130). A report's build (BUILD_REPORT set: its
-# looper's build_server) says so, report: its gates take one of the build
-# project's few report slots, and the rest of the pool is the lands' (looper#195);
-# a refusal of it (a project whose CI file does not declare report yet) starts
-# the build again without it. A refusal keeps GitLab's response, redacted: it says why.
+# later runs none (looper#130). Every build but a land's (BUILD_LAND set:
+# build_gates, a manager's batch or land, which moves main) says so, report: a
+# report's own (its looper's build_server), a pre-land gate's and a red round's
+# (looper#209: four such builds held tacplus's two build nodes while a 24-land
+# batch got none). Their gates take one of the build project's few report
+# slots, their jobs its report runner's, and the rest of the pool is the lands'
+# (looper#195); a refusal of it (a project whose CI file does not declare report
+# yet) starts the build again without it. A refusal keeps GitLab's response, redacted: it says why.
 start_build() { # sha gates base wait
   local r id url base=() report=()
   [[ -z "$3" ]] || base=(--data-urlencode "inputs%5Bbase%5D=$3")
-  [[ -z "${BUILD_REPORT:-}" ]] || report=(--data-urlencode "inputs%5Breport%5D=true")
+  [[ -n "${BUILD_LAND:-}" ]] || report=(--data-urlencode "inputs%5Breport%5D=true")
   while :; do
     r="$(printf '%s' "$BUILD_TRIGGER_TOKEN" |
          curl -sS --fail-with-body --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data-urlencode token@- \
@@ -1395,7 +1398,12 @@ reused_what() { if [[ "$1" == green ]]; then echo green; else echo "queued or ru
 # its trigger. One not started within BUILD_START of its trigger (or of this
 # wait's start, when the trigger's time is not known) has no runner taking its
 # jobs (looper#113): "no runner", BUILD_NO_RUNNER, at once rather than a wait
-# with no bound; the build is left queued, and a later wait takes it up.
+# with no bound; the build is left queued, and a later wait takes it up. A
+# land's build (BUILD_LAND) is waited on past it while the build project runs
+# other builds, read with GITLAB_TOKEN (build_pool_busy) every BUILD_START:
+# runners are there, the pool is full (looper#209: a 24-land batch's manager gave up after 15 min
+# while report builds held both build nodes), and the report builds' slots
+# and runner leave it a node once theirs end or are preempted.
 # In a GitLab job, a build with no verdict when the job's end is LAND_MARGIN
 # away is left to run: the next manager takes its verdict up. While it waits
 # it says so on stderr every BUILD_SAY (looper#112: a manager's land said
@@ -1409,7 +1417,7 @@ reused_what() { if [[ "$1" == green ]]; then echo green; else echo "queued or ru
 # a verdict", read with GITLAB_TOKEN (build_ended); without it, it is waited
 # for as any other.
 build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds] [wait, seconds]
-  local t0="${4:-$(date +%s)}" wait="${5:-$BUILD_WAIT}" end s v started="" fin now said ended
+  local t0="${4:-$(date +%s)}" wait="${5:-$BUILD_WAIT}" end s v started="" fin now said ended busy="" n
   end="$(job_end)"; said="$(date +%s)"
   while :; do
     s="$(build_statuses "$1" "$2")" || s=""
@@ -1432,7 +1440,12 @@ build_verdict() { # sha pipeline-id [url] [triggered, epoch seconds] [wait, seco
     if [[ -n "$started" ]] && (( now >= started + wait )); then
       echo "no verdict within $(hours "$wait") of its start"; build_times "$t0" "$started" "$now" running "${3:-$2}"; return 2
     fi
-    if [[ -z "$started" ]] && (( now >= t0 + BUILD_START )); then
+    if [[ -z "$started" && -n "${BUILD_LAND:-}" ]] && (( now >= ${busy:-$(( t0 + BUILD_START ))} )) && n="$(build_pool_busy "$2")"; then
+      [[ -n "$busy" ]] ||
+        log "the build job ${3:-$2} on ${1:0:7} has not started within $(hours "$BUILD_START"), and the build pool runs $n other build$(plural "$n"): it is full, not without runners; waiting on while it is (looper#209)" >&2
+      busy=$(( now + BUILD_START ))
+    fi
+    if [[ -z "$started" ]] && (( now >= ${busy:-$(( t0 + BUILD_START ))} )); then
       echo "no runner: the build job ${3:-$2} has not started within $(hours "$BUILD_START") (no $BUILD_CONTEXT status on ${1:0:7}, not even pending): no runner has taken its jobs; it stays queued, and a later wait takes it up"
       build_times "$t0" "" "$now" running "${3:-$2}"; return "$BUILD_NO_RUNNER"
     fi
@@ -1491,6 +1504,15 @@ build_ended() { # pipeline-id
   if [[ -z "${GITLAB_TOKEN:-}" ]]; then [[ -n "${BUILD_ENDED_FILE:-}" && -s "$BUILD_ENDED_FILE" ]] && cat "$BUILD_ENDED_FILE"; return; fi
   st="$(build_status "$1")" || return 1
   case "$st" in canceled|failed|skipped) echo "$st" ;; *) return 1 ;; esac
+}
+# The build project's other running pipelines than id, counted (looper#209),
+# read with GITLAB_TOKEN; fails with none, or none read.
+build_pool_busy() { # pipeline-id
+  local n
+  [[ -n "${GITLAB_TOKEN:-}" ]] || return 1
+  n="$(curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") "$BUILD_API/projects/$BUILD_PROJECT/pipelines?status=running&per_page=100" 2>/dev/null |
+       jq -r --arg id "$1" '[.[] | select((.id | tostring) != $id)] | length' 2>/dev/null)" || return 1
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) && echo "$n"
 }
 build_status() { [[ -n "${GITLAB_TOKEN:-}" && "$1" =~ ^[0-9]+$ ]] && build_pipeline "$1" | jq -re '.status // empty' 2>/dev/null; } # pipeline-id
 # A build's queue time apart from its run time (looper#128), for the recap.
@@ -1561,6 +1583,7 @@ build_capped() { # run-dir
 # BUILD_UNBUILT, its last lines "nothing built: <why>" (looper#194).
 build_gates() { # base [queued commit]
   local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates="" t0 r w c="${2:-}"; sha="$(git rev-parse HEAD)"
+  local BUILD_LAND=1   # a land's build, no report's (start_build, build_verdict: looper#209)
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
   w="$(build_wait "$gates")"
   if r="$(build_record "$b")" && [[ "$(sed -n 's/^base=//p' <<<"$r")" == "$1" && "$(sed -n 's/^gates=//p' <<<"$r")" == "$gates" ]] &&
@@ -1821,7 +1844,7 @@ build_server() { # run-dir
       base="$(sed -n 's/^base=//p' "$d/$id.taken" | head -n 1)"
       if ! [[ "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]]; then
         echo "not a build request (sha=, gates=, base=)" > "$d/$id.refused"
-      elif commit_map "$sha"; BUILD_REPORT=1 BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
+      elif commit_map "$sha"; BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
         echo "$BUILD_W" > "$d/$id.wait"
         # A build of the same key, green or queued or running, is reused (looper#134).
         if [[ -n "$BUILD_REUSED" ]]; then

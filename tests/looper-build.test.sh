@@ -1011,11 +1011,60 @@ if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_REPORT=true -- plan 2>"$TMP/err"; t
 verdict_is "fail: a report's build is not a release, a nightly or a verify run"
 pass
 
+# A report's builds fill no build pool (looper#209: on 2026-11-21 tacplus's
+# 24-land batch got no pod for 15 min, the spot pool's 2 nodes held by report
+# builds' gates, each a whole node): their slots stay below BUILD_POOL_NODES,
+# at least one, and their jobs run on BUILD_REPORT_TAGS, a runner whose pods a
+# land's build may preempt; a land's build's on the build runner's.
+NAME="plan: a report's slots below the pool's nodes, its jobs on BUILD_REPORT_TAGS; a land's on the build runner's (looper#209)"
+tags_of() { sed -n "/^$1:\$/,/^[^ ]/p" "$OUT/build-gates.yml" | sed -n 's/^  tags: //p'; } # job
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_POOL_NODES=2 CI_PIPELINE_ID=3086905975 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+[[ "$(rg_of gates)" == report-slot-0 ]] || fail "a report's gates with 2 nodes not in the one slot: '$(rg_of gates)'"
+grep -qF "plan: a report's build: its gates in report-slot-0, 1 report builds at a time (BUILD_REPORT_SLOTS 4, held below the build pool's 2 nodes, BUILD_POOL_NODES: a node is left to a land's build)" "$TMP/err" ||
+  fail "the plan does not say its bound: $(cat "$TMP/err")"
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_POOL_NODES=4 CI_PIPELINE_ID=3086905975 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(rg_of gates)" == report-slot-1 ]] || fail "a report's gates with 4 nodes not in slot 1 of 3: '$(rg_of gates)'"
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_POOL_NODES=1 CI_PIPELINE_ID=3086905975 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(rg_of gates)" == report-slot-0 ]] || fail "a report's gates with 1 node not in the one slot: '$(rg_of gates)'"
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_POOL_NODES=9 CI_PIPELINE_ID=3086905975 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(rg_of gates)" == report-slot-3 ]] || fail "a report's gates with 9 nodes not in slot 3 of 4: '$(rg_of gates)'"
+! grep -q "held below" "$TMP/err" || fail "the plan says a bound it did not apply: $(cat "$TMP/err")"
+for s in 0 x -1 1000; do
+  if build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_POOL_NODES="$s" -- plan 2>"$TMP/err"; then fail "planned with $s pool nodes"; fi
+  verdict_is "fail: BUILD_POOL_NODES '$s' is not a number of build pool nodes (1 to 999)"
+done
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_REPORT_TAGS="arm64, build-report" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+for j in gates gates-failed security-demo security-report security-failed; do
+  [[ "$(tags_of "$j")" == "[arm64, build-report]" ]] || fail "a report's $j not on BUILD_REPORT_TAGS: '$(tags_of "$j")'"
+done
+grep -q "its jobs on arm64, build-report" "$TMP/err" || fail "the plan does not say its tags: $(cat "$TMP/err")"
+"$ROOT/looper-ci-lint" "$OUT/build-gates.yml" > "$TMP/lint" 2>&1 || fail "the report's pipeline is not valid GitLab CI: $(cat "$TMP/lint")"
+build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(tags_of gates)" == "[arm64, build]" ]] || fail "a report's gates with no BUILD_REPORT_TAGS not on the build runner's: '$(tags_of gates)'"
+# A repository's nightly is no land's build either: its gates hold a report slot, its jobs on BUILD_NIGHTLY_TAGS.
+build BUILD_SHA= BUILD_NIGHTLY=true BUILD_POOL_NODES=2 BUILD_NIGHTLY_TAGS="arm64, build-nightly" BUILD_REPORT_TAGS="arm64, build-report" CI_PIPELINE_ID=3086905975 -- plan 2>"$TMP/err" ||
+  fail "nightly plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+[[ "$(rg_of gates)" == report-slot-0 ]] || fail "a nightly's gates not in the one report slot: '$(rg_of gates)'"
+[[ "$(tags_of gates)" == "[arm64, build-nightly]" ]] || fail "a nightly's gates not on BUILD_NIGHTLY_TAGS: '$(tags_of gates)'"
+grep -q "plan: a nightly: its gates in report-slot-0, 1 report builds at a time" "$TMP/err" || fail "the nightly's plan does not say its slot: $(cat "$TMP/err")"
+if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_POOL_NODES=0 -- plan 2>"$TMP/err"; then fail "planned a nightly with 0 pool nodes"; fi
+verdict_is "fail: BUILD_POOL_NODES '0' is not a number of build pool nodes (1 to 999)"
+for r in "" false; do
+  build BUILD_SHA="${SHA[pass]}" BUILD_REPORT="$r" BUILD_REPORT_TAGS="arm64, build-report" BUILD_POOL_NODES=x -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+  for j in gates security-demo; do
+    [[ "$(tags_of "$j")" == "[arm64, build]" ]] || fail "a land's $j (report '$r') not on the build runner's: '$(tags_of "$j")'"
+  done
+done
+pass
+
 NAME="ci/build.gitlab-ci.yml: the report input, passed to the plan, and four report builds at a time (looper#195)"
 c="$ROOT/ci/build.gitlab-ci.yml"
 sed -n '/^spec:$/,/^---$/p' "$c" | grep -A3 '^    report:$' | grep -qxF '      type: boolean' || fail "no boolean input report: $(sed -n '/^spec:$/,/^---$/p' "$c")"
 grep -qxF '  BUILD_REPORT: "$[[ inputs.report ]]"' "$c" || fail "the plan does not get the report input"
 [[ "$(sed -n 's/^  BUILD_REPORT_SLOTS: "\(.*\)"$/\1/p' "$c")" == 4 ]] || fail "BUILD_REPORT_SLOTS is not 4"
+# Below the spot pool's 2 nodes, the report builds' jobs on the build runner's tags until the cluster's report entry (looper#209).
+[[ "$(sed -n 's/^  BUILD_POOL_NODES: "\(.*\)"$/\1/p' "$c")" == 2 ]] || fail "BUILD_POOL_NODES is not 2"
+[[ "$(sed -n 's/^  BUILD_REPORT_TAGS: "\(.*\)"$/\1/p' "$c")" == "arm64, build" ]] || fail "BUILD_REPORT_TAGS is not the build runner's"
 pass
 
 NAME="plan: the gates job has a build's wait; a nightly's and a release's never"
@@ -1744,6 +1793,11 @@ for j in nightly-plan-demo nightly-demo nightly-plan-late nightly-late nightly-p
   [[ "$rg" == "  resource_group: nightly-slot-0" ]] || fail "$j is not in the one slot by default: '$rg'"
 done
 grep -q "plan: the nightly of 3 repositories .* 1 at a time" "$TMP/err" || fail "the plan does not say how many at a time: $(cat "$TMP/err")"
+# Each repository's plan gets the report slots its gates hold (looper#209): the child has none of the root's variables.
+fanout_fixture
+build "${FANOUT[@]}" BUILD_REPORT_SLOTS=3 BUILD_POOL_NODES=2 -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+v="$(sed -n "/^nightly-plan-demo:\$/,/^[^ ]/p" "$OUT/build-gates.yml")"
+grep -qxF '    BUILD_REPORT_SLOTS: "3"' <<<"$v" && grep -qxF '    BUILD_POOL_NODES: "2"' <<<"$v" || fail "a repository's nightly plan lacks the report slots: $v"
 fanout_fixture
 build "${FANOUT[@]}" BUILD_NIGHTLY_SLOTS=2 -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
 y="$OUT/build-gates.yml"
