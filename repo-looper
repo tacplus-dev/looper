@@ -1477,24 +1477,51 @@ epoch() { [[ -z "$1" ]] || date -d "$1" +%s 2>/dev/null || true; } # ISO time
 # that failed, allowed to or not, failed but in its script. Prints why; fails
 # when it is a red build, or cannot be told.
 build_infra() { # sha pipeline-id
-  local v j c f
+  local v j f
   v="$(build_said "$(build_statuses "$1" "$2")")" || return 1
   case "$v" in
     "failure: no security verdict: "*) echo "${v#failure: }"; return 0 ;;
     "failure: the build failed") ;;
     *) return 1 ;;
   esac
-  [[ -n "${GITLAB_TOKEN:-}" ]] || return 1
-  j="$(build_pipeline "$2/jobs")" || return 1
-  for c in $(build_pipeline "$2/bridges" | jq -r '.[].downstream_pipeline.id // empty' 2>/dev/null); do
-    [[ "$c" =~ ^[0-9]+$ ]] || return 1
-    j="$(jq -c --argjson c "$(build_pipeline "$c/jobs")" '. + $c' <<<"$j" 2>/dev/null)" || return 1
-  done
+  j="$(build_jobs_all "$2")" || return 1
   jq -e 'any(.[]; .name == "gates" and .status == "success")
          and all(.[] | select(.status == "failed" and .allow_failure != true); .failure_reason != "script_failure")
          and any(.[]; .status == "failed" and .allow_failure != true)' <<<"$j" >/dev/null 2>&1 || return 1
   f="$(jq -r '[.[] | select(.status == "failed" and .allow_failure != true)] | "\(map(.name) | join(", ")) failed in their infrastructure (\(map(.failure_reason // "unknown") | unique | join(", ")))"' <<<"$j")"
   echo "its gates job passed, and $f"
+}
+# A build pipeline's jobs and its child pipelines', one JSON array, read with
+# GITLAB_TOKEN; fails when there is none, or any cannot be read.
+build_jobs_all() { # pipeline-id
+  local j c
+  [[ -n "${GITLAB_TOKEN:-}" ]] || return 1
+  j="$(build_pipeline "$1/jobs")" || return 1
+  for c in $(build_pipeline "$1/bridges" | jq -r '.[].downstream_pipeline.id // empty' 2>/dev/null); do
+    [[ "$c" =~ ^[0-9]+$ ]] || return 1
+    j="$(jq -c --argjson c "$(build_pipeline "$c/jobs")" '. + $c' <<<"$j" 2>/dev/null)" || return 1
+  done
+  echo "$j"
+}
+# A red build whose gates job left no verdict because the build pool gave it
+# no room (looper#214): tacplus's batch of 18, its gates pod Unschedulable for
+# 15 min on each of GitLab's three tries (runner_system_failure), no gate run,
+# was judged red and built each land on its own on a 2-node pool. Its verdict
+# is gates-failed's "no gates verdict" (no build-verdict left: looper#148), or
+# report-fail's "the build failed" when gates-failed found no room either; its
+# gates job, read with GITLAB_TOKEN, failed in its runner (NO_ROOM_REASONS),
+# never in its script nor its own timeout. Prints why; fails when it is a red
+# build, or cannot be told.
+NO_ROOM_REASONS='["runner_system_failure", "scheduler_failure"]'
+build_no_room() { # sha pipeline-id
+  local v j r
+  v="$(build_said "$(build_statuses "$1" "$2")")" || return 1
+  case "$v" in "failure: no gates verdict: "*|"failure: the build failed") ;; *) return 1 ;; esac
+  j="$(build_jobs_all "$2")" || return 1
+  r="$(jq -re --argjson r "$NO_ROOM_REASONS" '[.[] | select(.name == "gates")] as $g
+         | if ($g | length) > 0 and all($g[]; .status == "failed" and (.failure_reason as $f | $r | index($f)))
+           then $g | map(.failure_reason) | unique | join(", ") else empty end' <<<"$j" 2>/dev/null)" || return 1
+  echo "its gates job failed $r, no gate verdict: the build pool had no room"
 }
 # A build pipeline's jobs or trigger jobs (<id>/jobs, <id>/bridges), read with GITLAB_TOKEN.
 build_pipeline() { # id/what
@@ -1593,8 +1620,8 @@ build_capped() { # run-dir
 # gates. Its verdict is that build's, on that commit; nothing is built again.
 # No build had (its commit's push refused, a trigger that failed) is no red:
 # BUILD_UNBUILT, its last lines "nothing built: <why>" (looper#194); nor is
-# one cancelled before a verdict, built again (build_again), and again
-# cancelled (looper#209).
+# one cancelled before a verdict, or given no room in the build pool, built
+# again (build_again), and again so (looper#209, looper#214).
 build_gates() { # base [queued commit]
   local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates="" t0 r w c="${2:-}"; sha="$(git rev-parse HEAD)"
   local BUILD_LAND=1   # a land's build, no report's (start_build, build_verdict: looper#209)
@@ -1641,8 +1668,10 @@ build_gates() { # base [queued commit]
 }
 
 # A land's red build, red in its infrastructure alone with its gates green
-# (build_infra, looper#173), or cancelled before a verdict (build_cancelled,
-# looper#209), built again, once: a new build of its key (a red or cancelled
+# (build_infra, looper#173), cancelled before a verdict (build_cancelled,
+# looper#209), or with no gates verdict for want of room in the build pool
+# (build_no_room, looper#214: a batch is built again as one, never fanned
+# out per land), built again, once: a new build of its key (a red or cancelled
 # one is reused by nothing), the commit still on the branch it was built from.
 # Its verdict is the land's: build_verdict's exit. AGAIN_P is the new build
 # ("<pipeline id> <URL>") and AGAIN_T0 its trigger's time; both are empty, and
@@ -1652,6 +1681,9 @@ build_again() { # sha gates base wait "<pipeline id> <URL>"
   if build_cancelled "$1" "${5%% *}"; then
     echo "the build job ${5#* } was cancelled before a verdict: no red; it is built again, once (looper#209)"
     log "the build job ${5#* } of $REPO ${1:0:7} was cancelled before a verdict: it is built again, once (looper#209)" >&2
+  elif why="$(build_no_room "$1" "${5%% *}")"; then
+    echo "the build job ${5#* } had no verdict, the build pool having had no room: $why; no red, it is built again as it was, once (looper#214)"
+    log "the build job ${5#* } of $REPO ${1:0:7} had no verdict, the build pool had no room: it is built again as it was, once (looper#214)" >&2
   else
     why="$(build_infra "$1" "${5%% *}")" || return 1
     echo "the build job ${5#* } failed, its gates green: $why; it is built again, once (looper#173)"
@@ -1664,11 +1696,17 @@ build_again() { # sha gates base wait "<pipeline id> <URL>"
   build_verdict "$1" "${AGAIN_P%% *}" "${AGAIN_P#* }" "$AGAIN_T0" "$4"
 }
 
-# A land's build cancelled before a verdict again once built again (looper#209):
-# no red, nothing built (BUILD_UNBUILT), its lands left queued for the next manager.
+# A land's build cancelled before a verdict again once built again (looper#209),
+# or given no room again (looper#214): no red, nothing built (BUILD_UNBUILT),
+# its lands left queued, as one batch, for the next manager.
 again_cancelled() { # sha
-  [[ -n "$AGAIN_P" ]] && build_cancelled "$1" "${AGAIN_P%% *}" &&
+  local why
+  [[ -n "$AGAIN_P" ]] || return 1
+  if build_cancelled "$1" "${AGAIN_P%% *}"; then
     echo "nothing built: its build job ${AGAIN_P#* } was cancelled before a verdict, as the one before it: no red (looper#209)"
+  elif why="$(build_no_room "$1" "${AGAIN_P%% *}")"; then
+    echo "nothing built: its build job ${AGAIN_P#* } had no verdict, the build pool had no room (${why%%: the build pool had no room}), as the one before it: no red (looper#214)"
+  else return 1; fi
 }
 
 # The record of a build left to run on branch b (build_gates), its lines
@@ -1968,17 +2006,18 @@ pre_land_due() { # main
   [[ -n "$GATES_MAPPED" && "$GATES_SET" == full && -n "${GM_RUN[$PRE_LAND]:-}" ]]
 }
 
-# A build's red that is its infrastructure's alone, its gates green: no verdict
-# on the land (looper#173), said.
+# A build's red that is its infrastructure's alone, its gates green (looper#173),
+# or its gates given no room in the build pool (looper#214): no verdict on the
+# land, said.
 pre_land_infra() { # sha pipeline-id log
   local why
   if grep -q '^verdict: failure: no security verdict: ' "$3"; then why="$(sed -n 's/^verdict: failure: //p' "$3" | tail -n 1)"
-  else why="$(build_infra "$1" "$2")" || return 1; fi
+  else why="$(build_infra "$1" "$2")" || why="$(build_no_room "$1" "$2")" || return 1; fi
   echo "$why" >> "$3"
 }
 
 # Why a pre-land gate has no verdict, from its log.
-pre_land_why() { grep -E '^(no verdict|no runner|verdict: |its gates job passed|the looper did not)' "$1" | tail -n 1 | grep . || tail -n 1 "$1"; } # log
+pre_land_why() { grep -E '^(no verdict|no runner|verdict: |its gates job (passed|failed)|the looper did not)' "$1" | tail -n 1 | grep . || tail -n 1 "$1"; } # log
 
 # The report's pre-land gate, before --land queues (looper#196). 0 to queue:
 # green (PRE_LANDED the main it was green on), none due, or no verdict, each
@@ -2181,9 +2220,11 @@ verdict_comment() { # issue id rc record-dir sha
     # One that had built this tree already (looper#134): reused, not built again.
     reused="$(sed -n 's/^the build job [^ ]* of .*: reused, \(.*\)$/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     # Built again after its infrastructure failed it, its gates green (looper#173).
-    again="$(sed -n 's/^the build job \([^ ]*\) failed, its gates green: .*/\1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    again="$(sed -n 's/^the build job \([^ ]*\) failed, its gates green: .*/\1 failed in its infrastructure alone, its gates green/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    # Or after its gates had no room in the build pool (looper#214).
+    [[ -n "$again" ]] || again="$(sed -n 's/^the build job \([^ ]*\) had no verdict, the build pool having had no room: .*/\1 had no verdict, the build pool having had no room/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     [[ -z "$again" ]] || reused=""
-    [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}${again:+, built again after $again failed in its infrastructure alone, its gates green}"
+    [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}${again:+, built again after $again}"
     # A verdict job's green on this tree, taken up (looper#191): its gates not run again.
     [[ -n "$build" ]] || build="$(sed -n 's/^the gates [^ ]* on [^ ]*: reused, \(.*\)$/, reused: \1/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     # Landed in a batch (looper#86): the candidate's one build is every member's.

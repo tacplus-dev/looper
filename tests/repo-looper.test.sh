@@ -4480,6 +4480,80 @@ lacks "$OUT" "#5: red on its own"
 lacks "$(grep '^alpha#5 ' "$FIX/comments" || true)" "The manager did not merge"
 pass
 
+# A batch's build whose gates job failed runner_system_failure on every try
+# (looper#214: tacplus's batch of 18, its gates pod Unschedulable 15 min each
+# try, was judged red and fanned out into 18 builds on a 2-node pool), its
+# gates-failed's "no gates verdict", is no red: the batch is built again as
+# one, once, and merged on that build's green, no land built on its own.
+# No room again, nothing built: the lands stay queued as one batch.
+no_room() { # pipeline-id...: its gates job failed runner_system_failure, no gate run
+  local id; mkdir -p "$FIX/pipeline-jobs" "$FIX/pipeline-bridges"
+  for id in "$@"; do
+    echo '[{"name": "plan", "status": "success"}, {"name": "report-fail", "status": "success"}]' > "$FIX/pipeline-jobs/$id.json"
+    echo "[{\"name\": \"gates\", \"status\": \"failed\", \"downstream_pipeline\": {\"id\": 9$id}}]" > "$FIX/pipeline-bridges/$id.json"
+    echo '[{"name": "gates", "status": "failed", "failure_reason": "runner_system_failure"}, {"name": "gates-failed", "status": "success"},
+           {"name": "security-alpha", "status": "failed", "failure_reason": "script_failure"}]' > "$FIX/pipeline-jobs/9$id.json"
+  done
+}
+nogates="no gates verdict: the gates job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
+scenario train-no-room-built-again
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+printf '%s\n' "$nogates" > "$FIX/build-infra"; no_room 901
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha"
+has "$OUT" "had no verdict, the build pool had no room: it is built again as it was, once (looper#214)"
+lacks "$OUT" "is red"; lacks "$OUT" "judging each of its"
+[[ "$(builds_of)" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ -z "$(cut -d' ' -f7 "$FIX/builds" | grep .)" ]] || fail "a land built on its own: $(cat "$FIX/builds")"
+for n in 4 5 6; do
+  [[ "$(landed "f$n.txt")" == "$n" ]] || fail "main lacks f$n.txt: $(origin log --oneline main)"
+  c="$(grep "^alpha#$n " "$FIX/comments")"
+  has "$c" "The manager merged [\`looper/alpha-$n\`]"; has "$c" "in a batch of 3 lands"
+  has "$c" "built again after https://gitlab.com/tacplus-dev/build/-/pipelines/901 had no verdict, the build pool having had no room"
+done
+main_green
+pass
+scenario train-no-room-twice
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+printf '%s\n' "$nogates" "$nogates" > "$FIX/build-infra"; no_room 901 902
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "nothing built: its build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 had no verdict, the build pool had no room (its gates job failed runner_system_failure, no gate verdict), as the one before it: no red (looper#214)"
+lacks "$OUT" "is red"; lacks "$OUT" "judging each of its"
+[[ "$(builds_of)" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+for n in 4 5 6; do
+  [[ -z "$(landed "f$n.txt")" ]] || fail "merged without a verdict"
+  grep -qx state=queued <<<"$(origin show "looper/alpha-$n:.looper/land")" || fail "#$n is not queued"
+  c="$(grep "^alpha#$n " "$FIX/comments")"
+  has "$c" "Nothing could be built of the batch holding"; lacks "$c" "The manager did not merge"
+done
+pass
+# A gates job failed in its script, no verdict file read, is red as before:
+# runner_system_failure alone is no room.
+scenario train-no-room-script-red
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+printf '%s\n' "$nogates" > "$FIX/build-infra"; no_room 901
+sed -i 's/runner_system_failure/script_failure/' "$FIX/pipeline-jobs/9901.json"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (looper#205)"
+lacks "$OUT" "the build pool had no room"
+pass
+# A land's own build in a red batch's round with no room (looper#214) is no
+# verdict on its own: the land stays in the batch, never sent back on it.
+scenario train-red-round-no-room
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+# The batch's build (901) red in its infrastructure's words; #5's own (903) given no room.
+printf '%s\n' "the build failed" "" "$nogates" > "$FIX/build-infra"; no_room 903
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (looper#205)"
+has "$OUT" "#5: no verdict on its own (its gates job failed runner_system_failure, no gate verdict: the build pool had no room)"
+lacks "$OUT" "#5: red on its own"
+lacks "$(grep '^alpha#5 ' "$FIX/comments" || true)" "The manager did not merge"
+pass
+
 # A red batch whose lands are each green on their own (two changes that break
 # only together, or a flake) is bisected after its round: the round sends
 # nothing back, and the bisection finds the land that breaks it.
