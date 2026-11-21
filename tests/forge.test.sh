@@ -32,7 +32,8 @@ TOKEN="glpat-$(printf forgetest%s token0123456789)"
 # refuses an edit that names a label the repository lacks, as gh does
 # (looper#80), and a label created twice; GitLab creates the labels an edit
 # adds, as its API does. Each label created is appended to
-# $FIX/labels-created as "<repo> <label>".
+# $FIX/labels-created as "<repo> <label>". A push's files (looper#213), both
+# forges' compare: $FIX/changed, "<path> [<old path>]" a line.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -92,6 +93,9 @@ case "$cmd" in
   api\ repos/*/contents/*)
     p="${cmd#api repos/}"; [[ "${p%%/*}" == "$ORG" ]] || exit 1; p="${p#*/}"
     t="$FIX/files/${p%%/contents/*}/${p#*/contents/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t" ;;
+  api\ repos/"$ORG"/*/compare/*)
+    jq -R 'split(" ") | {filename: .[0]} + (if .[1] then {status: "renamed", previous_filename: .[1]} else {} end)' "$FIX/changed" \
+      | jq -s '{files: .}' | jq -r "$q" ;;
   api\ repos/*/collaborators/*/permission)
     l="${cmd%/permission}"; l="${l##*/}"
     jq -e --arg l "$l" 'has($l)' "$FIX/permissions.json" >/dev/null || { echo "stub gh: HTTP 404" >&2; exit 1; }
@@ -180,6 +184,7 @@ case "$m $path" in
 esac
 rest="${path#projects/"$ORG"/}"
 case "$rest" in
+  */repository/compare) reply 200 "$(jq -R 'split(" ") | {new_path: .[0], old_path: (.[1] // .[0])}' "$FIX/changed" | jq -s '{diffs: .}')" ;;
   */repository/files/*/raw) t="$FIX/files/${rest%%/repository/files/*}/${rest#*/repository/files/}"; t="${t%/raw}"
     [[ -f "$t" ]] || reply 404 '{"message":"404 File Not Found"}'; reply 200 "$(cat "$t")" ;;
   */members/all) u="$(param query)"
@@ -485,6 +490,16 @@ Blocked-by: #2"' || fail "edit body"
   [[ "$(store beta 3 '[.labels[].name] | join(",")')" == approved ]] || fail "beta#3 still held: $(store beta 3 '[.labels[].name] | join(",")')"
   [[ "$(store beta 3 '.comments | length')" == 1 ]] || fail "beta#3 not told"
   no_token_in_argv
+  pass
+
+  # A push's files (looper#213): one compare from the back-off's sha to main's
+  # head, a renamed file's old path too.
+  scenario changed-files "$FORGE"
+  printf '%s\n' HISTORY.md "ci/b.yml ci/a.yml" > "$FIX/changed"
+  got="$(lib 'forge_changed_files alpha 1111111 2222222' | sort | paste -sd' ')"
+  [[ "$got" == "HISTORY.md ci/a.yml ci/b.yml" ]] || fail "forge_changed_files: $got"
+  if [[ "$FORGE" == github ]]; then grep -qF "gh api repos/$ORG/alpha/compare/1111111...2222222" "$FIX/calls" || fail "compare: $(cat "$FIX/calls")"
+  else grep -qxF "GET projects/$ORG/alpha/repository/compare?from=1111111&to=2222222" "$FIX/calls" || fail "compare: $(cat "$FIX/calls")"; fi
   pass
 done
 

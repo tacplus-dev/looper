@@ -33,7 +33,8 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # `gh api .../issues/<n>/events` answers the issue's `events` (GitHub's issue
 # events: {event, label: {name}, actor: {login}}), none by default. Each
 # comment has its created_at (now, when `gh issue comment` adds it), and
-# `gh api .../branches/main` answers origin's main (looper#181).
+# `gh api .../branches/main` answers origin's main (looper#181), and
+# `gh api .../compare/<base>...<head>` origin's files between them (looper#213).
 # `gh api graphql` answers forge_issue_states' aliased query from the issues'
 # files (null, and exit 1, for one there is none of), each query appended to
 # $FIX/graphql; $FIX/graphql-fail refuses it as GitHub does when it is down.
@@ -88,6 +89,9 @@ case "$cmd" in
     r="$FIX/runs/${cmd##*/}.json"; [[ -f "$r" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; jq -r "$q" "$r" ;;
   # Main's head (looper#181): origin's.
   api\ repos/*/branches/main) jq -n --arg s "$(git -C "$FIX/origin.git" rev-parse main)" '{commit: {sha: $s}}' | jq -r "$q" ;;
+  # A push's files (looper#213): origin's diff from one sha to another.
+  api\ repos/*/compare/*) c="${cmd##*/compare/}"
+    git -C "$FIX/origin.git" diff --name-only --no-renames "${c%...*}" "${c#*...}" | jq -R '{filename: .}' | jq -s '{files: .}' | jq -r "$q" ;;
   api\ repos/*/issues/*)
     p="${cmd#api repos/*/}"; p="${p%%\?*}"; f="$FIX/issues/${p%%/*}-$(cut -d/ -f3 <<<"$p").json"
     [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
@@ -1014,6 +1018,13 @@ pass
 # issue stays approved, not listed, until something changes, and the next run
 # says what did.
 soon() { date -u -d "@$(( $(date +%s) + 1 ))" +%FT%TZ; } # a time after the back-off's since
+main_push() { # file...: a push to origin's main changing those files
+  local w="$FIX/pusher" f
+  [[ -d "$w" ]] || git clone -q "$FIX/origin.git" "$w"
+  git -C "$w" pull -q --ff-only origin main
+  for f in "$@"; do mkdir -p "$w/$(dirname "$f")"; echo "$RANDOM" >> "$w/$f"; done
+  git -C "$w" add -A; git -C "$w" commit -q -m "change $*"; git -C "$w" push -q origin HEAD:main
+}
 scenario nothing-to-do
 step "Debian has no fix for CVE-2026-1 yet; left: build on it"
 run
@@ -1029,6 +1040,11 @@ has "$(body alpha 4)" "main $(origin rev-parse main))"
 c="$(others)"; has "$c" "nothing changed since the previous run"; has "$c" "backs off"; lacks "$c" "looper:stuck"
 OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
 [[ -z "$OUT" ]] || fail "listed an issue ended twice with nothing to do: $OUT"
+until1="$(body alpha 4 | grep -o 'Backed-off: until [^ ]*')"
+# The manager's planning files alone wake nobody (looper#213).
+main_push HISTORY.md STATE.md PROPOSALS.md
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "a push of the planning files alone restarted a backed-off issue: $OUT"
 jq --arg t "$(soon)" '.comments += [{body: "Any news?", created_at: $t, author: "stranger", association: "NONE"}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
 OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
 [[ -z "$OUT" ]] || fail "a stranger's comment restarted a backed-off issue: $OUT"
@@ -1042,6 +1058,45 @@ has "$p" "found nothing to do and backed off"; has "$p" "what changed since: a c
 has "$p" "--wait-until <date>"
 has "$OUT" "#4: backed-off"
 [[ "$(body alpha 4 | grep -c Backed-off)" == 1 ]] || fail "body: $(body alpha 4)"
+# A wake that ends with nothing to change keeps its until (looper#213).
+has "$(body alpha 4)" "$until1 (since "
+has "$(others | tail -n 3)" "keeps"
+# A push of anything else wakes it.
+main_push src/fix.sh STATE.md
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ "$OUT" == 4 ]] || fail "a push changing a file outside the planning files did not restart a backed-off issue: $OUT"
+pass
+
+# A run that waits until a date may name the paths it waits on (--wait-until
+# --path, looper#213: kernel#72 waits on its Dockerfile's base): only a push
+# to one of them wakes it, a wake that finds nothing keeps its until and its
+# paths, and a path that is not one is refused.
+scenario wait-until-paths
+d="$(date -u -d '+5 days' +%F)"
+echo 'echo x > a.txt' >> "$FIX/claude.sh"
+echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --wait-until $d --path ../x 2> \"\$FIX/err-up\" && exit 9" >> "$FIX/claude.sh"
+echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --wait-until $d --path 'a b' 2> \"\$FIX/err-space\" && exit 9" >> "$FIX/claude.sh"
+echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --path Dockerfile 2> \"\$FIX/err-alone\" && exit 9" >> "$FIX/claude.sh"
+echo "\"\$ROOT/repo-looper\" --repo alpha --issue 4 --wait-until $d \"left: build on Debian's fix\" --path Dockerfile --path ./ci/" >> "$FIX/claude.sh"
+run
+has "$(cat "$FIX/err-up")" "--path"; has "$(cat "$FIX/err-space")" "--path"; has "$(cat "$FIX/err-alone")" "--path is --wait-until's"
+has "$OUT" "#4: waiting"
+has "$(body alpha 4)" "Backed-off: until ${d}T00:00:00Z (since "
+has "$(body alpha 4)" ", paths Dockerfile ci)"
+has "$(others)" "a push to main of alpha changing Dockerfile or ci"
+main_push src/fix.sh Dockerfile.old
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ -z "$OUT" ]] || fail "a push to none of the paths it waits on restarted a backed-off issue: $OUT"
+main_push ci/build.yml
+OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-zero"
+[[ "$OUT" == 4 ]] || fail "a push to a path it waits on did not restart a backed-off issue: $OUT"
+: > "$FIX/claude.sh"; step "ci/build.yml changed, not the base: Debian has no fix yet; left: build on it"
+run
+p="$(cat "$(ls -d "$FIX"/project/looper-runs/*-issue-4 | tail -n 1)/prompt.md")"
+has "$p" "what changed since: a push to main of alpha ("; has "$p" ", changing ci/build.yml)"
+has "$OUT" "#4: backed-off"
+has "$(body alpha 4)" "Backed-off: until ${d}T00:00:00Z (since "
+has "$(body alpha 4)" ", paths Dockerfile ci)"
 pass
 
 # A run whose wait is outside, with a date (looper#181): --wait-until

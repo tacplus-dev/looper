@@ -140,6 +140,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   that a run that plans before it writes is not held a day; if first runs that only re-check prove common, the
   looper could back those off too. The GitLab paths (notes, resource label events, the branch API) are written to
   its API's documentation but only the GitHub ones are tested.
+- **A backed-off issue's compare, once a pass per repository** (2026-11-21, #213): a push to main wakes a backed-off
+  issue only when it changes more than HISTORY.md, STATE.md and PROPOSALS.md, or a path its `--wait-until --path`
+  named, and the kicker reads that with one compare from the line's sha to main's head. Once main has moved past an
+  issue's sha with only planning files, every pass compares again until the issue wakes: a fourth request an issue,
+  about 20 an hour. The issues backed off at the same sha could share one compare a pass, or the looper could move
+  the line's sha forward to main's head when the push it compared wakes nothing (a body edit each time, which the
+  search's `updatedAt` pre-filter above would then read as a change). The paths are exact files or directories, not
+  globs (`**/go.sum`); a run that needs one asks.
 - **Retry a build's failed jobs alone, not the whole build** (2026-11-17, #173): when a land's build fails only
   because of its infrastructure and its gates passed, the manager now builds it again once (`build_again`). That
   runs the gates again (tacplus's full gates take about 3.5h), because the manager's GitLab credentials cannot

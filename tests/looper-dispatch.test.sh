@@ -73,6 +73,15 @@ if [[ "$cmd" == api\ repos/*/branches/main || "$cmd" == api\ repos/*/issues/*/co
     *) k="$(cut -d/ -f2 <<<"$p")"; jq "[.${p##*/}[]?]" "$FIX/issues/$r-$k.json" ;;
   esac | jq -r "$q"; exit 0
 fi
+# A push's files (looper#213): `api repos/<org>/<repo>/compare/<base>...<head>`
+# answers $FIX/changed, one path a line (renamed: "<new> <old>"); no file, HTTP 404.
+if [[ "$cmd" == api\ repos/*/compare/* ]]; then
+  echo "$cmd" >> "$FIX/compares"
+  [[ -f "$FIX/changed" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+  q="."; while [[ $# -gt 0 ]]; do [[ "$1" != --jq ]] || { q="$2"; shift; }; shift; done
+  jq -R 'split(" ") | {filename: .[0]} + (if .[1] then {status: "renamed", previous_filename: .[1]} else {} end)' "$FIX/changed" \
+    | jq -s '{files: .}' | jq -r "$q"; exit 0
+fi
 if [[ "$cmd" == "attestation verify" ]]; then
   echo "$*" >> "$FIX/attest"
   t="${1##*:main-}"
@@ -520,12 +529,13 @@ pass
 # `Backed-off:` line is not started until its until passes or something
 # changes after its since: a member's comment (not a bot's, not a stranger's,
 # not one from before), a label added or removed (not looper:in-progress), a
-# push to its repository's main, a Blocked-by issue closing.
+# push to its repository's main that changes more than its planning files, or
+# a path its line names (looper#213), a Blocked-by issue closing.
 C40="$(printf 'c%.0s' {1..40})"
-backed() { # until (seconds ahead) since (seconds ago) [extra body line]: alpha#4 backed off
+backed() { # until (seconds ahead) since (seconds ago) [extra body line] [paths]: alpha#4 backed off
   issue alpha 4 OPEN "Waiting on Debian's fix.${3:+
 $3}
-Backed-off: until $(now_iso "-$1") (since $(now_iso "$2"), main $C40)" approved
+Backed-off: until $(now_iso "-$1") (since $(now_iso "$2"), main $C40${4:+, paths $4})" approved
 }
 said() { # login association seconds-ago: a comment on alpha#4
   jq --arg l "$1" --arg a "$2" --arg t "$(now_iso "$3")" '.comments += [{user: {login: $l}, author_association: $a, created_at: $t, body: "x"}]' \
@@ -557,13 +567,48 @@ dispatch run
 started || fail "a writer's comment did not restart a backed-off issue: $OUT"
 pass
 
-scenario backed-off-push
+# A push of the planning files alone (the manager's HISTORY.md, STATE.md and
+# PROPOSALS.md after a merge) wakes nobody: on 2026-11-21 such pushes started
+# looper#189 14 times and cloud#85 10, each run finding nothing to change
+# (looper#213). One that changes anything else does; one the forge cannot
+# compare changes nothing.
+scenario backed-off-push-planning
 backed 86000 600
 dispatch run
 ! started || fail "started a pipeline for a backed-off issue: $OUT"
 printf 'd%.0s' {1..40} > "$FIX/main-head"
 dispatch run
-started || fail "a push to main did not restart a backed-off issue: $OUT"
+! started || fail "a push the forge cannot compare restarted a backed-off issue: $OUT"
+printf '%s\n' HISTORY.md STATE.md PROPOSALS.md > "$FIX/changed"
+dispatch run
+! started || fail "a push of the planning files alone restarted a backed-off issue: $OUT"
+grep -qF "compare/$C40...$(printf 'd%.0s' {1..40})" "$FIX/compares" || fail "the push was not compared from the back-off's main to main's head: $(cat "$FIX/compares")"
+pass
+
+scenario backed-off-push-code
+backed 86000 600
+printf 'd%.0s' {1..40} > "$FIX/main-head"
+printf '%s\n' HISTORY.md docs/STATE.md > "$FIX/changed"
+dispatch run
+started || fail "a push changing a file outside the planning files did not restart a backed-off issue: $OUT"
+pass
+
+# A run that names the paths it waits on (--wait-until --path, looper#213) is
+# woken by a push to those alone: a file in a directory it names too, not a
+# file whose name only begins with one.
+scenario backed-off-push-paths
+backed 86000 600 "" "Dockerfile ci"
+printf 'd%.0s' {1..40} > "$FIX/main-head"
+printf '%s\n' looper-lib.sh Dockerfile.old cix/a.yml STATE.md > "$FIX/changed"
+dispatch run
+! started || fail "a push to none of the paths its Backed-off line names restarted a backed-off issue: $OUT"
+echo "ci/build.yml" >> "$FIX/changed"
+dispatch run
+started || fail "a push to a path its Backed-off line names did not restart a backed-off issue: $OUT"
+rm -f "$FIX/started"; backed 86000 600 "" "Dockerfile ci"
+printf '%s\n' "lib/new.sh Dockerfile" > "$FIX/changed"
+dispatch run
+started || fail "a push renaming a path its Backed-off line names did not restart a backed-off issue: $OUT"
 pass
 
 scenario backed-off-label

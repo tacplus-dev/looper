@@ -740,20 +740,53 @@ waits_over() {
 # until then, or until something changes after its since: a comment by a
 # member (an OWNER or MEMBER, or anyone with write access; no bot), a label
 # added or removed (but looper:in-progress), a push to its repository's main
-# (main is no longer that sha), or one of its Blocked-by issues closing. The
-# next run takes the line out, and its prompt says what changed.
+# (main is no longer that sha) that changes a file outside the planning files
+# (looper#213: the manager's own HISTORY.md, STATE.md and PROPOSALS.md pushes
+# after each merge woke looper#189 14 times on 2026-11-21, each run finding
+# nothing), or, when the line names paths (`, paths Dockerfile ci`: a
+# --wait-until run's --path), one of those; or one of its Blocked-by issues
+# closing. The next run takes the line out, and its prompt says what changed.
 LOOPER_BACKOFF_MAX="${LOOPER_BACKOFF_MAX:-86400}"
+# The files a push of these alone wakes no backed-off issue (looper#213).
+BACKOFF_QUIET_FILES="HISTORY.md STATE.md PROPOSALS.md"
 
 # The text on stdin's (an issue's body) first `Backed-off:` line, as "<until,
-# epoch> <since, epoch> <main sha>"; nothing when it has none or one it
-# cannot read (which holds nothing).
+# epoch> <since, epoch> <main sha>[ <path>...]"; nothing when it has none or
+# one it cannot read (which holds nothing).
 parse_backoff() {
   local l u s m
   l="$(grep -iE '^[[:space:]]*backed-off:' | head -n 1)" || true
-  [[ "$l" =~ until\ ([0-9T:Z.+-]+)\ \(since\ ([0-9T:Z.+-]+),\ main\ ([0-9a-f]{7,40})\) ]] || return 0
+  [[ "$l" =~ until\ ([0-9T:Z.+-]+)\ \(since\ ([0-9T:Z.+-]+),\ main\ ([0-9a-f]{7,40})(,\ paths\ ([^\)]*))?\) ]] || return 0
   u="$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null)" && s="$(date -u -d "${BASH_REMATCH[2]}" +%s 2>/dev/null)" || return 0
   m="${BASH_REMATCH[3]}"
-  echo "$u $s $m"
+  echo "$u $s $m${BASH_REMATCH[5]:+ ${BASH_REMATCH[5]}}"
+}
+
+# The files a push to a repository's main changed, from one sha to another,
+# one a line (a renamed file's old path too). Fails when they cannot be read.
+forge_changed_files() { # repo base head
+  case "$LOOPER_FORGE" in
+    github) gh api "repos/$LOOPER_ORG/$1/compare/$2...$3" --paginate --jq '.files[]? | .filename, (.previous_filename // empty)' ;;
+    gitlab) local c; c="$(gl_api GET "$(gl_project "$1")/repository/compare?from=$(gl_enc "$2")&to=$(gl_enc "$3")")" || return 1
+            jq -r '[.diffs[]? | .new_path, .old_path] | unique[]' <<<"$c" ;;
+  esac
+}
+
+# The changed files on stdin that wake a backed-off issue (looper#213), one a
+# line: with paths named, those and any file under them; else any but the
+# planning files at the repository's root.
+backoff_waking() { # [path...]
+  local f p
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    if (( $# )); then
+      for p in "$@"; do
+        p="${p#./}"; p="${p%/}"
+        if [[ "$f" == "$p" || "$f" == "$p"/* ]]; then echo "$f"; break; fi
+      done
+    elif [[ " $BACKOFF_QUIET_FILES " != *" $f "* ]]; then echo "$f"; fi
+  done | awk '!seen[$0]++'
+  return 0
 }
 
 # A login directs as a member does (looper#40): an OWNER or MEMBER, or anyone
@@ -804,12 +837,14 @@ forge_label_events_after() { # repo n epoch
 # what ended it (nothing for no line); fails while it holds. What cannot be
 # read changed nothing: the issue waits for its until at most.
 backoff_over() { # repo n body
-  local b u s m h c l a ev lb who r k st at
+  local b u s m h c l a ev lb who r k st at w paths=()
   b="$(parse_backoff <<<"$3")"; [[ -n "$b" ]] || return 0
-  read -r u s m <<<"$b"
+  read -r u s m b <<<"$b"; read -ra paths <<<"$b"
   if (( $(date +%s) >= u )); then echo "its back-off ended ($(hold_iso "$u"))"; return 0; fi
-  if h="$(forge_main_head "$1" 2>/dev/null)" && [[ "$h" =~ ^[0-9a-f]{7,40}$ && "$h" != "$m"* ]]; then
-    echo "a push to main of $1 (${m::7}..${h::7})"; return 0
+  if h="$(forge_main_head "$1" 2>/dev/null)" && [[ "$h" =~ ^[0-9a-f]{7,40}$ && "$h" != "$m"* ]] \
+     && c="$(forge_changed_files "$1" "$m" "$h" 2>/dev/null)" && w="$(backoff_waking "${paths[@]}" <<<"$c")" && [[ -n "$w" ]]; then
+    (( $(wc -l <<<"$w") <= 3 )) || w="$(head -n 3 <<<"$w"; echo ...)"
+    echo "a push to main of $1 (${m::7}..${h::7}, changing $(paste -sd, - <<<"$w" | sed 's/,/, /g'))"; return 0
   fi
   if c="$(forge_comments_after "$1" "$2" "$s" 2>/dev/null)"; then
     while read -r l a; do
