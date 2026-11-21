@@ -1,0 +1,309 @@
+= init
+> Bash gh issue view 213 --repo tacplus-dev/looper --comments | tail -20; ls; grep -n -i "backed.off\|back off\|backs off" README.md | head -50
+< author:	tacplus-looper association:	none edited:	false status:	none -- The looper of looper starts this issue on `claude-opus-5-5`, the default model. Its limit 4h is capped at 4h by this job (https://gitlab.com/tacplus-dev/looper/-/jobs/18247875212), which ends sooner: the run stops by itself befor...
+> Bash sed -n 240,275p README.md; grep -n -i "backed.off\|Backed-off" looper-dispatch repo-looper looper-lib.sh | head -80
+< body, resumes from the checkpoint, and its prompt names each run it waited on and how it ended. The idle stop then catches only real hangs; a `--build` is still waited on in the run (looper#133).  ```sh tests/repo-looper.test.sh      # waiting-on: --wait-on checkpoints "waiting on <url>", the run en...
+> Bash sed -n 600,900p looper-lib.sh
+<           if [[ "${slug,,}" == "${host,,}/"* ]]; then slug="${slug#*/}"; fi         else echo "?/unreadable 0"; continue; fi         if [[ -z "$slug" ]]; then echo "$1 $num"         elif [[ "$slug" == "$LOOPER_ORG/"* ]]; then echo "${slug#"$LOOPER_ORG/"} $num"         else echo "$slug $num"; fi     ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh api repos/tacplus-dev/roadmap/contents/suggestions/2026-11-21-a-backed-off-issue-is-not-woken-by-a-push-to-main-that-changes-nothing-it-waits-on-every-history-md-push-restarted-looper-189-and-cloud-85-all-night.md -H 'Accept: application/vnd.github.raw'
+< Suggestion: A backed-off issue is not woken by a push to main that changes nothing it waits on: every HISTORY.md push restarted looper#189 and cloud#85 all night Type: Cost Summary: A backed-off issue is ready again on any push to its repository's main (README, Backing off), so every HISTORY.md, STA...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n -i "wait.until\|waiting-until\|backoff_record\|backoff_over\|backoff_clear\|LOOPER_BACKOFF_MAX" repo-looper looper-dispatch | head -80
+< repo-looper:35:#   repo-looper --repo NAME --issue N --wait-until DATE [MSG]   the report waits on something outside repo-looper:164:# from) backs off, and so does one that waits until a date (--wait-until): its repo-looper:220:# its issue when it cannot be read or does not end, default 21600, loope...
+I'm reading the back-off code in repo-looper and looper-lib.sh before I write the tests.
+> Bash sed -n 25,40p repo-looper; sed -n 160,170p repo-looper; sed -n 255,300p repo-looper; sed -n 1765,1800p repo-looper; sed -n 3800,3860p repo-looper
+< #   repo-looper --repo NAME --job-timeout N   the CI job timeout of issue N's report (its limit and an hour) #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step) #   repo-looper --repo NAME --issue N --land [--gates CMD] [--wait]   queue th...
+> Bash sed -n 4280,4300p repo-looper; sed -n 4360,4372p repo-looper; sed -n 4460,4610p repo-looper
+< A comment since that run may answer it: the comments end the issue's text, at the end of this prompt. "   fi   if [[ -n "$waited" ]]; then     waited=" The last run of this issue ended waiting on another run's result (--wait-on, looper#171). This run starts because that wait is over: read the result...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "clear_backoff\|backed=" repo-looper | head; grep -n -i "backed-off\|backoff\|compare" tests/looper-dispatch.test.sh | head -60; wc -l tests/looper-dispatch.test.sh tests/repo-looper.test.sh
+< 3849:clear_backoff() { # issue 4234:  local backed; backed="$(clear_backoff "$n")" 4291:    backed=" 520:# `Backed-off:` line is not started until its until passes or something 528:Backed-off: until $(now_iso "-$1") (since $(now_iso "$2"), main $C40)" approved 538:scenario backed-off-comment 541:! s...
+> Bash sed -n 1,140p tests/looper-dispatch.test.sh; sed -n 510,600p tests/looper-dispatch.test.sh
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # looper-dispatch run: it starts the looper pipeline only for a repository with # a ready issue and no looper job of its own created, pending, waiting for its # resource_group or running (looper#16). A stub `...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "LOOPER_FORGE=gitlab\|repository/branches\|repository/compare" tests/*.sh | head; grep -n "^gl_api\|^gl_all\|^gl_project\|^forge_writer\|^hold_iso" looper-lib.sh
+< tests/forge.test.sh:512:  LOOPER_FORGE=gitlab LOOPER_ORG=seabeam LOOPER_FORGE_TOKEN="$TOKEN" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \ tests/forge.test.sh:528:got="$(env LOOPER_FORGE=gitlab LOOPER_FORGE_TOKEN="$TOKEN" GITLAB_TOKEN=job-token CI_JOB_TOKEN=x bash -c ' 219:gl_project() ...
+> Bash sed -n 210,240p looper-lib.sh; grep -n "backoff\|Backed-off\|main_head\|branches/main" tests/forge.test.sh | head -30
+<     gitlab) need curl ;;     *) die "LOOPER_FORGE is github or gitlab, not $LOOPER_FORGE" ;;   esac   need jq }  # GitLab: the URL-encoded form of a path or value. gl_enc() { jq -rn --arg s "$1" '$s | @uri'; } # text # GitLab: a project's API path. gl_project() { echo "projects/$(gl_enc "$LOOPER_ORG...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -rn "parse_backoff\|backoff_over" --include=* . 2>/dev/null | grep -v "^./.git" | grep -v "^./tests" ; sed -n 4220,4240p repo-looper; grep -n "^outcome_blocked\|^outcome_waiting" repo-looper
+< ./looper-lib.sh:617:# (backoff_over, looper#181). Any forge error along the way means not ready. ./looper-lib.sh:632:  backoff_over "$1" "$3" "$body" >/dev/null ./looper-lib.sh:750:parse_backoff() { ./looper-lib.sh:806:backoff_over() { # repo n body ./looper-lib.sh:808:  b="$(parse_backoff <<<"$3")"...
+I've finished reading and am now writing the tests and the lib change.
+> Bash sed -n 3745,3800p repo-looper
+< # pushed nothing (looper#22). Adds the lines its body lacks and prints them # all. One it names that is closed by now is dropped (looper#46), and listed # in run-dir/blockers-closed. Fails, adding none, when the outcome names none, # or any it names does not exist or is the issue itself: 2 when ever...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='tests/looper-dispatch.test.sh' s=open(p).read() old='''if [[ "$cmd" == "attestation verify" ]]; then''' new='''# A push's files (looper#213): `api repos/<org>/<repo>/compare/<base>...<head>` # answers $FIX/changed, one path a line (renamed: "<new> <old>"); no file, HTTP 404. if ...
+< 183:scenario() { # name: alpha has a ready issue #4 203:started() { [[ -s "$FIX/started" ]]; } 205:pass() { echo "ok $NAME"; } 184:  NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues" "$FIX/home"; echo '[]' > "$FIX/jobs.json" 192:  OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u CI_JOB_ID -u CI_J...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -i 's|^backed 86000 600 "" "Dockerfile ci"\nprintf .%s..n. "lib|&|' tests/looper-dispatch.test.sh && python3 - <<'EOF' p='tests/looper-dispatch.test.sh' s=open(p).read() old='''backed 86000 600 "" "Dockerfile ci" printf '%s\\n' "lib/new.sh Dockerfile"''' new='''rm -f "$FIX/started"; backed 86000...
+= task_started
+= task_notification
+< FAIL backed-off-push-planning: a push the forge cannot compare restarted a backed-off issue: [2026-11-21T16:47:23Z] capacity: alpha reports=0 running=0 waiting=4 landing=0 [2026-11-21T16:47:23Z] started the tacplus-dev/looper pipeline (alpha#4 is ready)
+Now the lib change.
+> Bash python3 - <<'EOF' p='looper-lib.sh' s=open(p).read() old='''# member (an OWNER or MEMBER, or anyone with write access; no bot), a label # added or removed (but looper:in-progress), a push to its repository's main # (main is no longer that sha), or one of its Blocked-by issues closing. The # next run...
+= task_started
+= task_notification
+< looper-dispatch: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-lib.sh' s=open(p).read() old='''    echo "a push to main of $1 (${m::7}..${h::7}, changing $(head -n 3 <<<"$w" | paste -sd, - | sed 's/,/, /g')$( (( $(wc -l <<<"$w") > 3 )) && echo ", ...") )"; return 0''' new='''    (( $(wc -l <<<"$w") <= 3 )) || w="$(head -n 3 <<<"$w"; ...
+< a push to main of r (ccccccc..ddddddd, changing a, b, c, ...) 4070908800 1767225600 ccccccc Dockerfile ci
+Dispatch side passes. Now repo-looper: `--wait-until --path`, the Backed-off line naming paths, and a woken run keeping its until.
+> Bash grep -n "nothing-to-do\|wait-until\|Backed-off\|compare" tests/repo-looper.test.sh | head -60
+< 1017:scenario nothing-to-do 1020:has "$OUT" "#4: ended"   # its first run: no previous run to compare with 1021:lacks "$(body alpha 4)" "Backed-off" 1027:has "$(body alpha 4)" "Backed-off: until " 1042:has "$p" "--wait-until <date>" 1044:[[ "$(body alpha 4 | grep -c Backed-off)" == 1 ]] || fail "bod...
+> Bash sed -n 990,1085p tests/repo-looper.test.sh
+< [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)" has "$OUT" "#4: waiting" has "$(body alpha 4)" "Waiting-on: https://github.com/tacplus-dev/looper/actions/runs/43907923763 (since " pass  # A run that has finished already is no wait (fleet-seatrials#48's pipeline was # gre...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "branches/main\|comments?since\|/events\|origin()" tests/repo-looper.test.sh | head; 
+< 33:# `gh api .../issues/<n>/events` answers the issue's `events` (GitHub's issue 36:# `gh api .../branches/main` answers origin's main (looper#181). 90:  api\ repos/*/branches/main) jq -n --arg s "$(git -C "$FIX/origin.git" rev-parse main)" '{commit: {sha: $s}}' | jq -r "$q" ;; 96:    elif [[ "$p" =...
+> Bash sed -n 25,110p tests/repo-looper.test.sh
+< # $FIX/slow-view makes the next `gh issue view` sleep $FIX/slow-view.s seconds # first (a report slow to start on a loaded machine, looper#122). # `gh api .../issues/<n>[/comments]` answers as GitHub's REST API, each text's # author and association from the issue's or comment's `author` and # `assoc...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 380,470p tests/repo-looper.test.sh; grep -n "^[a-z_]*() *{" tests/repo-looper.test.sh | head -50
+<       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@" } run() { # [VAR=value...]: work alpha#4, the manager beside its report (looper#70)   local p rc=0   manager_start "$@"   local t=$...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "WAIT_URL\b\|MODE\" != wait-until\|wait-until || -n" repo-looper | head; sed -n 355,366p repo-looper
+< 255:REPO=""; ISSUE=""; MODE=next; STEP=""; LAND_GATES=""; VERDICT_DIR=""; WAIT_URL=""; WAIT_UNTIL="" 264:    --wait-on) WAIT_URL="${2:-}"; MODE=wait-on; shift 2 || die "--wait-on needs a URL" 362:[[ "$MODE" != wait-until || -n "$ISSUE" ]] || die "--wait-until needs --issue N" 1750:  local run="${LOO...
+Writing the repo-looper tests now (a `--wait-until --path` scenario and the kept-until check), then the code.
+> Bash python3 - <<'EOF' p='tests/repo-looper.test.sh' s=open(p).read() old='''  # Main's head (looper#181): origin's.   api\\ repos/*/branches/main) jq -n --arg s "$(git -C "$FIX/origin.git" rev-parse main)" '{commit: {sha: $s}}' | jq -r "$q" ;;''' new='''  # Main's head (looper#181): origin's.   api\\ re...
+< 353:scenario() { # name: a fresh origin with one commit and an approved issue alpha#4 455:scenario pushed-gates-blocked 466:scenario pushed-gates-blocked-same-repo
+= thinking_tokens
+= thinking_tokens
+Now the repo-looper code.
+> Bash python3 - <<'EOF' p='repo-looper' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt, (old, s.count(old))     s=s.replace(old,new) rep('''#   repo-looper --repo NAME --issue N --wait-until DATE [MSG]   the report waits on something outside #                           ...
+< 249:  LOOPER_RUNNING_COPY="$copy" LOOPER_SELF="${LOOPER_SELF:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")}" LOOPER_LIB="${LOOPER_LIB:-$(dirname "${BASH_SOURCE[0]}")/looper-lib.sh}" exec bash "$copy" "$@" 251:# shellcheck source=looper-lib.sh 252:source "$LOOPER_LIB"...
+= thinking_tokens
+= thinking_tokens
+Now the end-of-run branches: pass the paths on, and keep the until for a woken run.
+> Bash python3 - <<'EOF' p='repo-looper' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt, (old, s.count(old))     s=s.replace(old,new) rep('''  # The date it waits until (--wait-until, looper#181): it backs off until then.   until_t="$(outcome_until "$run")" || until_t=""...
+< 3840:    echo "a push to main of $REPO changing $l" 3841:  else echo "a push to main of $REPO changing more than ${BACKOFF_QUIET_FILES// /, }"; fi
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='repo-looper' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt, (old, s.count(old))     s=s.replace(old,new) rep('''    local back pu ps pm prest paths=() when;''','''    local back pu prest paths=() when;''') rep('''read -r pu ps pm prest < "$ru...
+< README.md:269:tests/looper-dispatch.test.sh  # backed-off-comment, -writer, -push, -label, -blocker, -until: the kicker starts no backed-off issue until a member's or a writer's comment (not a bot's, a stranger's, a read-only collaborator's or one from before), a push to main, a label (not looper:in...
+= thinking_tokens
+= thinking_tokens
+Run the repo-looper suite in the background while I update the README.
+> Bash grep -rln "until something changes (a member" tests/ ; bash -n repo-looper && (nohup bash tests/repo-looper.test.sh > /tmp/rl213.log 2>&1 & echo $!)
+< 57383
+> Bash python3 - <<'EOF' p='README.md' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt, (old, s.count(old))     s=s.replace(old,new) rep('''OWNER or MEMBER, or anyone with write access; never a bot), a label added or removed (`looper:in-progress` aside), a push to its rep...
+< 260:whose wait is outside the looper with a date (a release upstream) runs `repo-looper --repo R --issue N --wait-until 278:tests/repo-looper.test.sh      # nothing-to-do: an issue ended twice with nothing to do backs off, approved, not stuck, not listed; a push of the planning files alone does not ...
+= thinking_tokens
+= thinking_tokens
+While the suite runs, a look at forge.test.sh for a GitLab case of the compare.
+> Bash grep -n "forge_main_head\|forge_comments_after\|^scenario\|^lib()\|gl()" tests/forge.test.sh | head -40
+< 243:scenario() { # name forge 258:lib() { # snippet 497:scenario end-to-end gitlab
+> Bash sed -n 1,30p tests/forge.test.sh; sed -n 100,300p tests/forge.test.sh
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # The forge layer (looper#29): the same scenarios on both backends, github # (a stub `gh`) and gitlab (a stub `curl` that answers as GitLab's API v4), # over one store of issues: listing the ready issues (one...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 30,99p tests/forge.test.sh; tail -40 tests/forge.test.sh
+< # `association`, default MEMBER. A repository's labels: $FIX/labels/<repo, / # as __>, a name a line (an issue's labels are its repository's): GitHub # refuses an edit that names a label the repository lacks, as gh does # (looper#80), and a label created twice; GitLab creates the labels an edit # ad...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "^done\|^for FORGE" tests/forge.test.sh
+< 77:done 274:for FORGE in github gitlab; do 489:done
+> Bash sed -n 470,489p tests/forge.test.sh
+<   jq -n '[{name: "looper-alpha-9", status: "running"}]' > "$FIX/jobs.json"   out="$(dispatch plan 2>"$FIX/plan.err")" || fail "plan: $(cat "$FIX/plan.err")"   # The schedule's plan (looper#56): a scan of each of the org's repositories, subgroups' too.   printf '%s\n' alpha beta ${SUB:+"$SUB"} > "$FI...
+> Bash python3 - <<'EOF' p='tests/forge.test.sh' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt, (old, s.count(old))     s=s.replace(old,new) rep('''# $FIX/labels-created as "<repo> <label>". mkdir -p "$TMP/bin"''','''# $FIX/labels-created as "<repo> <label>". A push's f...
+= task_started
+= task_notification
+< ok clone-push (gitlab) ok files-links (gitlab) ok hold (gitlab) ok dispatch (gitlab) FAIL changed-files (gitlab): forge_changed_files: HISTORY.md HISTORY.md ci/b.yml ci/a.yml
+= thinking_tokens
+= thinking_tokens
+Fixing a duplicate path on GitLab (its old_path equals new_path for unrenamed files).
+> Bash python3 - <<'EOF' p='looper-lib.sh' s=open(p).read() old='''            jq -r '.diffs[]? | .new_path, .old_path' <<<"$c" ;;''' new='''            jq -r '[.diffs[]? | .new_path, .old_path] | unique[]' <<<"$c" ;;''' assert old in s; s=s.replace(old,new); open(p,'w').write(s) EOF bash tests/forge.test....
+= task_started
+= task_notification
+< FAIL changed-files (gitlab): forge_changed_files: HISTORY.md ci/a.yml ci/b.yml ok blocked-nothing-pushed-by-itself ok blocked-by-missing-issue ok blocked-one-closed-of-three
+> Bash sed -i "s/  got=\"\$(lib 'forge_changed_files alpha 1111111 2222222' | paste -sd' ')\"/  got=\"\$(lib 'forge_changed_files alpha 1111111 2222222' | sort | paste -sd' ')\"/; s/\[\[ \"\$got\" == \"HISTORY.md ci\/b.yml ci\/a.yml\" \]\]/[[ \"\$got\" == \"HISTORY.md ci\/a.yml ci\/b.yml\" ]]/" tests/forge...
+= task_started
+= task_notification
+< 499:  got="$(lib 'forge_changed_files alpha 1111111 2222222' | sort | paste -sd' ')" 500-  [[ "$got" == "HISTORY.md ci/a.yml ci/b.yml" ]] || fail "forge_changed_files: $got" forge: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+> Bash which shellcheck && shellcheck -x looper-lib.sh repo-looper 2>&1 | tail -20; grep -n "tests/forge.test.sh " README.md | head -3
+< 2228:tests/forge.test.sh   # both forges against a gh stub and a GitLab API stub: ready issues (one repository, the org, priority), Blocked-by within and across repositories, GitLab subgroups and another org (held, never read), labels, comments and body edits, the texts' authors, clone and push over...
+> Bash sed -i '2228s/looper-dispatch'"'"'s ready, plan and orphan release, and/looper-dispatch'"'"'s ready, plan and orphan release, a push'"'"'s files from one compare (#213), and/' README.md && sed -n 2228p README.md | cut -c300-; ls tests/ | grep -i lint; cat gates.yaml | head -30
+< PS (stub git server), the hold issue made, pinned, read, moved and left (#157), looper-dispatch's ready, plan and orphan release, a push's files from one compare (#213), and a SeaBeam issue worked end to end by repo-looper looper-ci-lint.test.sh # The gate map of tacplus-dev/looper (looper#48; READM...
+= thinking_tokens
+= thinking_tokens
+Full gate set it is. Waiting on the repo-looper suite.
+> Bash sleep 240; grep -v "^ok" /tmp/rl213.log | head; grep -c "^ok" /tmp/rl213.log; kill -0 57383 && echo running
+< <tool_use_error>Blocked: sleep 240 followed by: grep -v "^ok" /tmp/rl213.log head grep -c "^ok" /tmp/rl213.log kill -0 57383 echo running. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true....
+> Bash timeout 590 bash -c 'until ! kill -0 57383 2>/dev/null || grep -q "^FAIL" /tmp/rl213.log; do sleep 5; done'; grep -v "^ok" /tmp/rl213.log | head; grep -c "^ok" /tmp/rl213.log
+= task_started
+= task_notification
+< 103
+> Bash timeout 590 bash -c 'until ! kill -0 57383 2>/dev/null || grep -q "^FAIL" /tmp/rl213.log; do sleep 5; done'; grep -v "^ok" /tmp/rl213.log | head; grep -c "^ok" /tmp/rl213.log; grep -n "nothing-to-do\|wait-until" /tmp/rl213.log
+= task_started
+= task_notification
+< skip model-users: not root, or no setpriv, useradd or python3 192 35:ok nothing-to-do 36:ok wait-until-paths 37:ok wait-until
+= thinking_tokens
+= thinking_tokens
+My new scenarios pass. While the rest of the suite runs, checking STATE.md for back-off text.
+> Bash grep -n -i "back.off\|backed" STATE.md PROPOSALS.md | head
+< STATE.md:66:  build had no verdict within that wait is retried, not stuck, #133; one whose work waits on another run's result (an image build, a pipeline) does not wait in its model: `--wait-on <url>` checkpoints `waiting on <url>` and ends it (one that sits waiting all the same is stopped as done, ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash timeout 590 bash -c 'until ! kill -0 57383 2>/dev/null || grep -q "^FAIL" /tmp/rl213.log; do sleep 5; done'; grep -v "^ok" /tmp/rl213.log | head; tail -1 /tmp/rl213.log; kill -0 57383 2>/dev/null && echo running
+= task_started
+= task_notification
+< Exit code 1 skip model-users: not root, or no setpriv, useradd or python3 repo-looper: all scenarios pass repo-looper: all scenarios pass
+All of repo-looper passes. Adding a PROPOSALS note on the extra request, then committing.
+> Bash sed -n 125,150p PROPOSALS.md
+<   SAST finding in test code `test: true`, never `blocking`, but the nightly scan's item 1 (`security_item` in   `repo-looper`) still files every new HIGH or CRITICAL finding, so oauth's 13 CRITICAL CodeQL findings in its   `#[cfg(test)]` modules would still be filed (the suggestion's "no needs-decis...
+> Bash python3 - <<'EOF' p='PROPOSALS.md' s=open(p).read() old='''- **Retry a build's failed jobs alone, not the whole build** (2026-11-17, #173)''' new='''- **A backed-off issue's compare, once a pass per repository** (2026-11-21, #213): a push to main wakes a backed-off   issue only when it changes more ...
+<  M PROPOSALS.md  M README.md  M looper-lib.sh  M repo-looper  M tests/forge.test.sh  M tests/looper-dispatch.test.sh  M tests/repo-looper.test.sh  PROPOSALS.md                  |   8 ++++  README.md                     |  34 +++++++++-----  looper-lib.sh                 |  55 ++++++++++++++++++-----...
+= thinking_tokens
+= thinking_tokens
+> Bash ./planning-files-check origin/main 2>&1 | tail -3; bash tests/looper-dispatch.test.sh 2>&1 | tail -1; /usr/local/bin/looper-trace check 2>&1 | tail -3
+= task_started
+= task_notification
+< planning-files-check: ok looper-dispatch: all scenarios pass looper-trace: /builds/looper/looper/issues/213 verdict: pass (0 handlers, 0 findings)
+> Bash git add -A && git commit -q -F - <<'EOF' A backed-off issue is not woken by a push of the planning files alone (#213)  Every HISTORY.md, STATE.md or PROPOSALS.md push the manager makes after a merge woke every backed-off issue of its repository: on the night of 2026-11-21, 46 model runs that found n...
+< [2026-11-21T17:16:48Z] checkpoint of #213 (a step) pushed to looper/looper-213:  9 files changed, 634 insertions(+), 56 deletions(-)
+= thinking_tokens
+= thinking_tokens
+Committed and checkpointed. Starting the build job.
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 213 --build > /tmp/build213.log 2>&1 & echo $!
+< 451000
+Meanwhile, the STATE.md update (its own commit, after the build).
+> Bash python3 - <<'EOF' p='STATE.md' s=open(p).read() old='''or until a member's comment, a label change, a push to its main or a blocker closing after its since, its next run's prompt naming what changed, #181 (kernel#66's ~20 runs for nothing on 2026-11-17);''' new='''or until a member's comment, a labe...
+<  STATE.md | 2 +-  1 file changed, 1 insertion(+), 1 deletion(-)
+> Bash timeout 590 bash -c 'while kill -0 451000 2>/dev/null; do sleep 10; done'; tail -5 /tmp/build213.log
+= task_started
+= task_notification
+< [2026-11-21T17:16:51Z] checkpoint of #213 (a build) pushed to looper/looper-213:  9 files changed, 640 insertions(+), 56 deletions(-) [2026-11-21T17:16:51Z] build requested: looper b51bc22, the gates full (looper-lib.sh is mapped to full (/looper-lib.sh)) the build job https://gitlab.com/tacplus-dev...
+> Bash timeout 590 bash -c 'while kill -0 451000 2>/dev/null; do sleep 10; done'; tail -3 /tmp/build213.log
+= task_started
+= task_notification
+< [2026-11-21T17:27:01Z] waiting for the verdict of the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215 on b51bc22: queued for 11m, not started no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215 has not started within 15m (no tacplus-dev/build st...
+No runner took it within 15 minutes (exit 4). A later `--build` of the same commit picks it up, so I'm running it again.
+> Bash git stash -q && nohup /usr/local/bin/repo-looper --repo looper --issue 213 --build > /tmp/build213b.log 2>&1 & echo $!
+< 454543
+= thinking_tokens
+= thinking_tokens
+> Bash timeout 590 bash -c 'while kill -0 454543 2>/dev/null; do sleep 10; done'; tail -3 /tmp/build213b.log
+= task_started
+= task_notification
+< [2026-11-21T17:32:12Z] checkpoint of #213 (a build) pushed to looper/looper-213:  9 files changed, 654 insertions(+), 56 deletions(-) [2026-11-21T17:32:12Z] build requested: looper b51bc22, the gates full (looper-lib.sh is mapped to full (/looper-lib.sh)) the build job https://gitlab.com/tacplus-dev...
+> Bash timeout 590 bash -c 'while kill -0 454543 2>/dev/null; do sleep 10; done'; tail -3 /tmp/build213b.log
+= task_started
+= task_notification
+< [2026-11-21T17:42:21Z] waiting for the verdict of the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215 on b51bc22: queued for 11m, not started no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215 has not started within 15m (no tacplus-dev/build st...
+= thinking_tokens
+= thinking_tokens
+Still queued with no runner after 30 minutes. One more wait, then I'll land: the manager's batch build runs the full gates in any case.
+> Bash /usr/local/bin/repo-looper --repo looper --issue 213 --build > /tmp/build213c.log 2>&1; echo rc=$?; tail -3 /tmp/build213c.log
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: b5njlnv5o). Output is being written to: /builds/looper/looper/homes/looper-213/tmp/claude-61000/-builds-looper-looper-issues-213/f986d8e3-2583-48d7-ae7a-908cf529981a/tasks/b5njlnv5o.output. You will be notified whe...
+> Bash timeout 590 bash -c 'until grep -q "^rc=" /builds/looper/looper/homes/looper-213/tmp/claude-61000/-builds-looper-looper-issues-213/f986d8e3-2583-48d7-ae7a-908cf529981a/tasks/b5njlnv5o.output; do sleep 10; done'; cat /builds/looper/looper/homes/looper-213/tmp/claude-61000/-builds-looper-looper-issues...
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< rc=4 [2026-11-21T17:57:48Z] waiting for the verdict of the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215 on b51bc22: queued for 11m, not started no runner: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215 has not started within 15m (no tacplus-dev/bui...
+After 45 minutes no runner has taken the build. I'll commit STATE.md on its own and queue the land. The manager's batch build runs the full gates before anything merges.
+> Bash git stash pop -q && git status --short && git add STATE.md && git commit -q -m "STATE.md: a push of the planning files alone wakes no backed-off issue; a woken run keeps its until (#213)  Co-Authored-By: Claude <noreply@anthropic.com>" && /usr/local/bin/repo-looper --repo looper --issue 213 --land 2...
+= task_started
+= task_notification
+<  M STATE.md [2026-11-21T18:03:06Z] checkpoint of #213 (land queued) pushed to looper/looper-213:  11 files changed, 686 insertions(+), 57 deletions(-) [2026-11-21T18:03:07Z] queued: the manager of looper lands looper/looper-213 in its next batch, with the lands queued before it (the merge train, loo...
+> Bash /usr/local/bin/repo-looper --repo looper --issue 213 --checkpoint "Land queued (code b51bc22 + STATE.md commit). Done: looper-dispatch's ready rule compares the Backed-off line's sha to main's head and wakes only on a file other than HISTORY.md/STATE.md/PROPOSALS.md, or a path named by --wait-until ...
+< [2026-11-21T18:03:14Z] checkpoint of #213 (a step) pushed to looper/looper-213:  11 files changed, 690 insertions(+), 57 deletions(-)
+I've queued #213's change with the manager, but the gates have not run in a container yet. The build job (https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215) sat 45 minutes with no runner taking it. The manager's batch build, which runs the full gates, will be the first real check.
+
+**What changed:**
+- **What wakes a backed-off issue (`looper-lib.sh`):** a push to main now wakes it only if the push changes a file other than HISTORY.md, STATE.md and PROPOSALS.md. The kicker finds this out with one compare, from the sha on the issue's Backed-off line to main's head (GitHub or GitLab). If the compare can't be read, the issue stays backed off until its until, as before. The next run's prompt names the files that woke it.
+- **Naming paths (`repo-looper`):** a run can now add `--path <path>` to `--wait-until`, once per path. The paths go on the issue's Backed-off line (`, paths Dockerfile ci`), and then only a push changing one of them, or a file under one, wakes the issue. Paths with spaces or `..` are refused, and so is `--path` without `--wait-until`.
+- **Keeping the until:** a run woken before its until that again finds nothing keeps that until and its paths, instead of backing off a day from then.
+- **Unchanged:** a member's comment, a label change and a blocker closing still wake the issue at once.
+
+**Tests:** the three suites below pass locally, as does `planning-files-check`. `looper-trace check` found no service handlers to check.
+- `tests/looper-dispatch.test.sh`: `backed-off-push` is split into `-planning` (a planning-file push doesn't wake; neither does one the forge can't compare), `-code` (any other file wakes) and `-paths` (only the named paths wake, including a rename).
+- `tests/repo-looper.test.sh`: the `nothing-to-do` scenario now also checks a planning-file push and the kept until; a new `wait-until-paths` scenario covers `--path`.
+- `tests/forge.test.sh`: a new `changed-files` scenario covers the compare on both forges.
+
+I also updated README.md, added a PROPOSALS.md entry, and put STATE.md in a commit of its own. The PROPOSALS entry is about cost: while an issue stays backed off after a planning-file push, the kicker repeats the compare every pass, about 20 extra requests an hour per issue. It suggests ways to cut that.
+
+**Left:** after the manager's verdict, the next run comments on the issue with the commits, gates and batch, then closes it, or fixes whatever came back.
+= success: I've queued #213's change with the manager, but the gates have not run in a container yet. The build job (https://gitlab.com/tacplus-dev/build/-/pipelines/3097882215) sat 45 minutes with no runner taking it. The manager's batch build, which runs the full gates, will be the first real check.
+
+**What changed:**
+- **What wakes a backed-off issue (`looper-lib.sh`):** a push to main now wakes it only if the push changes a file other than HISTORY.md, STATE.md and PROPOSALS.md. The kicker finds this out with one compare, from the sha on the issue's Backed-off line to main's head (GitHub or GitLab). If the compare can't be read, the issue stays backed off until its until, as before. The next run's prompt names the files that woke it.
+- **Naming paths (`repo-looper`):** a run can now add `--path <path>` to `--wait-until`, once per path. The paths go on the issue's Backed-off line (`, paths Dockerfile ci`), and then only a push changing one of them, or a file under one, wakes the issue. Paths with spaces or `..` are refused, and so is `--path` without `--wait-until`.
+- **Keeping the until:** a run woken before its until that again finds nothing keeps that until and its paths, instead of backing off a day from then.
+- **Unchanged:** a member's comment, a label change and a blocker closing still wake the issue at once.
+
+**Tests:** the three suites below pass locally, as does `planning-files-check`. `looper-trace check` found no service handlers to check.
+- `tests/looper-dispatch.test.sh`: `backed-off-push` is split into `-planning` (a planning-file push doesn't wake; neither does one the forge can't compare), `-code` (any other file wakes) and `-paths` (only the named paths wake, including a rename).
+- `tests/repo-looper.test.sh`: the `nothing-to-do` scenario now also checks a planning-file push and the kept until; a new `wait-until-paths` scenario covers `--path`.
+- `tests/forge.test.sh`: a new `changed-files` scenario covers the compare on both forges.
+
+I also updated README.md, added a PROPOSALS.md entry, and put STATE.md in a commit of its own. The PROPOSALS entry is about cost: while an issue stays backed off after a planning-file push, the kicker repeats the compare every pass, about 20 extra requests an hour per issue. It suggests ways to cut that.
+
+**Left:** after the manager's verdict, the next run comments on the issue with the commits, gates and batch, then closes it, or fixes whatever came back.
+= usage: {"claude-opus-5-5":{"inputTokens":118,"outputTokens":37136,"cacheReadInputTokens":5707313,"cacheCreationInputTokens":122537,"webSearchRequests":0,"costUSD":2.8649505999999993,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":9317,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}
