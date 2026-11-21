@@ -2186,11 +2186,13 @@ $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 # (red_round, looper#205): the red ones sent back, the rest staged again as one
 # batch. Red with no land red on its own, it is bisected on its prefixes (batch_judge: the candidate
 # after the first half of the batch is built; green, the breaking change is in
-# the second half, red, in the first; and so on, about log2(n) builds): the
-# land that breaks it is sent back with the failure (exit 4: the issue stays
-# approved, and its next report fixes it), the green prefix before it lands as
-# a batch of its own, and the lands after it stay queued: the next batch, from
-# the new main, takes them. A batch of one that is red is just sent back. A
+# the second half, red, in the first; and so on, about log2(n) builds): a
+# green prefix lands at once, as a batch of its own, and the next candidate is
+# built on the main it made (looper#208: tacplus's green first 7 waited on an
+# hour-long build more, on the old main); the land that breaks it is sent back
+# with the failure (exit 4: the issue stays approved, and its next report fixes
+# it), and the lands after it stay queued: the next batch, from the new main,
+# takes them. A batch of one that is red is just sent back. A
 # batch whose build would outlast the job, or whose build has no verdict by the
 # job's end, leaves its lands queued (LAND_DEFERRED): the next manager takes
 # them, and a build left to run is taken up by its tree (build_gates).
@@ -2304,10 +2306,11 @@ plural() { (( $1 == 1 )) || echo s; } # count
 # Judges the batch (TR_*, on main): one build of the whole candidate, landed
 # on green; on red, judged in one round (red_round, looper#205), and when the
 # round sends none back, or there is none, bisected on its prefixes until the land that breaks it is
-# found, the green prefix before it landed, that land sent back, the rest left
-# queued for the next batch. LAND_DEFERRED when no prefix's build fits the job
-# or a build has no verdict by its end (a green prefix found by then lands
-# first); 1 when a build could not be had. A candidate nothing could be built
+# found, each green prefix landed at once and the next candidate built on the
+# main it made (looper#208), that land sent back, the rest left queued for the
+# next batch. LAND_DEFERRED when no prefix's build fits the job or a build has
+# no verdict by its end (a green prefix found by then has landed); 1 when a
+# build could not be had or main moved under a green prefix. A candidate nothing could be built
 # of is no red, and is not bisected (batch_unbuilt, looper#194).
 BATCH_OVER=8   # batch_gates: the candidate's gates would outlast the job (looper#38): a shorter batch is tried
 batch_judge() { # main
@@ -2344,18 +2347,20 @@ batch_judge() { # main
     log "the round found no land red on its own: the batch's red is between its lands, or a flake; bisecting it"
   fi
   if (( k > 1 )); then
-    log "the batch is red: bisecting the batch of $k (the candidate after its first half is built next; about $(bisect_builds "$k") build$(plural "$(bisect_builds "$k")") find the land that breaks it)"
+    log "the batch is red: bisecting the batch of $k (the candidate after its first half is built next, a green prefix landed at once; about $(bisect_builds "$k") build$(plural "$(bisect_builds "$k")") find the land that breaks it)"
     while (( hi - lo > 1 )); do
       mid=$(( (lo + hi) / 2 ))
       rc=0; batch_gates "$main" "$mid" || rc=$?
       case "$rc" in
-        0) lo=$mid; log "bisecting: the first $mid of $k are green" ;;
+        # A green prefix lands at once, and the rest is built on the main it made (looper#208).
+        0) log "bisecting: the first $mid of $k are green: they land now, and the rest is built on the main they make"
+           batch_land "$main" "$mid" "$lo" || return 1
+           main="${TR_AFTER[mid-1]}"; lo=$mid ;;
         4) hi=$mid; red="$BATCH_OUT"; log "bisecting: the first $mid of $k are red" ;;
-        "$LAND_UNBUILT") (( lo == 0 )) || batch_land "$main" "$lo" || return 1; batch_unbuilt "$lo" "$mid"; return ;;
-        *) (( lo == 0 )) || batch_land "$main" "$lo"; (( rc != BATCH_OVER )) || rc=$LAND_DEFERRED; return "$rc" ;;
+        "$LAND_UNBUILT") batch_unbuilt "$lo" "$mid"; return ;;
+        *) (( rc != BATCH_OVER )) || rc=$LAND_DEFERRED; return "$rc" ;;
       esac
     done
-    (( lo == 0 )) || batch_land "$main" "$lo" || return 1
   fi
   c=$(( hi - 1 ))
   cp "$red/gates.log" "${TR_REC[c]}/gates.log" 2>/dev/null || true
@@ -2571,23 +2576,24 @@ batch_gates() { # main count
 }
 
 # Main fast-forwards to the first count lands' candidate (green: its build is
-# BATCH_OUT's), and each of them gets its record and its verdict (post_land:
+# BATCH_OUT's), and each of them from the from-th (those before it a green
+# prefix main has already) gets its record and its verdict (post_land:
 # the comment, the HISTORY.md line, the branch deleted). Fails when main moved
 # (nothing posted: the lands stay queued).
-batch_land() { # main count
-  local main="$1" count="$2" cand i rec ok="" set why mapped out
+batch_land() { # main count [from]
+  local main="$1" count="$2" from="${3:-0}" cand i rec ok="" set why mapped out
   cand="${TR_AFTER[count-1]}"
   set="${GREEN_SET[$count]}"; why="${GREEN_WHY[$count]}"; mapped="${GREEN_MAPPED[$count]}"; out="${GREEN_OUT[$count]}"
-  for (( i = 0; i < count; i++ )); do [[ -z "${TR_ROADMAP[i]}" ]] || ok+="${ok:+ }$(git -C "$CHECKOUT" rev-list "${TR_BEFORE[i]}..${TR_AFTER[i]}" -- ROADMAP.md | paste -sd' ' -)"; done
+  for (( i = from; i < count; i++ )); do [[ -z "${TR_ROADMAP[i]}" ]] || ok+="${ok:+ }$(git -C "$CHECKOUT" rev-list "${TR_BEFORE[i]}..${TR_AFTER[i]}" -- ROADMAP.md | paste -sd' ' -)"; done
   ( flock 8; LOOPER_LANDING=1 LOOPER_ROADMAP_OK="$ok" git -C "$CHECKOUT" push -q origin "$cand:refs/heads/main" ) 8>"$LAND_LOCK" ||
     { log "main did not fast-forward to the candidate ${cand:0:7} (it moved); the lands stay queued for the next batch"; return 1; }
-  log "main fast-forwarded: ${main:0:7}..${cand:0:7}, on the gates $set ($why): a batch of $count land$(plural "$count"), one build"
-  for (( i = 0; i < count; i++ )); do
+  log "main fast-forwarded: ${main:0:7}..${cand:0:7}, on the gates $set ($why): a batch of $(( count - from )) land$(plural "$(( count - from ))"), one build"
+  for (( i = from; i < count; i++ )); do
     rec="${TR_REC[i]}"
     echo "${TR_BEFORE[i]} ${TR_AFTER[i]}${mapped:+ $set}" >> "$rec/landed"
     printf '%s: %s\n' "$set" "$why" >> "$rec/gate-sets"
     cp "$out/gates.log" "$rec/gates.log" 2>/dev/null || true
-    echo "$count" > "$rec/batch"
+    echo "$(( count - from ))" > "$rec/batch"
     log "landed on main: ${TR_BEFORE[i]:0:7}..${TR_AFTER[i]:0:7}, on the gates $set ($why)" >> "$rec/out"
     post_land "${TR_N[i]}" "${TR_ID[i]}" "${TR_SHA[i]}" 0 "$rec"
   done

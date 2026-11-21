@@ -4265,6 +4265,39 @@ has "$OUT" "a batch of 2 lands (#7, #8) on main"
 main_green
 pass
 
+# A green prefix lands at once (looper#208): tacplus's bisection found its
+# first 7 lands green and built the next candidate, a full build more, on the
+# old main, the green ones held. A red batch of 5 whose bad change is the
+# fourth: the first 2 green land before the first 3 are built, and those are
+# built on the main the 2 made; #6, green, lands before the first 4 are built,
+# on the main it made; #7 is sent back; #8 is the next batch.
+scenario train-bisect-lands-green
+train_seed; train_issues 5 6 7 8
+for n in 4 5 6 7 8; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$( [[ "$n" == 7 ]] && echo red || echo "$n" )"; done
+manage "${BUILDS[@]}" LOOPER_RED_ROUND=0
+m="$(git -C "$FIX/seed" rev-parse HEAD)"
+f5="$(origin log --format='%H %s' main | sed -n 's/ fix 5$//p')"; f6="$(origin log --format='%H %s' main | sed -n 's/ fix 6$//p')"
+[[ -n "$f5" && -n "$f6" ]] || fail "main: $(origin log --oneline main)"
+# The first 2 built on the main the batch started from; the first 3 (#6's, main's) on #5's, the first 4 on #6's.
+has "$OUT" "the candidate ${f5:0:7} of 2 lands: a build job of the gates full (f4.txt matches no gate set), on main ${m:0:7}"
+has "$OUT" "the candidate ${f6:0:7} of 3 lands: a build job of the gates full (f6.txt matches no gate set), on main ${f5:0:7}"
+has "$OUT" "of 4 lands: a build job of the gates full (f7.txt matches no gate set), on main ${f6:0:7}"
+[[ "$(awk -v c="$f6" '$3 == c { print $5 }' "$FIX/builds")" == "$f5" ]] || fail "the first 3 were not built on #5's main: $(cat "$FIX/builds")"
+g="$(grep -n 'bisecting: the first 2 of 5 are green' <<<"$OUT" | cut -d: -f1)"
+f="$(grep -n "main fast-forwarded: ${m:0:7}\.\.${f5:0:7}" <<<"$OUT" | cut -d: -f1)"
+b="$(grep -n 'the candidate [0-9a-f]* of 3 lands: a build job' <<<"$OUT" | cut -d: -f1)"
+[[ -n "$g" && -n "$f" && -n "$b" ]] && (( g < f && f < b )) || fail "the first 2 did not land before the first 3 were built: $OUT"
+has "$OUT" "main fast-forwarded: ${f5:0:7}..${f6:0:7}"
+[[ "$(origin log --format=%s main | grep -v '^HISTORY' | head -n 4 | tac | paste -sd'|')" == "fix 4|fix 5|fix 6|fix 8" ]] || fail "main: $(origin log --oneline main)"
+[[ -z "$(landed f7.txt)" ]] || fail "the red change landed"
+c="$(cat "$FIX/comments")"
+has "$c" "found by bisecting a batch of 5 lands: the 3 before #7 are green without it, and the 1 after it are queued for the next batch"
+has "$(grep '^alpha#7 ' "$FIX/comments")" "sent back with the failure"
+has "$(grep '^alpha#4 ' "$FIX/comments")" "in a batch of 2 lands"
+lacks "$(grep '^alpha#6 ' "$FIX/comments")" "in a batch of"; has "$(grep '^alpha#6 ' "$FIX/comments")" "The manager merged [\`looper/alpha-6\`]"
+main_green
+pass
+
 # A batch of one that is red is just sent back: one build, no bisection.
 scenario train-one-red
 train_seed
