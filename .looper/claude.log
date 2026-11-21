@@ -1,0 +1,368 @@
+= init
+> Bash gh issue view 211 --repo tacplus-dev/looper --comments | tail -30; ls; ls tests | head -50; wc -l bin/* 2>/dev/null | tail -30
+< author:	tacplus-looper association:	none edited:	false status:	none -- The looper of looper starts this issue on `claude-opus-5-5`, the default model. Its limit 4h is capped at 4h by this job (https://gitlab.com/tacplus-dev/looper/-/jobs/18247875210), which ends sooner: the run stops by itself befor...
+> Bash wc -l looper-scan repo-looper tacplus looper-lib.sh tests/*.sh; grep -n "latest\|new\b\|\"new\"\|\.new" looper-scan | head -80
+<    1403 looper-scan    5216 repo-looper     116 tacplus    1022 looper-lib.sh     535 tests/forge.test.sh     129 tests/github-app-stub.sh     106 tests/go-fetch.test.sh      19 tests/hermetic.sh     156 tests/image-failed.test.sh    2735 tests/looper-build.test.sh     143 tests/looper-ci-lint.test....
+> Bash sed -n 1,130p looper-scan; sed -n 830,880p looper-scan; sed -n 1040,1110p looper-scan; sed -n 1230,1403p looper-scan
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # looper-scan: the build pipeline's deterministic security checks (looper#49; # README: Security checks). A floor under the nightly agent scan: the same # commit, the same tools (pinned in the looper image), ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "scan\b\|security\|summary.md\|findings.json\|new\b" repo-looper | head -120
+< 21:#   repo-looper --repo NAME --scan      the nightly scan: file issues, change no code; of the platform's 84:# so the next manager runs the new image). Each container a report's model 129:# work in progress (commits, changes, new files) is checkpointed to the branch 157:# made progress (a fix land...
+> Bash sed -n 4560,4770p repo-looper
+<   elif [[ -n "$capped" ]]; then     ended="The run's build had $capped, and the run then went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."   elif [[ "$stopped" == idle && -n "$head_after" && -n "$progress" ]]; then     ended="The ru...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Reading the issue's context (#180, #210) and how the nightly runs looper-scan before changing anything.
+> Bash gh issue view 210 --repo tacplus-dev/looper | head -60; grep -n "SCAN_KIND\|nightly" looper-build | head -60
+< title:	A nightly security job that publishes no report leaves security-<repo>/latest stale, and the repository scan reads it as that night's (tenantecho, 2026-11-21) state:	OPEN author:	tacplus-looper labels:	bug comments:	0 assignees:	 projects:	 milestone:	 issue-type:	 parent:	 sub-issues:	 sub-i...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "security_item\|security_report\|scan_labels\|verify_bugs\|run_scan\|^scan_\|^[a-z_]*scan[a-z_]*()" repo-looper | head; grep -n "scan" tests/repo-looper.test.sh | head -80
+< 4298:  local security; security="$(security_report "$run")" 4639:scan_labels() { # the newest issue number before the scan 4660:security_report() { # run-dir [repo, into run-dir/security-<repo>] 4683:verify_bugs() { # run-dir 4744:security_item() { # report-dir or "" 4812:    d="$(security_report "$...
+> Bash sed -n 5040,5130p repo-looper; sed -n 1476,1570p tests/repo-looper.test.sh
+<    A closed one makes the line stale (agents and Jody read it for what holds this up): file one issue for them, labelled \`$LABEL_BUG\` and \`$LABEL_APPROVED\`    (the fix is mechanical: rewrite the line, dropping each closed issue or naming what blocks now), quoting the line    and each closed issu...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "^forge_[a-z_]*()" looper-lib.sh repo-looper | head -50; grep -n "issue create\|--label\|search" looper-verify | head
+< looper-lib.sh:207:forge_need() { looper-lib.sh:247:forge_issue_view() { # repo n fields jq looper-lib.sh:257:forge_issue_list() { # repo state limit fields jq [label...] looper-lib.sh:271:forge_search_issues() { # label limit fields [jq [public]] looper-lib.sh:283:forge_repos() { looper-lib.sh:295:f...
+> Bash sed -n 240,350p looper-lib.sh; sed -n 50,100p looper-verify
+< # (`seabeam/tools/looper#5`: tools/looper). GL_ISSUE='{number: .iid, title, body: (.description // ""), state: (if .state == "opened" then "OPEN" else "CLOSED" end),            labels: [.labels[] | {name: .}], createdAt: .created_at, closedAt: .closed_at,            repository: {name: (.references.f...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 405,435p looper-lib.sh; grep -n "issue list\|issue view\|issue create\|^  gh)\|gh()" tests/repo-looper.test.sh | head -20
+< # An issue's texts for a prompt (looper#40), oldest first, one JSON object a # line: {a: author, s: association, t: text}, the title and body first, then # each comment (on GitLab, each note a person wrote). The association is # GitHub's author_association; on GitLab, the author's role in the projec...
+> Bash sed -n 60,200p tests/repo-looper.test.sh
+<   # $FIX/gh-hang: GitHub does not answer (looper#112).   api\ repos/*/commits/*/statuses*) [[ ! -e "$FIX/gh-hang" ]] || sleep 60     c="${cmd#api repos/*/commits/}"; c="${c%%/*}"; cat "$FIX/statuses/$c.json" 2>/dev/null || echo '[]'; exit 0 ;; esac n=""; repo=""; q="."; add=(); rm=(); body=""; has_b...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 665,705p looper-build; grep -n "previous run\|New since\|/latest/\|security-report\|cmd_report\|scan report\|looper-scan\" report\|SCAN_KIND\|nightly" tests/looper-build.test.sh | head -60; grep -rn "previous run\|New since" README.md STATE.md | head
+< security-$BUILD_REPO:   image: "$BUILD_SCAN_IMAGE"   tags: [$BUILD_RUNNER_TAGS]   needs: [{job: gates, artifacts: true}]   when: always   timeout: 3h   variables:     GIT_STRATEGY: none     BUILD_REPO: "$BUILD_REPO"     BUILD_SHA: "$BUILD_SHA"     BUILD_TAG: "${BUILD_TAG:-}"     BUILD_ORG: "$BUILD_O...
+> Bash sed -n 1525,1565p README.md; sed -n 160,180p STATE.md; grep -n "previous\|report: \|package-put\|package-get\|latest" tests/looper-build.test.sh | sed -n 1,80p | grep -v "verify-demo\|gates-demo"
+< and filed. Its entries count findings per tool, rule and file, not line, so an edit that moves them does not make them new:  ```json [   {"count":2,"file":"main.go","id":"G306","tool":"gosec"} ] ```  `looper-scan baseline FINDINGS > security-baseline.json` writes it from a run's `findings.json` (the...
+> Bash sed -n 440,500p tests/looper-build.test.sh; sed -n 2255,2300p tests/looper-build.test.sh; sed -n 2370,2440p tests/looper-build.test.sh; grep -n "^scan()\|^scanrun\|^secrun\|^run_scan\|scan() {" tests/looper-build.test.sh
+<     jwt="\${auth#Bearer }"; IFS=. read -r h p s <<<"\$jwt"     b64d "\$s" > "$TMP/sig"     printf '%s' "\$h.\$p" | openssl dgst -sha256 -verify "$TMP/app.pub" -signature "$TMP/sig" >/dev/null 2>&1 ||       { echo "jwt-bad" >> "$TMP/api.log"; exit 22; }     b64d "\$p" | grep -q '"iss":"$APP_ID"' || {...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 1875,1910p tests/looper-build.test.sh; grep -n "previous.json" tests/looper-build.test.sh
+< pass  # looper-scan, as the security job runs it: the stub scanners unless the real # ones are here, the build project's API (its package registry) at gitlab.example. SCAN_API=(CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42) scan() { # [VAR=value...] -- args   local e=(); while [[ "$1"...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "BUILD_SCAN_KIND=nightly" tests/looper-build.test.sh | head; grep -n "api.log\" *$\|: > \"\$TMP/api.log\"" tests/looper-build.test.sh | head -3; grep -n "vuln-findings.json\"" tests/looper-build.test.sh | head -3
+< 2013:NIGHTLY=(BUILD_SCAN_KIND=nightly PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH") 2604:if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly -- run 2>"$TMP/err"; then fail "passed"; fi 2612:if scan BUILD_SHA="${SHA[scanpod]}" BUILD_SCAN_KIND=nightly -- run 2>"$T...
+> Bash sed -n 2005,2030p tests/looper-build.test.sh; sed -n 2296,2330p tests/looper-build.test.sh; grep -n "api.log" tests/looper-build.test.sh | grep -n "rm\|: >" | head
+< [[ ! -e "$TMP/saw-reports" ]] || fail "scanned with the reports in the checkout: $(sort -u "$TMP/saw-reports" | paste -sd' ')" [[ "$(found "$CO/security")" == "$OUTSIDE" ]] || fail "findings: $(found "$CO/security") (with the reports outside: $OUTSIDE)" grep -qxF "Reports: $CO/security" "$CO/securit...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Now writing the failing tests first. looper-build.test.sh stub and assertions:
+> Bash python3 - <<'EOF' import re p='tests/looper-build.test.sh' s=open(p).read() old='''  # The build project's package registry (looper#49): the latest findings, the SBOMs.   "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/latest/findings.json")     echo "package-get \\$aut...
+< 2268:NAME="security: findings are compared with the last nightly's: the new ones are listed"
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='tests/looper-build.test.sh' s=open(p).read() anchor='''grep -q '^## Security checks: demo ' "$TMP/report.out" || fail "the summary is not in the job's log" pass ''' assert s.count(anchor)==1 new=anchor+''' # looper#211: new was measured against the latest, which a land's build o...
+< 2018:NIGHTLY=(BUILD_SCAN_KIND=nightly PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+= thinking_tokens
+= thinking_tokens
+> Bash (time bash tests/looper-build.test.sh) > /tmp/lb211.log 2>&1 & echo $!
+< 965
+Meanwhile, implementing looper-scan:
+> Bash python3 - <<'EOF' p='looper-scan' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt,(old,s.count(old)); s=s.replace(old,new) rep('''#   report   the security-report job: the run's findings as the repository's #            latest (the build project's generic package s...
+< (Bash completed with no output)
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "^issue()\|^body()\|^labels()\|^templates()\|^scenario()\|^has()\|^lacks()" -A6 tests/repo-looper.test.sh | head -60; cat /tmp/lb211.log | tail -5
+< 341:issue() { # repo n state labels(csv) body 342-  jq -n --argjson n "$2" --arg s "$3" --arg l "$4" --arg b "$5" \ 343-    '{number: $n, title: "Issue \($n)", state: $s, labels: ($l | split(",") | map(select(. != "")) | map({name: .})), body: $b, comments: [], createdAt: "2026-10-27T00:00:00Z"}' \ ...
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='tests/repo-looper.test.sh' s=open(p).read() anchor='''# The nightly scan files the build pipeline's red formal verification # (looper#74)''' assert s.count(anchor)==1 new='''# Every finding the policy fails or HIGH or CRITICAL, not excepted, is filed # once no open issue names i...
+< (Bash completed with no output)
+= thinking_tokens
+= thinking_tokens
+Now repo-looper: the unfiled list, the prompt, and the floor after the model.
+> Bash python3 - <<'EOF' p='repo-looper' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt,(old,s.count(old)); s=s.replace(old,new) rep('''# The scan's first item: the build's security report, or that there is none. security_item() { # report-dir or ""   if [[ -n "$1" ]]; t...
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 120s timeout and was moved to the background (ID: bxgjcu081). Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bxgjcu081.output. You will be notified whe...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sleep 60; grep -v "^ok" /tmp/lb211.log | tail -20; grep -c "^ok" /tmp/lb211.log
+< <tool_use_error>Blocked: sleep 60 followed by: grep -v "^ok" /tmp/lb211.log tail -20 grep -c "^ok" /tmp/lb211.log. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sl...
+> Bash grep -v "^ok" /tmp/lb211.log | tail -20; grep -c "^ok" /tmp/lb211.log
+< (security checks with the real scanners) 88
+= thinking_tokens
+= thinking_tokens
+Docs while tests run. README Security checks section:
+> Bash grep -n "latest\b\|previous run\|new since\|security-<repo>" README.md | sed -n 1,60p | grep -in "secur\|finding\|new"
+< 6:851:tacplus-dev/build`) and every repository's latest security report (the build project's `security-<repo>` packages), 8:1052:- **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the 11:1084:  failed `security-<repo>` job's, the gates gr...
+> Bash sed -n 1248,1260p README.md; sed -n 1348,1356p README.md; sed -n 1480,1490p README.md
+< run by two jobs of the child pipeline `plan` writes, beside `gates`:  - **`security-<repo>`** (`looper-scan run`, after `gates`, also when the gates fail) fetches the commit as `gates` does   (the reader app's read-only token, the key deleted and GitLab's job token dropped before any tool runs) and ...
+> Bash python3 - <<'EOF' p='README.md' s=open(p).read() def rep(old,new,cnt=1):     global s     assert s.count(old)==cnt,(old,s.count(old)); s=s.replace(old,new) rep('''  registry, with the job's token). The next run compares with it, and the nightly agent scan reads it. It publishes   them as its commit'...
+< 244:tests/repo-looper.test.sh      # waiting-on: --wait-on checkpoints "waiting on <url>", the run ends waiting (approved, not stuck), the issue not listed while the pipeline runs, listed once it failed, and the next run resumes, the result in its prompt and the line out of the body; waiting-on-then...
+> Bash cat /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bxgjcu081.output | tail; grep -v "^ok" /tmp/lb211.log | tail
+< (security checks with the real scanners)
+= thinking_tokens
+= thinking_tokens
+> Bash until grep -q "scan-security-unfiled\|FAIL" /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bxgjcu081.output 2>/dev/null || ! kill -0 965 2>/dev/null && false; do sleep 5; done; cat /builds/looper/looper/homes/looper...
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bluxtl5wf. Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bluxtl5wf.output. You will be notified when it completes. To check interim output, use Rea...
+= thinking_tokens
+= thinking_tokens
+Now STATE.md (to be its own last commit):
+> Bash python3 - <<'EOF' p='STATE.md' s=open(p).read() old='''SARIF and JSON reports, the new findings since the   previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a''' assert s.count(old)==1 s=s.replace(old,'''SARIF and JSON reports, the new finding...
+<  README.md                  | 21 ++++++++++-------  STATE.md                   |  5 +++-  looper-scan                | 56 +++++++++++++++++++++++++++++----------------  repo-looper                | 49 +++++++++++++++++++++++++++++++++++----  tests/looper-build.test.sh | 57 ++++++++++++++++++++++++++...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-scan' s=open(p).read() old='''# A HIGH or CRITICAL finding the last nightly had too (not new), neither # baselined nor excepted nor in test code: the summary's standing ones, which # the nightly scan files when no open issue names them (looper#211). JQ_STANDING=' def stan...
+< /bin/bash: line 35: shellcheck: command not found
+= thinking_tokens
+= thinking_tokens
+> Bash until [[ -s /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bxgjcu081.output ]]; do sleep 5; done; cat /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-...
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< [killed]
+> Bash grep -n "ONLY\|SCENARIO\|\$1" tests/repo-looper.test.sh | head; sed -n 349,352p tests/repo-looper.test.sh
+< 44:cmd="$1 $2"; shift 2 66:  case "$1" in 77:    *) n="$1"; shift ;; 84:save() { printf '%s\n' "$1" > "$f.$$" && mv "$f.$$" "$f"; } 152:model=""; while [[ $# -gt 0 ]]; do [[ "$1" != --model ]] || model="$2"; shift; done 189:enc() { printf '%s' "$1" | jq -sRr @uri; } 193:  [[ "$1" != @* ]] || { [[ "$...
+> Bash nohup bash tests/repo-looper.test.sh > /tmp/rl211.log 2>&1 & echo $!
+< 211781
+> Bash until grep -q "scan-security-unfiled\|^FAIL\|fail" /tmp/rl211.log || ! kill -0 211781 2>/dev/null; do sleep 10; done; grep -v "^ok" /tmp/rl211.log | tail -30; grep "scan-sec" /tmp/rl211.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< ok scan-security-report ok scan-security-cause ok scan-security-unfiled
+= thinking_tokens
+= thinking_tokens
+The new repo-looper scenario passes; checking the looper-build run (real scanners, slow).
+> Bash grep -v "^ok" /tmp/lb211.log | tail; grep -c "^ok" /tmp/lb211.log; kill -0 965 && echo running
+< Exit code 1 (security checks with the real scanners) skip security: a scanner the image lacks fails the run: the real scanners are here skip publish --dry-run, real buildx: the same commit twice gives the same digest: no docker with buildx here skip publish --dry-run, real rootless BuildKit, no Dock...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "first seen\|last nightly" /tmp/lb211.log; cd /builds/looper/looper/issues/211 && nohup bash tests/looper-build.test.sh > /tmp/lb211b.log 2>&1 & echo $!
+< 103:ok security: findings are compared with the last nightly's: the new ones are listed 112:ok security: a finding first seen by a land's build is new to the next nightly, which compares with the last nightly's, not the latest 318768
+= thinking_tokens
+= thinking_tokens
+> Bash for t in planning-files looper-ci-lint looper-secrets; do bash tests/$t.test.sh 2>&1 | tail -2; done
+= task_started
+= task_notification
+< ok no-base planning-files-check: all scenarios pass looper-ci-lint: all scenarios pass ok planted ok tree
+> Bash until ! kill -0 211781 2>/dev/null; do sleep 10; done; grep -v "^ok" /tmp/rl211.log | tail -20
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: bgeym8tx3). Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bgeym8tx3.output. You will be notified whe...
+= thinking_tokens
+= thinking_tokens
+> Bash git add looper-scan repo-looper README.md tests/ && git commit -q -F - <<'EOF' The nightly scan files every blocking or HIGH finding no open issue names, not only new ones (#211)  new was measured against security-<repo>/latest, which a land's build and a --build publish too: a finding one of them s...
+< 8b8dcb6 STATE.md: the nightly scan files every blocking or HIGH finding no open issue names (#211) aa24f34 The nightly scan files every blocking or HIGH finding no open issue names, not only new ones (#211) 3b912c9 ROADMAP: Next, accepted suggestions of 2026-11-21 (#211, #212, #213) [2026-11-21T17:2...
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short; git diff --stat origin/main HEAD | tail -1
+<  6 files changed, 182 insertions(+), 40 deletions(-)
+Committed and checkpointed. Starting the build job:
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 211 --build > /tmp/build211.log 2>&1 & echo $!
+< 507763
+> Bash until ! kill -0 211781 2>/dev/null; do sleep 10; done; grep -v "^ok" /tmp/rl211.log | tail -20
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< skip model-users: not root, or no setpriv, useradd or python3 repo-looper: all scenarios pass
+> Bash until ! kill -0 318768 2>/dev/null; do sleep 10; done; grep -v "^ok" /tmp/lb211b.log | tail -6; tail -5 /tmp/build211.log
+< (security checks with the real scanners) skip security: a scanner the image lacks fails the run: the real scanners are here skip publish --dry-run, real buildx: the same commit twice gives the same digest: no docker with buildx here skip publish --dry-run, real rootless BuildKit, no Docker: the same...
+= thinking_tokens
+= thinking_tokens
+> Bash /usr/local/bin/looper-trace check 2>&1 | tail -3
+< looper-trace: /builds/looper/looper/issues/211 verdict: pass (0 handlers, 0 findings)
+> Bash until ! kill -0 507763 2>/dev/null; do sleep 20; done; tail -5 /tmp/build211.log
+= task_started
+= task_notification
+< [2026-11-21T17:20:32Z] build requested: looper 8b8dcb6, the gates full (repo-looper is mapped to full (/repo-looper)) the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097888084 of looper 8b8dcb6, the gates full on base 3b912c9 [2026-11-21T17:30:43Z] waiting for the verdict of the buil...
+Exit 4 (no runner within 15m). A later --build of the same commit picks it up; waiting again:
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 211 --build > /tmp/build211b.log 2>&1 & echo $!
+< 621316
+> Bash until ! kill -0 621316 2>/dev/null; do sleep 20; done; tail -4 /tmp/build211b.log
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: b1o4v0t0p). Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/b1o4v0t0p.output. You will be notified whe...
+> Bash until ! kill -0 621316 2>/dev/null; do sleep 20; done; tail -4 /tmp/build211b.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097888084 of looper 8b8dcb6, the gates full on base 3b912c9 (reused: queued or running: this key's build, looper#134) [2026-11-21T17:46:18Z] waiting for the verdict of the build job https://gitlab.com/tacplus-dev/build/-/pipelines/30978...
+Still no runner after 30 minutes. Trying once more:
+> Bash /usr/local/bin/repo-looper --repo looper --issue 211 --build > /tmp/build211c.log 2>&1; echo rc=$?; tail -3 /tmp/build211c.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: b8mce39wf. Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/b8mce39wf.output. You will be notified when it completes. To check interim output, use Rea...
+= thinking_tokens
+= thinking_tokens
+> Bash until grep -q "rc=\|verdict\|no runner" /tmp/build211c.log 2>/dev/null; do sleep 20; done; tail -4 /tmp/build211c.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: bn2wgh4vl). Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bn2wgh4vl.output. You will be notified whe...
+> Bash tail -3 /tmp/build211c.log; cd /builds/looper/looper/issues/211 && nohup /usr/local/bin/repo-looper --repo looper --issue 211 --build > /tmp/build211d.log 2>&1 & echo $!
+< [2026-11-21T17:51:36Z] checkpoint of #211 (a build) pushed to looper/looper-211:  8 files changed, 603 insertions(+), 40 deletions(-) [2026-11-21T17:51:36Z] build requested: looper 8b8dcb6, the gates full (repo-looper is mapped to full (/repo-looper)) the build job https://gitlab.com/tacplus-dev/bui...
+> Bash until ! kill -0 628123 2>/dev/null; do sleep 20; done; tail -4 /tmp/build211d.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: b11h2kq12. Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/b11h2kq12.output. You will be notified when it completes. To check interim output, use Rea...
+> Bash until ! kill -0 628123 2>/dev/null; do sleep 20; done; tail -4 /tmp/build211d.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_updated
+= task_notification
+= background_tasks_changed
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 600s timeout and was moved to the background (ID: bh99xshs9). Output is being written to: /builds/looper/looper/homes/looper-211/tmp/claude-61000/-builds-looper-looper-issues-211/efaa6afe-9f50-4113-94b1-886c26d1a079/tasks/bh99xshs9.output. You will be notified whe...
+> Bash until ! kill -0 628123 2>/dev/null; do sleep 20; done; tail -4 /tmp/build211d.log
+= task_started
+= task_updated
+= task_notification
+= background_tasks_changed
+= task_notification
+< the build job https://gitlab.com/tacplus-dev/build/-/pipelines/3097888084 of looper 8b8dcb6, the gates full on base 3b912c9 (reused: queued or running: this key's build, looper#134) [2026-11-21T18:11:51Z] waiting for the verdict of the build job https://gitlab.com/tacplus-dev/build/-/pipelines/30978...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash /usr/local/bin/repo-looper --repo looper --issue 211 --land 2>&1 | tail -5
+= task_started
+= task_notification
+< [2026-11-21T18:17:11Z] checkpoint of #211 (land queued) pushed to looper/looper-211:  9 files changed, 658 insertions(+), 40 deletions(-) [2026-11-21T18:17:13Z] queued: the manager of looper lands looper/looper-211 in its next batch, with the lands queued before it (the merge train, looper#86), and ...
+> Bash /usr/local/bin/repo-looper --repo looper --issue 211 --checkpoint "Done and queued for land: aa24f34 (looper-scan: new measured against the last nightly's findings, version security-<repo>/nightly that only a nightly's report publishes, not latest or <main's head>, which a land's build also publishe...
+< [2026-11-21T18:17:21Z] checkpoint of #211 (a step) pushed to looper/looper-211:  9 files changed, 662 insertions(+), 40 deletions(-)
+I've made the change for #211 and queued it to land on main. It hasn't been checked by a build job: no runner picked up my `--build` (pipeline 3097888084) within 15 minutes, three times over about an hour. So the manager's own build of the batch will be the first build-image run. The issue stays `looper:landing` until its verdict, and the next run of this issue closes it or fixes what comes back.
+
+**What changed** (commit aa24f34, plus 8b8dcb6 for STATE.md on its own):
+- **What "new" is compared with:** `looper-scan` now compares each run's findings with the last nightly's, not with `latest`. A nightly's report publishes its findings under a new package version, `security-<repo>/nightly`; land and `--build` reports don't publish there.
+- **Why not `security-<repo>/<main's head>`, as the issue said:** a land's build publishes under its candidate's sha, and that candidate becomes main's head. So that package is often the land's report rather than the nightly's, which is the same problem we're fixing. The commit message explains this.
+- **New summary section:** `summary.md` now has "Standing HIGH/CRITICAL, not baselined, not excepted", listing findings the last nightly also had.
+- **Filing:** before the model runs, the nightly scan writes `unfiled.json`. It lists every finding that fails the policy or is HIGH/CRITICAL, isn't excepted, and whose id or aliases no open issue mentions (title, body or comments), whether new or not. The model files these as one issue per cause (#129). Whatever is still unnamed after the model, `repo-looper` files itself as one issue labelled `bug`, so nothing stays unfiled and the next scan files nothing twice.
+- **Tests:**
+  - `tests/looper-build.test.sh`, with the scanners: a finding first seen by a land's build is new to the next nightly, which never reads `latest`. Only a nightly's report publishes `nightly`. The nightly after that lists the finding under the new Standing section.
+  - `tests/repo-looper.test.sh` `scan-security-unfiled`: only unnamed findings are listed (one named through an alias is skipped; one mentioned only in a closed issue still counts as unnamed). What the model leaves is filed as one `bug`, and a second scan files nothing.
+- README's Security checks section is updated to match.
+
+**Local runs:** `looper-build.test.sh` (with the real scanners installed here), `repo-looper.test.sh`, `planning-files`, `looper-ci-lint` and `looper-secrets` all pass. `looper-trace check` found no handlers, which is expected since no service handlers were touched. shellcheck isn't installed here, and the gates that need Docker weren't run locally; the manager's build on the full gate set covers both.
+
+**Still open:** if a nightly publishes nothing, `security-<repo>/nightly` goes stale in the same way #210 describes for `latest`. #210 is still open, and its fix should cover the `nightly` version too.
+= success: I've made the change for #211 and queued it to land on main. It hasn't been checked by a build job: no runner picked up my `--build` (pipeline 3097888084) within 15 minutes, three times over about an hour. So the manager's own build of the batch will be the first build-image run. The issue stays `looper:landing` until its verdict, and the next run of this issue closes it or fixes what comes back.
+
+**What changed** (commit aa24f34, plus 8b8dcb6 for STATE.md on its own):
+- **What "new" is compared with:** `looper-scan` now compares each run's findings with the last nightly's, not with `latest`. A nightly's report publishes its findings under a new package version, `security-<repo>/nightly`; land and `--build` reports don't publish there.
+- **Why not `security-<repo>/<main's head>`, as the issue said:** a land's build publishes under its candidate's sha, and that candidate becomes main's head. So that package is often the land's report rather than the nightly's, which is the same problem we're fixing. The commit message explains this.
+- **New summary section:** `summary.md` now has "Standing HIGH/CRITICAL, not baselined, not excepted", listing findings the last nightly also had.
+- **Filing:** before the model runs, the nightly scan writes `unfiled.json`. It lists every finding that fails the policy or is HIGH/CRITICAL, isn't excepted, and whose id or aliases no open issue mentions (title, body or comments), whether new or not. The model files these as one issue per cause (#129). Whatever is still unnamed after the model, `repo-looper` files itself as one issue labelled `bug`, so nothing stays unfiled and the next scan files nothing twice.
+- **Tests:**
+  - `tests/looper-build.test.sh`, with the scanners: a finding first seen by a land's build is new to the next nightly, which never reads `latest`. Only a nightly's report publishes `nightly`. The nightly after that lists the finding under the new Standing section.
+  - `tests/repo-looper.test.sh` `scan-security-unfiled`: only unnamed findings are listed (one named through an alias is skipped; one mentioned only in a closed issue still counts as unnamed). What the model leaves is filed as one `bug`, and a second scan files nothing.
+- README's Security checks section is updated to match.
+
+**Local runs:** `looper-build.test.sh` (with the real scanners installed here), `repo-looper.test.sh`, `planning-files`, `looper-ci-lint` and `looper-secrets` all pass. `looper-trace check` found no handlers, which is expected since no service handlers were touched. shellcheck isn't installed here, and the gates that need Docker weren't run locally; the manager's build on the full gate set covers both.
+
+**Still open:** if a nightly publishes nothing, `security-<repo>/nightly` goes stale in the same way #210 describes for `latest`. #210 is still open, and its fix should cover the `nightly` version too.
+= usage: {"claude-opus-5-5":{"inputTokens":120,"outputTokens":34334,"cacheReadInputTokens":6568394,"cacheCreationInputTokens":134021,"webSearchRequests":0,"costUSD":3.0730067999999995,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":13398,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}
