@@ -1505,6 +1505,13 @@ build_ended() { # pipeline-id
   st="$(build_status "$1")" || return 1
   case "$st" in canceled|failed|skipped) echo "$st" ;; *) return 1 ;; esac
 }
+# A build pipeline cancelled with no verdict (looper#209): tacplus's batch
+# build, never given a pod while the pool was full, was cancelled by the hub
+# as an orphan, and the next manager judged the batch red on it and built each
+# of its 17 lands on its own. A land's such build is no red: it is built again.
+build_cancelled() { # sha pipeline-id
+  [[ -z "$(build_said "$(build_statuses "$1" "$2")")" && "$(build_ended "$2")" == canceled ]]
+}
 # The build project's other running pipelines than id, counted (looper#209),
 # read with GITLAB_TOKEN; fails with none, or none read.
 build_pool_busy() { # pipeline-id
@@ -1580,7 +1587,9 @@ build_capped() { # run-dir
 # (a merge commit linearized): the same tree, gate set and base, so the same
 # gates. Its verdict is that build's, on that commit; nothing is built again.
 # No build had (its commit's push refused, a trigger that failed) is no red:
-# BUILD_UNBUILT, its last lines "nothing built: <why>" (looper#194).
+# BUILD_UNBUILT, its last lines "nothing built: <why>" (looper#194); nor is
+# one cancelled before a verdict, built again (build_again), and again
+# cancelled (looper#209).
 build_gates() { # base [queued commit]
   local b="looper/build-$REPO-$ISSUE" sha p rc=0 gates="" t0 r w c="${2:-}"; sha="$(git rev-parse HEAD)"
   local BUILD_LAND=1   # a land's build, no report's (start_build, build_verdict: looper#209)
@@ -1597,6 +1606,7 @@ build_gates() { # base [queued commit]
     # Left to run (3), it is found again by its key: no record.
     build_verdict "$c" "${r%% *}" "$(cut -d' ' -f2 <<<"$r")" "" "$w" || rc=$?
     if (( rc == 1 )); then rc=0; build_again "$c" "$gates" "$1" "$w" "$(cut -d' ' -f1,2 <<<"$r")" || rc=$?; [[ -n "$AGAIN_P" ]] || rc=1; fi
+    (( rc != 1 )) || ! again_cancelled "$c" || rc=$BUILD_UNBUILT
     return "$rc"
   else
     t0="$(date +%s)"
@@ -1613,6 +1623,7 @@ build_gates() { # base [queued commit]
   if (( rc == 1 )); then
     rc=0; build_again "$sha" "$gates" "$1" "$w" "$p" || rc=$?
     if [[ -n "$AGAIN_P" ]]; then p="$AGAIN_P"; t0="$AGAIN_T0"; else rc=1; fi
+    (( rc != 1 )) || ! again_cancelled "$sha" || rc=$BUILD_UNBUILT
   fi
   # Left to run at the job's end (3), or not started within BUILD_START
   # (BUILD_NO_RUNNER, looper#113): recorded, for the next manager to take up.
@@ -1625,21 +1636,34 @@ build_gates() { # base [queued commit]
 }
 
 # A land's red build, red in its infrastructure alone with its gates green
-# (build_infra, looper#173), built again, once: a new build of its key (a red
+# (build_infra, looper#173), or cancelled before a verdict (build_cancelled,
+# looper#209), built again, once: a new build of its key (a red or cancelled
 # one is reused by nothing), the commit still on the branch it was built from.
 # Its verdict is the land's: build_verdict's exit. AGAIN_P is the new build
 # ("<pipeline id> <URL>") and AGAIN_T0 its trigger's time; both are empty, and
 # it fails, when the build was red, or none could be started.
 build_again() { # sha gates base wait "<pipeline id> <URL>"
   local why; AGAIN_P=""; AGAIN_T0=""
-  why="$(build_infra "$1" "${5%% *}")" || return 1
-  echo "the build job ${5#* } failed, its gates green: $why; it is built again, once (looper#173)"
-  log "the build job ${5#* } of $REPO ${1:0:7} failed in its infrastructure alone, its gates green: it is built again, once (looper#173)" >&2
+  if build_cancelled "$1" "${5%% *}"; then
+    echo "the build job ${5#* } was cancelled before a verdict: no red; it is built again, once (looper#209)"
+    log "the build job ${5#* } of $REPO ${1:0:7} was cancelled before a verdict: it is built again, once (looper#209)" >&2
+  else
+    why="$(build_infra "$1" "${5%% *}")" || return 1
+    echo "the build job ${5#* } failed, its gates green: $why; it is built again, once (looper#173)"
+    log "the build job ${5#* } of $REPO ${1:0:7} failed in its infrastructure alone, its gates green: it is built again, once (looper#173)" >&2
+  fi
   AGAIN_T0="$(date +%s)"
   get_build "$1" "$2" "$3" || { echo "nothing built again: $BUILD_P"; AGAIN_T0=""; return 1; }
   AGAIN_P="$BUILD_P"
   echo "the build job ${AGAIN_P#* } of $REPO ${1:0:7}, the gates ${2:-full} on base ${3:0:7}"
   build_verdict "$1" "${AGAIN_P%% *}" "${AGAIN_P#* }" "$AGAIN_T0" "$4"
+}
+
+# A land's build cancelled before a verdict again once built again (looper#209):
+# no red, nothing built (BUILD_UNBUILT), its lands left queued for the next manager.
+again_cancelled() { # sha
+  [[ -n "$AGAIN_P" ]] && build_cancelled "$1" "${AGAIN_P%% *}" &&
+    echo "nothing built: its build job ${AGAIN_P#* } was cancelled before a verdict, as the one before it: no red (looper#209)"
 }
 
 # The record of a build left to run on branch b (build_gates), its lines
@@ -2405,7 +2429,7 @@ batch_judge() { # main
 # was green on this main before the batch was staged (pre_land_train), so it
 # would say nothing of the batch's red. A land red on its own is sent back
 # with its own failure; one green, or with no verdict on its own (its rebase
-# alone conflicts, no runner, past its wait, its infrastructure's red, a build
+# alone conflicts, no runner, past its wait, its infrastructure's red, cancelled, a build
 # that would outlast the job), stays, and those are staged again from main as
 # one batch, judged as any (its round done: red again, it is bisected). A
 # round that sends nothing back (two lands that break only together, a flake)
@@ -2448,6 +2472,8 @@ red_round() { # main count
     rc=0; build_verdict "${rr[j]}" "${rp[j]%% *}" "${rp[j]#* }" "${rt[j]}" "${rw[j]}" > "$rec/round.log" 2>&1 || rc=$?
     git -C "$CHECKOUT" push -q origin --delete "looper/round-$REPO-$n" >/dev/null 2>&1 || true
     (( rc != 1 )) || ! pre_land_infra "${rr[j]}" "${rp[j]%% *}" "$rec/round.log" || rc=2
+    # Cancelled before a verdict (looper#209): no verdict on its own, not red.
+    (( rc != 1 )) || ! build_cancelled "${rr[j]}" "${rp[j]%% *}" || rc=2
     sed -n 's/^build times: /#'"$n"': its build /p' "$rec/round.log" | tail -n 1 | while IFS= read -r l; do log "$l"; done
     case "$rc" in
       0) log "#$n: green on its own" ;;

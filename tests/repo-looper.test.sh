@@ -235,7 +235,8 @@ case "$url" in
   # newer, by another creator: no verdict. $FIX/build-hold holds the build
   # (looper#128): `queued`, no runner has started it (no status); `running
   # <ISO time>`, its first job started then (its pending status alone);
-  # `<seconds>`, queued that long in the pool, then its verdict (looper#133).
+  # `<seconds>`, queued that long in the pool, then its verdict (looper#133);
+  # $FIX/build-hold-<pipeline id>, that build's alone (looper#209).
   */projects/tacplus-dev%2Fbuild/trigger/pipeline)
     form="$(IFS='&'; printf '%s' "${body[*]}")"
     dec() { local x="${1//+/ }"; printf '%b' "${x//%/\\x}"; }
@@ -263,7 +264,7 @@ case "$url" in
       [[ -z "$l" || "$state" != success ]] || { state=failure; desc="$l"; }
     fi
     rm -rf "$d"; mkdir -p "$FIX/statuses"; f="$FIX/statuses/$sha.json"; [[ -f "$f" ]] || echo '[]' > "$f"
-    now="$(date -u +%FT%TZ)"; hold="$(cat "$FIX/build-hold" 2>/dev/null || true)"; pend="building${gates:+: gates $gates}${base:+ on base $base}"
+    now="$(date -u +%FT%TZ)"; hold="$(cat "$FIX/build-hold-$id" 2>/dev/null || cat "$FIX/build-hold" 2>/dev/null || true)"; pend="building${gates:+: gates $gates}${base:+ on base $base}"
     st1() { ( flock 7; jq -c --arg s "$1" --arg d "$2" --arg u "https://gitlab.com/tacplus-dev/build/-/pipelines/$id" --arg w "$3" --arg t "${4:-$now}" \
               '[{state: $s, context: "tacplus-dev/build", description: $d, target_url: $u, creator: {login: $w}, created_at: $t}] + .' "$f" > "$f.new" && mv "$f.new" "$f" ) 7>"$f.lock"; }
     st() { st1 pending "$pend" "$3" "${4:-}"; [[ "$1" == pending ]] || st1 "$1" "$2" "$3" "${4:-}"; }
@@ -4070,6 +4071,36 @@ lacks "$OUT" "it is full, not without runners"
 [[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
 pass
 
+# A land's build cancelled before a verdict (looper#209: tacplus's batch build,
+# given no pod while the pool was full, was cancelled by the hub, and the next
+# manager judged the batch red on it and built each of its 17 lands on its
+# own) is no red: it is built again, once, and the land merged on that
+# build's verdict. Cancelled again, it is still no red: nothing built, the
+# land left queued, its issue told once, for the next manager.
+scenario build-cancelled-built-again
+pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"
+mkdir -p "$FIX/pipeline-status"; echo canceled > "$FIX/pipeline-status/901"; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold-901"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha"; has "$OUT" "was cancelled before a verdict: it is built again, once (looper#209)"
+lacks "$OUT" "is red"; lacks "$OUT" "judging each of its"
+[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+has "$(cat "$FIX/comments")" "a build job's verdict (https://gitlab.com/tacplus-dev/build/-/pipelines/902): green"
+pass
+scenario build-cancelled-twice
+pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"
+mkdir -p "$FIX/pipeline-status"
+for id in 901 902; do echo canceled > "$FIX/pipeline-status/$id"; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold-$id"; done
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "#4: left queued: nothing built: its build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 was cancelled before a verdict, as the one before it: no red (looper#209)"
+has "$OUT" "the manager stops: nothing could be built"; lacks "$OUT" "is red"
+[[ "$(wc -l < "$FIX/builds")" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ -z "$(landed notes.md)" ]] || fail "merged without a verdict"
+grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued"
+c="$(cat "$FIX/comments")"
+has "$c" "Nothing could be built of the batch holding"; lacks "$c" "The manager did not merge"
+pass
+
 # A build that has run past LOOPER_BUILD_WAIT since its start is red.
 scenario build-running-past-bound
 pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo "running $(date -u -d '2 hours ago' +%FT%TZ)" > "$FIX/build-hold"
@@ -4253,6 +4284,21 @@ s="$(grep -n ': on its own, the gates ' <<<"$OUT" | tail -n 1 | cut -d: -f1)"; v
 [[ "$(grep -c ': on its own, the gates ' <<<"$OUT")" == 5 ]] && (( s < v )) || fail "the round's builds were not all started first: $(grep -n 'on its own' <<<"$OUT")"
 [[ -z "$(origin for-each-ref refs/heads/looper/round-*)" ]] || fail "round branches left: $(origin for-each-ref refs/heads/looper/)"
 main_green
+pass
+
+# A land's build in the round cancelled before a verdict (looper#209) is no
+# red on its own: the land stays in the batch, and is not sent back on it.
+scenario train-red-round-cancelled
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+# The batch's build (901) red in its infrastructure's words; #5's own (903) cancelled.
+mkdir -p "$FIX/pipeline-status"; echo canceled > "$FIX/pipeline-status/903"; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold-903"
+printf 'the build failed\n' > "$FIX/build-infra"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (looper#205)"
+has "$OUT" "#5: no verdict on its own (verdict: failure: the build was cancelled before a verdict"
+lacks "$OUT" "#5: red on its own"
+lacks "$(grep '^alpha#5 ' "$FIX/comments" || true)" "The manager did not merge"
 pass
 
 # A red batch whose lands are each green on their own (two changes that break
