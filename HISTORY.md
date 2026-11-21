@@ -163,3 +163,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-21 looper issue security job takes 49 min on a tacplus candidate: gitleaks alone 29 min, scanners run serially on a 1-CPU pod (#207)
 - 2026-11-21 looper issue Bisect holds a green prefix: the manager builds the next half on the old main instead of merging the green half first (#208)
 - 2026-11-21 looper issue Batches still starve: runs' own pre-queue builds lack report:true (bypass #195's slots), and 4 report slots fill a 2-node pool (#209)
+- 2026-11-21 looper issue A pinned build image follows its line's newest patch by a relock the loopers land, and a pin behind its line is a bug the scan files (#212)
