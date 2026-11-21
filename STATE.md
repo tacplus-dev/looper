@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-20 by looper (#205).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-21 by looper (#212).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -90,7 +90,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-20 by lo
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
   the scans file bugs as `bug`, one issue per cause and not per finding, blocked from the start (its `Blocked-by:` lines)
   when the fix is another repository's open issue (#129), never approve a feature, and read the roadmaps before
-  opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); the build
+  opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); the
+  relock (#212): the nightly scan, before its model, moves main's pins by digest (each pin file's `build_image:`, each Dockerfile
+  FROM) to their tags' digests now, the tacplus build image at a patch tag and tacplus.lock's `tacplus:` to the line's newest
+  released patch, files one approved `bug` a repository for the moves (`<!-- looper-relock -->`) and queues the relock on its
+  branch with the manager's identity, `looper:landing`, for the merge train to land on its gates; an open one with its branch
+  on origin left to it; the build
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
   #71, and `wait`: the requester's wait, repo-looper's, past which a gates job writes `abandoned` and runs no gates, #130): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
