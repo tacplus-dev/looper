@@ -112,7 +112,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-20 by lo
   told once, #113; a report's `--build` is asked for with `report: true` and its gates job holds the resource group
   `report-slot-<pipeline id mod BUILD_REPORT_SLOTS>` (4), a land's none, so report builds never take every build slot
   and a land's build finds a runner (#195; in effect once the hub copies `ci/build.gitlab-ci.yml`, until then the
-  input refused and the build started again without it); gates silent for `BUILD_GATES_IDLE` (1h) are stopped, their
+  input refused and the build started again without it); every build but a land's is `report: true` (a report's
+  `--build` and pre-land gate, the manager's pre-land gates and red round), its slots held below `BUILD_POOL_NODES` (2,
+  at least one) and its child jobs on `BUILD_REPORT_TAGS`, a nightly's gates in a report slot too, and a land's build
+  not started within `LOOPER_BUILD_START` while other builds run (read with `GITLAB_TOKEN`) is waited on, not "no
+  runner" (#209: four non-land builds held the spot pool's 2 nodes and a 24-land batch's manager gave up; preemption,
+  a `build-report` runner with a low PriorityClass, is tacplus-dev/cluster#42); gates silent for `BUILD_GATES_IDLE` (1h) are stopped, their
   process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a build whose pipeline was cancelled or failed with no verdict is red at once, its status read with `GITLAB_TOKEN` (a report's model told by its looper), and reused by no request, and gates still running their requester's wait after they started are stopped, red (#198: the manager waited on a cancelled build for hours); a pending or green status names its key, gate set and base: a build
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
