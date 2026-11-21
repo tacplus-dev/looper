@@ -14,7 +14,9 @@
 #            security-exceptions.yaml of the commit; the reports in security/
 #   report   the security-report job: the run's findings as the repository's
 #            latest (the build project's generic package security-<repo>),
-#            what the next run compares with and the nightly agent scan reads
+#            what the nightly agent scan reads, and as its commit's; a
+#            nightly's as the last nightly's too (version nightly), what every
+#            run's new is measured against (looper#211)
 #   local    the same checks on a checkout, by hand: no credential, no previous run
 #   baseline a run's findings as the repository's recorded baseline
 #            (security-baseline.json, looper#146): what it accepts as its start
@@ -37,7 +39,7 @@
 # exception names it; an exception that has expired, or says less than an id,
 # a reason, who decided and an expiry date, fails too. A finding the commit's
 # security-baseline.json records (by tool, rule and file, not line: up to its
-# count) is baselined, never new; a secret, a HIGH or CRITICAL finding, one
+# count) is baselined, never new (new: not the last nightly's, looper#211); a secret, a HIGH or CRITICAL finding, one
 # the policy fails or an exception accepts is never baselined. A land's build
 # (BUILD_BASE: main's commit it is built on, looper#180) fails only on the
 # blocking findings its change adds: one the base's build reported too (by
@@ -89,6 +91,12 @@ def baselinable: .excepted == null and (.blocking | not) and .kind != "secret" a
 def file_of: .where | sub(":[0-9]+(-[0-9]+)?$"; "");
 def line_of: (.where | capture(":(?<l>[0-9]+)(-[0-9]+)?$").l // "0") | tonumber;
 '
+# A HIGH or CRITICAL finding the last nightly had too (not new), neither
+# baselined nor excepted: the summary's standing ones, which the nightly scan
+# files when no open issue names them (looper#211).
+JQ_STANDING='
+def standing_high: (.severity | IN("HIGH", "CRITICAL")) and (.new | not) and (.baselined | not) and .excepted == null;
+'
 # An exception's where (looper#182), a path glob, as a regular expression on a
 # finding's file_of: * and ? match within a path segment, ** across them ("**/"
 # also none); every other character is itself. A dependency's where is its
@@ -105,7 +113,7 @@ scan_usage() {
   cat <<'EOF'
 usage: looper-scan run               the security checks of BUILD_REPO at BUILD_SHA (BUILD_SCAN_KIND build|nightly|release)
        looper-scan local DIR         the same checks on a checkout (and DIR's generated/ under BUILD_OUT), nothing published
-       looper-scan report            the run's findings, published as the repository's latest (what the next run compares with)
+       looper-scan report            the run's findings, published as the repository's latest (a nightly's also as the last nightly's, what new is measured against)
        looper-scan baseline FINDINGS a run's findings.json as a security-baseline.json (MEDIUM, LOW and UNKNOWN only)
        looper-scan sbom SOURCE DIR   a CycloneDX and an SPDX SBOM of SOURCE (dir:..., oci-archive:...) in DIR
        looper-scan image ROOT DIR    the Go binaries under ROOT/usr/local/bin (an image's root), govulncheck -mode=binary,
@@ -847,14 +855,17 @@ cmd_run() {
   trap "rm -rf '$SCAN_WORK'" EXIT
   local started; started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  # The previous run's findings, while the job's token is still here.
+  # The last nightly's findings, while the job's token is still here: what
+  # new is measured against (looper#211). Not the latest, which a land's build
+  # or a --build publishes too: a finding one of them saw first was never new
+  # to the nightly, so never filed.
   local previous="$SCAN_WORK/previous.json"
   if [[ -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] &&
-     curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$previous" "$(latest_url findings.json)" 2>/dev/null &&
+     curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$previous" "$(package_url nightly findings.json)" 2>/dev/null &&
      jq -e 'type == "array"' "$previous" >/dev/null 2>&1; then
-    log "compared with the previous run of $BUILD_REPO"
+    log "compared with the last nightly of $BUILD_REPO"
   else
-    rm -f "$previous"; log "no previous run of $BUILD_REPO to compare with: every finding is new"
+    rm -f "$previous"; log "no nightly of $BUILD_REPO to compare with: every finding is new"
   fi
   # A land's base: the findings of main's commit it is built on (looper#180).
   local base="$SCAN_WORK/base.json"
@@ -1233,7 +1244,7 @@ mark_test_code() { # tree label prefix
 }
 
 # The same checks on a directory, as a build would run them on its commit:
-# no credential, no previous run (every finding is new), nothing published.
+# no credential, no last nightly (every finding is new), nothing published.
 cmd_local() { # dir
   [[ -d "${1:-}" ]] || { scan_usage >&2; exit 2; }
   local dir; dir="$(cd "$1" && pwd)"
@@ -1259,12 +1270,10 @@ cmd_local() { # dir
   scan_tree "$dir" /nonexistent "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
-# The repository's latest findings: a generic package of the build project
-# (its package registry, which a job's token may read and write).
-latest_url() { # file
-  package_url latest "$1"
-}
-# A version of them: latest, or a commit's (looper#180: a land's base's).
+# The repository's findings: a generic package of the build project (its
+# package registry, which a job's token may read and write), a version each:
+# latest, nightly (the last nightly's, looper#211), or a commit's (looper#180:
+# a land's base's).
 package_url() { # version file
   echo "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/security-$BUILD_REPO/$1/$2"
 }
@@ -1288,7 +1297,7 @@ write_summary() { # blocking
   local f="$SCAN_OUT/findings.json" p
   echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
   echo
-  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the previous run, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
+  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the last nightly, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
   if [[ -n "$SCAN_BASE_READ" ]]; then
     echo; printf '%s finding(s) standing (the base %s'"'"'s), %s of them failing the policy: main'"'"'s, reported and not failed here (the nightly'"'"'s to file); this build fails only on what its change adds (looper#180).\n' \
       "$(jq '[.[] | select(.standing)] | length' "$f")" "${SCAN_BASE:0:12}" "$(jq '[.[] | select(.blocking and .standing)] | length' "$f")"
@@ -1299,7 +1308,12 @@ write_summary() { # blocking
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
   if ((${#warnings[@]})); then echo; echo "### Warnings (none fails the run)"; for p in "${warnings[@]}"; do echo "- $p"; done; fi
   if (($1)); then echo; echo "### Failing the policy"; jq -r '.[] | select(.blocking) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)\(if .standing then " (standing)" else "" end)"' "$f"; fi
-  if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the previous run"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
+  if jq -e 'any(.new)' "$f" >/dev/null; then echo; echo "### New since the last nightly"; jq -r '.[] | select(.new) | "- \(.severity) \(.tool) \(.id): \(.where)"' "$f"; fi
+  # What the last nightly had too (looper#211): the nightly scan files each one no open issue names.
+  if jq -e "$JQ_STANDING"'any(standing_high)' "$f" >/dev/null; then
+    echo; echo "### Standing HIGH/CRITICAL, not baselined, not excepted"
+    jq -r "$JQ_STANDING"'.[] | select(standing_high) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"
+  fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
   if jq -e 'any(.test)' "$f" >/dev/null; then
     echo; echo "### In test code (SAST: listed, never failing the policy; looper#179)"
@@ -1331,7 +1345,7 @@ write_summary() { # blocking
 # The Go binaries of an image (looper#167): ROOT is its root (/ in the image
 # itself, as its Dockerfile's last step runs it, or its files unpacked), DIR
 # the commit's checkout or a directory holding its security-exceptions.yaml
-# (and security-baseline.json). No previous run: every finding is new.
+# (and security-baseline.json). No last nightly: every finding is new.
 cmd_image() { # root dir
   [[ $# -eq 2 && -d "$1" && -d "$2" ]] || { scan_usage >&2; exit 2; }
   local dir; SCAN_IMAGE_ROOT="$(cd "$1" && pwd)"; SCAN_IMAGE_ROOT="${SCAN_IMAGE_ROOT%/}"; dir="$(cd "$2" && pwd)"
@@ -1356,15 +1370,17 @@ cmd_report() {
   [[ -f "$SCAN_OUT/findings.json" ]] || { log "the security job left no findings: nothing to publish"; return 0; }
   : "${CI_JOB_TOKEN:?no job token: the report publishes with it}" "${CI_API_V4_URL:?}" "${CI_PROJECT_ID:?}"
   local f v
-  # As the latest, and as its commit's: what a land built on it compares with (looper#180).
-  for v in latest "$BUILD_SHA"; do
+  # As the latest, and as its commit's: what a land built on it compares with
+  # (looper#180); a nightly's as the last nightly's too, what new is measured
+  # against (looper#211).
+  for v in latest "$BUILD_SHA" $([[ "$SCAN_KIND" != nightly ]] || echo nightly); do
     for f in findings.json summary.md "$SEMGREP_READ"; do
       [[ -f "$SCAN_OUT/$f" ]] || continue
       curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$SCAN_OUT/$f" "$(package_url "$v" "$f")" ||
         { log "the package registry refused $f ($v)"; exit 1; }
     done
   done
-  log "published as security-$BUILD_REPO/latest (the next run's baseline) and security-$BUILD_REPO/$BUILD_SHA (a land on it compares with it)"
+  log "published as security-$BUILD_REPO/latest (what the nightly scan reads) and security-$BUILD_REPO/$BUILD_SHA (a land on it compares with it)$([[ "$SCAN_KIND" != nightly ]] || echo ", and as security-$BUILD_REPO/nightly (what the next run's new is measured against)")"
 }
 
 # --- baseline -----------------------------------------------------------------------

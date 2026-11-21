@@ -1563,6 +1563,40 @@ OUT="$(looper -- --repo alpha --list 2>/dev/null)" || fail "--list exited non-ze
 [[ "$OUT" == 5 ]] || fail "not planned once beta#2 closed: $OUT"
 pass
 
+# Every finding the policy fails or HIGH or CRITICAL, not excepted, is filed
+# once no open issue names its id or an alias, new or not (looper#211): one a
+# land's build saw first is not new to the nightly (gateway#43's picomatch sat
+# off the summary, never filed). The prompt hands the model the unfiled ones;
+# what it leaves unnamed the looper files itself, one issue listing them; the
+# next scan files nothing again. A closed issue that names one is no issue.
+scenario scan-security-unfiled
+templates
+issue alpha 5 OPEN approved,bug "Bump x: GHSA-aaaa-bbbb-cccc"
+issue alpha 6 CLOSED bug "GO-2026-0003 fixed."
+mkdir -p "$FIX/security"
+jq -n '[{tool: "osv-scanner", id: "GO-2026-0001", aliases: [], severity: "HIGH", fix: true, where: "a@1.0 (go.mod)", title: "a", new: false, excepted: null, blocking: true, standing: true},
+        {tool: "osv-scanner", id: "GO-2026-0002", aliases: ["GHSA-aaaa-bbbb-cccc"], severity: "HIGH", fix: true, where: "x@1.2 (go.mod)", title: "x", new: false, excepted: null, blocking: true},
+        {tool: "trivy", id: "GO-2026-0003", aliases: [], severity: "CRITICAL", fix: false, where: "c@2.0 (go.mod)", title: "c", new: false, excepted: null, blocking: false},
+        {tool: "osv-scanner", id: "GO-2026-0004", aliases: [], severity: "HIGH", fix: true, where: "d@1.0 (go.mod)", title: "d", new: true, excepted: "GO-2026-0004", blocking: false},
+        {tool: "gosec", id: "G306", aliases: [], severity: "MEDIUM", fix: true, where: "main.go:6", title: "perms", new: false, excepted: null, blocking: false}]' > "$FIX/security/findings.json"
+echo '## Security checks: alpha' > "$FIX/security/summary.md"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)/security"
+pp="$(cat "$d/../prompt.md")"
+has "$pp" "File every finding of $d/unfiled.json"
+[[ "$(jq -c 'map(.id)' "$d/unfiled.json")" == '["GO-2026-0001","GO-2026-0003"]' ]] || fail "unfiled: $(cat "$d/unfiled.json")"
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == 4 ]] || fail "not one issue filed: $(jq -s 'map(.title)' "$FIX"/issues/alpha-*.json)"
+has "$(body alpha 7)" "HIGH osv-scanner GO-2026-0001: a@1.0 (go.mod)"
+has "$(body alpha 7)" "CRITICAL trivy GO-2026-0003: c@2.0 (go.mod)"
+for x in GO-2026-0002 GO-2026-0004 G306; do lacks "$(body alpha 7)" "$x"; done
+[[ "$(labels alpha 7)" == bug ]] || fail "#7 labels $(labels alpha 7)"
+has "$OUT" "scan: 2 security finding(s) no open issue names after the model: filed as #7"
+rm -rf "$FIX"/project/looper-runs/*-scan
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(jq -c . "$(ls -d "$FIX"/project/looper-runs/*-scan)/security/unfiled.json")" == '[]' ]] || fail "filed again"
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == 4 ]] || fail "filed again: $(jq -s 'map(.title)' "$FIX"/issues/alpha-*.json)"
+pass
+
 # The nightly scan files the build pipeline's red formal verification
 # (looper#74): the repository's latest record, read with GITLAB_TOKEN, filed
 # by looper-verify before the model runs, one bug a failed harness; the same
