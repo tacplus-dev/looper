@@ -4050,15 +4050,18 @@ echo '[{"id": 901, "status": "running"}, {"id": 877, "status": "running"}, {"id"
     '[{state: "success", context: "tacplus-dev/build", description: "pass: gates docs", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t1},
       {state: "pending", context: "tacplus-dev/build", description: "building", target_url: $u, creator: {login: "tacplus-reader[bot]"}, created_at: $t0}]' > "$FIX/statuses/$s.json.new" &&
     mv "$FIX/statuses/$s.json.new" "$FIX/statuses/$s.json" ) > /dev/null 2>&1 &
+ran=$!
 manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_START=2 LOOPER_BUILD_SAY=1
-wait
+wait "$ran" || true
 has "$OUT" "has not started within 1m, and the build pool runs 2 other builds: it is full, not without runners; waiting on while it is (looper#209)"
 lacks "$OUT" "no runner:"
 [[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
 [[ "$(wc -l < "$FIX/builds")" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
 grep -qxF "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines?status=running&per_page=100" "$FIX/gitlab" ||
   fail "the running pipelines not read with GITLAB_TOKEN: $(grep pipelines "$FIX/gitlab")"
-# The pool emptied, the build still not started: no runner.
+pass
+# No other build running, the build not started: no runner.
+scenario build-queued-pool-idle
 pin_seed; queue 4 2026-11-11T10:00:00Z notes.md "the docs"; echo queued > "$FIX/build-hold"
 echo '[{"id": 901, "status": "running"}]' > "$FIX/pipelines-running"
 manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_START=2
