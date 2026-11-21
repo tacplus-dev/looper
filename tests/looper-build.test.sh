@@ -466,6 +466,11 @@ case "\$method \$url" in
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/previous.json" ]] || exit 22
     cp "$TMP/previous.json" "\$out" ;;
+  # A commit's Semgrep read of its generated code (looper#207): a land's base's, \$TMP/base-semgrep.sha256.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/"*"/semgrep-generated.sha256")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/base-semgrep.sha256" ]] || exit 22
+    cp "$TMP/base-semgrep.sha256" "\$out" ;;
   # A commit's findings (looper#180): a land's base's, \$TMP/base-findings.json.
   "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/"*"/findings.json")
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
@@ -1541,13 +1546,13 @@ grep -qxF '    BUILD_BASE: ""' "$TMP/sec.yml" || fail "the security job is not g
 grep -qxF '    - looper-scan run' "$TMP/sec.yml" || fail "does not run looper-scan"
 grep -qxF '    paths: [gates.log, build-verdict, built/, generated/]' "$y" || fail "the gates keep no generated code"
 sed -n '/^security-report:$/,$p' "$y" | grep -qxF '    - looper-scan report' || fail "no report job"
-! grep -q KUBERNETES_ "$TMP/sec.yml" || fail "a build's security job (no CodeQL) is sized: $(cat "$TMP/sec.yml")"
+grep -qxF '    KUBERNETES_CPU_REQUEST: "2"' "$TMP/sec.yml" || fail "a build's security job is not sized (BUILD_SCAN_REQUESTS, looper#207): $(cat "$TMP/sec.yml")"
 build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 -- plan 2>"$TMP/err" || fail "release plan failed"
 grep -qxF '    BUILD_SCAN_KIND: "release"' "$OUT/build-gates.yml" || fail "not a release's checks"
 pass
 
 # looper#189: CodeQL ran out of memory in the build runner's default pod.
-NAME="plan: a nightly's and a release's security job (CodeQL's) asks BUILD_SCAN_CODEQL_REQUESTS, a build's the runner's defaults"
+NAME="plan: a nightly's and a release's security job (CodeQL's) asks BUILD_SCAN_CODEQL_REQUESTS"
 sec_vars() { sed -n '/^security-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep '^    KUBERNETES_' | sed 's/^ *//' | paste -sd' '; }
 build BUILD_SHA= BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
 [[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "2" KUBERNETES_MEMORY_REQUEST: "12Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
@@ -1562,6 +1567,29 @@ if build BUILD_SHA= BUILD_NIGHTLY=true BUILD_SCAN_CODEQL_REQUESTS="2 16Gi 3500m 
 verdict_is "fail: BUILD_SCAN_CODEQL_REQUESTS '2 16Gi 3500m 16Gi' is past the build runner's ceilings (3500m 12Gi)"
 pass
 
+# looper#207: tacplus's security job ran 49 minutes in the runner's default 1-CPU pod.
+NAME="plan: a build's security job asks BUILD_SCAN_REQUESTS_<repo>, else BUILD_SCAN_REQUESTS, never the runner's 1-CPU default"
+build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+[[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "2" KUBERNETES_MEMORY_REQUEST: "8Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
+  fail "build: $(sec_vars)"
+build BUILD_SHA="${SHA[pass]}" BUILD_SCAN_REQUESTS="1 4Gi 2 6Gi" BUILD_SCAN_REQUESTS_other="3 10Gi 3500m 12Gi" -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$TMP/err")"
+[[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "1" KUBERNETES_MEMORY_REQUEST: "4Gi" KUBERNETES_CPU_LIMIT: "2" KUBERNETES_MEMORY_LIMIT: "6Gi"' ]] ||
+  fail "BUILD_SCAN_REQUESTS, another repository's set: $(sec_vars)"
+build BUILD_SHA="${SHA[pass]}" BUILD_SCAN_REQUESTS="1 4Gi 2 6Gi" BUILD_SCAN_REQUESTS_demo="3 10Gi 3500m 12Gi" -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$TMP/err")"
+[[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "3" KUBERNETES_MEMORY_REQUEST: "10Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
+  fail "BUILD_SCAN_REQUESTS_demo: $(sec_vars)"
+# A nightly's and a release's run CodeQL: BUILD_SCAN_CODEQL_REQUESTS sizes them.
+build BUILD_SHA= BUILD_NIGHTLY=true BUILD_SCAN_REQUESTS_demo="3 10Gi 3500m 12Gi" -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+[[ "$(sec_vars)" == 'KUBERNETES_CPU_REQUEST: "2" KUBERNETES_MEMORY_REQUEST: "12Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
+  fail "nightly: $(sec_vars)"
+if build BUILD_SHA="${SHA[pass]}" BUILD_SCAN_REQUESTS="2 8Gi" -- plan 2>"$TMP/err"; then fail "planned with two of four"; fi
+verdict_is "fail: BUILD_SCAN_REQUESTS '2 8Gi' is not"
+if build BUILD_SHA="${SHA[pass]}" BUILD_SCAN_REQUESTS_demo="2 8Gi 4 12Gi" -- plan 2>"$TMP/err"; then fail "planned past the ceilings"; fi
+verdict_is "fail: BUILD_SCAN_REQUESTS_demo '2 8Gi 4 12Gi' is past the build runner's ceilings (3500m 12Gi)"
+pass
+
 # looper#202: tacplus's gates were OOM-killed in the runner's default pod (8Gi).
 NAME="plan: the gates job asks BUILD_GATES_REQUESTS_<repo>, else the runner's defaults"
 gates_vars() { sed -n '/^gates:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep '^    KUBERNETES_' | sed 's/^ *//' | paste -sd' '; }
@@ -1572,7 +1600,7 @@ build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_other="1 1Gi 1 1Gi" -- plan 
 build BUILD_SHA="${SHA[pass]}" BUILD_GATES_REQUESTS_demo="3 12Gi 3500m 12Gi" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
 [[ "$(gates_vars)" == 'KUBERNETES_CPU_REQUEST: "3" KUBERNETES_MEMORY_REQUEST: "12Gi" KUBERNETES_CPU_LIMIT: "3500m" KUBERNETES_MEMORY_LIMIT: "12Gi"' ]] ||
   fail "build: $(gates_vars)"
-sed -n '/^security-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep -q KUBERNETES_ && fail "the security job took the gates' size"
+sed -n '/^security-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" | grep -q 'KUBERNETES_MEMORY_REQUEST: "12Gi"' && fail "the security job took the gates' size"
 build BUILD_SHA= BUILD_NIGHTLY=true BUILD_GATES_REQUESTS_demo="1500m 10Gi 3 10Gi" -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
 [[ "$(gates_vars)" == 'KUBERNETES_CPU_REQUEST: "1500m" KUBERNETES_MEMORY_REQUEST: "10Gi" KUBERNETES_CPU_LIMIT: "3" KUBERNETES_MEMORY_LIMIT: "10Gi"' ]] ||
   fail "nightly: $(gates_vars)"
@@ -1856,6 +1884,43 @@ blocking | grep -q '^gitleaks deploy/env.txt:aws-access-token:1 deploy/env.txt:1
   fail "a report holds the secret"
 pass
 
+# looper#207: the scanners one after another took tacplus's security job 49
+# minutes. Each of two is wrapped to take two seconds, its start and end logged.
+NAME="security: the scanners run side by side, BUILD_SCAN_JOBS at a time, each one's duration in the summary"
+W="$TMP/slow"; mkdir -p "$W"
+for t in gitleaks semgrep; do
+  printf '#!/usr/bin/env bash\n[[ "$1" != scan && "$1" != dir ]] || { echo "start %s $(date +%%s%%N)" >> "%s/slow.log"; sleep 2; echo "end %s $(date +%%s%%N)" >> "%s/slow.log"; }\nPATH="${PATH#*:}" exec %s "$@"\n' \
+    "$t" "$TMP" "$t" "$TMP" "$t" > "$W/$t"
+  chmod +x "$W/$t"
+done
+at() { awk -v e="$1" '$1 " " $2 == e { print $3 }' "$TMP/slow.log"; }
+slow_path() { local p="$TMP/bin:$SB:$PATH"; ((REAL_SCAN)) && p="$TMP/bin:$PATH"; echo "PATH=$W:$p"; }
+: > "$TMP/slow.log"
+scan BUILD_SHA="${SHA[scanclean]}" "$(slow_path)" BUILD_SCAN_JOBS=3 -- run 2>"$TMP/err" || fail "failed: $(tail -5 "$TMP/err")"
+(( $(at "start gitleaks") < $(at "end semgrep") && $(at "start semgrep") < $(at "end gitleaks") )) ||
+  fail "gitleaks and semgrep ran one after the other: $(cat "$TMP/slow.log")"
+grep -q '^\[.*\] the scanners: 3 at a time' "$TMP/err" || fail "$(grep 'the scanners' "$TMP/err")"
+grep -qx '### Durations (looper#207)' "$OUT/security/summary.md" || fail "no durations: $(cat "$OUT/security/summary.md")"
+grep -qE '^The scanners: [0-9]+s, 3 at a time; one after another, [0-9]+s\.$' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+for t in gitleaks semgrep; do grep -qE "^- $t: ([2-9]|[1-9][0-9]+)s\$|^- $t: [0-9]+m [0-9]+s\$" "$OUT/security/summary.md" || fail "no duration of $t: $(cat "$OUT/security/summary.md")"; done
+for t in osv-scanner govulncheck cargo-deny gosec clippy bandit spotbugs syft; do
+  grep -qE "^- $t: ([0-9]+m )?[0-9]+s\$" "$OUT/security/summary.md" || fail "no duration of $t: $(cat "$OUT/security/summary.md")"
+done
+jq -e '.jobs == 3 and .seconds >= 2 and any(.tools[]; .tool == "gitleaks" and .tree == "source" and .seconds >= 2)' "$OUT/security/durations.json" >/dev/null ||
+  fail "durations.json: $(cat "$OUT/security/durations.json")"
+: > "$TMP/slow.log"
+scan BUILD_SHA="${SHA[scanclean]}" "$(slow_path)" BUILD_SCAN_JOBS=1 -- run 2>"$TMP/err" || fail "failed: $(tail -5 "$TMP/err")"
+(( $(at "start gitleaks") > $(at "end semgrep") || $(at "start semgrep") > $(at "end gitleaks") )) ||
+  fail "BUILD_SCAN_JOBS=1 ran them side by side: $(cat "$TMP/slow.log")"
+if scan BUILD_SHA="${SHA[scanclean]}" BUILD_SCAN_JOBS=two -- run 2>"$TMP/err"; then fail "passed with BUILD_SCAN_JOBS=two"; fi
+scan_verdict_is "fail: BUILD_SCAN_JOBS 'two' is not a count"
+# A tool that stops before it finishes (its report unreadable, a set -e exit) fails the run, the others' reports kept.
+printf '#!/usr/bin/env bash\nwhile (($#)); do [[ "$1" == -o ]] && echo "not json" > "$2"; shift; done\n' > "$W/semgrep"
+if scan BUILD_SHA="${SHA[scansecret]}" "$(slow_path)" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan_verdict_is "fail: semgrep: source: it stopped before it finished"
+blocking | grep -q '^gitleaks deploy/env.txt:aws-access-token:1 deploy/env.txt:1$' || fail "the other tools' findings: $(blocking)"
+pass
+
 # looper-scan local on a checkout, by hand (looper#161): each scanner is
 # wrapped to record whether the checkout held the run's reports when it ran.
 NAME="security: looper-scan local . scans the checkout, never its own reports, and leaves it as it was"
@@ -1889,9 +1954,17 @@ grep -qxF "Reports: $CO/security" "$CO/security/summary.md" || fail "$(cat "$CO/
 grep -q '^fail: ' "$CO/security/verdict" || fail "verdict: $(cat "$CO/security/verdict")"
 pass
 
-NAME="security: code the gates generated is scanned too"
+# A nightly's security checks, its own tools (CodeQL, Trivy) the stubs.
+mkdir -p "$TMP/scanbin-nightly"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
+NIGHTLY=(BUILD_SCAN_KIND=nightly PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+NAME="security: code the gates generated is scanned too; a build's gitleaks reads the commit's templates, not it, a nightly's reads it (looper#207)"
 mkdir -p "$TMP/out-$((n + 1))/generated/model"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/model/keys.txt"
-if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err" || fail "a build's gitleaks read the generated code: $(blocking)"
+grep -qxF -- "- gitleaks: generated: not read in a build (the commit's templates are; the nightly and a release read it)" "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+jq -e 'any(.tools[]; .tool == "semgrep" and .tree == "generated")' "$OUT/security/durations.json" >/dev/null || fail "the generated code was not scanned"
+mkdir -p "$TMP/out-$((n + 1))/generated/model"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/model/keys.txt"
+if scan BUILD_SHA="${SHA[scanclean]}" "${NIGHTLY[@]}" -- run 2>"$TMP/err"; then fail "passed"; fi
 blocking | grep -q '^gitleaks generated/model/keys.txt:aws-access-token:1 generated/model/keys.txt:1$' || fail "$(blocking)"
 pass
 
@@ -1938,7 +2011,7 @@ plant tacplus/chassis/tlsconf
 if scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err"; then fail "passed without a tacplus.yaml"; fi
 blocking | grep -qxF 'gosec G402 tacplus/chassis/tlsconf/tls.go:7' || fail "$(blocking)"
 mkdir -p "$TMP/out-$((n + 1))/generated/tacplus"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/tacplus/keys.txt"
-if scan BUILD_SHA="${SHA[scangen]}" -- run 2>"$TMP/err"; then fail "the output of a generated recipe passed"; fi
+if scan BUILD_SHA="${SHA[scangen]}" "${NIGHTLY[@]}" -- run 2>"$TMP/err"; then fail "the output of a generated recipe passed"; fi
 blocking | grep -q '^gitleaks generated/tacplus/keys.txt:aws-access-token:1 ' || fail "$(blocking)"
 pass
 
@@ -2180,6 +2253,61 @@ cp "$OUT/security/findings.json" "$TMP/base-findings.json"
 scan BUILD_SHA="${SHA[scanbased]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err" || fail "$(cat "$OUT/security/verdict")"
 [[ "$(jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | [.where, .standing]]' "$OUT/security/findings.json")" == \
    '[["main.go:8",true],["main.go:9",true],["main.go:10",false]]' ]] || fail "$(jq -c . "$OUT/security/findings.json")"
+pass
+
+# looper#207: Semgrep took 29 of a tacplus land's 49 security minutes on the
+# code its gates generated, of which a land changes few files. A wrapper logs
+# the files each Semgrep run is given to read, by its target's name.
+NAME="security: a land's Semgrep reads only the generated files its base's read differently, and takes the base's findings for the rest"
+W="$TMP/semgrep-read"; mkdir -p "$W"
+printf '#!/usr/bin/env bash\nfor a; do t="$a"; done\n[[ "$1" == --version ]] || echo "$(basename "$t"): $(cd "$t" && find . -type f | sed "s#^[.]/##" | LC_ALL=C sort | paste -sd" " -)" >> "%s/semgrep-read.log"\nPATH="${PATH#*:}" exec semgrep "$@"\n' "$TMP" > "$W/semgrep"
+chmod +x "$W/semgrep"
+read_path() { local p="$TMP/bin:$SB:$PATH"; ((REAL_SCAN)) && p="$TMP/bin:$PATH"; echo "PATH=$W:$p"; }
+gen_tree() { # changed-content
+  mkdir -p "$TMP/out-$((n + 1))/generated/a" "$TMP/out-$((n + 1))/generated/b"
+  printf 'package a\n\nconst A = 1\n' > "$TMP/out-$((n + 1))/generated/a/same.go"
+  printf 'package b\n\nconst B = %s\n' "$1" > "$TMP/out-$((n + 1))/generated/b/changed.go"
+}
+# The base's build: it reads every generated file, and says what it read.
+gen_tree 1; : > "$TMP/semgrep-read.log"
+scan BUILD_SHA="${SHA[scanclean]}" "$(read_path)" -- run 2>"$TMP/err" || fail "the base's build failed: $(cat "$OUT/security/verdict")"
+grep -qxF "generated: a/same.go b/changed.go" "$TMP/semgrep-read.log" || fail "the base's read: $(cat "$TMP/semgrep-read.log")"
+[[ "$(sed 1d "$OUT/security/semgrep-generated.sha256")" == "$(cd "$OUT/generated" && sha256sum a/same.go b/changed.go)" ]] &&
+  head -1 "$OUT/security/semgrep-generated.sha256" | grep -q '^# .* p/default$' || fail "what it read: $(cat "$OUT/security/semgrep-generated.sha256")"
+cp "$OUT/security/semgrep-generated.sha256" "$TMP/base-semgrep.sha256"
+jq '. + [{tool: "semgrep", kind: "sast", id: "rule.from.base", aliases: [], severity: "MEDIUM", fix: true, where: "generated/a/same.go:3", title: "the base'"'"'s",
+          excepted: null, blocking: false, new: true, baselined: false, standing: false, test: false},
+         {tool: "semgrep", kind: "sast", id: "rule.from.base", aliases: [], severity: "MEDIUM", fix: true, where: "generated/b/changed.go:3", title: "the base'"'"'s",
+          excepted: null, blocking: false, new: true, baselined: false, standing: false, test: false}]' "$OUT/security/findings.json" > "$TMP/base-findings.json"
+# A land on it, one generated file changed: Semgrep reads that one; the other keeps the base's finding.
+gen_tree 2; : > "$TMP/semgrep-read.log"
+scan BUILD_SHA="${SHA[scanclean]}" BUILD_BASE="$BASE_SHA" "$(read_path)" -- run 2>"$TMP/err" || fail "the land failed: $(cat "$OUT/security/verdict")"
+grep -qxF "package-get JOB-TOKEN: glcbt-stub security-demo/$BASE_SHA/semgrep-generated.sha256" "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+grep -qxF "semgrep-changed-generated: b/changed.go" "$TMP/semgrep-read.log" || fail "the land's read: $(cat "$TMP/semgrep-read.log")"
+! grep -q '^generated: ' "$TMP/semgrep-read.log" || fail "it read the whole generated tree: $(cat "$TMP/semgrep-read.log")"
+[[ "$(jq -c '[.[] | select(.id == "rule.from.base") | {where, title, standing}]' "$OUT/security/findings.json")" == \
+   '[{"where":"generated/a/same.go:3","title":"the base'"'"'s","standing":true}]' ]] || fail "the base's findings: $(jq -c . "$OUT/security/findings.json")"
+grep -qxF -- "- semgrep: generated: 1 file(s) read the same in the base's build (${BASE_SHA:0:12}): its findings there; 1 read here" "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+[[ "$(sed 1d "$OUT/security/semgrep-generated.sha256")" == "$(cd "$OUT/generated" && sha256sum a/same.go b/changed.go)" ]] || fail "what it read: $(cat "$OUT/security/semgrep-generated.sha256")"
+# The report publishes it, as the latest and as its commit's.
+v="$OUT"
+scan BUILD_SHA="${SHA[scanclean]}" BUILD_OUT="$v" -- report 2>"$TMP/err" >/dev/null || fail "report failed: $(cat "$TMP/err")"
+for r in latest "${SHA[scanclean]}"; do
+  grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/$r/semgrep-generated.sha256 $(sha256sum < "$v/security/semgrep-generated.sha256" | cut -c1-12)" "$TMP/api.log" ||
+    fail "not published ($r): $(cat "$TMP/api.log")"
+done
+# Another Semgrep than the base's, or a nightly: every file is read.
+sed '1s/.*/# semgrep 0.0.1 p\/default/' "$TMP/base-semgrep.sha256" > "$TMP/x" && mv "$TMP/x" "$TMP/base-semgrep.sha256"
+gen_tree 2; : > "$TMP/semgrep-read.log"
+scan BUILD_SHA="${SHA[scanclean]}" BUILD_BASE="$BASE_SHA" "$(read_path)" -- run 2>"$TMP/err" || fail "the land failed: $(cat "$OUT/security/verdict")"
+grep -qxF "generated: a/same.go b/changed.go" "$TMP/semgrep-read.log" || fail "another version's read was taken: $(cat "$TMP/semgrep-read.log")"
+! jq -e 'any(.id == "rule.from.base")' "$OUT/security/findings.json" >/dev/null || fail "another version's findings were taken"
+cp "$OUT/security/semgrep-generated.sha256" "$TMP/base-semgrep.sha256"
+gen_tree 2; : > "$TMP/semgrep-read.log"
+if scan BUILD_SHA="${SHA[scanclean]}" BUILD_BASE="$BASE_SHA" "${NIGHTLY[@]}" "PATH=$W:${NIGHTLY[1]#PATH=}" -- run 2>"$TMP/err"; then :; fi
+grep -qxF "generated: a/same.go b/changed.go" "$TMP/semgrep-read.log" || fail "the nightly took the base's read: $(cat "$TMP/semgrep-read.log")"
+rm -f "$TMP/base-semgrep.sha256" "$TMP/base-findings.json"
 pass
 
 NAME="security: a recorded baseline: its findings, by tool, rule and file up to its count, are baselined, not new, wherever their lines move"

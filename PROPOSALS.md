@@ -4,6 +4,25 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **tacplus's security job sized in the cloud stack** (2026-11-21, #207): a build's `security-<repo>` now asks
+  `BUILD_SCAN_REQUESTS_<repo>`, else `BUILD_SCAN_REQUESTS` (`2 8Gi 3500m 12Gi`), and runs its scanners as many at a
+  time as it has CPUs. tacplus-dev/cloud's `stacks/gitlab` sets `BUILD_GATES_REQUESTS_tacplus` and its `ci/policy.sh`
+  caps `BUILD_GATES_REQUESTS_*` at 3 CPU and 10Gi (cloud#87); `BUILD_SCAN_REQUESTS_tacplus = "3 10Gi 3500m 12Gi"` and
+  the same cap on `BUILD_SCAN_*` are cloud's to add (not this repository's), once a tacplus land's `### Durations`
+  shows whether 2 CPUs are enough for under 15 minutes.
+- **The generated code's other scanners, incremental too** (2026-11-21, #207): a land's Semgrep now reads only the
+  generated files its base's build read differently (`semgrep-generated.sha256`), because Semgrep CE reads each file
+  on its own. gosec, clippy and Bandit read the generated code per module, not per file: a generated set whose files
+  are all the same as the base's (its directory's hashes) could take the base's findings for it in the same way.
+  Worth it if `### Durations` shows one of them on a tacplus land's critical path.
+- **Semgrep's rules of the base's day** (2026-11-21, #207): the findings a land takes from its base for unchanged
+  generated files were found with the rules the registry served the base's build (`p/default` is fetched each run),
+  hours earlier at most; the nightly reads every file with the day's. If a rule change should reach a land at once,
+  the read could record the rules' digest instead of the config name.
+- **The issue's per-scanner table read one row off** (2026-11-21, #207, for the record): a security job's log line
+  `[time] <tool>: <tree>` marks the tool's start, so the 29 minutes #207 gave gitleaks were Semgrep's (on the
+  generated tree: 525 CPU-seconds for 2 of tacplus's ~21 proto sets, measured here), and gitleaks's were the 3m 23s
+  given gosec. The summary's `### Durations` now gives each tool's own time.
 - **The merge-train decision's red path, after #205** (2026-11-20, #205): tacplus-dev/roadmap
   `decisions/merge-train-2026-11-04.md` still describes a red batch as bisected; since #205 a red batch with build
   jobs is first judged in one round (each land built on its own, at once; reds sent back, the rest one batch), the

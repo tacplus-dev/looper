@@ -560,7 +560,7 @@ pin issue (filed by the hub) commits one.
 
 ```sh
 tests/repo-looper.test.sh       # build-job-scan: a pinned repository's scan, its model with no docker, reads the nightly build's gates record into its prompt's item 3, none read runs no gates; scan-unpinned-gates: an unpinned one's keeps its gates; build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); its build asked for with `report: true`, a land's never; build-job-report-undeclared: a build project that refuses `report` gets the build again without it (looper#195); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-infra-once, build-job-infra-pull, build-job-infra-red, build-job-infra-no-token: a land's build red in its infrastructure alone, its gates green (security-failed's no security verdict, or report-fail's the build failed with the pipeline's and its child's jobs read with GITLAB_TOKEN: gates passed, the rest failed but in their script), is built again once and merges on that build's green, its comment saying so; a job failed in its script, or no GITLAB_TOKEN to tell, is red, built once (looper#173); build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-job-slow: a started build is waited for from its start; build-job-cancelled, build-job-cancelled-no-token: a build whose pipeline was cancelled, or failed, with no verdict is red at once, read with GITLAB_TOKEN, and no request reuses it; without GITLAB_TOKEN it is waited for (looper#198); build-job-no-trigger: without the trigger the gates run in the manager's job, as before
-tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin; the nightly fan-out: a pinned repository is built, an unpinned, archived or another owner's is not, each child is its repository's nightly and needs its own plan alone, a listing or pin it cannot read fails (looper#164); a few at a time, each repository's plan and child in its slot's resource group, BUILD_NIGHTLY_SLOTS checked, and a nightly's jobs on BUILD_NIGHTLY_TAGS, a build's never (looper#185); a report's gates job in one of BUILD_REPORT_SLOTS resource groups, a land's in none, BUILD_REPORT and the slots checked, and the CI file's report input (looper#195); gates silent for BUILD_GATES_IDLE stopped, their process group too, red, and gates that keep printing not (looper#195); gates still running BUILD_WAIT seconds after they started stopped, red, a nightly's (no wait) never (looper#198); the gates job sized by BUILD_GATES_REQUESTS_<repo>, else the runner's defaults, a value not four quantities, a request over its limit or a limit past BUILD_RUNNER_CEILINGS refused (looper#202)
+tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin; the nightly fan-out: a pinned repository is built, an unpinned, archived or another owner's is not, each child is its repository's nightly and needs its own plan alone, a listing or pin it cannot read fails (looper#164); a few at a time, each repository's plan and child in its slot's resource group, BUILD_NIGHTLY_SLOTS checked, and a nightly's jobs on BUILD_NIGHTLY_TAGS, a build's never (looper#185); a report's gates job in one of BUILD_REPORT_SLOTS resource groups, a land's in none, BUILD_REPORT and the slots checked, and the CI file's report input (looper#195); gates silent for BUILD_GATES_IDLE stopped, their process group too, red, and gates that keep printing not (looper#195); gates still running BUILD_WAIT seconds after they started stopped, red, a nightly's (no wait) never (looper#198); the gates job sized by BUILD_GATES_REQUESTS_<repo>, else the runner's defaults, a value not four quantities, a request over its limit or a limit past BUILD_RUNNER_CEILINGS refused (looper#202); a build's security job sized by BUILD_SCAN_REQUESTS_<repo>, else BUILD_SCAN_REQUESTS, held to the same; its scanners side by side, BUILD_SCAN_JOBS at a time, one after another with 1, each one's duration in the summary and durations.json, a tool that stops before it finishes failing the run, and a build's gitleaks not on the generated code, a nightly's on it, a land's Semgrep on the generated files its base's read differently alone, the base's findings for the rest, what it read published, another Semgrep's read or a nightly reading all (looper#207)
 ```
 
 ### Gates scaled to the diff
@@ -1305,10 +1305,33 @@ to both `database create` and `database analyze`, sized to the job's cgroup, nev
 release's `security-<repo>`, asks `BUILD_SCAN_CODEQL_REQUESTS` (`"<cpu> <memory> <cpu limit> <memory limit>"`, default
 `2 12Gi 3500m 12Gi`, the build runner's ceilings). In that pod, CodeQL runs with `--ram 9216` and `--threads 3`: three
 times the budget each source tree needed, for the generated trees the nightly also scans. The memory request is the
-limit, so the pod is never evicted for memory it was promised. A build's job runs no CodeQL and keeps the runner's
-defaults. The summary's `### Memory` gives each analysis's peak (the job's working set: memory.current less its
+limit, so the pod is never evicted for memory it was promised. A build's job runs no CodeQL; it asks `BUILD_SCAN_REQUESTS` (below). The summary's `### Memory` gives each analysis's peak (the job's working set: memory.current less its
 inactive page cache, read every second) against the job's memory. That figure is what to resize from. An analysis
 that runs out of memory names its `--ram` in its problem.
+
+**The scanners run side by side** (looper#207: a tacplus land's security job took 49 minutes in the runner's default
+1-CPU pod, its scanners one after another, Semgrep alone 29 of them on the code the gates generated: the job's log
+marks each tool's start, so the issue's table gave them to gitleaks). `looper-scan`
+runs each tool in a lane of its own over every tree in turn (Trivy's two, the release jars and the tree, share one:
+they share its cache), `BUILD_SCAN_JOBS` lanes at a time (default the job's CPUs, at least 2); SpotBugs and CodeQL,
+each sized to the job's memory, run after them, one at a time. What each tool reports, and what it could not do,
+reads as a run one after another gives it; a tool that stops before it finishes fails the run. **A build's gitleaks
+reads the commit's tree, not the code its gates generated**: that code comes, the same every time, from the
+templates in the commit's tree, which it reads (tacplus's tree reads in seconds, its generated sets in about half a
+minute each on a CPU); its summary says so, and a nightly and a release read it as before. Every other tool still
+scans the generated code in a build. **A land's Semgrep reads only the generated files its base's read
+differently**: Semgrep CE reads each file on its own, so a file at the same path with the same bytes, read by the
+same Semgrep with the same rules (`p/default`, the registry's of the base's day), has the same findings. Every run
+that reads the generated code writes what it read, `security/semgrep-generated.sha256` (a first line `# <semgrep
+version> <config>`, then each file as `sha256sum` prints it, from the tree's root), and `security-report` publishes
+it with the findings, as the latest and as its commit's. A land's build (`BUILD_BASE`) whose base has both, read by
+the same Semgrep and with the same `.semgrepignore`, gives Semgrep only the files that differ (copied at their
+paths) and takes the base's Semgrep findings in the others; the summary says how many of each. A nightly and a
+release read every file. A build's `security-<repo>` asks the build project's
+`BUILD_SCAN_REQUESTS_<repo>`, else `BUILD_SCAN_REQUESTS` (default `2 8Gi 3500m 12Gi`: the requests fit a
+c4a-standard-4 node after its DaemonSets, tacplus-dev/cloud#87), in the gates' form and held to the same ceilings.
+The summary's `### Durations` gives how long the scanners took together, how many at a time, how long they would
+have one after another, and each tool's time (per tree), longest first; `security/durations.json` has the same.
 
 | Tool | Version | Pinned by | Runs on |
 |---|---|---|---|

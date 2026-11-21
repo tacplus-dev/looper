@@ -27,6 +27,9 @@
 # FindSecBugs, Trivy on the release jars the gates built (the dependencies
 # they shade, looper#147), and a Syft SBOM; nightly and release add CodeQL
 # and Trivy (filesystem, Kubernetes manifests, the Dockerfiles' base images).
+# They run side by side, BUILD_SCAN_JOBS at a time (default the job's CPUs),
+# each one's duration in the summary (looper#207); a build's gitleaks reads
+# the commit's tree, not the code its gates generated from it.
 #
 # The policy: a secret fails, and so does a HIGH or CRITICAL finding with a
 # fix (a fixed version, or our own code: a SAST finding outside test code,
@@ -419,20 +422,68 @@ tool_cargo_deny() { # tree label prefix
   done < <(projects "$1" Cargo.lock)
 }
 
+# What a run's Semgrep read of the code the gates generated (looper#207), as
+# the security report publishes it: a first line "# <semgrep version>
+# <config>", then each file as sha256sum prints it ("<sha256>  <path>", from
+# the tree's root), sorted. Semgrep CE reads each file on its own: a file at
+# the same path with the same bytes, read by the same version with the same
+# rules, has the same findings. A land's build (BUILD_BASE) reads only what
+# differs from its base's read and takes the base's findings for the rest;
+# tacplus's generated sets took its Semgrep 29 of its 49 minutes, and a land
+# changes few of their files. The nightly and a release read every file.
+SEMGREP_READ=semgrep-generated.sha256
+semgrep_read() { # tree
+  echo "# $(semgrep --version 2>/dev/null | head -1) $SEMGREP_CONFIG"
+  (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sed 's#  \./#  #')
+}
+
 tool_semgrep() { # tree label prefix
   need semgrep || return 0
-  local raw="$SCAN_OUT/raw/semgrep-$2.json" rc=0
-  semgrep scan --config "$SEMGREP_CONFIG" --metrics=off --disable-version-check --json -o "$raw" -q "$1" \
+  local raw="$SCAN_OUT/raw/semgrep-$2.json" rc=0 target="$1" read="" same="" base="$SCAN_WORK/$SEMGREP_READ.base" n
+  if [[ "$2" == generated ]]; then
+    read="$SCAN_WORK/$SEMGREP_READ"; semgrep_read "$1" > "$read"
+    # The base's read, by the same version and rules, its .semgrepignore the same: the files it read the same.
+    if [[ "$SCAN_KIND" == build && -f "$base" && -f "$SCAN_WORK/base.json" && "$(head -1 "$base")" == "$(head -1 "$read")" ]] &&
+       [[ "$(grep -E '  \.semgrepignore$' "$base" || true)" == "$(grep -E '  \.semgrepignore$' "$read" || true)" ]]; then
+      same="$SCAN_WORK/semgrep-same-$2"; target="$SCAN_WORK/semgrep-changed-$2"
+      LC_ALL=C comm -12 <(tail -n +2 "$base" | LC_ALL=C sort) <(tail -n +2 "$read" | LC_ALL=C sort) | sed 's/^[0-9a-f]*  //' > "$same"
+      mkdir -p "$target"
+      LC_ALL=C comm -13 <(tail -n +2 "$base" | LC_ALL=C sort) <(tail -n +2 "$read" | LC_ALL=C sort) | sed 's/^[0-9a-f]*  //' |
+        { cat; [[ ! -f "$1/.semgrepignore" ]] || echo .semgrepignore; } |
+        (cd "$1" && tar -cf - -T -) | tar -xf - -C "$target"
+      n="$(find "$target" -type f | wc -l)"
+      notes+=("semgrep: $2: $(wc -l < "$same") file(s) read the same in the base's build (${SCAN_BASE:0:12}): its findings there; $n read here")
+      log "semgrep: $2: $(wc -l < "$same") file(s) as the base's (its findings), $n to read"
+    fi
+  fi
+  semgrep scan --config "$SEMGREP_CONFIG" --metrics=off --disable-version-check --json -o "$raw" -q "$target" \
     >/dev/null 2>"$SCAN_OUT/raw/semgrep-$2.log" || rc=$?
   ((rc == 0)) || { tool_error semgrep "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/semgrep-$2.log")"; return 0; }
   norm "$SCAN_OUT/norm/semgrep-$2.json" '
     [.[0].results[]? | finding("semgrep"; "sast"; .check_id; [];
        (.extra.metadata.confidence as $c | {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}[.extra.severity] // "UNKNOWN" | unsure($c));
        true; ((.path | rel($root; $prefix)) + ":" + (.start.line | tostring)); .extra.message)]' \
-    "$raw" --arg root "$1" --arg prefix "$3"
+    "$raw" --arg root "$target" --arg prefix "$3"
+  if [[ -n "$same" ]]; then
+    # The base's findings in the files read the same, as Semgrep gave them.
+    jq --rawfile same "$same" --arg prefix "$3" "$JQ_BASELINE"'
+      ($same | split("\n") | map(select(. != "") | {($prefix + .): true}) | add // {}) as $s
+      | . + [$base[0][] | select(.tool == "semgrep" and $s[file_of]) | {tool, kind, id, aliases, severity, fix, where, title}]' \
+      --slurpfile base "$SCAN_WORK/base.json" "$SCAN_OUT/norm/semgrep-$2.json" > "$SCAN_OUT/norm/semgrep-$2.json.tmp"
+    mv "$SCAN_OUT/norm/semgrep-$2.json.tmp" "$SCAN_OUT/norm/semgrep-$2.json"
+  fi
+  # What it read, for a land built on this commit: only once it read it all.
+  [[ -z "$read" ]] || cp "$read" "$SCAN_OUT/$SEMGREP_READ"
 }
 
+# A build's gitleaks reads the commit's tree, not the code its gates generated
+# (looper#207: tacplus's took minutes, its tree seconds): that code comes, the
+# same every time, from the templates the commit's tree holds, which it reads.
+# The nightly and a release read it too.
 tool_gitleaks() { # tree label prefix
+  if [[ "$SCAN_KIND" == build && "$2" == generated ]]; then
+    notes+=("gitleaks: generated: not read in a build (the commit's templates are; the nightly and a release read it)"); return 0
+  fi
   need gitleaks || return 0
   local raw="$SCAN_OUT/raw/gitleaks-$2.json" rc=0
   # The tree, not .git: the commit's files are what it ships.
@@ -816,6 +867,14 @@ cmd_run() {
     else
       rm -f "$base"; log "no findings of the base $BUILD_BASE: every blocking finding fails"
     fi
+    # The files of the generated code its Semgrep read (looper#207): what it
+    # need not read again.
+    if [[ -f "$base" ]] && curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$SCAN_WORK/$SEMGREP_READ.base" \
+         "$(package_url "$BUILD_BASE" "$SEMGREP_READ")" 2>/dev/null; then
+      log "the base's Semgrep read of the generated code: what it read the same is not read again"
+    else
+      rm -f "$SCAN_WORK/$SEMGREP_READ.base"
+    fi
   fi
 
   local key="${TACPLUS_READER_APP_KEY:-}"
@@ -849,22 +908,114 @@ scan_tree() { # src previous-findings started [base-findings]
   log "security ($SCAN_KIND): $BUILD_REPO $BUILD_SHA"
 
   # The trees: the commit, and the code its gates generated.
-  local trees=("$src|source|") t tree label prefix tool
+  local trees=("$src|source|") t tree label prefix t0
   [[ -n "$(ls -A "$BUILD_OUT/generated" 2>/dev/null)" ]] && trees+=("$BUILD_OUT/generated|generated|generated/")
   local tools=(osv govulncheck cargo_deny semgrep gitleaks gosec clippy bandit spotbugs jars)
   [[ "$SCAN_KIND" == build ]] || tools+=(codeql trivy)
-  for t in "${trees[@]}"; do
-    IFS='|' read -r tree label prefix <<<"$t"
-    for tool in "${tools[@]}"; do log "$tool: $label"; "tool_$tool" "$tree" "$label" "$prefix"; done
-  done
+  scan_tools "${trees[@]}" -- "${tools[@]}"
   skip_generated_tree "$src"
   for t in "${trees[@]}"; do IFS='|' read -r tree label prefix <<<"$t"; mark_test_code "$tree" "$label" "$prefix"; done
   if need syft; then
+    t0="$(date +%s)"
     syft scan -q "dir:$src" -o "cyclonedx-json=$SCAN_OUT/sbom.cdx.json" -o "spdx-json=$SCAN_OUT/sbom.spdx.json" 2>"$SCAN_OUT/raw/syft.log" ||
       problems+=("syft: $(tool_cause "$SCAN_OUT/raw/syft.log")")
+    durations+=("syft|source|$(($(date +%s) - t0))")
   fi
+  write_durations > "$SCAN_OUT/durations.json"
 
   scan_policy "$src" "$previous" "$started" "$base"
+}
+
+# The scanners side by side (looper#207: one after another, tacplus's took 49
+# minutes): each a lane of its own over every tree in turn, SCAN_JOBS lanes at
+# a time, Trivy's two in one (they share its cache). SpotBugs and CodeQL, each
+# sized to the job's memory (CodeQL's peak measured on it), run after them,
+# one at a time. What each tool adds to problems, notes and peaks is read back
+# in the order a run one after another would give them; a tool that stopped
+# before it finished is a problem.
+SCAN_LANES=(clippy gosec bandit gitleaks semgrep cargo_deny govulncheck osv "jars trivy")
+SCAN_ALONE=(spotbugs codeql)
+# The lanes at a time: BUILD_SCAN_JOBS, else the job's CPUs, at least 2 (a
+# scanner waits on the network too).
+scan_jobs() {
+  local j="${BUILD_SCAN_JOBS:-}"
+  if [[ -n "$j" ]]; then [[ "$j" =~ ^[1-9][0-9]*$ ]] || return 1; echo "$j"; return 0; fi
+  j="$(job_cpus)"; echo $((j > 2 ? j : 2))
+}
+# How long each tool took on each tree: "tool|label|seconds" (looper#207).
+durations=()
+SCAN_SECONDS=""
+SCAN_JOBS_USED=""
+# The durations as JSON (security/durations.json): each tool's seconds on each
+# tree, the scanners' together, and how many ran at a time.
+write_durations() {
+  printf '%s\n' "${durations[@]}" | jq -Rn --argjson wall "${SCAN_SECONDS:-0}" --argjson jobs "${SCAN_JOBS_USED:-1}" '
+    {seconds: $wall, jobs: $jobs,
+     tools: [inputs | select(. != "") | split("|") | {tool: .[0], tree: .[1], seconds: (.[2] | tonumber)}]}'
+}
+
+# One tool on one tree, in a subshell of its own: what it adds, kept in
+# $SCAN_WORK/runs/<n>.*, its seconds last (no .secs: it stopped).
+scan_one() { # n tool tree label prefix
+  local f="$SCAN_WORK/runs/$1" tool="$2" t0; shift 2
+  problems=() notes=() peaks=()
+  log "$tool: $2"; t0="$(date +%s)"
+  "tool_$tool" "$@"
+  { ((${#problems[@]} == 0)) || printf '%s\0' "${problems[@]}"; } > "$f.problems"
+  { ((${#notes[@]} == 0)) || printf '%s\0' "${notes[@]}"; } > "$f.notes"
+  { ((${#peaks[@]} == 0)) || printf '%s\0' "${peaks[@]}"; } > "$f.peaks"
+  echo $(($(date +%s) - t0)) > "$f.secs"
+  log "$tool: $2: done in $(cat "$f.secs")s"
+}
+# A lane's tools, each over every tree, one after another.
+scan_lane() { # lane trees...
+  local tool t i tree label prefix lane="$1"; shift
+  for tool in $lane; do
+    in_list "$tool" "${SCAN_RUN[@]}" || continue
+    i=0
+    for t in "$@"; do
+      i=$((i + 1)); IFS='|' read -r tree label prefix <<<"$t"
+      ( scan_one "$i-$tool" "$tool" "$tree" "$label" "$prefix" ) & wait "$!" || true
+    done
+  done
+}
+# A tool's name, as the summary gives it (its function's, else).
+tool_name() { # tool
+  case "$1" in osv) echo osv-scanner ;; cargo_deny) echo cargo-deny ;; jars) echo "trivy (the release jars)" ;; *) echo "$1" ;; esac
+}
+in_list() { # word list...
+  local w="$1" x; shift
+  for x; do [[ "$x" == "$w" ]] && return 0; done; return 1
+}
+SCAN_RUN=()
+scan_tools() { # trees... -- tools...
+  local trees=() tool t i lane running=0 jobs a=() f t0
+  while [[ "$1" != -- ]]; do trees+=("$1"); shift; done; shift
+  SCAN_RUN=("$@")
+  jobs="$(scan_jobs)" || { problems+=("BUILD_SCAN_JOBS '${BUILD_SCAN_JOBS:-}' is not a count"); jobs=1; }
+  mkdir -p "$SCAN_WORK/runs"
+  SCAN_JOBS_USED="$jobs"
+  log "the scanners: $jobs at a time (the job's $(job_cpus) CPU(s))"
+  t0="$(date +%s)"
+  for lane in "${SCAN_LANES[@]}"; do
+    if ((running >= jobs)); then wait -n || true; running=$((running - 1)); fi
+    scan_lane "$lane" "${trees[@]}" & running=$((running + 1))
+  done
+  wait
+  for tool in "${SCAN_ALONE[@]}"; do scan_lane "$tool" "${trees[@]}"; done
+  SCAN_SECONDS=$(($(date +%s) - t0))
+  i=0
+  for t in "${trees[@]}"; do
+    i=$((i + 1)); IFS='|' read -r tree label prefix <<<"$t"
+    for tool in "$@"; do
+      f="$SCAN_WORK/runs/$i-$tool"
+      if [[ ! -f "$f.secs" ]]; then problems+=("$tool: $label: it stopped before it finished (the job's log)"); continue; fi
+      mapfile -d '' -t a < "$f.problems"; problems+=("${a[@]}")
+      mapfile -d '' -t a < "$f.notes"; notes+=("${a[@]}")
+      mapfile -d '' -t a < "$f.peaks"; peaks+=("${a[@]}")
+      durations+=("$(tool_name "$tool")|$label|$(cat "$f.secs")")
+    done
+  done
 }
 
 # A land's base (looper#180): its commit (BUILD_BASE), once asked for; whether
@@ -1165,6 +1316,14 @@ write_summary() { # blocking
   fi
   if ((${#notes[@]})); then echo; echo "### Not analyzed, or in part"; for p in "${notes[@]}"; do echo "- $p"; done; fi
   if ((${#peaks[@]})); then echo; echo "### Memory"; for p in "${peaks[@]}"; do echo "- $p"; done; fi
+  if [[ -f "$SCAN_OUT/durations.json" ]]; then
+    echo; echo "### Durations (looper#207)"
+    jq -r 'def t: if . >= 60 then "\(. / 60 | floor)m \(. % 60)s" else "\(.)s" end;
+      "The scanners: \(.seconds | t), \(.jobs) at a time; one after another, \([.tools[] | select(.tool != "syft") | .seconds] | add // 0 | t).",
+      (.tools | group_by(.tool) | map({tool: .[0].tool, seconds: (map(.seconds) | add), trees: .}) | sort_by(-.seconds, .tool)[]
+       | "- \(.tool): \(.seconds | t)\(if (.trees | length) > 1 then " (" + (.trees | map("\(.tree) \(.seconds | t)") | join(", ")) + ")" else "" end)")' \
+      "$SCAN_OUT/durations.json"
+  fi
   echo; echo "### Checked against"; jq -r 'to_entries[] | "- \(.key): \(.value | to_entries | map("\(.key) \(.value)") | join(", "))"' "$SCAN_OUT/databases.json"
   echo; echo "### Tools"; jq -r 'to_entries[] | "- \(.key) \(.value)"' "$SCAN_OUT/tools.json"
 }
@@ -1199,7 +1358,7 @@ cmd_report() {
   local f v
   # As the latest, and as its commit's: what a land built on it compares with (looper#180).
   for v in latest "$BUILD_SHA"; do
-    for f in findings.json summary.md; do
+    for f in findings.json summary.md "$SEMGREP_READ"; do
       [[ -f "$SCAN_OUT/$f" ]] || continue
       curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$SCAN_OUT/$f" "$(package_url "$v" "$f")" ||
         { log "the package registry refused $f ($v)"; exit 1; }
