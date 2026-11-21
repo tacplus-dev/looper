@@ -461,11 +461,16 @@ case "\$method \$url" in
     [[ -z "\$w" ]] || printf '%s' "\$code" ;;
   "GET https://api.github.com/repos/tacplus-dev/demo")   # its visibility: CodeQL's terms (looper#49)
     echo "repo \$auth" >> "$TMP/api.log"; [[ -f "$TMP/private" ]] && echo '{"private": true}' || echo '{"private": false}' ;;
-  # The build project's package registry (looper#49): the latest findings, the SBOMs.
-  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/latest/findings.json")
+  # The build project's package registry (looper#49): the last nightly's findings
+  # (looper#211), \$TMP/previous.json; the latest, \$TMP/latest.json; the SBOMs.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/nightly/findings.json")
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/previous.json" ]] || exit 22
     cp "$TMP/previous.json" "\$out" ;;
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/latest/findings.json")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/latest.json" ]] || exit 22
+    cp "$TMP/latest.json" "\$out" ;;
   # A commit's Semgrep read of its generated code (looper#207): a land's base's, \$TMP/base-semgrep.sha256.
   "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/"*"/semgrep-generated.sha256")
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
@@ -1903,8 +1908,8 @@ jq -e '."osv-scanner".queried_at and .govulncheck.db_last_modified and .semgrep.
 grep -q '^### Checked against' "$s/summary.md" || fail "summary: $(cat "$s/summary.md")"
 ls "$s/raw" | grep -q '^osv-scanner-source.json$' || fail "no raw report: $(ls "$s/raw")"
 ! ls "$s/raw" | grep -q '^trivy\|^codeql' || fail "a build ran the nightly's tools: $(ls "$s/raw")"
-grep -qxF "package-get JOB-TOKEN: glcbt-stub security-demo/latest/findings.json" "$TMP/api.log" ||
-  fail "the previous run was not asked for with the job token: $(cat "$TMP/api.log")"
+grep -qxF "package-get JOB-TOKEN: glcbt-stub security-demo/nightly/findings.json" "$TMP/api.log" ||
+  fail "the last nightly's findings were not asked for with the job token: $(cat "$TMP/api.log")"
 [[ ! -e "$KEY" ]] || fail "the app's key file is still there"
 ((REAL_SCAN)) || grep -qxF "osv-scanner job-token=none key=none" "$TMP/scan-env" || fail "a scanner saw: $(cat "$TMP/scan-env")"
 pass
@@ -2260,7 +2265,7 @@ if scan BUILD_SHA="${SHA[scanbadkey]}" -- run 2>"$TMP/err"; then fail "an unknow
 scan_verdict_is "fail: security-exceptions.yaml: line 7: unknown key \"path\""
 pass
 
-NAME="security: findings are compared with the previous run's: the new ones are listed"
+NAME="security: findings are compared with the last nightly's: the new ones are listed"
 if ((REAL_SCAN)); then
   jq '[.[] | select(.tool != "govulncheck")]' "$TMP/vuln-findings.json" > "$TMP/previous.json"
 else
@@ -2270,7 +2275,7 @@ if scan BUILD_SHA="${SHA[scanvuln]}" -- run 2>"$TMP/err"; then fail "passed"; fi
 rm "$TMP/previous.json"
 [[ "$(jq -r '[.[] | select(.new) | .tool] | unique | join(" ")' "$OUT/security/findings.json")" == govulncheck ]] ||
   fail "new: $(jq -c '[.[] | select(.new)]' "$OUT/security/findings.json")"
-sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH govulncheck GO-2021-0113' ||
+sed -n '/^### New since the last nightly/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH govulncheck GO-2021-0113' ||
   fail "$(cat "$OUT/security/summary.md")"
 pass
 
@@ -2381,7 +2386,7 @@ rm "$TMP/previous.json"
 [[ "$(g306)" == '[{"where":"main.go:8","new":false,"baselined":true},{"where":"main.go:9","new":false,"baselined":true},{"where":"main.go:10","new":true,"baselined":false}]' ]] ||
   fail "$(g306)"
 grep -q ', 2 baselined (security-baseline.json), ' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
-sed -n '/^### New since the previous run/,/^$/p' "$OUT/security/summary.md" | grep -q '^- MEDIUM gosec G306: main.go:10$' ||
+sed -n '/^### New since the last nightly/,/^$/p' "$OUT/security/summary.md" | grep -q '^- MEDIUM gosec G306: main.go:10$' ||
   fail "$(cat "$OUT/security/summary.md")"
 [[ "$(jq -c '[.runs[] | select(.tool.driver.name == "gosec") | .results[] | select(.ruleId == "G306") | [.level, .properties.baselined]]' "$OUT/security/findings.sarif")" == \
    '[["note",true],["note",true],["warning",false]]' ]] || fail "SARIF: $(jq -c . "$OUT/security/findings.sarif")"
@@ -2427,6 +2432,44 @@ grep -q "^package-put JOB-TOKEN: glcbt-stub security-demo/latest/summary.md " "$
 grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/${SHA[scanvuln]}/findings.json $(sha256sum < "$v/security/findings.json" | cut -c1-12)" "$TMP/api.log" ||
   fail "not published as its commit's: $(cat "$TMP/api.log")"
 grep -q '^## Security checks: demo ' "$TMP/report.out" || fail "the summary is not in the job's log"
+pass
+
+# looper#211: new was measured against the latest, which a land's build or a
+# --build publishes too, so a finding one of them saw first was never new to
+# the nightly, never on its summary, never filed. A nightly compares with the
+# last nightly's findings, which only a nightly's report publishes.
+NAME="security: a finding first seen by a land's build is new to the next nightly, which compares with the last nightly's, not the latest"
+# The last nightly found nothing; a land's build of the vulnerable commit, on
+# a base that has its findings (standing), passes and is published, but not as the nightly's.
+echo '[]' > "$TMP/previous.json"; cp "$TMP/vuln-findings.json" "$TMP/base-findings.json"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err" || fail "the land failed: $(cat "$OUT/security/verdict")"
+v="$OUT"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_OUT="$v" -- report 2>"$TMP/err" >/dev/null || fail "report failed: $(cat "$TMP/err")"
+grep -q "^package-put JOB-TOKEN: glcbt-stub security-demo/latest/findings.json " "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+! grep -q "security-demo/nightly/" "$TMP/api.log" || fail "a land's build published as the last nightly's: $(cat "$TMP/api.log")"
+cp "$v/security/findings.json" "$TMP/latest.json"
+# The next nightly: new, though the latest has it.
+if scan BUILD_SHA="${SHA[scanvuln]}" "${NIGHTLY[@]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+! grep -q "security-demo/latest/" "$TMP/api.log" || fail "compared with the latest: $(cat "$TMP/api.log")"
+jq -e '[.[] | select(.id == "GO-2021-0113")] | length > 0 and all(.new)' "$OUT/security/findings.json" >/dev/null ||
+  fail "not new: $(jq -c '[.[] | select(.id == "GO-2021-0113")]' "$OUT/security/findings.json")"
+sed -n '/^### New since the last nightly/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH [a-z-]* GO-2021-0113: ' ||
+  fail "$(cat "$OUT/security/summary.md")"
+# Its report publishes it as the last nightly's too, what the next one compares with.
+v="$OUT"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_SCAN_KIND=nightly BUILD_OUT="$v" -- report 2>"$TMP/err" >/dev/null || fail "report failed: $(cat "$TMP/err")"
+grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/nightly/findings.json $(sha256sum < "$v/security/findings.json" | cut -c1-12)" "$TMP/api.log" ||
+  fail "not published as the last nightly's: $(cat "$TMP/api.log")"
+grep -q "^package-put JOB-TOKEN: glcbt-stub security-demo/latest/findings.json " "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+cp "$v/security/findings.json" "$TMP/previous.json"
+# The nightly after it: no longer new, still on the summary, standing.
+if scan BUILD_SHA="${SHA[scanvuln]}" "${NIGHTLY[@]}" -- run 2>"$TMP/err"; then fail "passed"; fi
+jq -e '[.[] | select(.id == "GO-2021-0113")] | length > 0 and all(.new | not)' "$OUT/security/findings.json" >/dev/null ||
+  fail "new again: $(jq -c '[.[] | select(.id == "GO-2021-0113")]' "$OUT/security/findings.json")"
+! grep -q '^### New since the last nightly' "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+sed -n '/^### Standing HIGH\/CRITICAL, not baselined, not excepted/,/^$/p' "$OUT/security/summary.md" | grep -q '^- HIGH [a-z-]* GO-2021-0113: ' ||
+  fail "$(cat "$OUT/security/summary.md")"
+rm -f "$TMP/previous.json" "$TMP/latest.json" "$TMP/base-findings.json"
 pass
 
 NAME="security: a scanner the image lacks fails the run"
