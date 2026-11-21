@@ -165,7 +165,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-20 by lo
   `security-baseline.json`, written by `looper-scan baseline`: MEDIUM, LOW and UNKNOWN findings counted per tool, rule
   and file, not line, are baselined, never new, so not filed; an issue's run is handed the repository's latest
   findings to record it from); SARIF and JSON reports, the new findings since the
-  previous run (the build project's generic package `security-<repo>`), which the nightly agent scan reads; a
+  last nightly (the build project's generic package `security-<repo>`, version `nightly`, which only a nightly's
+  report publishes: not the latest, which a land's build makes old, #211) and the standing HIGH/CRITICAL ones; the
+  nightly agent scan reads the latest and files every finding failing the policy or HIGH/CRITICAL, not excepted,
+  that no open issue names, new or not (what its model leaves unnamed, the looper files as one bug, #211); a
   release's image SBOM (CycloneDX, SPDX); the looper image's own Go binaries (#167, `looper-scan image`, the
   `Dockerfile`'s last step): `govulncheck -mode=binary` on every one under `/usr/local/bin`, under the same policy and
   `security-exceptions.yaml`, fails the image build (`image.yml`, a release's publish) before a push; a base-image
