@@ -213,16 +213,22 @@ reply() { # code body
 # (looper#50), $FIX/packages.json.
 case "$url" in
   # The image registry (looper#153), as ghcr answers a tag's manifest HEAD:
-  # a bearer challenge without a token, then the digest $FIX/image-digest
-  # holds; no file, HTTP 404. Each read is a line of $FIX/image-reads.
+  # a bearer challenge without a token, then the digest $FIX/registry/<name>/<tag>
+  # holds (looper#212), else $FIX/image-digest; no file, HTTP 404. Each read is a line of $FIX/image-reads.
   https://ghcr.io/token*) reply 200 '{"token":"anon"}'; exit 0 ;;
   https://ghcr.io/v2/*/manifests/*)
-    [[ -f "$FIX/image-digest" ]] || { reply 404 '{"errors":[{"code":"MANIFEST_UNKNOWN"}]}'; exit 0; }
+    k="${url#https://ghcr.io/v2/}"; k="$FIX/registry/${k%%/manifests/*}/${k##*/manifests/}"
+    [[ -f "$k" ]] || k="$FIX/image-digest"
+    [[ -f "$k" ]] || { reply 404 '{"errors":[{"code":"MANIFEST_UNKNOWN"}]}'; exit 0; }
     if [[ " ${hdrs[*]-} " != *" Authorization: Bearer anon "* ]]; then
       reply 401 'WWW-Authenticate: Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:tacplus-dev/looper:pull"'; exit 0
     fi
-    echo "$url $(cat "$FIX/image-digest")" >> "$FIX/image-reads"
-    reply 200 "Docker-Content-Digest: $(cat "$FIX/image-digest")"; exit 0 ;;
+    echo "$url $(cat "$k")" >> "$FIX/image-reads"
+    reply 200 "Docker-Content-Digest: $(cat "$k")"; exit 0 ;;
+  # tacplus-dev/tacplus's releases (looper#212): $FIX/releases.json, else HTTP 404.
+  https://api.github.com/repos/tacplus-dev/tacplus/releases*)
+    if [[ -f "$FIX/releases.json" ]]; then reply 200 "$(cat "$FIX/releases.json")"; else reply 404 '{"message":"Not Found"}'; fi
+    exit 0 ;;
   # The build project's trigger (looper#71): its token on stdin (never argv), the
   # body decoded as a form (+ a space, %XX its byte) as GitLab does, its gates
   # input checked as GitLab does (HTTP 422), an input given empty refused as
@@ -3670,6 +3676,90 @@ templates; : > "$FIX/scan.sh"
 OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
 has "$pp" "3. The repository's own gates failing on main ("; lacks "$pp" "nightly build's verdict"; lacks "$pp" "You have no container runtime"
+pass
+
+# The relock (looper#212): the nightly scan, before its model, moves each pin
+# by digest behind its line or tag, tacplus.lock's build image and tacplus to
+# the line's newest released patch (no draft, no other line, never backwards)
+# and a Dockerfile FROM to its tag's digest now; files one approved bug for
+# them, and queues the relock on its branch, a commit and the land's
+# checkpoint, for the manager, which lands it. A relock already queued is left
+# to it; on a newer patch the open bug gets the next relock, and with none
+# behind, or the releases unread, nothing is filed.
+scenario scan-relock
+templates; : > "$FIX/scan.sh"
+dg() { printf "sha256:%s" "$(printf "$1%.0s" {1..64})"; }
+B=ghcr.io/tacplus-dev/tacplus/build
+printf '# Written by `tacplus pin`.\ntacplus: 2.6.1\nbuild_image: %s:2.6.1@%s\n' "$B" "$(dg a)" > "$FIX/seed/tacplus.lock"
+printf 'FROM %s:2.6.1@%s AS build\nFROM --platform=$BUILDPLATFORM ghcr.io/tacplus-dev/base:nonroot@%s\nFROM ghcr.io/tacplus-dev/other:1@%s\nFROM ${BASE}\n' \
+  "$B" "$(dg a)" "$(dg b)" "$(dg e)" > "$FIX/seed/Dockerfile"
+printf 'full:\n  run: "true"\n' > "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm pinned && git -C "$FIX/seed" push -q origin main
+echo '[{"tag_name":"v2.6.14","draft":true,"prerelease":false},{"tag_name":"v2.7.0","draft":false,"prerelease":false},{"tag_name":"v2.6.13","draft":false,"prerelease":false},{"tag_name":"v2.6.2","draft":false,"prerelease":false}]' > "$FIX/releases.json"
+mkdir -p "$FIX/registry/tacplus-dev/tacplus/build" "$FIX/registry/tacplus-dev/base" "$FIX/registry/tacplus-dev/other"
+dg c > "$FIX/registry/tacplus-dev/tacplus/build/2.6.13"; dg d > "$FIX/registry/tacplus-dev/base/nonroot"; dg e > "$FIX/registry/tacplus-dev/other/1"
+main0="$(origin rev-parse main)"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ "$(cat "$d/relock.txt")" == "tacplus.lock: tacplus 2.6.1 → 2.6.13 (the 2.6 line's newest patch)
+tacplus.lock: $B:2.6.1@$(dg a) → $B:2.6.13@$(dg c) (the 2.6 line's newest patch)
+Dockerfile: $B:2.6.1@$(dg a) → $B:2.6.13@$(dg c) (the 2.6 line's newest patch)
+Dockerfile: ghcr.io/tacplus-dev/base:nonroot@$(dg b) → ghcr.io/tacplus-dev/base:nonroot@$(dg d) (its tag's digest now)" ]] ||
+  fail "relock.txt: $(cat "$d/relock.txt" 2>&1)"
+[[ "$(labels alpha 5)" == "approved,bug,looper:landing" ]] || fail "#5 labels $(labels alpha 5)"
+has "$(body alpha 5)" "<!-- looper-relock -->"; has "$(body alpha 5)" "- tacplus.lock: tacplus 2.6.1 → 2.6.13"
+has "$(jq -r .title "$FIX/issues/alpha-5.json")" "relock (tacplus.lock: tacplus 2.6.1 → 2.6.13, and 3 more)"
+[[ "$(origin rev-parse main)" == "$main0" ]] || fail "the scan moved main: $(origin log --oneline main)"
+origin show looper/alpha-5:.looper/land | grep -qx state=queued || fail "no land queued: $(origin show looper/alpha-5:.looper/land 2>&1)"
+[[ "$(origin rev-parse looper/alpha-5~2)" == "$main0" ]] || fail "the branch: $(origin log --oneline looper/alpha-5)"
+[[ "$(origin diff --name-only main looper/alpha-5^ | paste -sd' ')" == "Dockerfile tacplus.lock" ]] || fail "the relock: $(origin diff --stat main looper/alpha-5^)"
+[[ "$(origin show looper/alpha-5^:tacplus.lock)" == "# Written by \`tacplus pin\`.
+tacplus: 2.6.13
+build_image: $B:2.6.13@$(dg c)" ]] || fail "tacplus.lock: $(origin show looper/alpha-5^:tacplus.lock)"
+f="$(origin show looper/alpha-5^:Dockerfile)"
+has "$f" "FROM $B:2.6.13@$(dg c) AS build"; has "$f" "FROM --platform=\$BUILDPLATFORM ghcr.io/tacplus-dev/base:nonroot@$(dg d)"
+has "$f" "FROM ghcr.io/tacplus-dev/other:1@$(dg e)"; has "$f" 'FROM ${BASE}'
+has "$(origin log -1 --format=%B looper/alpha-5^)" "Relock: the pinned images to their lines' newest patches and their tags' digests (#5)"
+pp="$(cat "$d/prompt.md")"
+has "$pp" "4. Pins that break the project's rule"; has "$pp" "file nothing for those."
+has "$pp" "Behind ($d/relock.txt): the relock is #5, its land queued for the manager."
+[[ "$(grep -c '^https://api.github.com/repos/tacplus-dev/tacplus/releases' <(cut -d' ' -f2- "$FIX/gitlab"))" == 1 ]] || fail "the releases read more than once: $(grep releases "$FIX/gitlab")"
+# Queued already: left to it, nothing filed or pushed again.
+tip="$(origin rev-parse looper/alpha-5)"; rm -rf "$d"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ ! -e "$FIX/issues/alpha-6.json" ]] || fail "filed again: $(jq -r .title "$FIX/issues/alpha-6.json")"
+[[ "$(origin rev-parse looper/alpha-5)" == "$tip" ]] || fail "the queued relock was pushed again"
+has "$(cat "$(ls -d "$FIX"/project/looper-runs/*-scan)/prompt.md")" "the relock is #5, already at work."
+# The manager lands it.
+manage
+[[ "$(landed tacplus.lock | sed -n 's/^tacplus: //p')" == 2.6.13 ]] || fail "main: $(origin log --oneline main)"
+lacks "$(origin show main --stat)" ".looper/"
+# Nothing behind: nothing filed.
+rm -rf "$FIX"/project/looper-runs/*-scan
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ ! -s "$d/relock.txt" && ! -e "$FIX/issues/alpha-6.json" ]] || fail "relock: $(cat "$d/relock.txt")"
+has "$(cat "$d/prompt.md")" "None is behind."
+# A newer patch, #5 still open: the next relock on it, said there.
+sed -i 's/"v2.6.13"/"v2.6.15"/' "$FIX/releases.json"; dg f > "$FIX/registry/tacplus-dev/tacplus/build/2.6.15"; rm -rf "$d"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ ! -e "$FIX/issues/alpha-6.json" ]] || fail "filed again: $(jq -r .title "$FIX/issues/alpha-6.json")"
+[[ "$(origin show looper/alpha-5^:tacplus.lock | sed -n 's/^tacplus: //p')" == 2.6.15 ]] || fail "not relocked: $(origin show looper/alpha-5^:tacplus.lock 2>&1)"
+has "$(cat "$FIX/comments")" "alpha#5 The nightly scan of"
+# The releases unread: nothing moves, the prompt says so.
+manage; rm -f "$FIX/releases.json"; rm -rf "$FIX"/project/looper-runs/*-scan
+jq '.state = "CLOSED"' "$FIX/issues/alpha-5.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-5.json"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+has "$(cat "$d/relock-unread.txt")" "tacplus.lock: tacplus 2.6.15: its line's releases could not be read"
+[[ ! -e "$FIX/issues/alpha-6.json" ]] || fail "filed on unread releases: $(jq -r .title "$FIX/issues/alpha-6.json")"
+has "$(cat "$d/prompt.md")" "Some could not be read ($d/relock-unread.txt)"
+# A newer patch whose image cannot be read: the lock is not half moved.
+echo '[{"tag_name":"v2.6.16","draft":false}]' > "$FIX/releases.json"; rm -rf "$d"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+has "$(cat "$d/relock-unread.txt")" "tacplus.lock: left as it is: not all of it could be read"
+[[ ! -s "$d/relock.txt" && ! -e "$FIX/issues/alpha-6.json" ]] || fail "relocked half: $(cat "$d/relock.txt")"
 pass
 
 # A build is keyed by (repo, commit, gate set, base) (looper#134). Two requests

@@ -63,7 +63,8 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   link the job, not a path on it. See [After a run](#after-a-run).
 - **The nightly scan** changes no code: it files a `bug` per finding (dependency vulnerabilities,
   gates failing on main, pins off the latest MAJOR.MINOR line, a STATE.md `Blocked on` that names a closed
-  issue). Mechanical fixes are filed `approved`,
+  issue). A pin behind its line's newest patch or its tag's digest is one `bug` whose relock the looper queues for
+  the manager, which lands it on the gates (looper#212). Mechanical fixes are filed `approved`,
   the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
   The platform roadmap's own nightly scan is instead the suggestion pass for the whole platform: up to 5 evidenced
   suggestions a night in tacplus-dev/roadmap `suggestions/`, for Jody's daily review. See [Suggestions](#suggestions).
@@ -217,6 +218,20 @@ looper creates both labels in a repository that lacks them.
   nightly scan reads it against the forge: the looper reads the state of each issue the item names (`#N`, the
   repository's; `owner/repo#N`; on its line and the lines that continue it) into the run's `blocked-on.txt`, and the
   scan's prompt lists the closed ones: one `bug`, `approved`, to rewrite the line (drop each, or name what blocks now).
+- **The relock** (looper#212): a pinned image follows its line's newest patch, by a commit the merge train lands. Nothing
+  moved a pin but a person: kernel, stratum, eventbus and redo pinned tacplus `build:2.6.1` while the 2.6 line was at
+  2.6.13, whose image fixed 86 HIGH and CRITICAL CVEs their gates, compilers and security checks all ran with. The
+  nightly scan, before its model, reads main's pins: each pin file's (`tacplus.lock`, `build.lock`) `build_image:` and
+  each Dockerfile `FROM` by digest moves to its tag's digest now, the tacplus build image at a patch tag to its line's
+  newest released patch (tacplus-dev/tacplus's releases, no draft or prerelease, never backwards), and `tacplus.lock`'s
+  `tacplus:` with it, as `tacplus pin` writes them; the moves are the run's `relock.txt`, a pin it could not read
+  `relock-unread.txt`. Any move is one `bug` of the repository, `approved` (its body carries `<!-- looper-relock -->`;
+  one open at a time), and the relock is its land: a commit on main and the checkpoint carrying `.looper/land`, on the
+  issue's branch, pushed with the manager's identity (no new credential) and `looper:landing`, so the manager lands it
+  on the gates its diff calls for (full, for a pin) like any land. Green, the issue's next run closes it; red, it fixes
+  what came back. An open relock issue whose branch is on origin (queued, or its report's work) is left to it; one
+  without gets the next relock, said in a comment. The scan's model files nothing for a pin's patch or digest, only a
+  floor off the latest MAJOR.MINOR line, and checks what the looper could not read.
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`, on GitLab `.../-/issues/N`) in
@@ -324,6 +339,7 @@ looper-trace check .           # at a service's root
 tests/looper-trace.test.sh     # a fixture service in Go and in Rust (one causal and one unrelated call, a background loop, a propagation test): passes when right; flags a dropped trace_id on the causal call and never the unrelated one, a marker without a reason, a handler with no propagation test; a seam taking a row by value and its trace_id as a parameter (carried, the row's trace_id dropped, covered through the handler's test); the trace_id through a variable, a builder, a forwarded tonic request, a client in a variable or behind an accessor; generated code, other libraries' clients and functions taking only references not read as handlers; Java named, not read
 tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work prompt, the scan's check on main and its item 5
 tests/repo-looper.test.sh      # scan-blocked-on: STATE.md's Blocked on read against the issues' states, the closed ones the scan's item 6 (#132)
+tests/repo-looper.test.sh      # scan-relock: the pins behind their line's newest patch or their tag's digest moved, one approved bug filed and the relock queued on its branch, which the manager lands; queued already, left; a newer patch, the open bug's next relock; none behind, or the releases unread, nothing filed (#212)
 ```
 
 ### Managers and direct reports

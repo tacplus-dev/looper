@@ -1065,3 +1065,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   recurring at once. Recomputing them means re-reading the jobs API for those windows (`looper-recap collect --until`
   each night's end, while GitLab still lists the jobs) and rewriting the roadmap's files: the roadmap's change, or let
   them age out.
+- **The manager closes a green relock's bug itself** (2026-11-21, #212): the nightly relock's bug is closed by its
+  next report, a model run whose only work is the closing comment, once a night per repository whose pins moved
+  (looper's own `build.lock` follows `looper:main`, which moves most days). The manager could close a relock bug
+  (`<!-- looper-relock -->`) on its green verdict, its comment naming the range and the gate set, as it appends a
+  HISTORY.md line; a red one still goes to its report.
+- **A relock rewrites the lock's prose too** (2026-11-21, #212): the relock moves only `build_image:`, `tacplus:` and
+  the FROM refs; a comment naming the version (fleet-dev's `build.lock`: "tacplus build 2.6 at v2.6.13's digest")
+  goes stale. `tacplus pin` writing the lock's header for a tacplus project, and no version in a hand-written
+  comment, would keep them true.
+- **The relock on a GitLab forge** (2026-11-21, #212): it runs only where `LOOPER_FORGE=github` (the pins the build
+  pipeline reads); a SeaBeam instance's repositories, once pinned, need the same step and the tacplus releases read
+  from where that instance mirrors them.
