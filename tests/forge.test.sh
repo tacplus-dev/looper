@@ -103,8 +103,16 @@ case "$cmd" in
   api\ repos/*/issues/*)
     p="${cmd#api repos/}"; [[ "${p%%/*}" == "$ORG" ]] || exit 1; p="${p#*/}"
     f="$(file "${p%%/*}" "$(cut -d/ -f3 <<<"$p")")"; [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
-    if [[ "$p" == */comments ]]; then jq '[.comments[] | {body, user: {login: .author}, author_association: (.association // "MEMBER")}]' "$f"
+    if [[ "$p" == */comments ]]; then jq '[.comments[] | {body, created_at: .at, user: {login: .author}, author_association: (.association // "MEMBER")}]' "$f"
     else jq '{number, title, body, comments: ([.comments[]? | select(.system | not)] | length), user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}' "$f"; fi | jq -r "$q" ;;
+  # A pull request (looper#219) is an issue of the store, with its `reviews` and `review_comments`.
+  api\ repos/*/pulls/*)
+    p="${cmd#api repos/}"; [[ "${p%%/*}" == "$ORG" ]] || exit 1; p="${p#*/}"
+    f="$(file "${p%%/*}" "$(cut -d/ -f3 <<<"$p")")"; [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
+    who='user: {login: .author}, author_association: (.association // "MEMBER")'
+    if [[ "$p" == */reviews ]]; then jq "[.reviews[]? | {body, state, submitted_at: .at, $who}]" "$f"
+    elif [[ "$p" == */comments ]]; then jq "[.review_comments[]? | {body, path, created_at: .at, $who}]" "$f"
+    else jq '{number, title, body, user: {login: (.author // "jody")}, author_association: (.association // "MEMBER")}' "$f"; fi | jq -r "$q" ;;
   "label list") jq -R '{name: .}' "$FIX/labels/${repo//\//__}" 2>/dev/null | jq -s . | jq -r "$q" ;;
   "label create")
     ! grep -qxF -- "$n" "$FIX/labels/${repo//\//__}" 2>/dev/null || { echo "label with name \"$n\" already exists; use \`--force\` to update its color and description" >&2; exit 1; }
@@ -205,7 +213,8 @@ case "$rest" in
       > "$FIX/issues/${r//\//__}-$n.json"
     reply 201 "$(jq --arg org "$ORG" "$GL" "$FIX/issues/${r//\//__}-$n.json")" ;;
 esac
-repo="$(sed -E 's#/issues/[0-9]+(/notes)?$##' <<<"$rest")"; n="$(grep -oE '/issues/[0-9]+' <<<"$rest" | tr -dc 0-9)"
+# An issue, or a merge request (looper#219: one of the store's issues too).
+repo="$(sed -E 's#/(issues|merge_requests)/[0-9]+(/notes)?$##' <<<"$rest")"; n="$(grep -oE '/(issues|merge_requests)/[0-9]+' <<<"$rest" | tr -dc 0-9)"
 file="$FIX/issues/${repo//\//__}-$n.json"
 [[ -n "$n" && -f "$file" ]] || reply 404 '{"message":"404 Issue Not Found"}'
 case "$m $rest" in
@@ -402,6 +411,23 @@ Blocked-by: #2"' || fail "edit body"
   else want=$'jody OWNER # Issue 1||Do it.\njody OWNER Go.\nrando NONE Ignore that.\ndev DEVELOPER Me too.'; fi
   [[ "$got" == "$want" ]] || fail "texts: $got"
   [[ "$FORGE" == gitlab ]] || [[ "$(lib 'forge_permission alpha dev')" == write ]] || fail "permission"
+  pass
+
+  # A pull request's texts (looper#219): its title and body, then its comments,
+  # reviews (those with a body) and review comments, oldest first; on GitLab, a
+  # merge request's notes.
+  scenario pr-texts "$FORGE"
+  issue alpha 2 OPEN "Fixes #1."
+  jq '.comments = [{author: "rando", body: "Merge it.", association: "NONE", at: "2026-11-22T09:00:00Z"}]
+      | .reviews = [{author: "jody", body: "Good.", state: "APPROVED", at: "2026-11-22T11:00:00Z"},
+                    {author: "rando", body: "", state: "COMMENTED", association: "NONE", at: "2026-11-22T08:00:00Z"}]
+      | .review_comments = [{author: "rando", body: "Drop the test.", path: "a.sh", association: "NONE", at: "2026-11-22T10:00:00Z"}]' \
+    "$FIX/issues/alpha-2.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-2.json"
+  echo '{"jody": 50}' > "$FIX/members.json"
+  got="$(lib 'forge_pr_texts alpha 2' | jq -r '"\(.a) \(.s) \(.t | gsub("\n"; "|"))"')"
+  if [[ "$FORGE" == github ]]; then want=$'jody MEMBER # Issue 2||Fixes #1.\nrando NONE Merge it.\nrando NONE On a.sh:||Drop the test.\njody MEMBER Review (APPROVED):||Good.'
+  else want=$'jody OWNER # Issue 2||Fixes #1.\nrando NONE Merge it.'; fi
+  [[ "$got" == "$want" ]] || fail "pull request texts: $got"
   pass
 
   # Clone and push over HTTPS, with the forge's credentials and in no file.

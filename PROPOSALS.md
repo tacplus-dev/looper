@@ -4,6 +4,12 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Text the model reads itself, past the rule** (2026-11-22, #219): `repo-looper --issue-text` and `--pr-text` wrap a
+  run's later reads in its prompt's nonce blocks, but only the prompt's rules send the model there: its `gh` still
+  reads an issue unwrapped. A `gh` first on the model's PATH (as its `pkill` and `docker` are, looper#61, #71) that
+  answers `gh issue view` and `gh pr view` through them would hold for the common reads, not `gh api`. The nightly
+  scan's prompts draw no nonce, so a scan's reads have the rule alone. And `REPO#N` of another repository is judged
+  by the permission on the run's repository, not that one's (a writer there, not here, is data).
 - **HISTORY.md lines in the batch's own push** (2026-11-22, #215): the train now adds a closed issue's HISTORY.md
   line queued in a batch once the batch is done, and rebases a green candidate onto a main moved by planning files
   alone, so a line no longer strands a build. The issue's "better" form, the lines committed on top of the green
@@ -693,11 +699,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   nonce blocks, but a comment posted during the run, a linked issue or a pull request the model reads itself
   (`gh issue view`) comes unwrapped: there only the prompt's rule (its author's association) stands between it and
   the run. A `repo-looper --issue-text N` the model calls instead (the same blocks, the run's nonce from its
-  `.nonce`) would carry the provenance to those reads too.
+  `.nonce`) would carry the provenance to those reads too. Done in #219 (2026-11-22): `--issue-text` and
+  `--pr-text`, which the prompt's rules send every later read through.
 - **Limit who may comment on the public repositories** (2026-10-31, #40): GitHub's interaction limits (org or
   repository: collaborators only, renewable for up to six months) would stop strangers' comments at the source,
   where looper#40 only marks them as data; it also stops legitimate outside reports, so it is Jody's call, maybe only
-  on the repositories whose loopers push.
+  on the repositories whose loopers push. Put to Jody with #219's suggestion (2026-11-22).
 - **A land's time across jobs** (2026-10-31, #38): the lander's estimate is the repository's last land that passed
   its gates, kept in `LOOPER_WORK/<repo>/land-seconds`, which a fresh runner VM does not have: a job's first land uses
   `LOOPER_LAND_MINUTES` or the built-in default (70 minutes for tacplus, 30 for the others). Recording each land's

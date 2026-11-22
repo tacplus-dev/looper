@@ -415,19 +415,43 @@ forge_issue_texts() { # repo n
       comments="$(gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate)" || return 1
       jq -c '{a: .user.login, s: .author_association, t: ("# " + .title + "\n\n" + (.body // ""))}' <<<"$issue"
       jq -c '.[] | {a: .user.login, s: .author_association, t: (.body // "")}' <<<"$comments" ;;
-    gitlab)
-      local p u roles='{}' l m; p="$(gl_project "$1")"
-      issue="$(gl_api GET "$p/issues/$2")" || return 1
-      comments="$(gl_all "$p/issues/$2/notes?sort=asc&order_by=created_at" 1000)" || return 1
-      for u in $( { jq -r .author.username <<<"$issue"; jq -r '.[] | select(.system | not) | .author.username' <<<"$comments"; } | sort -u); do
-        m="$(gl_api GET "$p/members/all?query=$(gl_enc "$u")")" || return 1
-        l="$(jq --arg u "$u" '[.[] | select(.username == $u) | .access_level] | max // 0' <<<"$m")"
-        roles="$(jq -c --arg u "$u" --argjson l "$l" '.[$u] = (if $l >= 50 then "OWNER" elif $l >= 40 then "MAINTAINER"
-          elif $l >= 30 then "DEVELOPER" elif $l >= 20 then "REPORTER" elif $l >= 15 then "PLANNER" elif $l >= 10 then "GUEST" else "NONE" end)' <<<"$roles")"
-      done
-      jq -c --argjson r "$roles" '{a: .author.username, s: $r[.author.username], t: ("# " + .title + "\n\n" + (.description // ""))}' <<<"$issue"
-      jq -c --argjson r "$roles" '.[] | select(.system | not) | {a: .author.username, s: $r[.author.username], t: (.body // "")}' <<<"$comments" ;;
+    gitlab) gl_texts "$1" issues "$2" ;;
   esac
+}
+
+# A pull request's texts (looper#219), as forge_issue_texts': its title and
+# body first, then each comment, review and review comment, oldest first (on
+# GitLab, a merge request's, and each note a person wrote).
+forge_pr_texts() { # repo n
+  local pr comments reviews notes
+  case "$LOOPER_FORGE" in
+    github)
+      pr="$(gh api "repos/$LOOPER_ORG/$1/pulls/$2")" || return 1
+      comments="$(gh api "repos/$LOOPER_ORG/$1/issues/$2/comments" --paginate)" || return 1
+      reviews="$(gh api "repos/$LOOPER_ORG/$1/pulls/$2/reviews" --paginate)" || return 1
+      notes="$(gh api "repos/$LOOPER_ORG/$1/pulls/$2/comments" --paginate)" || return 1
+      jq -c '{a: .user.login, s: .author_association, t: ("# " + .title + "\n\n" + (.body // ""))}' <<<"$pr"
+      { jq -c '.[] | {at: .created_at, a: .user.login, s: .author_association, t: (.body // "")}' <<<"$comments"
+        jq -c '.[] | select((.body // "") != "") | {at: .submitted_at, a: .user.login, s: .author_association, t: ("Review (" + .state + "):\n\n" + .body)}' <<<"$reviews"
+        jq -c '.[] | {at: .created_at, a: .user.login, s: .author_association, t: ("On " + .path + ":\n\n" + (.body // ""))}' <<<"$notes"
+      } | jq -sc 'sort_by(.at) | .[] | del(.at)' ;;
+    gitlab) gl_texts "$1" merge_requests "$2" ;;
+  esac
+}
+
+# A GitLab issue's or merge request's texts, each author's role in the project.
+gl_texts() { # repo issues|merge_requests n
+  local p u roles='{}' l m item notes; p="$(gl_project "$1")"
+  item="$(gl_api GET "$p/$2/$3")" || return 1
+  notes="$(gl_all "$p/$2/$3/notes?sort=asc&order_by=created_at" 1000)" || return 1
+  for u in $( { jq -r .author.username <<<"$item"; jq -r '.[] | select(.system | not) | .author.username' <<<"$notes"; } | sort -u); do
+    m="$(gl_api GET "$p/members/all?query=$(gl_enc "$u")")" || return 1
+    l="$(jq --arg u "$u" '[.[] | select(.username == $u) | .access_level] | max // 0' <<<"$m")"
+    roles="$(jq -c --arg u "$u" --argjson l "$l" '.[$u] = (if $l >= 50 then "OWNER" elif $l >= 40 then "MAINTAINER"
+      elif $l >= 30 then "DEVELOPER" elif $l >= 20 then "REPORTER" elif $l >= 15 then "PLANNER" elif $l >= 10 then "GUEST" else "NONE" end)' <<<"$roles")"
+  done
+  jq -c --argjson r "$roles" '{a: .author.username, s: $r[.author.username], t: ("# " + .title + "\n\n" + (.description // ""))}' <<<"$item"
+  jq -c --argjson r "$roles" '.[] | select(.system | not) | {a: .author.username, s: $r[.author.username], t: (.body // "")}' <<<"$notes"
 }
 
 # GitHub: a COLLABORATOR's permission on the repository (admin, maintain,
