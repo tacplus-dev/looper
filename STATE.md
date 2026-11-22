@@ -177,8 +177,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   last nightly (the build project's generic package `security-<repo>`, version `nightly`, which only a nightly's
   report publishes: not the latest, which a land's build makes old, #211) and the standing HIGH/CRITICAL ones; the
   nightly agent scan reads the latest and files every finding failing the policy or HIGH/CRITICAL, not excepted,
-  that no open issue names, new or not (what its model leaves unnamed, the looper files as one bug, #211); a
-  release's image SBOM (CycloneDX, SPDX); the looper image's own Go binaries (#167, `looper-scan image`, the
+  that no open issue names, new or not (what its model leaves unnamed, the looper files as one bug, #211); each
+  summary names its run under its header (the pipeline, the job, the time it started), and a security job that left
+  no findings (killed, timed out, its pod never scheduled, its runner lost) has its report publish as the latest a
+  summary saying so (`no report`: its run, why, the last report, whose findings the latest still holds) and fail, the
+  findings left as they were; the scan's prompt and an issue run's say which run the report is (#210: the
+  nightlies of 2026-11-21 and 22 published nothing for ten repositories, and their scans read the last run's
+  report as that night's); a release's image SBOM (CycloneDX, SPDX); the looper image's own Go binaries (#167, `looper-scan image`, the
   `Dockerfile`'s last step): `govulncheck -mode=binary` on every one under `/usr/local/bin`, under the same policy and
   `security-exceptions.yaml`, fails the image build (`image.yml`, a release's publish) before a push; a base-image
   binary (by the sha256 recorded after `FROM`) is attributed to tacplus-dev/tacplus, a stripped one said (by hand on
