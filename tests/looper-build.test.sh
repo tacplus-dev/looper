@@ -471,6 +471,11 @@ case "\$method \$url" in
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/latest.json" ]] || exit 22
     cp "$TMP/latest.json" "\$out" ;;
+  # The latest's summary (looper#210): \$TMP/latest-summary.md.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/latest/summary.md")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/latest-summary.md" ]] || exit 22
+    cp "$TMP/latest-summary.md" "\$out" ;;
   # A commit's Semgrep read of its generated code (looper#207): a land's base's, \$TMP/base-semgrep.sha256.
   "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/"*"/semgrep-generated.sha256")
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
@@ -1913,6 +1918,9 @@ jq -e '.version == "2.1.0" and (.runs | type == "array")' "$s/findings.sarif" >/
 jq -e '."osv-scanner".queried_at and .govulncheck.db_last_modified and .semgrep.rules' "$s/databases.json" >/dev/null ||
   fail "databases: $(cat "$s/databases.json")"
 grep -q '^### Checked against' "$s/summary.md" || fail "summary: $(cat "$s/summary.md")"
+# Its run, under its header (looper#210): the commit is main's night after night, the pipeline and the time are not.
+sed -n 3p "$s/summary.md" | grep -qE '^Pipeline https://gitlab\.com/tacplus-dev/build/-/pipelines/1, started [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\.$' ||
+  fail "no run under its header: $(head -4 "$s/summary.md")"
 ls "$s/raw" | grep -q '^osv-scanner-source.json$' || fail "no raw report: $(ls "$s/raw")"
 ! ls "$s/raw" | grep -q '^trivy\|^codeql' || fail "a build ran the nightly's tools: $(ls "$s/raw")"
 grep -qxF "package-get JOB-TOKEN: glcbt-stub security-demo/nightly/findings.json" "$TMP/api.log" ||
@@ -2479,6 +2487,50 @@ grep -q "^package-put JOB-TOKEN: glcbt-stub security-demo/latest/summary.md " "$
 grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/${SHA[scanvuln]}/findings.json $(sha256sum < "$v/security/findings.json" | cut -c1-12)" "$TMP/api.log" ||
   fail "not published as its commit's: $(cat "$TMP/api.log")"
 grep -q '^## Security checks: demo ' "$TMP/report.out" || fail "the summary is not in the job's log"
+pass
+
+# looper#210: a security job killed, OOM-killed, timed out, never scheduled or
+# its runner lost leaves no findings, and its report published nothing: the
+# latest stayed the last run's, which the nightly scan read as that night's.
+NAME="security: a security job that left no findings: its report publishes a summary saying so as the latest, keeps the last findings, and fails"
+v="$TMP/no-findings"; rm -rf "$v"; mkdir -p "$v"
+printf '%s\n' "## Security checks: demo ${SHA[scanclean]} (build)" "" "Pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, started 2026-11-20T04:01:00Z." "" "0 finding(s)." \
+  > "$TMP/latest-summary.md"
+none() { # [VAR=value...]: the report of a run with no findings, its summary in $TMP/report.out
+  if scan BUILD_SHA="${SHA[scanvuln]}" BUILD_SCAN_KIND=nightly BUILD_OUT="$v" CI_JOB_URL=https://gitlab.com/tacplus-dev/build/-/jobs/9 "$@" -- report \
+       2>"$TMP/err" > "$TMP/report.out"; then fail "no findings, and the report passed"; fi
+  grep -qxF "package-put JOB-TOKEN: glcbt-stub security-demo/latest/summary.md $(sha256sum < "$TMP/report.out" | cut -c1-12)" "$TMP/api.log" ||
+    fail "its summary was not published as the latest: $(cat "$TMP/api.log")"
+  [[ "$(grep -c '^package-put' "$TMP/api.log")" == 1 ]] || fail "published more than the summary: $(cat "$TMP/api.log")"
+}
+none
+s="$(cat "$TMP/report.out")"
+[[ "$(sed -n 1p <<<"$s")" == "## Security checks: demo ${SHA[scanvuln]} (nightly): no report" ]] || fail "header: $s"
+sed -n 3p <<<"$s" | grep -qE '^Pipeline https://gitlab\.com/tacplus-dev/build/-/pipelines/1, job https://gitlab\.com/tacplus-dev/build/-/jobs/9, reported [0-9T:-]{19}Z\.$' ||
+  fail "its run: $s"
+sed -n '/^### Problems (each fails the run)$/,/^$/p' <<<"$s" | grep -qF -- "- security-demo left no findings: no security/ artifact: it was killed, OOM-killed or timed out, its pod never scheduled, or its runner lost (its log in the pipeline says which)" ||
+  fail "why: $s"
+grep -qxF "Last report, whose findings security-demo/latest/findings.json still holds: demo ${SHA[scanclean]} (build); Pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, started 2026-11-20T04:01:00Z." <<<"$s" ||
+  fail "the last report: $s"
+grep -qF "the security job left no findings: published security-demo/latest/summary.md saying so" "$TMP/err" || fail "$(cat "$TMP/err")"
+# A verdict without findings (a step before the scanners failed): its why. The
+# last report, a summary of no report itself: its last report, carried on.
+mkdir -p "$v/security"; echo "fail: no read-only GitHub token (the tacplus-reader app)" > "$v/security/verdict"
+cp "$TMP/report.out" "$TMP/latest-summary.md"
+none
+s="$(cat "$TMP/report.out")"
+grep -qF -- "- security-demo left no findings: its verdict: fail: no read-only GitHub token (the tacplus-reader app)" <<<"$s" || fail "why: $s"
+grep -qxF "Last report, whose findings security-demo/latest/findings.json still holds: demo ${SHA[scanclean]} (build); Pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, started 2026-11-20T04:01:00Z." <<<"$s" ||
+  fail "the last report, carried on: $s"
+# A last report of before looper#210, which names no run; and none at all.
+printf '%s\n' "## Security checks: demo ${SHA[scanclean]} (nightly)" "" "0 finding(s)." > "$TMP/latest-summary.md"
+none
+grep -qxF "Last report, whose findings security-demo/latest/findings.json still holds: demo ${SHA[scanclean]} (nightly); its summary names no run (before looper#210)." "$TMP/report.out" ||
+  fail "an older last report: $(cat "$TMP/report.out")"
+rm -f "$TMP/latest-summary.md"
+none
+grep -qxF "Last report: none (security-demo/latest had no summary)." "$TMP/report.out" || fail "no last report: $(cat "$TMP/report.out")"
+rm -rf "$v"
 pass
 
 # looper#211: new was measured against the latest, which a land's build or a

@@ -1153,7 +1153,7 @@ scan_policy() { # dir previous-findings started [base-findings]
   local blocking failing
   blocking="$(jq '[.[] | select(.blocking)] | length' "$SCAN_OUT/findings.json")"
   failing="$(jq '[.[] | select(.blocking and (.standing | not))] | length' "$SCAN_OUT/findings.json")"
-  write_summary "$blocking" > "$SCAN_OUT/summary.md"
+  write_summary "$blocking" "$started" > "$SCAN_OUT/summary.md"
   cat "$SCAN_OUT/summary.md" >&2
 
   if ((${#problems[@]})); then scan_verdict fail "${problems[0]}$( ((${#problems[@]} > 1)) && echo " (and $((${#problems[@]} - 1)) more: security/summary.md)")"; fi
@@ -1346,9 +1346,11 @@ write_sarif() {
     "$SCAN_OUT/findings.json"
 }
 
-write_summary() { # blocking
+write_summary() { # blocking started
   local f="$SCAN_OUT/findings.json" p
   echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND)"
+  # Its run (looper#210): the commit is main's night after night, the pipeline and the time are not.
+  echo; echo "$(run_of) started $2."
   echo
   jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the last nightly, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
   if [[ -n "$SCAN_BASE_READ" ]]; then
@@ -1417,13 +1419,54 @@ cmd_image() { # root dir
   scan_policy "$dir" /nonexistent "$started"
 }
 
+# The pipeline and job a summary is of, the start of its line: "Pipeline <url>,
+# job <url>," (a run by hand: "Run here (no pipeline),").
+run_of() {
+  if [[ -n "${CI_PIPELINE_URL:-}" ]]; then echo "Pipeline $CI_PIPELINE_URL,${CI_JOB_URL:+ job $CI_JOB_URL,}"
+  else echo "Run here (no pipeline),"; fi
+}
+
 # --- report -------------------------------------------------------------------------
+
+# A security job that left no findings (looper#210): killed, OOM-killed, timed
+# out, its pod never scheduled or its runner lost. Its summary, saying so, is
+# the latest's, so that no one reads the last run's as this one's: the run, why,
+# and the last report, whose findings the latest still holds. The findings are
+# left as they are: the latest's, the commit's (what a land compares with) and
+# the last nightly's (what new is measured against). Fails the job.
+report_none() {
+  local why last s="$SCAN_WORK/summary.md" pkg="security-$BUILD_REPO"
+  why="$(sed -n '1s/^fail: /its verdict: fail: /p' "$SCAN_OUT/verdict" 2>/dev/null || true)"
+  [[ -n "$why" ]] || why="no security/ artifact: it was killed, OOM-killed or timed out, its pod never scheduled, or its runner lost (its log in the pipeline says which)"
+  if curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$SCAN_WORK/last.md" "$(package_url latest summary.md)" 2>/dev/null; then
+    last="$(sed -n '/^Last report[,:] /{p;q}' "$SCAN_WORK/last.md")"
+    [[ -n "$last" ]] || last="Last report, whose findings $pkg/latest/findings.json still holds: $(sed -n '1s/^## Security checks: //p' "$SCAN_WORK/last.md"); $(
+      sed -n '/^Pipeline .*, started .*\.$/{p;q}' "$SCAN_WORK/last.md" | grep . || echo "its summary names no run (before looper#210).")"
+  else
+    last="Last report: none ($pkg/latest had no summary)."
+  fi
+  { echo "## Security checks: $BUILD_REPO $BUILD_SHA ($SCAN_KIND): no report"
+    echo; echo "$(run_of) reported $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+    echo; echo "### Problems (each fails the run)"; echo "- security-$BUILD_REPO left no findings: $why"
+    echo; echo "$last"
+  } > "$s"
+  cat "$s"
+  curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$s" "$(package_url latest summary.md)" ||
+    { log "the package registry refused summary.md (latest)"; exit 1; }
+  log "the security job left no findings: published $pkg/latest/summary.md saying so (the findings are left as they were)"
+  exit 1
+}
 
 cmd_report() {
   check_inputs
   [[ -f "$SCAN_OUT/summary.md" ]] && cat "$SCAN_OUT/summary.md"
-  [[ -f "$SCAN_OUT/findings.json" ]] || { log "the security job left no findings: nothing to publish"; return 0; }
   : "${CI_JOB_TOKEN:?no job token: the report publishes with it}" "${CI_API_V4_URL:?}" "${CI_PROJECT_ID:?}"
+  if [[ ! -f "$SCAN_OUT/findings.json" ]]; then
+    SCAN_WORK="$(mktemp -d)"
+    # shellcheck disable=SC2064  # this run's directory
+    trap "rm -rf '$SCAN_WORK'" EXIT
+    report_none
+  fi
   local f v
   # As the latest, and as its commit's: what a land built on it compares with
   # (looper#180); a nightly's as the last nightly's too, what new is measured

@@ -1643,15 +1643,28 @@ templates
 : > "$FIX/scan.sh"
 mkdir -p "$FIX/security"
 echo '[{"tool":"osv-scanner","id":"GO-2021-0113","severity":"HIGH","fix":true,"where":"go.mod","new":true,"excepted":null,"blocking":true}]' > "$FIX/security/findings.json"
-echo '## Security checks: alpha' > "$FIX/security/summary.md"
+printf '%s\n' '## Security checks: alpha 0123abc (nightly)' '' 'Pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, job https://gitlab.com/tacplus-dev/build/-/jobs/9, started 2026-11-21T03:52:00Z.' \
+  > "$FIX/security/summary.md"
 OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
 d="$(ls -d "$FIX"/project/looper-runs/*-scan)/security"
+# Which run it is (looper#210): a report its night's security job did not replace reads as the last run's, not tonight's.
 has "$pp" "the latest
-   report of alpha's build is $d/summary.md"
+   report of alpha's build is $d/summary.md (it is the run of alpha 0123abc (nightly), pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, job https://gitlab.com/tacplus-dev/build/-/jobs/9, started 2026-11-21T03:52:00Z), its findings"
+has "$pp" "A report of another run than tonight's nightly of this checkout's HEAD"
 cmp -s "$d/findings.json" "$FIX/security/findings.json" || fail "the report was not read: $(ls "$d" 2>&1)"
 grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/security-alpha/latest/findings.json" "$FIX/gitlab" ||
   fail "$(cat "$FIX/gitlab")"
+rm -rf "$FIX"/project/looper-runs/*-scan
+# A summary of before looper#210, naming no run; one of a run that published no report.
+echo '## Security checks: alpha 0123abc (nightly)' > "$FIX/security/summary.md"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "(it is the run of alpha 0123abc (nightly), its summary naming no pipeline or time (a report from before looper#210): it may be an older night's)"
+rm -rf "$FIX"/project/looper-runs/*-scan
+printf '%s\n' '## Security checks: alpha 0123abc (nightly): no report' '' 'Pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/8, reported 2026-11-22T04:00:00Z.' \
+  > "$FIX/security/summary.md"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "(it is no report: the security job of alpha 0123abc (nightly) left no findings (pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/8, reported 2026-11-22T04:00:00Z; its summary's Problems say why), so its findings are the last report's, which its \`Last report\` line names, not this run's)"
 rm -rf "$FIX/security" "$FIX"/project/looper-runs/*-scan
 OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "security report of alpha could not be read"
@@ -1663,7 +1676,7 @@ pass
 scenario issue-security-report
 mkdir -p "$FIX/security"
 echo '[{"tool":"gosec","kind":"sast","id":"G306","severity":"MEDIUM","fix":true,"where":"main.go:6","new":true,"excepted":null,"blocking":false}]' > "$FIX/security/findings.json"
-echo '## Security checks: alpha' > "$FIX/security/summary.md"
+printf '%s\n' '## Security checks: alpha 0123abc (build)' '' 'Pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, started 2026-11-21T03:52:00Z.' > "$FIX/security/summary.md"
 report "Done."
 run GITLAB_TOKEN=glpat-t
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
@@ -1671,7 +1684,8 @@ d="$(ls -d "$FIX"/project/looper-runs/*-issue-4)/security"
 has "$p" "Read them before changing anything.
 The build pipeline's latest security report of alpha (README: Security checks) is $d/summary.md, its findings
 $d/findings.json; \`"
-has "$p" "/looper-scan baseline $d/findings.json > security-baseline.json\` records them as its baseline."
+has "$p" "/looper-scan baseline $d/findings.json > security-baseline.json\` records them as its baseline.
+It is the run of alpha 0123abc (build), pipeline https://gitlab.com/tacplus-dev/build/-/pipelines/7, started 2026-11-21T03:52:00Z."
 cmp -s "$d/findings.json" "$FIX/security/findings.json" || fail "the report was not read: $(ls "$d" 2>&1)"
 grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/security-alpha/latest/findings.json" "$FIX/gitlab" ||
   fail "$(cat "$FIX/gitlab")"
