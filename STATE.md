@@ -259,9 +259,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each where it runs (#84: the reports and manager of a repository whose gates are build jobs on the in-cluster control runner, `LOOPER_CONTROL_TAGS`, default `arm64, control`, with their kind's requests and limits as `KUBERNETES_*` variables, a report 100m/512Mi, a manager 50m/256Mi, the kicker and the plan 50m (#165: from the pods' use, limits unchanged; each pod logs its use at its end, the recap's requests against use per kind), `LOOPER_REQUESTS_<kind>`; a job that still needs Docker, an unpinned repository's or any scan's, on the VM runners' tags: a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
-- **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its control jobs (the
-  kicker, the plan) and the pinned repositories' reports and managers as pods of the in-cluster `control` runner
-  (58541761, `arm64, control`, tacplus-dev/cluster#13, #84) once the hub copies `ci/tacplus-dev.gitlab-ci.yml` there
+- **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its kicker and plan as
+  pods of the in-cluster `kick` runner (59685138, `arm64, kick`, tacplus-dev/cluster#39, #222: never behind the
+  reports and managers they start), the pinned repositories' reports and managers and the hub's probes as pods of
+  the in-cluster `control` runner (58541761, `arm64, control`, tacplus-dev/cluster#13, #84) once the hub copies `ci/tacplus-dev.gitlab-ci.yml` there
   and unpauses it (the hub's step after #84 lands; until then everything runs on the VM runners as before), the jobs
   that still need Docker (tacplus's until its pin, tacplus#340, its nightly scan among them) on the VM runners' tags (`arm64, autoscale`:
   jody1-328023's *tacplus-dev arm64 autoscaler* and cloud's `ci` stack's `shared` pool, runner 58534919, which took #43's job of 2026-11-16), image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives the jody1 runner a fresh worker per job
