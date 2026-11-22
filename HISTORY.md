@@ -172,3 +172,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-22 looper issue Issue, comment and PR text a run reads itself carries the run's provenance nonce too: repo-looper --issue-text and --pr-text (#40's follow-up) (#219)
 - 2026-11-22 looper issue looper-scan: a land whose base commit published no report compares with its nearest published ancestor on main, else the last nightly, not with nothing (#180) (#217)
 - 2026-11-22 looper issue repo-looper files the other-repository half of an approved issue approved, with a Parent line naming it (#218)
+- 2026-11-22 looper issue The kicker and plan queue behind reports on the control runner; the kick runner (cluster#39) is idle because no job asks for tag 'kick' (#222)
