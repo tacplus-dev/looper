@@ -2295,7 +2295,12 @@ $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 # hour-long build more, on the old main); the land that breaks it is sent back
 # with the failure (exit 4: the issue stays approved, and its next report fixes
 # it), and the lands after it stay queued: the next batch, from the new main,
-# takes them. A batch of one that is red is just sent back. A
+# takes them. A batch of one that is red is just sent back. Each candidate is
+# built on the main of its build (train_onto, looper#215): main moved by
+# planning files alone, the candidate is rebased onto it, before its build and
+# when a green one cannot fast-forward; moved otherwise, its lands are staged
+# again on it (before a build) or left queued (after one). A closed issue's
+# HISTORY.md line queued in the batch is added once it is done (TR_LATER). A
 # batch whose build would outlast the job, or whose build has no verdict by the
 # job's end, leaves its lands queued (LAND_DEFERRED): the next manager takes
 # them, and a build left to run is taken up by its tree (build_gates).
@@ -2307,6 +2312,7 @@ $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
 # `merging #N (..., queued T)` when staged and `#N: landed on main: ...` when
 # main has it, as before.
 TR_N=(); TR_ID=(); TR_SHA=(); TR_BEFORE=(); TR_AFTER=(); TR_REC=(); TR_GATES=(); TR_ROADMAP=()
+TR_LATER=()   # the batch's closed issues' HISTORY.md lines, "<issue> <id> <sha> <rec-dir>": posted once it is done (looper#215)
 declare -A GREEN_SET=() GREEN_WHY=() GREEN_MAPPED=() GREEN_OUT=()   # a green candidate's gate set, why, and record, by its count of lands
 
 drop_worktree() { git -C "$CHECKOUT" worktree remove -f "$1" 2>/dev/null || rm -rf "$1"; git -C "$CHECKOUT" worktree prune; }
@@ -2315,16 +2321,17 @@ drop_worktree() { git -C "$CHECKOUT" worktree remove -f "$1" 2>/dev/null || rm -
 # landed, judged in a round, bisected. LAND_DEFERRED when its build would outlast the job or has no
 # verdict by its end; 1 when it could not be judged (nothing posted either way).
 train() { # queued lands
-  local q="$1" rc=0 main
-  RED_ROUND_DONE=""
+  local q="$1" rc=0 main later n id sha rec
+  RED_ROUND_DONE=""; TR_LATER=()
   fetch "$CHECKOUT" main || { log "could not fetch main; nothing landed"; return 1; }
   main="$(git -C "$CHECKOUT" rev-parse origin/main)"
   # Each land's fast unit gate on this main first (looper#196): a red one never reaches the batch.
   pre_land_train "$q" "$main"; q="$PRE_Q"
   stage_batch "$q" "$main"
-  (( ${#TR_N[@]} > 0 )) || return 0
-  batch_judge "$main" || rc=$?
+  (( ${#TR_N[@]} == 0 )) || batch_judge "$main" || rc=$?
   git -C "$CHECKOUT" update-ref -d "$STAGING_REF" 2>/dev/null || true
+  # The HISTORY.md lines queued in the batch, once it is done (looper#215).
+  for later in "${TR_LATER[@]+"${TR_LATER[@]}"}"; do read -r n id sha rec <<<"$later"; post_land "$n" "$id" "$sha" 0 "$rec"; done
   return "$rc"
 }
 
@@ -2376,7 +2383,12 @@ stage_land() { # issue id sha rec-dir
   log "merging #$n ($b, queued $(git -C "$CHECKOUT" show "$sha:.looper/land" | sed -n 's/^queued=//p'))"
   if [[ "$ahead" == 0 ]]; then
     log "nothing to land: $b has no commit that main lacks" > "$rec/out"
-    drop_worktree "$wt"; post_land "$n" "$id" "$sha" 0 "$rec"; return 0
+    drop_worktree "$wt"
+    # A closed issue's HISTORY.md line moves main: not under the batch's build, after it (looper#215).
+    if git -C "$CHECKOUT" cat-file -e "$sha:.looper/history" 2>/dev/null; then
+      TR_LATER+=("$n $id $sha $rec"); log "#$n: its HISTORY.md line is added once the batch is done"; return 0
+    fi
+    post_land "$n" "$id" "$sha" 0 "$rec"; return 0
   fi
   before="$(git -C "$CHECKOUT" rev-parse "$ONTO")"
   pushd "$wt" >/dev/null || return 1
@@ -2403,6 +2415,58 @@ stage_land() { # issue id sha rec-dir
   log "#$n: staged: ${before:0:7}..${after:0:7} on the candidate"
 }
 
+# The batch's candidate on the main of now (looper#215): tacplus's manager
+# built a batch and three bisection rounds, 8 h, on the main it started with,
+# which a HISTORY.md line had moved a minute after, and its green candidate
+# could not fast-forward: nothing landed in 27 h. Main fetched again: unmoved,
+# nothing changes. Moved by planning files alone (moved_by_planning), the lands
+# from the from-th, staged on main, are rebased onto it (the logs unioned, no
+# hook, nothing regenerated), TR_BEFORE and TR_AFTER naming their rebased
+# commits. Moved by anything else, or a rebase that conflicts or drops a
+# commit, fails: the lands are as they were, to be staged again on TRAIN_MAIN,
+# the new main. TRAIN_MAIN: main.
+train_onto() { # main from
+  local main="$1" from="$2" n=${#TR_N[@]} now wt attrs i j rc=0 old=() new=()
+  local -A to=()
+  TRAIN_MAIN="$main"
+  fetch "$CHECKOUT" main || { log "could not fetch main: the candidate stays on main ${main:0:7}"; return 0; }
+  now="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  [[ "$now" != "$main" ]] || return 0
+  TRAIN_MAIN="$now"
+  moved_by_planning "$main" "$now" "the candidate" || return 1
+  (( from < n )) || return 0
+  log "main moved since the candidate by planning files alone ($(paste -sd, - <<<"$MOVED_FILES" | sed 's/,/, /g')): its $(( n - from )) land$(plural "$(( n - from ))") rebased onto main ${now:0:7}"
+  attrs="$(mktemp)"; printf '%s\n' "$LOG_ATTRS" > "$attrs"
+  wt="$(scratch_dir)"; rm -rf "$wt"
+  if git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "${TR_AFTER[n-1]}" >/dev/null 2>&1 &&
+     git -C "$wt" -c core.hooksPath=/dev/null -c "core.attributesFile=$attrs" rebase -q --onto "$now" "$main" >/dev/null 2>&1; then
+    mapfile -t old < <(git -C "$CHECKOUT" rev-list --reverse "$main..${TR_AFTER[n-1]}")
+    mapfile -t new < <(git -C "$wt" rev-list --reverse "$now..HEAD")
+    if (( ${#old[@]} == ${#new[@]} )); then
+      to[$main]="$now"; for j in "${!old[@]}"; do to[${old[j]}]="${new[j]}"; done
+      for (( i = from; i < n; i++ )); do TR_BEFORE[i]="${to[${TR_BEFORE[i]}]}"; TR_AFTER[i]="${to[${TR_AFTER[i]}]}"; done
+      git -C "$CHECKOUT" update-ref "$STAGING_REF" "${TR_AFTER[n-1]}"
+      log "the candidate ${old[-1]:0:7} rebased onto main ${now:0:7}: ${TR_AFTER[n-1]:0:7}"
+    else rc=1; log "the rebase onto main ${now:0:7} dropped commits of the candidate: not rebased"; fi
+  else
+    rc=1; log "the candidate's rebase onto main ${now:0:7} conflicts in: $(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
+    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+  fi
+  rm -f "$attrs"; drop_worktree "$wt"
+  return "$rc"
+}
+
+# The lands from the from-th staged again, as one batch, on TRAIN_MAIN (main
+# moved under them otherwise than by planning files: train_onto), and judged.
+train_restage() { # from
+  local i q=""
+  for (( i = $1; i < ${#TR_N[@]}; i++ )); do q+="0 0 ${TR_N[i]} ${TR_ID[i]} ${TR_SHA[i]}"$'\n'; done
+  log "the $(( ${#TR_N[@]} - $1 )) land$(plural "$(( ${#TR_N[@]} - $1 ))") from #${TR_N[$1]} staged again, as one batch, on main ${TRAIN_MAIN:0:7} (looper#215)"
+  stage_batch "$q" "$TRAIN_MAIN"
+  (( ${#TR_N[@]} > 0 )) || return 0
+  batch_judge "$TRAIN_MAIN"
+}
+
 batch_names() { local i s=""; for (( i = 0; i < $1; i++ )); do s+="${s:+, }#${TR_N[i]}"; done; echo "$s"; } # count
 plural() { (( $1 == 1 )) || echo s; } # count
 
@@ -2418,6 +2482,9 @@ plural() { (( $1 == 1 )) || echo s; } # count
 BATCH_OVER=8   # batch_gates: the candidate's gates would outlast the job (looper#38): a shorter batch is tried
 batch_judge() { # main
   local main="$1" n=${#TR_N[@]} k=${#TR_N[@]} lo=0 hi rc=0 mid c red
+  # Built on the main of now (looper#215).
+  train_onto "$main" 0 || { train_restage 0; return; }
+  main="$TRAIN_MAIN"
   # The budget is the batch's gate set's (looper#38): one that would outlast the
   # job shrinks to the longest prefix that fits, and the rest wait for the next manager.
   while (( k > 0 )); do rc=0; batch_gates "$main" "$k" || rc=$?; (( rc == BATCH_OVER )) || break; k=$(( k - 1 )); done
@@ -2453,6 +2520,8 @@ batch_judge() { # main
     log "the batch is red: bisecting the batch of $k (the candidate after its first half is built next, a green prefix landed at once; about $(bisect_builds "$k") build$(plural "$(bisect_builds "$k")") find the land that breaks it)"
     while (( hi - lo > 1 )); do
       mid=$(( (lo + hi) / 2 ))
+      train_onto "$main" "$lo" || { train_restage "$lo"; return; }
+      main="$TRAIN_MAIN"
       rc=0; batch_gates "$main" "$mid" || rc=$?
       case "$rc" in
         # A green prefix lands at once, and the rest is built on the main it made (looper#208).
@@ -2683,15 +2752,25 @@ batch_gates() { # main count
 # Main fast-forwards to the first count lands' candidate (green: its build is
 # BATCH_OUT's), and each of them from the from-th (those before it a green
 # prefix main has already) gets its record and its verdict (post_land:
-# the comment, the HISTORY.md line, the branch deleted). Fails when main moved
-# (nothing posted: the lands stay queued).
+# the comment, the HISTORY.md line, the branch deleted). A main moved since
+# the build by planning files alone, which no gate reads, the candidate is
+# rebased onto first (train_onto, looper#215), as the manager job's staging is
+# (looper#114). Fails when main moved otherwise (nothing posted: the lands stay
+# queued, and the next batch builds them on the new main).
 batch_land() { # main count [from]
-  local main="$1" count="$2" from="${3:-0}" cand i rec ok="" set why mapped out
-  cand="${TR_AFTER[count-1]}"
+  local main="$1" count="$2" from="${3:-0}" cand i rec ok set why mapped out tries=0
   set="${GREEN_SET[$count]}"; why="${GREEN_WHY[$count]}"; mapped="${GREEN_MAPPED[$count]}"; out="${GREEN_OUT[$count]}"
-  for (( i = from; i < count; i++ )); do [[ -z "${TR_ROADMAP[i]}" ]] || ok+="${ok:+ }$(git -C "$CHECKOUT" rev-list "${TR_BEFORE[i]}..${TR_AFTER[i]}" -- ROADMAP.md | paste -sd' ' -)"; done
-  ( flock 8; LOOPER_LANDING=1 LOOPER_ROADMAP_OK="$ok" git -C "$CHECKOUT" push -q origin "$cand:refs/heads/main" ) 8>"$LAND_LOCK" ||
-    { log "main did not fast-forward to the candidate ${cand:0:7} (it moved); the lands stay queued for the next batch"; return 1; }
+  while :; do
+    cand="${TR_AFTER[count-1]}"; ok=""
+    for (( i = from; i < count; i++ )); do [[ -z "${TR_ROADMAP[i]}" ]] || ok+="${ok:+ }$(git -C "$CHECKOUT" rev-list "${TR_BEFORE[i]}..${TR_AFTER[i]}" -- ROADMAP.md | paste -sd' ' -)"; done
+    ( flock 8; LOOPER_LANDING=1 LOOPER_ROADMAP_OK="$ok" git -C "$CHECKOUT" push -q origin "$cand:refs/heads/main" ) 8>"$LAND_LOCK" && break
+    tries=$(( tries + 1 ))
+    if (( tries > 3 )) || ! train_onto "$main" "$from" || [[ "$TRAIN_MAIN" == "$main" ]]; then
+      log "main did not fast-forward to the candidate ${cand:0:7} (it moved); the lands stay queued for the next batch"; return 1
+    fi
+    log "the green candidate ${cand:0:7} is now ${TR_AFTER[count-1]:0:7}, on main ${TRAIN_MAIN:0:7}: its tree but the planning files is the one built (looper#215)"
+    main="$TRAIN_MAIN"
+  done
   log "main fast-forwarded: ${main:0:7}..${cand:0:7}, on the gates $set ($why): a batch of $(( count - from )) land$(plural "$(( count - from ))"), one build"
   for (( i = from; i < count; i++ )); do
     rec="${TR_REC[i]}"
@@ -3054,21 +3133,26 @@ verdict_batch() {
 # by these alone leaves its gates' results as they were.
 PLANNING_ONLY_RE='^(ROADMAP\.md|PROPOSALS\.md|HISTORY\.md|STATE\.md|roadmap/.+)$'
 
+# Main moved from main to now, on top of it, by planning files alone
+# (MOVED_FILES: the files): else fails, saying why, of what was built on main.
+moved_by_planning() { # main now what
+  local other
+  git -C "$CHECKOUT" merge-base --is-ancestor "$1" "$2" ||
+    { log "main moved since $3, not on top of it (it is ${2:0:7}, $3 was on ${1:0:7}): not rebased"; return 1; }
+  MOVED_FILES="$(git -C "$CHECKOUT" diff --name-only --no-renames "$1" "$2")"
+  other="$(grep -Ev "$PLANNING_ONLY_RE" <<<"$MOVED_FILES" | sed '/^$/d' || true)"
+  [[ -z "$other" ]] || { log "main moved since $3 by files a gate may read ($(paste -sd, - <<<"$other" | sed 's/,/, /g')): not rebased"; return 1; }
+}
+
 # Main moved since the verdict (looper#114). By planning files alone, the
 # verdict's staging is rebased onto the new main, in a scratch worktree, no
 # hook and no repository code run, nothing regenerated: RESTAGED is the
 # result. Anything else moved, or a rebase that conflicts, fails, saying why.
 restage_on_planning() { # verdict-main staging
-  local main="$1" staging="$2" now files other wt rc=0
+  local main="$1" staging="$2" now wt rc=0
   now="$(git -C "$CHECKOUT" rev-parse origin/main)"
-  git -C "$CHECKOUT" merge-base --is-ancestor "$main" "$now" ||
-    { log "main moved since the verdict, not on top of it (it is ${now:0:7}, the verdict was on ${main:0:7}): not rebased"; return 1; }
-  files="$(git -C "$CHECKOUT" diff --name-only --no-renames "$main" "$now")"
-  other="$(grep -Ev "$PLANNING_ONLY_RE" <<<"$files" | sed '/^$/d' || true)"
-  if [[ -n "$other" ]]; then
-    log "main moved since the verdict by files a gate may read ($(paste -sd, - <<<"$other" | sed 's/,/, /g')): not rebased"; return 1
-  fi
-  log "main moved since the verdict by planning files alone ($(paste -sd, - <<<"$files" | sed 's/,/, /g')): rebasing $STAGING onto it"
+  moved_by_planning "$main" "$now" "the verdict" || return 1
+  log "main moved since the verdict by planning files alone ($(paste -sd, - <<<"$MOVED_FILES" | sed 's/,/, /g')): rebasing $STAGING onto it"
   wt="$(scratch_dir)"
   git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$staging" &&
     git -C "$wt" -c core.hooksPath=/dev/null rebase -q --onto "$now" "$main" >/dev/null 2>&1 || rc=$?

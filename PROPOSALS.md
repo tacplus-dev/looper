@@ -4,6 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **HISTORY.md lines in the batch's own push** (2026-11-22, #215): the train now adds a closed issue's HISTORY.md
+  line queued in a batch once the batch is done, and rebases a green candidate onto a main moved by planning files
+  alone, so a line no longer strands a build. The issue's "better" form, the lines committed on top of the green
+  candidate and pushed with it (one push, main moved once), is left out: a batch with nothing green would still need
+  them pushed on their own. Two more left as they were: a red batch's round (#205) builds each land on the main
+  fetched before the batch's build, not again before the round; and the split verdict job (#90) stages on the main
+  it started with, the manager job alone rebasing onto planning files (#114).
 - **A land's build preempts report builds** (2026-11-21, #209): every build but a land's is now `report: true`, its
   slots held below `BUILD_POOL_NODES` (2), and its child jobs on `BUILD_REPORT_TAGS`; a land's build not started within
   `LOOPER_BUILD_START` waits on while other builds run. Preemption itself is the cluster's: a `build-report` runner

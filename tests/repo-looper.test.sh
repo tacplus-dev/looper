@@ -4395,10 +4395,16 @@ main_green() {
   for c in $(origin log -g --format=%H main); do
     origin merge-base --is-ancestor "$c" "$(git -C "$FIX/seed" rev-parse HEAD)" && continue   # the scenario's own pushes
     [[ "$(origin log -1 --format=%s "$c")" == HISTORY.md:* ]] && continue
-    jq -e --arg c "$c" 'map(select(.state == "success")) | length > 0' "$FIX/statuses/$c.json" >/dev/null 2>&1 ||
-      fail "main pointed at ${c:0:7} with no green build of it: $(origin log -g --oneline main)"
+    green_status "$c" && continue
+    # A green candidate rebased onto a main moved by planning files alone (looper#215): its tree but those.
+    for s in "$FIX"/statuses/*.json; do
+      s="$(basename "$s" .json)"
+      green_status "$s" && [[ -z "$(origin diff --name-only "$s" "$c" | grep -Ev '^(HISTORY|STATE|PROPOSALS|ROADMAP)\.md$')" ]] && continue 2
+    done
+    fail "main pointed at ${c:0:7} with no green build of it: $(origin log -g --oneline main)"
   done
 }
+green_status() { jq -e 'map(select(.state == "success")) | length > 0' "$FIX/statuses/$1.json" >/dev/null 2>&1; } # sha
 
 # A batch of 5 green lands with 1 build: all five on main, in queue order, each
 # with its verdict naming the batch, the branches deleted, the issues free.
@@ -4635,6 +4641,94 @@ has "$c" "found by bisecting a batch of 5 lands: the 3 before #7 are green witho
 has "$(grep '^alpha#7 ' "$FIX/comments")" "sent back with the failure"
 has "$(grep '^alpha#4 ' "$FIX/comments")" "in a batch of 2 lands"
 lacks "$(grep '^alpha#6 ' "$FIX/comments")" "in a batch of"; has "$(grep '^alpha#6 ' "$FIX/comments")" "The manager merged [\`looper/alpha-6\`]"
+main_green
+pass
+
+# Main moved by a HISTORY.md line under the batch (looper#215): tacplus's
+# manager built a batch and three bisection rounds, 8 h, on a main a
+# HISTORY.md line had moved a minute after it started, and its green
+# candidate could not fast-forward: nothing landed. A closed issue's
+# HISTORY.md line queued among the lands moves main only once the batch is
+# done: the batch lands in one build, its line after it.
+history_request() { # issue queued-time: a closed issue's HISTORY.md line, queued as queue_history leaves it
+  local d="$FIX/q-$1"; rm -rf "$d"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b "looper/alpha-$1"; mkdir -p "$d/.looper"
+  printf 'id=q%s\nstate=queued\nqueued=%s\n' "$1" "$2" > "$d/.looper/land"; echo "- 2026-11-22 looper issue Done. (#$1)" > "$d/.looper/history"
+  git -C "$d" add -A; git -C "$d" commit -qm "looper: HISTORY.md's line for #$1"; git -C "$d" push -q origin "looper/alpha-$1"
+  issue alpha "$1" CLOSED approved,bug "Done."
+  jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-$1.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-$1.json"
+}
+scenario train-history-request-after-batch
+train_seed; train_issues 5
+queue 4 2026-11-03T10:00:00Z f4.txt 4
+history_request 9 2026-11-03T11:00:00Z
+queue 5 2026-11-03T12:00:00Z f5.txt 5
+manage "${BUILDS[@]}"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+lacks "$OUT" "did not fast-forward"
+[[ "$(landed f4.txt)" == 4 && "$(landed f5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+has "$(history)" "- 2026-11-22 looper issue Done. (#9)"
+[[ "$(origin log --format=%s main | head -n 3 | tac | paste -sd'|')" == "fix 4|fix 5|HISTORY.md: #9 (looper)" ]] || fail "main: $(origin log --oneline main)"
+lacks "$(labels alpha 9)" "looper:landing"
+main_green
+pass
+
+# Main moved by planning files alone during a green candidate's build
+# (looper#215): the candidate is rebased onto it and merged, one build. Main
+# moved by anything else: it is built again on the new main, and merged then.
+during_build() { # script: run once, by the first build's gates, beside them
+  cat > "$FIX/seed/gates.yaml" <<'EOF'
+full:
+  run: 'echo "full ${BUILD_STUB:-here} $(git rev-parse HEAD)" >> "$FIX/gates-ran" && { [[ ! -e "$FIX/during-build" ]] || bash "$FIX/during-build"; } && ! grep -qs red -- *.txt'
+EOF
+  git -C "$FIX/seed" commit -qam "gates: during the build" && git -C "$FIX/seed" push -q origin main
+  printf 'rm -f "$FIX/during-build"; cd "$FIX/seed" && %s\n' "$1" > "$FIX/during-build"
+}
+history_on_main='echo "- 2026-11-22 looper issue Done. (#9)" >> HISTORY.md && git add HISTORY.md && git commit -qm "HISTORY.md: #9 (looper)" && git push -q origin main'
+scenario train-green-after-history-on-main
+train_seed; train_issues 5 6
+during_build "$history_on_main"
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+m="$(git -C "$FIX/seed" rev-parse HEAD)"
+manage "${BUILDS[@]}"
+h="$(git -C "$FIX/seed" rev-parse HEAD)"; [[ "$h" != "$m" ]] || fail "main did not move during the build"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(cut -d' ' -f5 "$FIX/builds")" == "$m" ]] || fail "the build: $(cat "$FIX/builds")"
+[[ "$(origin log --format=%s main | head -n 4 | tac | paste -sd'|')" == "HISTORY.md: #9 (looper)|fix 4|fix 5|fix 6" ]] || fail "main: $(origin log --oneline main)"
+has "$(history)" "(#9)"
+has "$OUT" "main moved since the candidate by planning files alone (HISTORY.md)"
+has "$OUT" "main fast-forwarded: ${h:0:7}.."
+lacks "$OUT" "did not fast-forward"
+for n in 4 5 6; do has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 3 lands"; done
+main_green
+pass
+scenario train-green-after-code-on-main
+train_seed; train_issues 5
+during_build 'echo other > other.txt && git add other.txt && git commit -qm "main: other.txt" && git push -q origin main'
+for n in 4 5; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+manage "${BUILDS[@]}"
+h="$(git -C "$FIX/seed" rev-parse HEAD)"
+[[ "$(builds_of)" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ "$(sed -n 2p "$FIX/builds" | cut -d' ' -f5)" == "$h" ]] || fail "not built again on the new main: $(cat "$FIX/builds")"
+has "$OUT" "by files a gate may read (other.txt)"
+[[ "$(landed f4.txt)" == 4 && "$(landed f5.txt)" == 5 && "$(landed other.txt)" == other ]] || fail "main: $(origin log --oneline main)"
+main_green
+pass
+
+# Each candidate is built on the main of its build (looper#215): a red batch's
+# bisection builds its next candidate on the main a HISTORY.md line moved
+# during the batch's build, not on the main the batch was staged on.
+scenario train-bisect-on-latest-main
+train_seed; train_issues 5 6
+during_build "$history_on_main"
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$( [[ "$n" == 5 ]] && echo red || echo "$n" )"; done
+manage "${BUILDS[@]}" LOOPER_RED_ROUND=0
+h="$(git -C "$FIX/seed" rev-parse HEAD)"
+has "$OUT" "bisecting: the first 1 of 3 are green"
+[[ "$(sed -n 2p "$FIX/builds" | cut -d' ' -f5)" == "$h" ]] || fail "the bisection's first candidate was not built on the new main ${h:0:7}: $(cat "$FIX/builds")"
+lacks "$OUT" "did not fast-forward"
+[[ "$(landed f4.txt)" == 4 && "$(landed f6.txt)" == 6 && -z "$(landed f5.txt)" ]] || fail "main: $(origin log --oneline main)"
+has "$(history)" "(#9)"
+has "$(grep '^alpha#5 ' "$FIX/comments")" "sent back with the failure"
 main_green
 pass
 
