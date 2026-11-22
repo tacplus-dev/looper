@@ -91,7 +91,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   the next patch, features built only when a ROADMAP.md links them (else a design proposal and `needs-decision`),
   the scans file bugs as `bug`, one issue per cause and not per finding, blocked from the start (its `Blocked-by:` lines)
   when the fix is another repository's open issue (#129), never approve a feature, and read the roadmaps before
-  opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); the
+  opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); an
+  issue's run files the change its issue needs in another repository of the org (its other half) there, `approved` with
+  it, its body's first line `Parent: <org>/<repo>#N` naming it, and the looper approves one its outcome waits on that
+  was filed without (#218); the
   relock (#212): the nightly scan, before its model, moves main's pins by digest (each pin file's `build_image:`, each Dockerfile
   FROM) to their tags' digests now, the tacplus build image at a patch tag and tacplus.lock's `tacplus:` to the line's newest
   released patch, files one approved `bug` a repository for the moves (`<!-- looper-relock -->`) and queues the relock on its
