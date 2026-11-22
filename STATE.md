@@ -79,7 +79,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   with author and association, only an OWNER's or MEMBER's text, or that of a COLLABORATOR, CONTRIBUTOR or NONE with write permission on the
   repository (an org owner with private membership shows as CONTRIBUTOR, #97; looked up once a prompt), directing the run and the
   rest, with a tool's quoted source text (source-text markers), data; text holding the nonce refused, the
-  nonce redacted from what leaves the job; the nightly scan; the `tacplus` wrapper with GitHub credentials for its container
+  nonce redacted from what leaves the job; what the model reads later (a comment since, a linked issue, a pull
+  request) through `--issue-text` and `--pr-text`, in the same blocks with the run's nonce (#219); the nightly scan; the `tacplus` wrapper with GitHub credentials for its container
   (#11), which runs the released tacplus (the repository's `tacplus.lock` pin, else its floor's newest patch,
   checksum-verified) in the `build:<MAJOR.MINOR>` image of its line, so Go repositories generate (no longer the
   retired, Go-less `tacplus/tacplus` image), and `looper-smoke` generates Go through it on every image build (#27); the reusable planning-files CI check (`.github/workflows/planning-files.yml`, #13); the GitLab CI files of `ci/` linted as GitLab reads them, a gate (`looper-ci-lint`: YAML, GitLab's JSON schema, extends/stages/needs, and GitLab's lint API with a token, #94); the issue flow (#14):
@@ -325,8 +326,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   (#172 pins it once one is: PROPOSALS.md) and publish still runs with Docker on `BUILD_DOCKER_TAGS`, `arm64,
   build-docker`, the VM build pool's own tag (tacplus-dev/cloud#70; #172), never the in-cluster `build` runner's, and
   no gate set needs Docker (README: Build pipeline); `macos-smoke` (#36) has not run yet: the hub copies
-  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run (a newer comment, a
-  pull request) is not wrapped: only the prompt's rule on authors guards it (#40, PROPOSALS.md); the build pipeline always
+  `ci/build.gitlab-ci.yml` into tacplus-dev/build and plays it once (no CI file here is linted or run by a test); a report's memory limit is per container and the model's `docker` only, not a boundary: `docker compose`, `docker build`'s containers, the real docker by its path and processes in the job's own container are unlimited, as are the manager's gates (#41, PROPOSALS.md); text the model reads itself during a run other than through
+  `--issue-text` and `--pr-text` (its own `gh`, a nightly scan's reads) is not wrapped: only the prompt's rule on authors guards it (#219, PROPOSALS.md); the build pipeline always
   run the full gates unless the manager or a report's `--build` names a set (#71) (PROPOSALS.md); the security checks (#49) have run only by hand (`looper-scan local`), not in
   tacplus-dev/build: they start with the next looper image and the hub's copy of `ci/build.gitlab-ci.yml` (the
   `nightly` input; one schedule, `{"nightly": true}` with no `repo`, fanning out to each pinned repository's nightly,
