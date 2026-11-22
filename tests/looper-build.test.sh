@@ -476,10 +476,17 @@ case "\$method \$url" in
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/base-semgrep.sha256" ]] || exit 22
     cp "$TMP/base-semgrep.sha256" "\$out" ;;
-  # A commit's findings (looper#180): a land's base's, \$TMP/base-findings.json.
+  # The last nightly's summary (looper#217: the commit it names), \$TMP/previous-summary.md.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/nightly/summary.md")
+    echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
+    [[ -f "$TMP/previous-summary.md" ]] || exit 22
+    cp "$TMP/previous-summary.md" "\$out" ;;
+  # A commit's findings (looper#180): a land's base's, \$TMP/base-findings.json,
+  # but for the commits \$TMP/unpublished lists (no build published theirs, looper#217).
   "GET https://gitlab.example/api/v4/projects/42/packages/generic/security-demo/"*"/findings.json")
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     [[ -f "$TMP/base-findings.json" ]] || exit 22
+    v="\${url#*/security-demo/}"; ! grep -qxF "\${v%%/*}" "$TMP/unpublished" 2>/dev/null || exit 22
     cp "$TMP/base-findings.json" "\$out" ;;
   # The last formal verification's record (looper#74): \$TMP/verify-record.
   "GET https://gitlab.example/api/v4/projects/42/packages/generic/verify-demo/latest/record")
@@ -2312,6 +2319,46 @@ cp "$OUT/security/findings.json" "$TMP/base-findings.json"
 scan BUILD_SHA="${SHA[scanbased]}" BUILD_BASE="$BASE_SHA" -- run 2>"$TMP/err" || fail "$(cat "$OUT/security/verdict")"
 [[ "$(jq -c '[.[] | select(.tool == "gosec" and .id == "G306") | [.where, .standing]]' "$OUT/security/findings.json")" == \
    '[["main.go:8",true],["main.go:9",true],["main.go:10",false]]' ]] || fail "$(jq -c . "$OUT/security/findings.json")"
+pass
+
+# looper#217: a land's base no build published (the manager's HISTORY.md push,
+# the nightly's PROPOSALS.md) compares with its nearest first-parent ancestor
+# that one did, else the last nightly's: never with nothing.
+git -C "$work" checkout -q -b scanhistory "$BASE_SHA"
+printf 'history\n' > "$work/HISTORY.md"; git -C "$work" add -A; git -C "$work" commit -qm "HISTORY.md"
+printf 'proposals\n' > "$work/PROPOSALS.md"; git -C "$work" add -A; git -C "$work" commit -qm "PROPOSALS.md"
+git -C "$work" push -q "$SRV/repos/github.com/tacplus-dev/demo.git" HEAD:refs/heads/scanhistory
+H1="$(git -C "$work" rev-parse HEAD~1)"; H2="$(git -C "$work" rev-parse HEAD)"
+NAME="security: a land on a HISTORY.md-only head keeps main's findings standing, its nearest published ancestor's"
+cp "$TMP/vuln-findings.json" "$TMP/base-findings.json"; printf '%s\n' "$H2" "$H1" > "$TMP/unpublished"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$H2" -- run 2>"$TMP/err" || fail "the land failed on main's findings: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+[[ "$(grep -o 'security-demo/[^ ]*/findings.json' "$TMP/api.log" | grep -v nightly)" == \
+   "$(printf 'security-demo/%s/findings.json\n' "$H2" "$H1" "$BASE_SHA")" ]] || fail "asked for: $(cat "$TMP/api.log")"
+jq -e '[.[] | select(.blocking)] | length >= 2 and all(.standing)' "$OUT/security/findings.json" >/dev/null || fail "standing: $(standing)"
+grep -q "standing (${BASE_SHA:0:12}'s)" "$OUT/security/summary.md" &&
+  grep -qF "The base ${H2:0:12} published no findings (no build ran on it): its findings are its nearest first-parent ancestor with a report, $BASE_SHA, 2 commit(s) before it (looper#217)." \
+    "$OUT/security/summary.md" || fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: a land whose base and its ancestors published nothing compares with the last nightly's, and names its commit"
+printf '%s\n' "$H2" "$H1" "$BASE_SHA" > "$TMP/unpublished"
+cp "$TMP/vuln-findings.json" "$TMP/previous.json"; printf '## Security checks: demo %s (nightly)\n' "$BASE_SHA" > "$TMP/previous-summary.md"
+scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$H2" -- run 2>"$TMP/err" || fail "the land failed on the nightly's findings: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+jq -e '[.[] | select(.blocking)] | length >= 2 and all(.standing)' "$OUT/security/findings.json" >/dev/null || fail "standing: $(standing)"
+grep -qF "its findings are the last nightly's, of ${BASE_SHA:0:12}: none of its last 20 first-parent commits has one (looper#217)." "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+pass
+
+NAME="security: with no findings of the base, its ancestors or a nightly, every blocking finding fails, and the summary says so"
+rm -f "$TMP/previous.json" "$TMP/previous-summary.md"
+if scan BUILD_SHA="${SHA[scanvuln]}" BUILD_BASE="$H2" -- run 2>"$TMP/err"; then fail "passed with nothing to compare with"; fi
+scan_verdict_is "fail: "
+jq -e 'all(.standing | not)' "$OUT/security/findings.json" >/dev/null || fail "standing: $(standing)"
+grep -qF "No findings of the base ${H2:0:12} (its build published none), of its last 20 first-parent commits or of a nightly" "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+rm -f "$TMP/unpublished" "$TMP/base-findings.json"
 pass
 
 # looper#207: Semgrep took 29 of a tacplus land's 49 security minutes on the

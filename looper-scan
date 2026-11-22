@@ -44,7 +44,8 @@
 # (BUILD_BASE: main's commit it is built on, looper#180) fails only on the
 # blocking findings its change adds: one the base's build reported too (by
 # tool, rule and file, up to its count) is standing, reported and not failed,
-# the nightly's to file; a nightly and a release fail on every one. A tool that cannot run
+# the nightly's to file (a base no build published: its nearest published
+# first-parent ancestor's, else the last nightly's, looper#217); a nightly and a release fail on every one. A tool that cannot run
 # fails the run. It runs in the looper image (jq, the scanners), never in the
 # repository's build image; it sources looper-build for the build's
 # credentials (the tacplus-reader app, read-only) and checkout.
@@ -867,27 +868,6 @@ cmd_run() {
   else
     rm -f "$previous"; log "no nightly of $BUILD_REPO to compare with: every finding is new"
   fi
-  # A land's base: the findings of main's commit it is built on (looper#180).
-  local base="$SCAN_WORK/base.json"
-  if [[ "$SCAN_KIND" == build && -n "${BUILD_BASE:-}" ]]; then
-    SCAN_BASE="$BUILD_BASE"
-    if [[ -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] &&
-       curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$base" "$(package_url "$BUILD_BASE" findings.json)" 2>/dev/null &&
-       jq -e 'type == "array"' "$base" >/dev/null 2>&1; then
-      log "compared with the base $BUILD_BASE: its blocking findings are standing"
-    else
-      rm -f "$base"; log "no findings of the base $BUILD_BASE: every blocking finding fails"
-    fi
-    # The files of the generated code its Semgrep read (looper#207): what it
-    # need not read again.
-    if [[ -f "$base" ]] && curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$SCAN_WORK/$SEMGREP_READ.base" \
-         "$(package_url "$BUILD_BASE" "$SEMGREP_READ")" 2>/dev/null; then
-      log "the base's Semgrep read of the generated code: what it read the same is not read again"
-    else
-      rm -f "$SCAN_WORK/$SEMGREP_READ.base"
-    fi
-  fi
-
   local key="${TACPLUS_READER_APP_KEY:-}"
   BUILD_GITHUB_TOKEN="$(reader_token '"contents":"read","metadata":"read"')" ||
     scan_verdict fail "no read-only GitHub token (the tacplus-reader app)"
@@ -897,8 +877,24 @@ cmd_run() {
     SCAN_PUBLIC=unknown
   [[ -n "$key" ]] && rm -f "$key"
   unset TACPLUS_READER_APP_KEY TACPLUS_READER_APP_ID TACPLUS_READER_INSTALLATION_ID
-  drop_job_credentials
   export BUILD_GITHUB_TOKEN; git_credentials
+
+  # A land's base: the findings of main's commit it is built on (looper#180),
+  # else of its nearest ancestor with any, else the last nightly's (looper#217),
+  # while the job's token is still here; its history is read with the source's.
+  local base="$SCAN_WORK/base.json"
+  if [[ "$SCAN_KIND" == build && -n "${BUILD_BASE:-}" ]]; then
+    find_base "$base" "$previous"
+    # The files of the generated code its Semgrep read (looper#207): what it
+    # need not read again.
+    if [[ -f "$base" ]] && curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$SCAN_WORK/$SEMGREP_READ.base" \
+         "$(package_url "$SCAN_BASE_VERSION" "$SEMGREP_READ")" 2>/dev/null; then
+      log "the base's Semgrep read of the generated code: what it read the same is not read again"
+    else
+      rm -f "$SCAN_WORK/$SEMGREP_READ.base"
+    fi
+  fi
+  drop_job_credentials
   export GOPRIVATE="${GOPRIVATE:-github.com/$BUILD_ORG/*}" GOFLAGS="${GOFLAGS:--mod=mod}"
   local src="$SCAN_WORK/src"
   build_step fetch_commit "$src"
@@ -1029,10 +1025,67 @@ scan_tools() { # trees... -- tools...
   done
 }
 
-# A land's base (looper#180): its commit (BUILD_BASE), once asked for; whether
-# its findings were read is whether its base-findings file is there.
+# A land's base (looper#180): the commit whose findings it is compared with
+# (BUILD_BASE's, else its ancestor's, else the last nightly's), once asked
+# for; whether they were read is whether its base-findings file is there.
 SCAN_BASE=""
 SCAN_BASE_READ=""
+# Their package's version (the commit, or nightly), and what the summary says
+# when they are not BUILD_BASE's own.
+SCAN_BASE_VERSION=""
+SCAN_BASE_FROM=""
+# How many of main's first-parent commits, from BUILD_BASE, a base's findings
+# are looked for in (looper#217).
+SCAN_BASE_DEPTH=20
+
+# The findings a land is compared with (looper#217). A base no build published
+# (the manager's HISTORY.md push, the nightly's PROPOSALS.md, a ROADMAP edit)
+# takes the nearest of its first-parent ancestors that one did, up to
+# SCAN_BASE_DEPTH commits from it, else the last nightly's: never nothing while
+# main has a report. Its history is fetched, commits alone, only then.
+find_base() { # base-findings previous-findings
+  local out="$1" previous="$2" c n=0 hist="$SCAN_WORK/base-history" commits=()
+  SCAN_BASE="$BUILD_BASE"; SCAN_BASE_VERSION="$BUILD_BASE"
+  [[ -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] ||
+    { log "no findings of the base $BUILD_BASE (no package registry): every blocking finding fails"; return 0; }
+  if base_package "$BUILD_BASE" "$out"; then
+    log "compared with the base $BUILD_BASE: its blocking findings are standing"; return 0
+  fi
+  git init -q "$hist"
+  if git -C "$hist" fetch -q --depth "$SCAN_BASE_DEPTH" --filter=tree:0 "$(repo_url)" "$BUILD_BASE" 2>/dev/null; then
+    mapfile -t commits < <(git -C "$hist" rev-list --first-parent --max-count="$SCAN_BASE_DEPTH" FETCH_HEAD 2>/dev/null | tail -n +2)
+  else
+    log "the base's history cannot be read: its ancestors are not looked at"
+  fi
+  rm -rf "$hist"
+  for c in "${commits[@]}"; do
+    n=$((n + 1))
+    if base_package "$c" "$out"; then
+      SCAN_BASE="$c"; SCAN_BASE_VERSION="$c"
+      SCAN_BASE_FROM="its nearest first-parent ancestor with a report, $c, $n commit(s) before it"
+      log "no findings of the base $BUILD_BASE: compared with $c, its ancestor $n commit(s) back"; return 0
+    fi
+  done
+  if [[ -f "$previous" ]]; then
+    cp "$previous" "$out"
+    # The commit it was of: its summary's heading names it.
+    SCAN_BASE=""
+    if curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$SCAN_WORK/nightly.md" "$(package_url nightly summary.md)" 2>/dev/null; then
+      SCAN_BASE="$(sed -n '1s/^## Security checks: [^ ]* \([0-9a-f]\{40\}\) (nightly)$/\1/p' "$SCAN_WORK/nightly.md")"
+    fi
+    SCAN_BASE="${SCAN_BASE:-nightly}"; SCAN_BASE_VERSION=nightly
+    SCAN_BASE_FROM="the last nightly's, of ${SCAN_BASE:0:12}: none of its last $SCAN_BASE_DEPTH first-parent commits has one"
+    log "no findings of the base $BUILD_BASE nor of its ancestors: compared with the last nightly ($SCAN_BASE)"; return 0
+  fi
+  log "no findings of the base $BUILD_BASE, of its ancestors or of a nightly: every blocking finding fails"
+}
+
+# A commit's published findings into file, if they are there and a list.
+base_package() { # commit file
+  curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" -o "$2" "$(package_url "$1" findings.json)" 2>/dev/null &&
+    jq -e 'type == "array"' "$2" >/dev/null 2>&1 && return 0
+  rm -f "$2"; return 1
+}
 
 # The policy on the run's findings, with dir's security-exceptions.yaml and
 # security-baseline.json (the commit's), the reports; the verdict ends the run.
@@ -1299,10 +1352,12 @@ write_summary() { # blocking
   echo
   jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the last nightly, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
   if [[ -n "$SCAN_BASE_READ" ]]; then
-    echo; printf '%s finding(s) standing (the base %s'"'"'s), %s of them failing the policy: main'"'"'s, reported and not failed here (the nightly'"'"'s to file); this build fails only on what its change adds (looper#180).\n' \
-      "$(jq '[.[] | select(.standing)] | length' "$f")" "${SCAN_BASE:0:12}" "$(jq '[.[] | select(.blocking and .standing)] | length' "$f")"
+    echo; printf '%s finding(s) standing (%s'"'"'s), %s of them failing the policy: main'"'"'s, reported and not failed here (the nightly'"'"'s to file); this build fails only on what its change adds (looper#180).\n' \
+      "$(jq '[.[] | select(.standing)] | length' "$f")" "$([[ -n "$SCAN_BASE_FROM" ]] || echo "the base ")${SCAN_BASE:0:12}" "$(jq '[.[] | select(.blocking and .standing)] | length' "$f")"
+    [[ -z "$SCAN_BASE_FROM" ]] ||
+      { echo; echo "The base ${BUILD_BASE:0:12} published no findings (no build ran on it): its findings are $SCAN_BASE_FROM (looper#217)."; }
   elif [[ -n "$SCAN_BASE" ]]; then
-    echo; echo "No findings of the base ${SCAN_BASE:0:12} (its build published none): every finding failing the policy fails this build."
+    echo; echo "No findings of the base ${SCAN_BASE:0:12} (its build published none), of its last $SCAN_BASE_DEPTH first-parent commits or of a nightly: every finding failing the policy fails this build."
   fi
   [[ -z "${SCAN_REPORTS:-}" ]] || { echo; echo "Reports: $SCAN_REPORTS"; }
   if ((${#problems[@]})); then echo; echo "### Problems (each fails the run)"; for p in "${problems[@]}"; do echo "- $p"; done; fi
