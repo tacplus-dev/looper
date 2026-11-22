@@ -594,6 +594,45 @@ has "$(cat "$FIX/comments")" "the next run resumes"
 lacks "$(cat "$FIX/comments")" "looper:stuck"
 pass
 
+# The other-repository half of an approved issue (looper#218) is filed already
+# approved, its Parent line naming the issue: the prompt says so, and the issue
+# waits on it.
+scenario other-repo-half-approved
+cat >> "$FIX/claude.sh" <<'EOS'
+gh issue create --repo tacplus-dev/beta --title "The beta half of tacplus-dev/alpha#4" --label bug,approved --body "Parent: tacplus-dev/alpha#4
+Change beta's pin."
+echo "Blocked-by: tacplus-dev/beta#1" > "$OUTCOME"
+EOS
+run
+p="$(tr '\n' ' ' < "$(ls "$FIX"/project/looper-runs/*-issue-4/prompt.md)" | tr -s ' ')"
+has "$p" "A change it needs in another repository of tacplus-dev (its other half) is part of it, approved with it (looper#218)"
+has "$p" "labelled \`approved\` and this issue's kind (\`bug\`), never \`needs-decision\`, its body's first line \`Parent: tacplus-dev/alpha#4\`"
+has "$p" "a change in another repository it does not call for"
+[[ "$(labels beta 1)" == bug,approved ]] || fail "beta#1 labels $(labels beta 1)"
+has "$(body beta 1)" "Parent: tacplus-dev/alpha#4"
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#1"
+lacks "$(cat "$FIX/comments")" "beta#1 "
+pass
+
+# One the model filed without approved that the issue waits on gets it from
+# the looper, said on it; one whose Parent line names another issue, or none,
+# does not.
+scenario other-repo-half-unapproved
+issue beta 1 OPEN bug "Parent: tacplus-dev/alpha#40"
+issue beta 2 OPEN bug "Someone else's."
+cat >> "$FIX/claude.sh" <<'EOS'
+gh issue create --repo tacplus-dev/beta --title "The beta half of tacplus-dev/alpha#4" --label bug --body "Parent: tacplus-dev/alpha#4
+Change beta's pin."
+printf 'Blocked-by: tacplus-dev/beta#1\nBlocked-by: tacplus-dev/beta#2\nBlocked-by: tacplus-dev/beta#3\n' > "$OUTCOME"
+EOS
+run
+[[ "$(labels beta 3)" == approved,bug ]] || fail "beta#3 labels $(labels beta 3)"
+has "$(cat "$FIX/comments")" "beta#3 Approved with its parent, tacplus-dev/alpha#4"
+for i in 1 2; do [[ "$(labels beta $i)" == bug ]] || fail "beta#$i labels $(labels beta $i)"; done
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#3"
+has "$(cat "$FIX/comments")" "so this issue is now \`Blocked-by: tacplus-dev/beta#1\`, \`Blocked-by: tacplus-dev/beta#2\`, \`Blocked-by: tacplus-dev/beta#3\` and stays"
+pass
+
 scenario ended-unknown
 run
 [[ "$(labels alpha 4)" == "approved,bug,looper:stuck" ]] || fail "labels $(labels alpha 4)"
