@@ -163,7 +163,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   an unexpired `security-exceptions.yaml` entry accepts it (only in its `where`, a path or a glob, when it has one, a dependency's
   file too: `go.mod` for `golang.org/x/text@0.3.0 (go.mod)`, #183; an entry without one accepts its id everywhere and the report warns, #182); a land (a build with a base) fails only on the blocking
   findings it adds: its base commit's (`security-<repo>/<sha>`, each build's findings published as its commit's too)
-  are `standing`, reported and the nightly's to file, while a nightly and a release fail on them (#180); a service's generated tree (its root `tacplus.yaml`'s
+  are `standing`, reported and the nightly's to file, while a nightly and a release fail on them (#180); a base no build published (a HISTORY.md, PROPOSALS.md or ROADMAP.md push) takes its nearest published first-parent ancestor's, up to 20 commits back, else the last nightly's, the summary naming the commit (#217); a service's generated tree (its root `tacplus.yaml`'s
   `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
   counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); a SAST finding in test
   code (Rust's `#[cfg(test)]` modules and `tests/`, Go's `_test.go`, TS/JS's `test/` and `*.test.*`, Java's
