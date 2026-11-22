@@ -1129,7 +1129,8 @@ issue tacplus 5 OPEN "Go." approved
 issue alpha 6 OPEN "Land it." looper:landing
 mkdir -p "$FIX/contents"; echo "build: x" > "$FIX/contents/alpha-build.lock"
 control_plan() { PLAN="$(env -u CI_PIPELINE_SOURCE -u GH_TOKEN -u LOOPER_JOB_TAGS -u BUILD_TRIGGER_TOKEN "${APPS[@]}" LOOPER_JOB_TAGS_tacplus="arm64, autoscale-16" "$@" \
-  LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"; }
+  LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"
+  sed -n 's/^  tags: \[\(.*\)\]$/\1/p' <<<"$PLAN" >> "$FIX/plan-tags"; }
 vars_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  variables:/ {v=1; next} f && /^  [a-z]/ {v=0} f && v {sub(/^    /, ""); print}' <<<"$PLAN" | paste -sd' '; }
 control_plan BUILD_TRIGGER_TOKEN=glptt-x
 [[ "$(tags_of alpha-4)" == "[arm64, control]" ]] || fail "alpha's report: $(tags_of alpha-4): $PLAN"
@@ -1182,21 +1183,38 @@ control_plan BUILD_TRIGGER_TOKEN=glptt-x
 [[ "$(tags_of none)" == "[arm64, control]" ]] || fail "looper-none: $(tags_of none): $PLAN"
 control_plan
 [[ "$(tags_of none)" == "[arm64, autoscale]" ]] || fail "looper-none without the trigger: $(tags_of none)"
+# The kicker and the plan never share a runner with what the plan starts (looper#222): GitLab gives a job to any
+# runner holding all its tags, so neither the kick jobs' tag set nor any planned job's (a report, manager, scan,
+# verdict or looper-none, each placement above) holds the other: a full control runner never holds a kick back.
+kick="$(sed -n '/^\.kick:$/,/^[^ ]/s/^  tags: \[\(.*\)\]$/\1/p' "$ROOT/ci/tacplus-dev.gitlab-ci.yml")"
+[[ -n "$kick" ]] || fail "no .kick tags in ci/tacplus-dev.gitlab-ci.yml"
+holds() { local t; for t in ${2//,/ }; do [[ " ${1//,/ } " == *" $t "* ]] || return 1; done; }   # set $1 holds every tag of $2
+[[ -s "$FIX/plan-tags" ]] || fail "no planned job's tags"
+while read -r t; do
+  ! holds "$t" "$kick" && ! holds "$kick" "$t" || fail "the kick jobs' tags [$kick] and a planned job's [$t] share a runner"
+done < <(sort -u "$FIX/plan-tags")
 pass
 
-# The control jobs of tacplus-dev's own pipeline file (looper#84): the kicker, the plan and the hub's probes on
-# the control runner with the control kind's requests, and no job of the file on a VM runner's tag (autoscale,
-# autoscale-16, gce): only tacplus's per-repository override names one, for its reports until its pin lands.
+# The control jobs of tacplus-dev's own pipeline file (looper#84): the hub's probes on the control runner, the
+# kicker and the plan on the kick runner (looper#222; tacplus-dev/cluster#39), each with the control kind's requests,
+# and no job of the file on a VM runner's tag (autoscale, autoscale-16, gce): only tacplus's per-repository override
+# names one, for its reports until its pin lands.
 scenario ci-control
 f="$ROOT/ci/tacplus-dev.gitlab-ci.yml"
-for j in looper-plan looper-kick looper-ruleset-probe looper-token-diagnose; do
+for j in looper-ruleset-probe looper-token-diagnose; do
   awk -v j="$j:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f' "$f" | grep -qx '  extends: \[.looper-identity, .control\]' || fail "$j is not a control job"
+done
+for j in looper-plan looper-kick; do
+  awk -v j="$j:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f' "$f" | grep -qx '  extends: \[.looper-identity, .kick\]' || fail "$j is not a kick job"
 done
 awk '$0 == ".control:" {f=1; next} /^[^ ]/ {f=0} f' "$f" > "$FIX/control"
 grep -qx '  tags: \[arm64, control\]' "$FIX/control" || fail ".control's tags: $(cat "$FIX/control")"
 for v in 'KUBERNETES_CPU_REQUEST: 50m' 'KUBERNETES_MEMORY_REQUEST: 256Mi' 'KUBERNETES_CPU_LIMIT: 1' 'KUBERNETES_MEMORY_LIMIT: 1Gi'; do
   grep -qx "    $v" "$FIX/control" || fail ".control's requests lack $v: $(cat "$FIX/control")"
 done
+# .kick is .control (its requests, the kick runner's defaults, and its retry) on the kick runner's tags.
+[[ "$(awk '$0 == ".kick:" {f=1; next} /^[^ ]/ {f=0} f' "$f")" == $'  extends: .control\n  tags: [arm64, kick]' ]] \
+  || fail ".kick: $(awk '$0 == ".kick:" {f=1; next} /^[^ ]/ {f=0} f' "$f")"
 ! grep -nE '^\s*tags:.*(autoscale|gce)' "$f" || fail "a job of $f asks for a VM runner's tag"
 [[ "$(grep -cE 'autoscale|gce' "$f")" == "$(grep -cE '^\s*LOOPER_JOB_TAGS_tacplus: |^\s*#.*(autoscale|gce)' "$f")" ]] || fail "a VM runner's tag outside tacplus's override and the comments: $(grep -nE 'autoscale|gce' "$f")"
 pass

@@ -4,8 +4,9 @@
 # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub
 # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper); this project only runs them, on the
 # runners registered to the tacplus-dev group: the in-cluster control runner (`arm64, control`,
-# tacplus-dev/cluster#13: a pod on the normal pool per job, looper#84) for this file's control jobs and
-# for the reports and managers of every repository whose gates are build jobs, the VM runners
+# tacplus-dev/cluster#13: a pod on the normal pool per job, looper#84) for the hub's probes and for the
+# reports and managers of every repository whose gates are build jobs, the kick runner (`arm64, kick`,
+# tacplus-dev/cluster#39, looper#222) for the kicker and the plan, the VM runners
 # (`arm64, autoscale`, `arm64, autoscale-16`) for the jobs that still need Docker. `looper-plan` lists the ready issues across
 # tacplus-dev and writes a child pipeline with a report job per ready issue, every one (no
 # per-repository cap, looper#107), and each such repository's manager (`looper-dispatch plan`, the code
@@ -84,9 +85,10 @@ stages:
       aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER
 
 # This file's control jobs (looper#84; tacplus-dev/roadmap
-# decisions/only-vms-are-k8s-nodes-2026-11-04.md): the kicker, the plan and the
-# hub's probes run on the in-cluster control runner (`arm64, control`,
-# tacplus-dev/cluster#13), each a pod on the normal pool with small requests
+# decisions/only-vms-are-k8s-nodes-2026-11-04.md): the hub's probes run on the
+# in-cluster control runner (`arm64, control`, tacplus-dev/cluster#13), the
+# kicker and the plan on the kick runner (`.kick`, below), each a pod on the
+# normal pool with small requests
 # (GitLab's KUBERNETES_* variables, within that runner's ceilings: they run
 # bash, gh and git, and wait on the forge; 50m CPU from what they use,
 # looper#165, the recap's "Requests against use"). None of them runs Docker. The plan's
@@ -105,12 +107,22 @@ stages:
     KUBERNETES_CPU_LIMIT: 1
     KUBERNETES_MEMORY_LIMIT: 1Gi
 
+# The jobs that start work rather than do it, the kicker and the plan, on the
+# kick runner (`arm64, kick`, tacplus-dev/cluster#39, its 2 slots theirs alone;
+# looper#222): on the control runner they waited behind its reports and
+# managers, and with it full no issue started anywhere. Never a tag set a
+# report's or a manager's holds or is held by (tests/looper-dispatch.test.sh:
+# plan-control): GitLab gives a job to any runner holding all its tags.
+.kick:
+  extends: .control
+  tags: [arm64, kick]
+
 looper-plan:
   stage: plan
   image: ghcr.io/tacplus-dev/looper@sha256:cd7d3689ff60cc9721ba9c451a6495535d5b91d0474f06558c7349ff63352516
   needs: []
   <<: *looper-rules
-  extends: [.looper-identity, .control]
+  extends: [.looper-identity, .kick]
   environment: {name: looper-plan, action: prepare}
   # The plan's settings, reviewed with this file (looper#56): looper-dispatch
   # plan reads them, and gives the child's jobs the git identity.
@@ -162,7 +174,7 @@ looper-kick:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/
   resource_group: kicker
   environment: {name: kicker, action: prepare}
-  extends: [.looper-identity, .control]
+  extends: [.looper-identity, .kick]
   timeout: 75m
   variables:
     GIT_STRATEGY: none
