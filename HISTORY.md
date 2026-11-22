@@ -167,3 +167,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-21 looper issue A backed-off issue is not woken by a push to main that changes only HISTORY.md, STATE.md or PROPOSALS.md, or nothing it waits on (#213)
 - 2026-11-21 looper issue The nightly scan files every blocking or HIGH finding no open issue names, not only the ones new since the previous run (which a land's build can make old) (#211)
 - 2026-11-22 looper issue A batch whose gates job only failed runner_system_failure (never ran a gate) is judged red and fans out per land; it is no verdict, like #209's never-started build (#214)
+- 2026-11-22 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#216)
