@@ -170,3 +170,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-22 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#216)
 - 2026-11-22 looper issue A green candidate can't land because main moved by a HISTORY.md-only commit; the manager built 8 h of candidates on a stale main (#215)
 - 2026-11-22 looper issue Issue, comment and PR text a run reads itself carries the run's provenance nonce too: repo-looper --issue-text and --pr-text (#40's follow-up) (#219)
+- 2026-11-22 looper issue looper-scan: a land whose base commit published no report compares with its nearest published ancestor on main, else the last nightly, not with nothing (#180) (#217)
