@@ -4,6 +4,20 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The nightly maintenance after tacplus's Images, by schedule** (2026-11-23, #226): the scan follows whichever build
+  of a line the registry has when it runs. The GitLab schedule that starts the nightly scan is not in this repository,
+  and neither is tacplus-dev/tacplus#966's cron for the Images run. Check that the scan's schedule starts after the
+  Images run has usually finished (with a margin), or have the Images run trigger the scan. Until then, a rebuild
+  published after the scan waits a night.
+- **A dated build's line in its tag or a label** (2026-11-23, #226): the line of a `build:<YYYYMMDD>-<commit>` pin
+  comes from tacplus's compare API, one call per line for each commit until one holds it. A line in the tag
+  (`build:2.6-<YYYYMMDD>-<commit>`) or an `org.opencontainers.image.version` label on the image (it has none today)
+  would make it one registry read. That would be for tacplus-dev/tacplus#966 to add.
+- **The model's CI tool fixes built before they are queued** (2026-11-23, #226): the scan's model cannot build, so its
+  bump of a tool's pin is first verified by the land's batch build, and a red one goes back to the maintenance issue's
+  report. A `--build` of the maintenance commit before it is queued (as a report's `--build` does) would keep a bad
+  bump out of a batch.
+
 - **Text the model reads itself, past the rule** (2026-11-22, #219): `repo-looper --issue-text` and `--pr-text` wrap a
   run's later reads in its prompt's nonce blocks, but only the prompt's rules send the model there: its `gh` still
   reads an issue unwrapped. A `gh` first on the model's PATH (as its `pkill` and `docker` are, looper#61, #71) that
