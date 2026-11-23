@@ -175,3 +175,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-22 looper issue The kicker and plan queue behind reports on the control runner; the kick runner (cluster#39) is idle because no job asks for tag 'kick' (#222)
 - 2026-11-23 looper issue A nightly security job that publishes no report leaves security-<repo>/latest stale, and the repository scan reads it as that night's (tenantecho, 2026-11-21) (#210)
 - 2026-11-23 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#223)
+- 2026-11-23 looper issue ci/build.gitlab-ci.yml: run pending, plan and report-pass/report-fail on arm64, build-light, not the build runner's slots (the looper half of tacplus-dev/cloud#100) (#224)
