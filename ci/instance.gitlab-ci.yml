@@ -36,7 +36,7 @@ variables:
   LOOPER_PIPELINE: $CI_PROJECT_PATH
   # The looper image by digest, never a tag (looper#115): this file's jobs and
   # the plan's (looper-dispatch plan), which verifies no attestation here.
-  LOOPER_JOB_IMAGE: ghcr.io/tacplus-dev/looper@sha256:cd7d3689ff60cc9721ba9c451a6495535d5b91d0474f06558c7349ff63352516
+  LOOPER_JOB_IMAGE: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
 
 default:
   image: $LOOPER_JOB_IMAGE
