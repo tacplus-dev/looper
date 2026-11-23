@@ -1084,6 +1084,17 @@ grep -qxF '  BUILD_REPORT: "$[[ inputs.report ]]"' "$c" || fail "the plan does n
 [[ "$(sed -n 's/^  BUILD_REPORT_TAGS: "\(.*\)"$/\1/p' "$c")" == "arm64, build" ]] || fail "BUILD_REPORT_TAGS is not the build runner's"
 pass
 
+# The light jobs, looper-build alone in the looper image, on the light runner (looper#224, tacplus-dev/cloud#100):
+# never behind the build runner's slots. No other job is: gates is a trigger, the rest keep default's build runner.
+NAME="ci/build.gitlab-ci.yml: pending, plan, report-pass and report-fail on arm64, build-light, and no other job"
+c="$ROOT/ci/build.gitlab-ci.yml"
+for j in pending plan report-pass report-fail; do
+  [[ "$(sed -n "/^$j:\$/,/^[^ ]/p" "$c" | sed -n 's/^  tags: //p')" == "[arm64, build-light]" ]] ||
+    fail "$j is not on arm64, build-light: $(sed -n "/^$j:\$/,/^[^ ]/p" "$c")"
+done
+[[ "$(grep -c '^ *tags: .*build-light' "$c")" == 4 ]] || fail "build-light is not the four light jobs' alone: $(grep -n '^ *tags: .*build-light' "$c")"
+pass
+
 NAME="plan: the gates job has a build's wait; a nightly's and a release's never"
 build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=10800 -- plan 2>"$TMP/err" || fail "plan failed"
 grep -qxF '    BUILD_WAIT: "10800"' <(sed -n '/^gates:$/,/^security-demo:$/p' "$OUT/build-gates.yml") || fail "no wait: $(head -16 "$OUT/build-gates.yml")"
