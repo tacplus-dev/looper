@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by looper (#215).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-23 by looper (#226).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -99,7 +99,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-22 by lo
   FROM) to their tags' digests now, the tacplus build image at a patch tag and tacplus.lock's `tacplus:` to the line's newest
   released patch, files one approved `bug` a repository for the moves (`<!-- looper-relock -->`) and queues the relock on its
   branch with the manager's identity, `looper:landing`, for the merge train to land on its gates; an open one with its branch
-  on origin left to it; the build
+  on origin left to it; the nightly maintenance (#226, tacplus-dev/roadmap decisions/security-gates-ship-only-2026-11-23.md): a CI image
+  (build.lock's tacplus build image, any pin of it at its line's tag or a dated one) moves to its line's newest dated build
+  (`build:<YYYYMMDD>-<commit>`, the dated tag at `build:X.Y`'s digest now; a dated pin's line the oldest release branch holding its
+  commit, none unread), never a floating tag, every other file naming the moved ref with it but markdown, and the scan's model fixes
+  the CI tools' advisories of the security report (a bump of the tool's pin, else a 14-day exception for that binary), its
+  `security-exceptions.yaml` and `ci/` changes alone landed with the moves as one land on the relock issue, which names them;
+  dated pins need cloud#102 and onscreen#6 (their pin tests refuse a dated tag) and cluster#54 to land green there; the build
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
   #71, and `wait`: the requester's wait, repo-looper's, past which a gates job writes `abandoned` and runs no gates, #130): the commit's gates in its pinned build image (`tacplus.lock`, or `build.lock` for a repository that is no
