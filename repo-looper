@@ -5555,13 +5555,15 @@ relock() { # dir record unread
     done < <(sed -n -E 's/^[[:space:]]*FROM[[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+@sha256:[0-9a-f]{64}).*$/\2/Ip' "$dir/$f" | awk '!seen[$0]++')
   done < <(git -C "$dir" ls-files -- 'Dockerfile' '*/Dockerfile' 'Dockerfile.*' '*/Dockerfile.*' '*.Dockerfile' 'Containerfile' '*/Containerfile')
   # A moved ref moves wherever else it is named (looper#226), but in markdown.
+  moves="$(sed -n -E 's/^[^ ]+: ([^ ]+@sha256:[0-9a-f]{64}) → ([^ ]+@sha256:[0-9a-f]{64}) \(.*$/\1 \2/p' "$2" | awk '!seen[$0]++')"
   while read -r from to; do
+    [[ -n "$from" ]] || continue
     while IFS= read -r -d '' f; do
       [[ "$f" != *.md ]] || continue
       replace_in "$dir/$f" "$from" "$to"
       echo "$f: $from → $to (with its pin)" >> "$2"
     done < <(git -C "$dir" grep -lzIF -e "$from" -- . 2>/dev/null)
-  done < <(sed -n -E 's/^[^ ]+: ([^ ]+@sha256:[0-9a-f]{64}) → ([^ ]+@sha256:[0-9a-f]{64}) \(.*$/\1 \2/p' "$2" | awk '!seen[$0]++')
+  done <<<"$moves"
   return 0
 }
 relock_one() { # dir file ref record unread [dated]
@@ -5614,20 +5616,27 @@ maint_tools() { # tools.md [patch]
   elif [[ -s "${2:-}" ]]; then echo; echo "The CI tools' advisories: the scan's model changed $(grep -E '^\+\+\+ b/' "$2" | sed 's|^+++ b/||' | paste -sd' ') (looper#226)."; fi
 }
 # The scan's maintenance before its model (looper#226): main's pins relocked
-# in a worktree, the open maintenance issue, and whether it is at work.
+# in a clone of its own, the open maintenance issue, and whether it is at
+# work. A clone, not a worktree: the checkout is the model's (looper#83), its
+# git's config and hooks too, and the looper commits and pushes here after it
+# (the scan's other git after its model, looper#227).
 MAINT_WT="" MAINT_MAIN="" MAINT_N="" MAINT_HELD=""
 maint_prepare() { # run-dir
-  local run="$1" b
+  local run="$1" b url
   : > "$run/relock.txt"; : > "$run/relock-unread.txt"
   [[ "$LOOPER_FORGE" == github ]] || return 0
   MAINT_WT="$(scratch_dir)"; rm -rf "$MAINT_WT"
-  MAINT_MAIN="$(git -C "$CHECKOUT" rev-parse origin/main)"
-  git -C "$CHECKOUT" worktree add -q -f --detach "$MAINT_WT" "$MAINT_MAIN" || { drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; }
+  MAINT_MAIN="$(git -C "$CHECKOUT" rev-parse origin/main)"; url="$(git -C "$CHECKOUT" remote get-url origin)"
+  if ! { git clone -q --no-local --no-checkout "$CHECKOUT" "$MAINT_WT" 2>/dev/null &&
+         git -C "$MAINT_WT" fetch -q "$CHECKOUT" "+refs/remotes/origin/main:refs/remotes/origin/main" &&
+         git -C "$MAINT_WT" checkout -q --detach "$MAINT_MAIN" && git -C "$MAINT_WT" remote set-url origin "$url"; }; then
+    rm -rf "$MAINT_WT"; MAINT_WT=""; return 0
+  fi
   RELOCK_RELEASES="$run/relock-releases.txt"; : > "$RELOCK_RELEASES"
   relock "$MAINT_WT" "$run/relock.txt" "$run/relock-unread.txt"
   [[ ! -s "$run/relock-unread.txt" ]] || log "relock: unread: $(paste -sd';' "$run/relock-unread.txt")"
   [[ ! -s "$run/relock.txt" ]] || log "relock: $(wc -l < "$run/relock.txt") pin(s) behind: $(paste -sd';' "$run/relock.txt")"
-  if ! MAINT_N="$(relock_issue)"; then log "maintenance: the open issues of $REPO could not be read; nothing filed or queued"; MAINT_N=""; drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  if ! MAINT_N="$(relock_issue)"; then log "maintenance: the open issues of $REPO could not be read; nothing filed or queued"; MAINT_N=""; rm -rf "$MAINT_WT"; MAINT_WT=""; return 0; fi
   [[ -n "$MAINT_N" ]] || return 0
   b="$(wip_branch "$MAINT_N")"
   if [[ -n "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$b")" ]]; then
@@ -5684,18 +5693,22 @@ IT
 # After the model (looper#226): the model's CI tool fixes (security-exceptions.yaml
 # and ci/, nothing else of its) with the pins' moves, one commit on the
 # maintenance issue's branch, its land queued; the issue filed if none is open.
-maint_land() { # run-dir base
+maint_land() { # run-dir base report-dir
   local run="$1" base="$2" n="$MAINT_N" new="" b id title msg f
   [[ -n "$MAINT_WT" ]] || return 0
-  if [[ -n "$MAINT_HELD" ]]; then drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
-  # Its new files too (a first security-exceptions.yaml): the checkout is reset after the scan.
-  for f in security-exceptions.yaml ci; do [[ ! -e "$CHECKOUT/$f" ]] || git -C "$CHECKOUT" add -N -- "$f" 2>/dev/null || true; done
-  git -C "$CHECKOUT" diff --binary "$base" -- security-exceptions.yaml ci > "$run/tools.patch" 2>/dev/null || : > "$run/tools.patch"
+  if [[ -n "$MAINT_HELD" ]]; then rm -rf "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  : > "$run/tools.patch"
+  if [[ -n "${3:-}" ]]; then
+    # Its new files too (a first security-exceptions.yaml): the checkout is reset after the scan.
+    for f in security-exceptions.yaml ci; do [[ ! -e "$CHECKOUT/$f" ]] || git -C "$CHECKOUT" -c core.fsmonitor=false add -N -- "$f" 2>/dev/null || true; done
+    git -C "$CHECKOUT" -c core.fsmonitor=false diff --no-ext-diff --no-textconv --binary "$base" -- security-exceptions.yaml ci > "$run/tools.patch" 2>/dev/null ||
+      : > "$run/tools.patch"
+  fi
   if [[ -s "$run/tools.patch" ]] && ! git -C "$MAINT_WT" apply "$run/tools.patch" 2>"$run/tools.patch.log"; then
     log "maintenance: the model's CI tool fixes do not apply with the pins' moves ($run/tools.patch.log): left out"; : > "$run/tools.patch"
   fi
   [[ -s "$run/tools.patch" ]] || rm -f "$run/tools.md"
-  if [[ -z "$(git -C "$MAINT_WT" status --porcelain)" ]]; then drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  if [[ -z "$(git -C "$MAINT_WT" status --porcelain)" ]]; then rm -rf "$MAINT_WT"; MAINT_WT=""; return 0; fi
   if [[ -s "$run/relock.txt" ]]; then
     title="Pinned images behind their lines: relock ($(head -n 1 "$run/relock.txt" | sed 's/ (.*//; s/@sha256:[0-9a-f]*//g')$( (( $(wc -l < "$run/relock.txt") < 2 )) || echo ", and $(( $(wc -l < "$run/relock.txt") - 1 )) more"))"
     msg="Relock: the pinned images to their lines' newest patches and builds and their tags' digests"
@@ -5706,7 +5719,7 @@ maint_land() { # run-dir base
   if [[ -z "$n" ]]; then
     if n="$(forge_issue_create "$REPO" "$title" "$(relock_body "$run/relock.txt" "$MAINT_MAIN" "$run/tools.md")" "$LABEL_BUG" "$LABEL_APPROVED")"; then
       new=1; log "maintenance: filed #$n"
-    else log "maintenance: could not file the issue"; drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+    else log "maintenance: could not file the issue"; rm -rf "$MAINT_WT"; MAINT_WT=""; return 0; fi
   fi
   b="$(wip_branch "$n")"; id="$(date -u +%Y%m%dT%H%M%SZ)-$n-relock"
   if ( cd "$MAINT_WT" && git add -A &&
@@ -5724,7 +5737,7 @@ maint_land() { # run-dir base
     log "maintenance: could not queue it on $b: #$n stays for its report to make"
     [[ -n "$new" || ! -s "$run/tools.patch" ]] || forge_issue_comment "$REPO" "$n" "The nightly scan of $(date -u +%F) could not queue its maintenance on \`$b\` (looper#226); make it yourself:"$'\n\n'"$( [[ ! -s "$run/relock.txt" ]] || sed 's/^/- /' "$run/relock.txt")$(maint_tools "$run/tools.md" "$run/tools.patch")"$'\n\n'"<details><summary>The CI tool fixes</summary>"$'\n\n```diff\n'"$(cat "$run/tools.patch")"$'\n```\n</details>' >/dev/null || true
   fi
-  drop_worktree "$MAINT_WT"; MAINT_WT=""
+  rm -rf "$MAINT_WT"; MAINT_WT=""
 }
 
 scan() {
@@ -5780,7 +5793,7 @@ $(provenance_rule)
 PR
   base="$(git -C "$CHECKOUT" rev-parse HEAD)"
   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
-  maint_land "$run" "$base"
+  maint_land "$run" "$base" "$report"
   [[ -z "$report" ]] || security_file_unfiled "$report"
   [[ -n "$before" ]] && scan_labels "$before"
   # Its PROPOSALS.md, the looper's commit (looper#83): the change since the
