@@ -1,0 +1,63 @@
+= init
+> Bash git status --short | head; /usr/local/bin/repo-looper --repo looper --issue-text 189 | tail -40; /usr/local/bin/repo-looper --repo looper --issue-text 210 | tail -30; date -u
+= task_started
+= task_notification
+< **messaging, from its nightly scan of 2026-11-22 (`looper-runs/20261122T095539Z-scan`, messaging main 69e444a).** This is the data point you asked for. The `security-messaging` report the scan read today **is stale**: it comes from the 2026-11-20 nightly, not the 2026-11-22 one, and it predates the ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api repos/tacplus-dev/cloud/commits?per_page=8 --jq '.[]|.sha[0:7]+" "+.commit.committer.date+" "+(.commit.message|split("\n")[0])' 2>&1; gh search issues --repo tacplus-dev/cloud build_ci_commit --state open --json number,title 2>&1 | head; gh api 'search/code?q=build_ci_commit+repo:t...
+< 919a49b 2026-11-23T01:25:42Z HISTORY.md: #95 (looper) 428d2af 2026-11-23T00:17:45Z STATE.md: #95, the looper pool 0b79db5 2026-11-23T00:17:45Z dev test: the looper pool's node_count is the provider's to compute (#95) e9d63a8 2026-11-23T00:17:45Z dev: a looper node pool from 0 to 2 c4a-standard-2, on...
+= thinking_tokens
+= thinking_tokens
+> Bash /usr/local/bin/repo-looper --repo looper --issue-text cloud#92 | head -60; gh api repos/tacplus-dev/cloud/issues/92 --jq '.labels[].name,.state'
+< <<issue-text nonce=[redacted] author=jodydadescott association=MEMBER role=direction>> # tacplus-dev/build still runs the pre-#207 looper image: move build_ci_commit to looper main so the security scanners run side by side (56 min today)  **Evidence.** tacplus's merge build c67...
+= thinking_tokens
+= thinking_tokens
+> Bash gh api repos/tacplus-dev/looper/issues/221 --jq '.state,.title,[.labels[].name]'; /usr/local/bin/repo-looper --repo looper --issue-text 221 | tail -25
+< open ci/: pin the looper image of main at or after d8e72ad (carries #207's side-by-side scanners, #209): ci/build.gitlab-ci.yml still pins cd7d3689 ["bug"] <<issue-text nonce=[redacted] author=tacplus-looper[bot] association=NONE role=data>> # ci/: pin the looper image of main ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -rn "BUILD_RUNNER_CEILINGS\|BUILD_SCAN_CODEQL_REQUESTS" --include=* -I . | grep -v '^./HISTORY' | head -30
+< ./STATE.md:158:  left, its job `BUILD_SCAN_CODEQL_REQUESTS`, `2 12Gi 3500m 12Gi`, each analysis's peak in the summary's `### Memory`, #189: ./STATE.md:159:  CodeQL's own default heap ran the Java and Rust nightlies out of memory; the gates job `BUILD_GATES_REQUESTS_<repo>`, unset the runner's defaul...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh issue comment 221 --repo tacplus-dev/looper --body "From #189 (CodeQL out of memory on the nightlies): please pin an image at or after **cc25fdf** (#210), not just d8e72ad. Since cloud#82, the nightlies have run cd7d3689. That image has #189's CodeQL \`--ram\`/\`--threads\` sizing, but on 2026-11...
+< https://github.com/tacplus-dev/looper/issues/221#issuecomment-7089324322
+> Bash /usr/local/bin/repo-looper --repo looper --issue 189 --wait-until 2026-11-23T10:00:00Z "Done: 58cbdbf+a142f91 merged on main (8180689..72f0d3f, gates docs+build, build pipeline 3083771156 green); nightlies run image cd7d3689 (revision e8653dd, has 64f61b5) since cloud#82's build_ci_commit e877150. #...
+< [2026-11-23T01:40:10Z] checkpoint of #189 (waiting until 2026-11-23T10:00:00Z) pushed to looper/looper-189:  2 files changed, 861 insertions(+) [2026-11-23T01:40:10Z] #189 waits until 2026-11-23T10:00:00Z. Your run ends here: end your reply now. Its next run starts then, or sooner when something cha...
+= thinking_tokens
+= thinking_tokens
+#189 still isn't done: no nightly has yet shown a fresh security report for any of the eight repositories. #210 has merged, but the nightlies don't run its code yet. This run changed no code; it backs off until 2026-11-23 10:00Z, after today's repository scans.
+
+- **What the nightlies run:** image cd7d3689 (since cloud#82). It has this issue's CodeQL memory sizing (the `--ram`/`--threads` change) but not #210's change. That change makes a security job that leaves no findings publish a "no report" summary, so a nightly that runs out of memory without publishing becomes visible.
+- **What gets #210 there:** two more steps. looper#221 has to pin an image that includes #210's commit, cc25fdf, and then cloud#92 has to point tacplus-dev/build at it. looper#221 isn't approved yet and asks only for a pin at or after d8e72ad. I commented there asking for a pin at or after cc25fdf.
+- **Next run:** it reads the 2026-11-23 nightly's security summaries for eventbus, stratum, mailbox, llmproxy, redo, kernel, tenantecho and messaging as the repository scans quote them. If they're fresh, have no CodeQL out-of-memory problem and their memory peaks are under 12Gi, it posts the outcome comment and closes #189. If they're still stale, it records `Blocked-by: #221`.
+- **Unconfirmed guess for the stale reports:** on 2026-11-21 and 2026-11-22 the tenantecho and messaging security jobs published nothing. One possible cause is that a pod asking for 12Gi never gets scheduled on the build nodes. I can't check that without access to tacplus-dev/build. It's in the checkpoint, so whatever summary shows up next gets checked for it.
+
+The checkpoint pushed "2 files changed, 861 insertions" to the `looper/looper-189` branch even though my checkout showed nothing uncommitted. I didn't check what those files were.
+= success: #189 still isn't done: no nightly has yet shown a fresh security report for any of the eight repositories. #210 has merged, but the nightlies don't run its code yet. This run changed no code; it backs off until 2026-11-23 10:00Z, after today's repository scans.
+
+- **What the nightlies run:** image cd7d3689 (since cloud#82). It has this issue's CodeQL memory sizing (the `--ram`/`--threads` change) but not #210's change. That change makes a security job that leaves no findings publish a "no report" summary, so a nightly that runs out of memory without publishing becomes visible.
+- **What gets #210 there:** two more steps. looper#221 has to pin an image that includes #210's commit, cc25fdf, and then cloud#92 has to point tacplus-dev/build at it. looper#221 isn't approved yet and asks only for a pin at or after d8e72ad. I commented there asking for a pin at or after cc25fdf.
+- **Next run:** it reads the 2026-11-23 nightly's security summaries for eventbus, stratum, mailbox, llmproxy, redo, kernel, tenantecho and messaging as the repository scans quote them. If they're fresh, have no CodeQL out-of-memory problem and their memory peaks are under 12Gi, it posts the outcome comment and closes #189. If they're still stale, it records `Blocked-by: #221`.
+- **Unconfirmed guess for the stale reports:** on 2026-11-21 and 2026-11-22 the tenantecho and messaging security jobs published nothing. One possible cause is that a pod asking for 12Gi never gets scheduled on the build nodes. I can't check that without access to tacplus-dev/build. It's in the checkpoint, so whatever summary shows up next gets checked for it.
+
+The checkpoint pushed "2 files changed, 861 insertions" to the `looper/looper-189` branch even though my checkout showed nothing uncommitted. I didn't check what those files were.
+= usage: {"claude-opus-5-5":{"inputTokens":16,"outputTokens":3966,"cacheReadInputTokens":596287,"cacheCreationInputTokens":77505,"webSearchRequests":0,"costUSD":0.8186814000000001,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":1260,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}
