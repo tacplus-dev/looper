@@ -63,8 +63,9 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   link the job, not a path on it. See [After a run](#after-a-run).
 - **The nightly scan** changes no code: it files a `bug` per finding (dependency vulnerabilities,
   gates failing on main, pins off the latest MAJOR.MINOR line, a STATE.md `Blocked on` that names a closed
-  issue). A pin behind its line's newest patch or its tag's digest is one `bug` whose relock the looper queues for
-  the manager, which lands it on the gates (looper#212). Mechanical fixes are filed `approved`,
+  issue). A pin behind its line's newest patch or build or its tag's digest, and its model's fixes of the CI tools'
+  advisories, are one `bug` whose land the looper queues for the manager, which lands it on the gates (looper#212,
+  looper#226). Mechanical fixes are filed `approved`,
   the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
   The platform roadmap's own nightly scan is instead the suggestion pass for the whole platform: up to 5 evidenced
   suggestions a night in tacplus-dev/roadmap `suggestions/`, for Jody's daily review. See [Suggestions](#suggestions).
@@ -239,6 +240,26 @@ looper creates both labels in a repository that lacks them.
   what came back. An open relock issue whose branch is on origin (queued, or its report's work) is left to it; one
   without gets the next relock, said in a comment. The scan's model files nothing for a pin's patch or digest, only a
   floor off the latest MAJOR.MINOR line, and checks what the looper could not read.
+- **The nightly maintenance** (looper#226; tacplus-dev/roadmap `decisions/security-gates-ship-only-2026-11-23.md`)
+  extends the relock. A CI image is re-pinned to its tacplus line's newest **dated** build tag
+  (`build:<YYYYMMDD>-<commit>`, immutable), by digest, never a floating tag (cluster#54: `build:2.6` moved and broke
+  every cluster build). That covers `build.lock`'s tacplus build image, at any tag, and any pin of that image at its
+  line's tag (`build:2.6@…`) or at a dated tag, in a pin file or a Dockerfile `FROM`. tacplus publishes a dated tag
+  with every build of a line (a release's, its nightly rebuild on current packages: tacplus-dev/tacplus#966) and
+  moves the line's tag to it. The line's newest build is therefore the dated tag at the digest `build:X.Y` names
+  now (the registry's tag list), and a dated pin's line is the oldest whose `release/X.Y` branch holds the commit
+  its tag names (tacplus's compare API). A dated pin whose line cannot be told is unread, never moved to another
+  line. The same image at a patch tag stays as it is. Every other tracked file that names a moved ref moves with
+  it (the CI file's image, `pin.yaml`'s `job:`, a Dockerfile's `ARG`), but markdown, which says what was. The
+  scan's model then fixes the CI tools' advisories of the build's security report (item 5 of its prompt), in a
+  binary the repository's CI tool script installs (`ci/tools.sh` or its equivalent). It bumps the tool's pin to
+  the newest upstream release that fixes it. If none does, it adds an entry to `security-exceptions.yaml` for that
+  binary alone (`where`), for 14 days, naming the advisory and the release it waits on. It writes what it did to
+  the run's `tools.md`. The looper takes its changes to `security-exceptions.yaml` and under `ci/` (nothing else
+  of its but PROPOSALS.md) with the pins' moves, as one commit and one land on the maintenance issue (the relock
+  issue, `<!-- looper-relock -->`), which names the advisories, so no other issue is filed for them. When that
+  issue is already at work, the model only comments its fixes there. A repository whose CI file the hub pins
+  (cloud, cluster: `ci/pin.sh`) gets its land the same way, and the hub re-pins after it merges.
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`, on GitLab `.../-/issues/N`) in
@@ -360,6 +381,7 @@ tests/repo-looper.test.sh      # other-repo-half-approved: the prompt's rule 1 f
 tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work prompt, the scan's check on main and its item 5
 tests/repo-looper.test.sh      # scan-blocked-on: STATE.md's Blocked on read against the issues' states, the closed ones the scan's item 6 (#132)
 tests/repo-looper.test.sh      # scan-relock: the pins behind their line's newest patch or their tag's digest moved, one approved bug filed and the relock queued on its branch, which the manager lands; queued already, left; a newer patch, the open bug's next relock; none behind, or the releases unread, nothing filed (#212)
+tests/repo-looper.test.sh      # scan-maintenance: build.lock's CI image at its line's floating tag, and a FROM at a dated tag, moved to the line's newest dated build by digest (its line from the release branch holding its commit), every file naming the old ref with it but markdown; the model's CI tool fixes (a bump, an exception) landed with them as one land on one issue naming the advisories, its other changes left out; at work already, the model told and nothing pushed; a dated pin of no line unread (#226)
 ```
 
 ### Managers and direct reports

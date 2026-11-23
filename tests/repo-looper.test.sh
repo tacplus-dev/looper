@@ -230,6 +230,20 @@ case "$url" in
   # a bearer challenge without a token, then the digest $FIX/registry/<name>/<tag>
   # holds (looper#212), else $FIX/image-digest; no file, HTTP 404. Each read is a line of $FIX/image-reads.
   https://ghcr.io/token*) reply 200 '{"token":"anon"}'; exit 0 ;;
+  # A name's tags (looper#226): the files of $FIX/registry/<name>/, behind the same challenge.
+  https://ghcr.io/v2/*/tags/list*)
+    k="${url#https://ghcr.io/v2/}"; k="$FIX/registry/${k%%/tags/list*}"
+    [[ -d "$k" ]] || { reply 404 '{"errors":[{"code":"NAME_UNKNOWN"}]}'; exit 0; }
+    if [[ " ${hdrs[*]-} " != *" Authorization: Bearer anon "* ]]; then
+      reply 401 'WWW-Authenticate: Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:tacplus-dev/tacplus/build:pull"'; exit 0
+    fi
+    reply 200 "$(ls "$k" | jq -Rsc '{tags: (split("\n") | map(select(. != "")))}')"; exit 0 ;;
+  # Whether a tacplus line's branch holds a commit (looper#226): $FIX/compare/<base>...<head>
+  # (its / a _) holds the comparison's status, else HTTP 404.
+  https://api.github.com/repos/tacplus-dev/tacplus/compare/*)
+    k="${url##*/compare/}"; k="$FIX/compare/${k//\//_}"
+    if [[ -f "$k" ]]; then reply 200 "{\"status\":\"$(cat "$k")\"}"; else reply 404 '{"message":"Not Found"}'; fi
+    exit 0 ;;
   https://ghcr.io/v2/*/manifests/*)
     k="${url#https://ghcr.io/v2/}"; k="$FIX/registry/${k%%/manifests/*}/${k##*/manifests/}"
     [[ -f "$k" ]] || k="$FIX/image-digest"
@@ -3920,17 +3934,17 @@ build_image: $B:2.6.13@$(dg c)" ]] || fail "tacplus.lock: $(origin show looper/a
 f="$(origin show looper/alpha-5^:Dockerfile)"
 has "$f" "FROM $B:2.6.13@$(dg c) AS build"; has "$f" "FROM --platform=\$BUILDPLATFORM ghcr.io/tacplus-dev/base:nonroot@$(dg d)"
 has "$f" "FROM ghcr.io/tacplus-dev/other:1@$(dg e)"; has "$f" 'FROM ${BASE}'
-has "$(origin log -1 --format=%B looper/alpha-5^)" "Relock: the pinned images to their lines' newest patches and their tags' digests (#5)"
+has "$(origin log -1 --format=%B looper/alpha-5^)" "Relock: the pinned images to their lines' newest patches and builds and their tags' digests (#5)"
 pp="$(cat "$d/prompt.md")"
 has "$pp" "4. Pins that break the project's rule"; has "$pp" "file nothing for those."
-has "$pp" "Behind ($d/relock.txt): the relock is #5, its land queued for the manager."
+has "$pp" "Behind ($d/relock.txt): the looper queues them after you, with your fixes of item 5, as one land (a new \`bug\`)."
 [[ "$(grep -c '^https://api.github.com/repos/tacplus-dev/tacplus/releases' <(cut -d' ' -f2- "$FIX/gitlab"))" == 1 ]] || fail "the releases read more than once: $(grep releases "$FIX/gitlab")"
 # Queued already: left to it, nothing filed or pushed again.
 tip="$(origin rev-parse looper/alpha-5)"; rm -rf "$d"
 OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 [[ ! -e "$FIX/issues/alpha-6.json" ]] || fail "filed again: $(jq -r .title "$FIX/issues/alpha-6.json")"
 [[ "$(origin rev-parse looper/alpha-5)" == "$tip" ]] || fail "the queued relock was pushed again"
-has "$(cat "$(ls -d "$FIX"/project/looper-runs/*-scan)/prompt.md")" "the relock is #5, already at work."
+has "$(cat "$(ls -d "$FIX"/project/looper-runs/*-scan)/prompt.md")" "the maintenance land is #5, already at work."
 # The manager lands it.
 manage
 [[ "$(landed tacplus.lock | sed -n 's/^tacplus: //p')" == 2.6.13 ]] || fail "main: $(origin log --oneline main)"
@@ -3961,6 +3975,95 @@ OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited 
 d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
 has "$(cat "$d/relock-unread.txt")" "tacplus.lock: left as it is: not all of it could be read"
 [[ ! -s "$d/relock.txt" && ! -e "$FIX/issues/alpha-6.json" ]] || fail "relocked half: $(cat "$d/relock.txt")"
+pass
+
+# The nightly maintenance (looper#226): a CI image pin of the tacplus build
+# image (build.lock's, a FROM at its line's floating or dated tag) moves to its
+# line's newest dated build tag, by digest, never a floating tag: the dated
+# tag at the digest the line's tag names now, the line of a dated pin the
+# tacplus release branch that holds its commit. Every file that names the old
+# ref moves with it (the CI file's image, pin.yaml's job:), but markdown. The
+# scan's model fixes the CI tools' advisories of the security report (a bump of
+# the tool's pin, else a 14-day exception for that binary), and the looper
+# lands both as one land, the maintenance issue naming the advisories (so
+# no other issue is filed for them); the model's changes anywhere else are
+# not taken. A land at work already: the model is told, and nothing is queued.
+scenario scan-maintenance
+templates
+dg() { printf "sha256:%s" "$(printf "$1%.0s" {1..64})"; }
+B=ghcr.io/tacplus-dev/tacplus/build
+mkdir -p "$FIX/seed/ci"
+printf '# The CI image.\nbuild_image: %s:2.6@%s\n' "$B" "$(dg a)" > "$FIX/seed/build.lock"
+printf 'default:\n  image: %s:2.6@%s\n' "$B" "$(dg a)" > "$FIX/seed/ci/project.gitlab-ci.yml"
+printf 'job: %s:2.6@%s\n' "$B" "$(dg a)" > "$FIX/seed/pin.yaml"
+printf 'The CI image was %s:2.6@%s.\n' "$B" "$(dg a)" > "$FIX/seed/NOTES.md"
+printf 'FROM %s:20261101-aaaaaaa@%s\n' "$B" "$(dg b)" > "$FIX/seed/Dockerfile"
+printf 'LEGO=v5.6.0\n' > "$FIX/seed/ci/tools.sh"
+printf 'package main\n' > "$FIX/seed/main.go"
+printf 'full:\n  run: "true"\n' > "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm pinned && git -C "$FIX/seed" push -q origin main
+echo '[{"tag_name":"v2.6.13","draft":false,"prerelease":false},{"tag_name":"v2.5.3","draft":false,"prerelease":false}]' > "$FIX/releases.json"
+mkdir -p "$FIX/registry/tacplus-dev/tacplus/build" "$FIX/compare"
+r="$FIX/registry/tacplus-dev/tacplus/build"
+dg c > "$r/2.6"; dg c > "$r/20261123-ccccccc"; dg e > "$r/20261122-ccccccc"; dg d > "$r/2.5"; dg d > "$r/20261123-ddddddd"; dg b > "$r/20261101-aaaaaaa"
+echo diverged > "$FIX/compare/aaaaaaa...release_2.5"; echo ahead > "$FIX/compare/aaaaaaa...release_2.6"; echo identical > "$FIX/compare/ccccccc...release_2.6"
+mkdir -p "$FIX/security"
+echo '[{"tool":"govulncheck","kind":"sca","id":"GO-2026-6278","aliases":["CVE-2026-1"],"severity":"HIGH","fix":true,"where":"bin/lego (github.com/gorilla/websocket@v1.5.3)","new":true,"excepted":null,"blocking":true},
+       {"tool":"govulncheck","kind":"sca","id":"GO-2026-6974","aliases":[],"severity":"HIGH","fix":true,"where":"bin/osv-scanner (go.opentelemetry.io/otel/trace@v1.45.0)","new":true,"excepted":null,"blocking":true}]' > "$FIX/security/findings.json"
+echo '## Security checks: alpha 0123abc (nightly)' > "$FIX/security/summary.md"
+cat > "$FIX/scan.sh" <<'EOS'
+run="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+sed -i 's/v5.6.0/v5.7.0/' ci/tools.sh
+printf 'exceptions:\n  - id: GO-2026-6974\n    reason: "bin/osv-scanner: no release fixes it, waits on osv-scanner 2.7.2"\n    decided_by: jodydadescott\n    expires: 2026-12-07\n    where: bin/osv-scanner\n' > security-exceptions.yaml
+echo sneaked >> main.go
+printf -- '- GO-2026-6278 in bin/lego: lego v5.6.0 → v5.7.0\n- GO-2026-6974 in bin/osv-scanner: excepted until 2026-12-07, waiting on osv-scanner 2.7.2\n' > "$run/tools.md"
+EOS
+main0="$(origin rev-parse main)"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ "$(cat "$d/relock.txt")" == "build.lock: $B:2.6@$(dg a) → $B:20261123-ccccccc@$(dg c) (the 2.6 line's newest build)
+Dockerfile: $B:20261101-aaaaaaa@$(dg b) → $B:20261123-ccccccc@$(dg c) (the 2.6 line's newest build)
+ci/project.gitlab-ci.yml: $B:2.6@$(dg a) → $B:20261123-ccccccc@$(dg c) (with its pin)
+pin.yaml: $B:2.6@$(dg a) → $B:20261123-ccccccc@$(dg c) (with its pin)" ]] ||
+  fail "relock.txt: $(cat "$d/relock.txt" 2>&1)"
+pp="$(cat "$d/prompt.md")"
+has "$pp" "5. The CI tools' advisories (tacplus-dev/looper#226"
+has "$pp" "expires: $(date -u -d '+14 days' +%F)"
+has "$pp" "the looper queues them after you, with your fixes of item 5, as one land"
+[[ "$(labels alpha 5)" == "approved,bug,looper:landing" ]] || fail "#5 labels $(labels alpha 5)"
+has "$(body alpha 5)" "<!-- looper-relock -->"; has "$(body alpha 5)" "- pin.yaml: $B:2.6@$(dg a) → $B:20261123-ccccccc@$(dg c)"
+has "$(body alpha 5)" "- GO-2026-6278 in bin/lego: lego v5.6.0 → v5.7.0"
+[[ "$(origin rev-parse main)" == "$main0" ]] || fail "the scan moved main: $(origin log --oneline main)"
+[[ "$(origin diff --name-only main looper/alpha-5^ | paste -sd' ')" == "Dockerfile build.lock ci/project.gitlab-ci.yml ci/tools.sh pin.yaml security-exceptions.yaml" ]] ||
+  fail "the land: $(origin diff --stat main looper/alpha-5^)"
+has "$(origin show looper/alpha-5^:pin.yaml)" "job: $B:20261123-ccccccc@$(dg c)"
+has "$(origin log -1 --format=%B looper/alpha-5^)" "GO-2026-6974 in bin/osv-scanner"
+origin show looper/alpha-5:.looper/land | grep -qx state=queued || fail "no land queued: $(origin show looper/alpha-5:.looper/land 2>&1)"
+# The advisories are the maintenance issue's: none filed again.
+[[ ! -e "$FIX/issues/alpha-6.json" ]] || fail "filed again: $(jq -r .title "$FIX/issues/alpha-6.json")"
+# At work already: the model is told; nothing pushed again.
+tip="$(origin rev-parse looper/alpha-5)"; rm -rf "$d"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+has "$(cat "$d/prompt.md")" "the maintenance land is #5, already at work: change no file for them"
+[[ "$(origin rev-parse looper/alpha-5)" == "$tip" ]] || fail "the queued land was pushed again"
+manage
+has "$(landed pin.yaml)" "20261123-ccccccc"; has "$(landed ci/tools.sh)" "v5.7.0"; lacks "$(landed main.go)" sneaked
+has "$(landed NOTES.md)" "$B:2.6@$(dg a)"
+# Nothing behind, no advisory fixed: nothing filed; a pin at the line's newest build stays.
+rm -rf "$FIX/security" "$FIX"/project/looper-runs/*-scan; : > "$FIX/scan.sh"
+jq '.state = "CLOSED"' "$FIX/issues/alpha-5.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-5.json"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ ! -s "$d/relock.txt" && ! -e "$FIX/issues/alpha-6.json" ]] || fail "maintenance: $(cat "$d/relock.txt")"
+# A dated pin whose line cannot be told: unread, never moved to another line's.
+git -C "$FIX/seed" pull -q --rebase origin main; printf 'FROM %s:20261101-fffffff@%s\n' "$B" "$(dg b)" > "$FIX/seed/Dockerfile"
+git -C "$FIX/seed" commit -qam dated && git -C "$FIX/seed" push -q origin main
+rm -rf "$d"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+has "$(cat "$d/relock-unread.txt")" "Dockerfile: $B:20261101-fffffff@$(dg b): its line could not be told: no tacplus release branch holds its commit"
+[[ ! -s "$d/relock.txt" ]] || fail "moved: $(cat "$d/relock.txt")"
 pass
 
 # A build is keyed by (repo, commit, gate set, base) (looper#134). Two requests

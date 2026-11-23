@@ -2945,22 +2945,40 @@ image_watched() { [[ -n "${LOOPER_IMAGE:-}" && "$JOB_IMAGE" == *.*/* && "$JOB_IM
 # token its realm grants for the scope it names, anonymous: the image is public,
 # and the token is no credential of the job's, so it may go on a command line.
 image_digest() { # host/name[:tag]
-  local ref="$1" host path tag url hdr ch realm service scope tok digest
+  local ref="$1" host path tag url hdr ch tok digest
   host="${ref%%/*}"; path="${ref#*/}"
   if [[ "$path" == *:* ]]; then tag="${path##*:}"; path="${path%:*}"; else tag=latest; fi
   url="https://$host/v2/$path/manifests/$tag"
   hdr="$(curl -sSI --retry 2 -H "Accept: $MANIFEST_TYPES" "$url" 2>/dev/null | tr -d '\r')" || return 1
   if ch="$(grep -i -m 1 '^www-authenticate: *bearer ' <<<"$hdr")"; then
-    realm="$(sed -n 's/.*realm="\([^"]*\)".*/\1/p' <<<"$ch")"; service="$(sed -n 's/.*service="\([^"]*\)".*/\1/p' <<<"$ch")"
-    scope="$(sed -n 's/.*scope="\([^"]*\)".*/\1/p' <<<"$ch")"
-    [[ "$realm" == https://* ]] || return 1
-    tok="$(curl -fsS --retry 2 -G --data-urlencode "service=$service" --data-urlencode "scope=$scope" "$realm" 2>/dev/null \
-            | jq -r '.token // .access_token // empty')" && [[ -n "$tok" ]] || return 1
+    tok="$(bearer_token "$ch")" || return 1
     hdr="$(curl -sSI --retry 2 -H "Authorization: Bearer $tok" -H "Accept: $MANIFEST_TYPES" "$url" 2>/dev/null | tr -d '\r')" || return 1
   fi
   digest="$(sed -n 's/^docker-content-digest: *//Ip' <<<"$hdr" | tail -n 1)"
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
   echo "$digest"
+}
+# The anonymous token a registry's bearer challenge grants for the scope it names.
+bearer_token() { # www-authenticate header
+  local realm service scope tok
+  realm="$(sed -n 's/.*realm="\([^"]*\)".*/\1/p' <<<"$1")"; service="$(sed -n 's/.*service="\([^"]*\)".*/\1/p' <<<"$1")"
+  scope="$(sed -n 's/.*scope="\([^"]*\)".*/\1/p' <<<"$1")"
+  [[ "$realm" == https://* ]] || return 1
+  tok="$(curl -fsS --retry 2 -G --data-urlencode "service=$service" --data-urlencode "scope=$scope" "$realm" 2>/dev/null \
+          | jq -r '.token // .access_token // empty')" && [[ -n "$tok" ]] || return 1
+  echo "$tok"
+}
+# The tags a registry publishes for a name (looper#226), one a line, as the
+# registry API lists them, behind the same anonymous challenge.
+image_tags() { # host/name
+  local host="${1%%/*}" path="${1#*/}" url hdr ch tok auth=()
+  url="https://$host/v2/$path/tags/list?n=10000"
+  # A GET: ghcr answers a HEAD of a list with 405, no challenge.
+  hdr="$(curl -sSi --retry 2 "$url" 2>/dev/null | tr -d '\r')" || return 1
+  if ch="$(grep -i -m 1 '^www-authenticate: *bearer ' <<<"$hdr")"; then
+    tok="$(bearer_token "$ch")" || return 1; auth=(-H "Authorization: Bearer $tok")
+  fi
+  curl -fsS --retry 2 "${auth[@]}" "$url" 2>/dev/null | jq -er '.tags | arrays | .[]'
 }
 
 # At the job's start: the digest its image's tag names now, logged.
@@ -5358,29 +5376,58 @@ IT
 # patch tag to its line's newest released patch (tacplus-dev/tacplus's
 # releases, TACPLUS_RELEASES_URL, as the tacplus wrapper reads them), and
 # tacplus.lock's `tacplus:` with it, as `tacplus pin` writes them; never
-# backwards. What moves is the run's relock.txt, a move a line. Any move is
-# one bug of the repository (its body carries RELOCK_MARK; one open at a
-# time), `approved`, and the relock its land: a commit on main and the
-# checkpoint carrying .looper/land, pushed as a report's --land leaves its
-# branch, with the manager's identity (no new credential), the issue
-# looper:landing until the manager's verdict. Green, its next run closes it;
-# red, it fixes what came back. A relock issue with its branch already on
-# origin (queued, or a report's work) is left to it.
+# backwards. A CI image (looper#226: build.lock's tacplus build image, and
+# any pin of it at its line's floating tag or a dated one) moves to its
+# line's newest dated build instead, `<YYYYMMDD>-<commit>`, immutable, which
+# tacplus publishes with every build of a line (a release's, its nightly
+# rebuild on current packages, tacplus-dev/tacplus#966): never a floating tag
+# (cluster#54: build:2.6 moved and broke every cluster build). Every other
+# file naming a moved ref moves with it (the CI file's image, pin.yaml's
+# `job:`, a Dockerfile's ARG; never markdown, which says what was). What moves
+# is the run's relock.txt, a move a line. The scan's model then fixes the CI
+# tools' advisories of the security report (looper#226: a bump of the tool's
+# pin, else a 14-day exception for that binary), and the moves and its fixes
+# are one bug of the repository (its body carries RELOCK_MARK; one open at a
+# time), `approved`, and one land: a commit on main and the checkpoint
+# carrying .looper/land, pushed as a report's --land leaves its branch, with
+# the manager's identity (no new credential), the issue looper:landing until
+# the manager's verdict. Green, its next run closes it; red, it fixes what
+# came back. A maintenance issue with its branch already on origin (queued,
+# or a report's work) is left to it, its model told.
 TACPLUS_IMAGE="${TACPLUS_IMAGE_REPO:-ghcr.io/tacplus-dev/tacplus/build}"
 TACPLUS_RELEASES="${TACPLUS_RELEASES_URL:-https://api.github.com/repos/tacplus-dev/tacplus/releases?per_page=100}"
+TACPLUS_COMPARE="${TACPLUS_COMPARE_URL:-https://api.github.com/repos/tacplus-dev/tacplus/compare}"
 RELOCK_MARK='<!-- looper-relock -->'
-RELOCK_RELEASES=""   # the lines' newest patches read, "<MAJOR.MINOR> <X.Y.Z>" lines: the run's record
+# What the run read, its record: "<MAJOR.MINOR> <X.Y.Z>" a line's newest patch,
+# "line <commit> <MAJOR.MINOR>" a dated build's line, "dated <MAJOR.MINOR>
+# <tag>@<digest>" a line's newest build; the releases beside it (.json).
+RELOCK_RELEASES=""
+# A read of GitHub's API, with the job's token where it has one (the public
+# tacplus repository's, its rate limit the token's).
+github_read() { # url [curl args...]
+  local t auth=""
+  t="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  [[ -n "$t" || "$LOOPER_FORGE" != github ]] || t="$(gh auth token 2>/dev/null)" || t=""
+  [[ -z "$t" || "$1" != https://api.github.com/* ]] || auth="header = \"Authorization: Bearer $t\""
+  printf '%s\n' "$auth" | curl -sSL --retry 2 --connect-timeout 10 -K - "${@:2}" "$1" 2>/dev/null
+}
+# tacplus-dev/tacplus's releases, read once a run.
+tacplus_releases() {
+  local f="" json
+  [[ -z "$RELOCK_RELEASES" ]] || f="$RELOCK_RELEASES.json"
+  if [[ -n "$f" && -s "$f" ]]; then cat "$f"; return 0; fi
+  json="$(github_read "$TACPLUS_RELEASES" -f)" && jq -e 'type == "array"' <<<"$json" >/dev/null 2>&1 || return 1
+  [[ -z "$f" ]] || printf '%s\n' "$json" > "$f"
+  printf '%s\n' "$json"
+}
+# The released tags, vX.Y.Z (no draft, no prerelease).
+tacplus_tags() { tacplus_releases | jq -r '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name' 2>/dev/null; }
 # The newest released patch of a tacplus line (X.Y.Z), read once a run.
 tacplus_newest() { # MAJOR.MINOR
-  local json t auth="" v
+  local v
   v="$(awk -v l="$1" '$1 == l { print $2; exit }' "${RELOCK_RELEASES:-/dev/null}" 2>/dev/null)"
   if [[ -z "$v" ]]; then
-    t="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-    [[ -n "$t" || "$LOOPER_FORGE" != github ]] || t="$(gh auth token 2>/dev/null)" || t=""
-    [[ -z "$t" || "$TACPLUS_RELEASES" != https://api.github.com/* ]] || auth="header = \"Authorization: Bearer $t\""
-    json="$(printf '%s\n' "$auth" | curl -fsSL --retry 2 --connect-timeout 10 -K - "$TACPLUS_RELEASES" 2>/dev/null)" || return 1
-    v="$(jq -r '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name' <<<"$json" 2>/dev/null |
-      sed -n -E "s/^v(${1//./\\.}\.[0-9]+)$/\1/p" | sort -t. -k3,3n | tail -n 1)"
+    v="$(tacplus_tags | sed -n -E "s/^v(${1//./\\.}\.[0-9]+)$/\1/p" | sort -t. -k3,3n | tail -n 1)"
     [[ -n "$v" ]] || return 1
     [[ -z "$RELOCK_RELEASES" ]] || echo "$1 $v" >> "$RELOCK_RELEASES"
   fi
@@ -5391,14 +5438,72 @@ tacplus_follow() { # X.Y.Z
   local v; v="$(tacplus_newest "${1%.*}")" || return 1
   if (( ${v##*.} > ${1##*.} )); then echo "$v"; else echo "$1"; fi
 }
-# A ref by digest where it should be: "<name>:<tag>@<digest>", its tag the
-# tacplus line's newest patch for the tacplus build image, at its tag's digest
-# now. Nothing (and 1) when it cannot be read; 2 for no ref by digest.
-relock_ref() { # name:tag@sha256:...
-  local name tag reg d
+# The line a dated build is of (looper#226): the oldest line whose release
+# branch holds the commit its tag names (a branch holds the commits of the
+# line it was branched from, never a later line's), read from tacplus-dev/
+# tacplus's compare API. Fails 2 when none holds it, 1 when one could not be read.
+tacplus_line_of() { # commit
+  local c="$1" l lines out code
+  l="$(awk -v c="$c" '$1 == "line" && $2 == c { print $3; exit }' "${RELOCK_RELEASES:-/dev/null}" 2>/dev/null)"
+  [[ -z "$l" ]] || { echo "$l"; return 0; }
+  lines="$(tacplus_tags | sed -n -E 's/^v([0-9]+\.[0-9]+)\.[0-9]+$/\1/p' | sort -u -t. -k1,1n -k2,2n)"
+  [[ -n "$lines" ]] || return 1
+  for l in $lines; do
+    out="$(github_read "$TACPLUS_COMPARE/$c...release/$l" -w '\n%{http_code}')" || return 1
+    code="${out##*$'\n'}"
+    case "$code" in
+      200) case "$(jq -r '.status // empty' <<<"${out%$'\n'*}" 2>/dev/null)" in
+             identical|ahead) [[ -z "$RELOCK_RELEASES" ]] || echo "line $c $l" >> "$RELOCK_RELEASES"; echo "$l"; return 0 ;;
+           esac ;;
+      404) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 2
+}
+# A line's newest dated build (looper#226), "<tag>@<digest>": the dated tag
+# (<YYYYMMDD>-<commit>) of the image its floating tag names now, which tacplus
+# moves to each build of the line it publishes; read once a run.
+tacplus_dated() { # MAJOR.MINOR
+  local v d t td n=0
+  v="$(awk -v l="$1" '$1 == "dated" && $2 == l { print $3; exit }' "${RELOCK_RELEASES:-/dev/null}" 2>/dev/null)"
+  [[ -z "$v" ]] || { echo "$v"; return 0; }
+  d="$(image_digest "$TACPLUS_IMAGE:$1")" || return 1
+  while read -r t; do
+    n=$((n + 1)); (( n <= 64 )) || break
+    td="$(image_digest "$TACPLUS_IMAGE:$t")" || continue
+    [[ "$td" == "$d" ]] || continue
+    [[ -z "$RELOCK_RELEASES" ]] || echo "dated $1 $t@$d" >> "$RELOCK_RELEASES"
+    echo "$t@$d"; return 0
+  done < <(image_tags "$TACPLUS_IMAGE" | grep -E '^[0-9]{8}-[0-9a-f]{7,40}$' | sort -r)
+  return 1
+}
+# A ref by digest where it should be, printed "<ref> <why>": its tag the
+# tacplus line's newest patch for the tacplus build image at a patch tag, its
+# line's newest dated build for one at the line's tag or a dated one (or a
+# patch tag, given dated: a CI image's pin), else at its tag's digest now.
+# Nothing (and 1) when it cannot be read, 3 when a dated build's line cannot
+# be told; 2 for no ref by digest.
+relock_ref() { # name:tag@sha256:... [dated]
+  local name tag otag reg d line="" nt rc
   [[ "$1" =~ ^([A-Za-z0-9][A-Za-z0-9._/:-]*):([A-Za-z0-9_][A-Za-z0-9._-]*)@sha256:[0-9a-f]{64}$ ]] || return 2
-  name="${BASH_REMATCH[1]}" tag="${BASH_REMATCH[2]}"
-  if [[ "$name" == "$TACPLUS_IMAGE" && "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then tag="$(tacplus_follow "$tag")" || return 1; fi
+  name="${BASH_REMATCH[1]}" tag="${BASH_REMATCH[2]}" otag="${BASH_REMATCH[2]}"
+  if [[ "$name" == "$TACPLUS_IMAGE" ]]; then
+    if [[ "$tag" =~ ^[0-9]{8}-([0-9a-f]{7,40})$ ]]; then
+      rc=0; line="$(tacplus_line_of "${BASH_REMATCH[1]}")" || rc=$?
+      (( rc == 0 )) || { (( rc == 2 )) && return 3; return 1; }
+    elif [[ "$tag" =~ ^[0-9]+\.[0-9]+$ ]]; then line="$tag"
+    elif [[ -n "${2:-}" && "$tag" =~ ^([0-9]+\.[0-9]+)\.[0-9]+$ ]]; then line="${BASH_REMATCH[1]}"; fi
+    if [[ -n "$line" ]]; then
+      nt="$(tacplus_dated "$line")" || return 1
+      # The same image at an immutable tag stays as it is; never backwards.
+      if [[ "${nt#*@}" == "${1##*@}" && "$tag" != "$line" ]] || [[ "$tag" =~ ^[0-9]{8}- && "${tag:0:8}" > "${nt:0:8}" ]]; then
+        echo "$1 -"; return 0
+      fi
+      echo "$name:$nt the $line line's newest build"; return 0
+    fi
+    if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then tag="$(tacplus_follow "$tag")" || return 1; fi
+  fi
   # Docker Hub's names have no registry host.
   reg="$name"
   if [[ "${name%%/*}" != *[.:]* && "${name%%/*}" != localhost ]]; then
@@ -5406,7 +5511,8 @@ relock_ref() { # name:tag@sha256:...
     reg="registry-1.docker.io/$reg"
   fi
   d="$(image_digest "$reg:$tag")" || return 1
-  echo "$name:$tag@$d"
+  if [[ "$tag" == "$otag" ]]; then echo "$name:$tag@$d its tag's digest now"
+  else echo "$name:$tag@$d the ${tag%.*} line's newest patch"; fi
 }
 # Replaces every occurrence of a string in a file, as it is.
 replace_in() { # file old new
@@ -5418,7 +5524,7 @@ replace_in() { # file old new
 # ("<file>: <from> → <to> (<why>)"), each pin it could not read one of the
 # unread file. Returns 0 whether or not anything moved.
 relock() { # dir record unread
-  local dir="$1" f ref v nv moves unread
+  local dir="$1" f ref v nv moves unread from to
   : > "$2"; : > "$3"
   # A pin file moves whole or not at all: its tacplus and its image together.
   moves="$(mktemp)"; unread="$(mktemp)"
@@ -5433,8 +5539,9 @@ relock() { # dir record unread
         echo "$f: tacplus $v → $nv (the ${v%.*} line's newest patch)" >> "$moves"
       fi
     fi
+    # build.lock pins a CI image (looper#226): its line's newest build, a patch tag too.
     while read -r ref; do
-      relock_one "$dir" "$f" "$ref" "$moves" "$unread"
+      relock_one "$dir" "$f" "$ref" "$moves" "$unread" "$([[ "$f" == tacplus.lock ]] || echo dated)"
     done < <(sed -n -E 's/^build_image:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "$dir/$f")
     if [[ -s "$unread" ]]; then
       git -C "$dir" checkout -q -- "$f"; cat "$unread" >> "$3"
@@ -5447,104 +5554,177 @@ relock() { # dir record unread
       relock_one "$dir" "$f" "$ref" "$2" "$3"
     done < <(sed -n -E 's/^[[:space:]]*FROM[[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+@sha256:[0-9a-f]{64}).*$/\2/Ip' "$dir/$f" | awk '!seen[$0]++')
   done < <(git -C "$dir" ls-files -- 'Dockerfile' '*/Dockerfile' 'Dockerfile.*' '*/Dockerfile.*' '*.Dockerfile' 'Containerfile' '*/Containerfile')
+  # A moved ref moves wherever else it is named (looper#226), but in markdown.
+  while read -r from to; do
+    while IFS= read -r -d '' f; do
+      [[ "$f" != *.md ]] || continue
+      replace_in "$dir/$f" "$from" "$to"
+      echo "$f: $from → $to (with its pin)" >> "$2"
+    done < <(git -C "$dir" grep -lzIF -e "$from" -- . 2>/dev/null)
+  done < <(sed -n -E 's/^[^ ]+: ([^ ]+@sha256:[0-9a-f]{64}) → ([^ ]+@sha256:[0-9a-f]{64}) \(.*$/\1 \2/p' "$2" | awk '!seen[$0]++')
   return 0
 }
-relock_one() { # dir file ref record unread
-  local new rc=0 why
-  new="$(relock_ref "$3")" || rc=$?
+relock_one() { # dir file ref record unread [dated]
+  local out new why rc=0
+  out="$(relock_ref "$3" "${6:-}")" || rc=$?
   case "$rc" in
     2) return 0 ;;
+    3) echo "$2: $3: its line could not be told: no tacplus release branch holds its commit" >> "$5"; return 0 ;;
     1) echo "$2: $3: its tag's digest could not be read" >> "$5"; return 0 ;;
   esac
+  new="${out%% *}" why="${out#* }"
   [[ "$new" != "$3" ]] || return 0
   replace_in "$1/$2" "$3" "$new"
-  if [[ "${new%@*}" == "${3%@*}" ]]; then why="its tag's digest now"
-  else why="${3%@*}"; why="${why##*:}"; why="the ${why%.*} line's newest patch"; fi
   echo "$2: $3 → $new ($why)" >> "$4"
 }
-# The open relock issue of the repository, if any.
+# The open maintenance (relock) issue of the repository, if any.
 relock_issue() {
   forge_issue_list "$REPO" open 100 number,body "[.[] | select(.body // \"\" | contains(\"$RELOCK_MARK\")) | .number] | min // empty"
 }
-relock_body() { # record main
+relock_body() { # record main tools
   cat <<B
 $RELOCK_MARK
-The nightly scan of $(date -u +%F) (main at \`${2:0:7}\`) found pinned images behind their lines and tags (tacplus-dev/looper#212):
+The nightly scan of $(date -u +%F) (main at \`${2:0:7}\`) found pinned images behind their lines and tags (tacplus-dev/looper#212, #226), and CI tools with advisories:
 
-$(sed 's/^/- /' "$1")
+$( [[ -s "$1" ]] && sed 's/^/- /' "$1" || echo "- No pin is behind.")
+$(maint_tools "$3")
 
 Every gate, compiler and security check of this repository runs in its pinned build image: a pin behind its line's
-newest patch keeps them on an image whose fixes the line has released, and a FROM behind its tag ships a base
-without its fixes.
+newest build keeps them on an image whose fixes the line has released, and a FROM behind its tag ships a base
+without its fixes. A CI tool's advisory is fixed by its pin, else accepted for 14 days for that binary
+(tacplus-dev/roadmap decisions/security-gates-ship-only-2026-11-23.md).
 
 ## Fix
-The relock: these moves, in one commit. The looper queues it on this issue's branch for the manager's merge train,
-which lands it on the gates its diff calls for (the full gates, for a pin), and its verdict is a comment here. If it
-comes back (red: the new image's tools, say), fix what it says and land again; if it could not be queued, make
-these moves yourself (\`tacplus pin\` writes tacplus.lock's), verify and land them.
+The nightly maintenance: these moves and fixes, in one commit. The looper queues it on this issue's branch for the
+manager's merge train, which lands it on the gates its diff calls for (the full gates, for a pin), and its verdict is
+a comment here. If it comes back (red: the new image's tools, a repository test of its pins, say), fix what it says
+and land again; if it could not be queued, make these moves yourself (\`tacplus pin\` writes tacplus.lock's), verify
+and land them. A move under \`.github/workflows/\` needs \`$LABEL_WORKFLOWS\` on this issue (set by someone with write
+access) for the looper's token to push it.
 
 ## Acceptance criteria
-- main pins each image above at its new digest (or a newer one), its gates green on it.
+- main pins each image above at its new digest (or a newer one), and each CI tool advisory above is fixed or
+  accepted for that binary, its gates green on it.
 B
 }
-# The scan's relock and its item 4, printed for the prompt.
-relock_item() { # run-dir
-  local run="$1" wt main n="" b id ok="" new=""
-  [[ "$LOOPER_FORGE" == github ]] || { echo "4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released MAJOR.MINOR line it should follow."; return 0; }
-  wt="$(scratch_dir)"; rm -rf "$wt"
-  main="$(git -C "$CHECKOUT" rev-parse origin/main)"
-  git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$main" || { drop_worktree "$wt"; echo "4. Pins: the looper could not read main's (looper#212): file nothing for them."; return 0; }
+# The model's account of its CI tool fixes (looper#226), for the issue: its
+# tools.md, else the files it changed.
+maint_tools() { # tools.md [patch]
+  if [[ -s "$1" ]]; then echo; echo "The CI tools' advisories (the scan's model, looper#226):"; echo; grep -E '^- ' "$1" | head -n 100
+  elif [[ -s "${2:-}" ]]; then echo; echo "The CI tools' advisories: the scan's model changed $(grep -E '^\+\+\+ b/' "$2" | sed 's|^+++ b/||' | paste -sd' ') (looper#226)."; fi
+}
+# The scan's maintenance before its model (looper#226): main's pins relocked
+# in a worktree, the open maintenance issue, and whether it is at work.
+MAINT_WT="" MAINT_MAIN="" MAINT_N="" MAINT_HELD=""
+maint_prepare() { # run-dir
+  local run="$1" b
+  : > "$run/relock.txt"; : > "$run/relock-unread.txt"
+  [[ "$LOOPER_FORGE" == github ]] || return 0
+  MAINT_WT="$(scratch_dir)"; rm -rf "$MAINT_WT"
+  MAINT_MAIN="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  git -C "$CHECKOUT" worktree add -q -f --detach "$MAINT_WT" "$MAINT_MAIN" || { drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; }
   RELOCK_RELEASES="$run/relock-releases.txt"; : > "$RELOCK_RELEASES"
-  relock "$wt" "$run/relock.txt" "$run/relock-unread.txt"
-  [[ ! -s "$run/relock-unread.txt" ]] || log "relock: unread: $(paste -sd';' "$run/relock-unread.txt")" >&2
-  if [[ -s "$run/relock.txt" ]]; then
-    log "relock: $(wc -l < "$run/relock.txt") pin(s) behind: $(paste -sd';' "$run/relock.txt")" >&2
-    if ! n="$(relock_issue)"; then log "relock: the open issues of $REPO could not be read; nothing filed or queued" >&2; n=""
-    elif [[ -z "$n" ]]; then
-      if n="$(forge_issue_create "$REPO" "Pinned images behind their lines: relock ($(head -n 1 "$run/relock.txt" | sed 's/ (.*//; s/@sha256:[0-9a-f]*//g')$( (( $(wc -l < "$run/relock.txt") < 2 )) || echo ", and $(( $(wc -l < "$run/relock.txt") - 1 )) more"))" \
-                "$(relock_body "$run/relock.txt" "$main")" "$LABEL_BUG" "$LABEL_APPROVED")"; then
-        new=1; log "relock: filed #$n" >&2
-      else log "relock: could not file the issue" >&2; n=""; fi
-    fi
-    b="$(wip_branch "${n:-0}")"
-    if [[ -z "$n" ]]; then :
-    elif [[ -n "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$b")" ]]; then
-      log "relock: #$n's branch $b is on origin (its land queued, or its report's work): left to it" >&2; ok=held
-    elif forge_issue_view "$REPO" "$n" labels '.labels[].name' 2>/dev/null | grep -qx "$LABEL_IN_PROGRESS"; then
-      log "relock: #$n is $LABEL_IN_PROGRESS: left to its report" >&2; ok=held
-    else
-      id="$(date -u +%Y%m%dT%H%M%SZ)-$n-relock"
-      if ( cd "$wt" && git add -A &&
-           git commit -q -m "Relock: the pinned images to their lines' newest patches and their tags' digests (#$n)" \
-             -m "$(cat "$run/relock.txt")" \
-             -m "The nightly scan's relock (looper#212): a pin moves in a commit, on the gates, never by a build." &&
-           mkdir -p .looper && printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n' "$id" "$(land_gates)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .looper/land &&
-           git add -f .looper/land && git commit -q -m "looper: the relock of #$n (land queued)" &&
-           { [[ -z "$MANAGER_GH" ]] || export GH_CONFIG_DIR="$MANAGER_GH"; } &&
-           git push -q --force-with-lease="refs/heads/$b:" origin "HEAD:refs/heads/$b" ); then
-        forge_issue_edit "$REPO" "$n" --add-label "$LABEL_LANDING" >/dev/null || true
-        [[ -n "$new" ]] || forge_issue_comment "$REPO" "$n" "The nightly scan of $(date -u +%F) queued the relock on \`$b\` for the manager's merge train (looper#212):"$'\n\n'"$(sed 's/^/- /' "$run/relock.txt")" >/dev/null || true
-        log "relock: queued on $b for #$n" >&2; ok=queued
-      else log "relock: could not queue it on $b: #$n stays for its report to relock" >&2; fi
-    fi
+  relock "$MAINT_WT" "$run/relock.txt" "$run/relock-unread.txt"
+  [[ ! -s "$run/relock-unread.txt" ]] || log "relock: unread: $(paste -sd';' "$run/relock-unread.txt")"
+  [[ ! -s "$run/relock.txt" ]] || log "relock: $(wc -l < "$run/relock.txt") pin(s) behind: $(paste -sd';' "$run/relock.txt")"
+  if ! MAINT_N="$(relock_issue)"; then log "maintenance: the open issues of $REPO could not be read; nothing filed or queued"; MAINT_N=""; drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  [[ -n "$MAINT_N" ]] || return 0
+  b="$(wip_branch "$MAINT_N")"
+  if [[ -n "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$b")" ]]; then
+    log "maintenance: #$MAINT_N's branch $b is on origin (its land queued, or its report's work): left to it"; MAINT_HELD=1
+  elif forge_issue_view "$REPO" "$MAINT_N" labels '.labels[].name' 2>/dev/null | grep -qx "$LABEL_IN_PROGRESS"; then
+    log "maintenance: #$MAINT_N is $LABEL_IN_PROGRESS: left to its report"; MAINT_HELD=1
   fi
-  drop_worktree "$wt"
+}
+# The scan's item 4, printed for the prompt.
+relock_item() { # run-dir
+  local run="$1"
+  [[ "$LOOPER_FORGE" == github ]] || { echo "4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released MAJOR.MINOR line it should follow."; return 0; }
+  [[ -n "$MAINT_WT" ]] || { echo "4. Pins: the looper could not read main's, or the open issues (looper#212): file nothing for them."; return 0; }
   cat <<IT
 4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
-   MAJOR.MINOR line it should follow. A pin's patch and digest are the looper's (tacplus-dev/looper#212): it read
-   main's pins (each pin file's \`build_image:\` and \`tacplus:\`, each Dockerfile FROM by digest) against their
-   lines' newest patches and their tags' digests now; file nothing for those.
+   MAJOR.MINOR line it should follow. A pin's patch, dated build and digest are the looper's (tacplus-dev/looper#212,
+   #226): it read main's pins (each pin file's \`build_image:\` and \`tacplus:\`, each Dockerfile FROM by digest, and
+   every file naming them) against their lines' newest patches and builds and their tags' digests now; file nothing for those.
 IT
   if [[ ! -s "$run/relock.txt" ]]; then echo "   None is behind."
-  elif [[ -z "$n" ]]; then echo "   Behind ($run/relock.txt), but the looper could file no issue for them: file one \`$LABEL_BUG\`, \`$LABEL_APPROVED\`, with the moves as its fix, its body carrying \`$RELOCK_MARK\`."
-  else
-    case "$ok" in
-      queued) echo "   Behind ($run/relock.txt): the relock is #$n, its land queued for the manager." ;;
-      held) echo "   Behind ($run/relock.txt): the relock is #$n, already at work." ;;
-      *) echo "   Behind ($run/relock.txt): the relock is #$n, which its report makes (it could not be queued)." ;;
-    esac
-  fi
+  elif [[ -n "$MAINT_HELD" ]]; then echo "   Behind ($run/relock.txt): the maintenance land is #$MAINT_N, already at work."
+  else echo "   Behind ($run/relock.txt): the looper queues them after you, with your fixes of item 5, as one land (${MAINT_N:+#$MAINT_N}${MAINT_N:-a new \`$LABEL_BUG\`})."; fi
   [[ ! -s "$run/relock-unread.txt" ]] || echo "   Some could not be read ($run/relock-unread.txt): check those yourself, and file one that lags as above."
+}
+# The scan's item 5 (looper#226), printed for the prompt.
+tools_item() { # run-dir report-dir
+  local run="$1"
+  [[ -n "$MAINT_WT" && -n "$2" ]] || { echo "5. The CI tools' advisories: no security report or no maintenance land this night (looper#226): nothing to fix; file them as item 1 says."; return 0; }
+  cat <<IT
+5. The CI tools' advisories (tacplus-dev/looper#226; tacplus-dev/roadmap decisions/security-gates-ship-only-2026-11-23.md):
+   the findings of item 1's report in a tool only this repository's pipelines run, never one it ships: a binary its CI
+   tool script installs (\`ci/tools.sh\` or its equivalent under ci/; the finding's \`where\` names the binary, as
+   \`bin/lego (...)\`). The build image's own packages are item 4's, not yours. For each one:
+IT
+  if [[ -n "$MAINT_HELD" ]]; then cat <<IT
+   the maintenance land is #$MAINT_N, already at work: change no file for them; comment on #$MAINT_N with each one
+   (its id and binary) and its fix as below (the bump, or the exception), for its report. File no other issue for them.
+IT
+  return 0; fi
+  cat <<IT
+   - move the tool's pin in that script to the newest upstream release that fixes it (the advisory's fixed version
+     in the release's own dependencies: its go.mod, its lock; the newest release, not the first fixed one);
+   - if no release fixes it yet, add an entry to security-exceptions.yaml (README: Security checks) for that binary
+     alone: \`id\` the advisory, \`where\` the binary (its \`where\` without the parentheses), \`expires: $(date -u -d '+14 days' +%F)\`,
+     \`decided_by: jodydadescott\` (the decision's), \`reason\` naming the advisory, the binary, the upstream release it
+     waits on (or that none is out yet) and looper#226. One accepted until later already is left as it is.
+   Change only that script and security-exceptions.yaml (under ci/ and at the root): the looper takes nothing else of
+   yours but PROPOSALS.md. Write what you did to $run/tools.md, a line an advisory:
+   \`- <id> in <binary>: <tool> <from> → <to>\` or \`- <id> in <binary>: excepted until <date>, waiting on <release>\`.
+   The looper queues them after you, with item 4's moves, as one land on the maintenance issue
+   (${MAINT_N:+#$MAINT_N}${MAINT_N:-one it files}), which names them: file no other issue for them. You verify nothing: its build does.
+IT
+}
+# After the model (looper#226): the model's CI tool fixes (security-exceptions.yaml
+# and ci/, nothing else of its) with the pins' moves, one commit on the
+# maintenance issue's branch, its land queued; the issue filed if none is open.
+maint_land() { # run-dir base
+  local run="$1" base="$2" n="$MAINT_N" new="" b id title msg f
+  [[ -n "$MAINT_WT" ]] || return 0
+  if [[ -n "$MAINT_HELD" ]]; then drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  # Its new files too (a first security-exceptions.yaml): the checkout is reset after the scan.
+  for f in security-exceptions.yaml ci; do [[ ! -e "$CHECKOUT/$f" ]] || git -C "$CHECKOUT" add -N -- "$f" 2>/dev/null || true; done
+  git -C "$CHECKOUT" diff --binary "$base" -- security-exceptions.yaml ci > "$run/tools.patch" 2>/dev/null || : > "$run/tools.patch"
+  if [[ -s "$run/tools.patch" ]] && ! git -C "$MAINT_WT" apply "$run/tools.patch" 2>"$run/tools.patch.log"; then
+    log "maintenance: the model's CI tool fixes do not apply with the pins' moves ($run/tools.patch.log): left out"; : > "$run/tools.patch"
+  fi
+  [[ -s "$run/tools.patch" ]] || rm -f "$run/tools.md"
+  if [[ -z "$(git -C "$MAINT_WT" status --porcelain)" ]]; then drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  if [[ -s "$run/relock.txt" ]]; then
+    title="Pinned images behind their lines: relock ($(head -n 1 "$run/relock.txt" | sed 's/ (.*//; s/@sha256:[0-9a-f]*//g')$( (( $(wc -l < "$run/relock.txt") < 2 )) || echo ", and $(( $(wc -l < "$run/relock.txt") - 1 )) more"))"
+    msg="Relock: the pinned images to their lines' newest patches and builds and their tags' digests"
+  else
+    title="CI tools' advisories: the nightly maintenance ($(maint_tools "$run/tools.md" "$run/tools.patch" | grep -m 1 -oE '^- [^ ]+' | cut -c3-))"
+    msg="Nightly maintenance: the CI tools' advisories"
+  fi
+  if [[ -z "$n" ]]; then
+    if n="$(forge_issue_create "$REPO" "$title" "$(relock_body "$run/relock.txt" "$MAINT_MAIN" "$run/tools.md")" "$LABEL_BUG" "$LABEL_APPROVED")"; then
+      new=1; log "maintenance: filed #$n"
+    else log "maintenance: could not file the issue"; drop_worktree "$MAINT_WT"; MAINT_WT=""; return 0; fi
+  fi
+  b="$(wip_branch "$n")"; id="$(date -u +%Y%m%dT%H%M%SZ)-$n-relock"
+  if ( cd "$MAINT_WT" && git add -A &&
+       git commit -q -m "$msg (#$n)" \
+         -m "$(cat "$run/relock.txt")$(maint_tools "$run/tools.md" "$run/tools.patch")" \
+         -m "The nightly maintenance (looper#212, looper#226): a pin moves in a commit, on the gates, never by a build." &&
+       mkdir -p .looper && printf 'id=%s\ngates=%s\nstate=queued\nqueued=%s\n' "$id" "$(land_gates)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .looper/land &&
+       git add -f .looper/land && git commit -q -m "looper: the nightly maintenance of #$n (land queued)" &&
+       { [[ -z "$MANAGER_GH" ]] || export GH_CONFIG_DIR="$MANAGER_GH"; } &&
+       git push -q --force-with-lease="refs/heads/$b:" origin "HEAD:refs/heads/$b" ); then
+    forge_issue_edit "$REPO" "$n" --add-label "$LABEL_LANDING" >/dev/null || true
+    [[ -n "$new" ]] || forge_issue_comment "$REPO" "$n" "The nightly scan of $(date -u +%F) queued the nightly maintenance on \`$b\` for the manager's merge train (looper#212, looper#226):"$'\n\n'"$( [[ ! -s "$run/relock.txt" ]] || sed 's/^/- /' "$run/relock.txt")$(maint_tools "$run/tools.md" "$run/tools.patch")" >/dev/null || true
+    log "maintenance: queued on $b for #$n"
+  else
+    log "maintenance: could not queue it on $b: #$n stays for its report to make"
+    [[ -n "$new" || ! -s "$run/tools.patch" ]] || forge_issue_comment "$REPO" "$n" "The nightly scan of $(date -u +%F) could not queue its maintenance on \`$b\` (looper#226); make it yourself:"$'\n\n'"$( [[ ! -s "$run/relock.txt" ]] || sed 's/^/- /' "$run/relock.txt")$(maint_tools "$run/tools.md" "$run/tools.patch")"$'\n\n'"<details><summary>The CI tool fixes</summary>"$'\n\n```diff\n'"$(cat "$run/tools.patch")"$'\n```\n</details>' >/dev/null || true
+  fi
+  drop_worktree "$MAINT_WT"; MAINT_WT=""
 }
 
 scan() {
@@ -5567,10 +5747,11 @@ scan() {
     jq '[.[] | select(.excepted == null and (.blocking or (.severity | IN("HIGH", "CRITICAL"))))]' "$report/findings.json" > "$report/unfiled.json"
   fi
   verify_bugs "$run"
+  maint_prepare "$run"
   before="$(forge_issue_list "$REPO" all 1 number '.[0].number // 0')" || before=""
   cat > "$run/prompt.md" <<PR
 You are the nightly scanner of $LOOPER_ORG/$REPO. Your working directory is its checkout at origin/main.
-Change no code. Find, in order:
+Change no code but item 5's CI tool fixes. Find, in order:
 $(security_item "$report")
 2. Known vulnerabilities in dependencies the build's checks do not cover (the ecosystem's own auditor where it
    applies: cargo audit, npm audit, govulncheck, pip-audit, the Maven/Gradle dependency tree against advisories).
@@ -5579,6 +5760,7 @@ $(security_item "$report")
    is first; then file it again, naming the entry.$(auditors_note)
 $(gates_item "$gates")
 $(relock_item "$run")
+$(tools_item "$run" "$report")
 $(trace_item "$run")
 $(blocked_on_item "$run")
 For each finding, first check the open issues (\`$(forge_cmd list "$REPO")\`) and skip one already
@@ -5590,13 +5772,15 @@ cause); otherwise \`$LABEL_DECISION\`. A cause another repository's open issue f
 upstream release) is filed with its \`Blocked-by: <org>/<repo>#N\` line in the body from the start, one per issue it
 waits on, so no report runs until that issue closes. If nothing is found, file nothing.
 An idea for new behaviour you come across is a feature, never \`$LABEL_APPROVED\`: add it to PROPOSALS.md (what, why,
-links), the one file you may change. Leave it in the checkout: commit nothing and push nothing (only the manager's
-identity writes main, looper#83); the looper commits your PROPOSALS.md change on main when you are done.
+links), the one file you may change but item 5's. Leave them in the checkout: commit nothing and push nothing (only the
+manager's identity writes main, looper#83); the looper commits your PROPOSALS.md change on main, and item 5's with the
+maintenance land, when you are done.
 $(opening_rule)
 $(provenance_rule)
 PR
   base="$(git -C "$CHECKOUT" rev-parse HEAD)"
   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
+  maint_land "$run" "$base"
   [[ -z "$report" ]] || security_file_unfiled "$report"
   [[ -n "$before" ]] && scan_labels "$before"
   # Its PROPOSALS.md, the looper's commit (looper#83): the change since the
