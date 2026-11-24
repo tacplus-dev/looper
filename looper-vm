@@ -268,13 +268,33 @@ stop() {
   exit 0
 }
 
+# The VM's credentials (tacplus-dev/cloud#108): nothing secret is in the VM's
+# metadata or its cloud-init. The reports mint their GitHub tokens themselves
+# (repo-looper through looper-token, which on a VM signs as the VM's own
+# service account); the deployment's app and key ring default to tacplus-dev's
+# (not secrets: an app's id and a key ring's path). The model's token is read
+# once, here, from Secret Manager as the VM's account, and passed to the
+# children in their environment; a VM that cannot read it stops at once,
+# saying so, rather than start reports that cannot run.
+vm_credentials() {
+  export LOOPER_KMS_KEYRING="${LOOPER_KMS_KEYRING:-projects/tacplus-ci/locations/us-central1/keyRings/looper}"
+  export LOOPER_REPORT_APP_ID="${LOOPER_REPORT_APP_ID:-5632122}"
+  export LOOPER_REPORT_INSTALLATION_ID="${LOOPER_REPORT_INSTALLATION_ID:-179024135}"
+  [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]] && return 0
+  local secret="${LOOPER_VM_MODEL_SECRET:-looper-model-token}" project="${LOOPER_VM_SECRET_PROJECT:-tacplus-ci}" t
+  t="$(timeout 60 gcloud secrets versions access latest --secret="$secret" --project="$project" 2>"$STATE/secret-err")" && [[ -n "$t" ]] ||
+    die "no model token: Secret Manager $project/$secret refused this VM's account: $(tr '\n' ' ' < "$STATE/secret-err" | cut -c1-300)"
+  export CLAUDE_CODE_OAUTH_TOKEN="$t"; rm -f "$STATE/secret-err"
+}
+
 parent() {
   [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "--repo NAME is required"
   for v in POLL STOP_GRACE LIST_TIMEOUT COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
   (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is under 5 seconds"
   trap stop TERM INT
   cache_ready
-  STATE="$CACHE/vm"; rm -f "$STATE/list" "$STATE/list.new"
+  STATE="$CACHE/vm"; mkdir -p "$STATE"; rm -f "$STATE/list" "$STATE/list.new"
+  vm_credentials
   log "looper-vm of $REPO: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m"
   local z
   while :; do

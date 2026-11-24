@@ -147,6 +147,15 @@ check_id_token() {
 # (the job's user's alone): its login is the first exchange (STS), and every
 # later call exchanges the token again.
 gcp_login() { # dir
+  # On a project's looper VM (looper#238, LOOPER_VM set, no id_token): no
+  # federation. gcloud, with a configuration of its own and no account in it,
+  # signs as the VM's own service account from the metadata server, which
+  # tacplus-dev/cloud binds as a signer of the report app's key (cloud#108).
+  if [[ -n "${LOOPER_VM:-}" && -z "${GCP_ID_TOKEN:-}" ]]; then
+    export CLOUDSDK_CONFIG="$1/gcloud" CLOUDSDK_CORE_DISABLE_PROMPTS=1
+    ( umask 077; mkdir -p "$CLOUDSDK_CONFIG" )
+    return 0
+  fi
   : "${GCP_ID_TOKEN:?this job has no id_tokens GCP_ID_TOKEN (README, Only the manager writes main)}"
   : "${GCP_WIF_PROVIDER:?the project variable GCP_WIF_PROVIDER is not set}"
   check_id_token

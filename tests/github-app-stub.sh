@@ -22,7 +22,7 @@ app_stub() { # dir
     openssl rsa -in "$1/keys/$k.pem" -pubout -out "$1/keys/$k.pub" 2>/dev/null
   done
   # Each key's binding: the environments of the looper project's jobs that may sign with it.
-  printf 'tacplus-looper looper-report looper-scan kicker looper-plan\ntacplus-manager looper-manager looper-scan\n' > "$1/iam"
+  printf 'tacplus-looper looper-report looper-scan kicker looper-plan vm:looper-vm-alpha\ntacplus-manager looper-manager looper-scan\n' > "$1/iam"
   cat > "$1/bin/gcloud" <<'EOF'
 #!/usr/bin/env bash
 echo "gcloud $*" >> "$APP_STUB/gcloud.log"
@@ -55,16 +55,24 @@ case "$*" in
       echo "stub: a relative --version" >&2; exit 1
     fi
     key="${ver%/cryptoKeyVersions/*}"; key="${key##*/}"
-    # Exchanged again on each call: the token file must still be there.
-    [[ -s "$(cat "$src")" ]] || { echo "no credential source" >&2; exit 1; }
+    # On a GCE VM with no federation configured, gcloud signs as the VM's own
+    # service account (the metadata server; STUB_GCE_SA, as `vm:ACCOUNT`).
+    if [[ ! -s "$src" && -n "${STUB_GCE_SA:-}" ]]; then
+      gce=1
+    else
+      # Exchanged again on each call: the token file must still be there.
+      [[ -s "$(cat "$src")" ]] || { echo "no credential source" >&2; exit 1; }
+    fi
     case "${STUB_FAIL:-}" in
       sts) echo "ERROR: (gcloud.kms.asymmetric-sign) There was a problem refreshing your current auth tokens: ('Error code invalid_grant: The audience in ID Token [x] does not match the expected audience.', '{\"error\":\"invalid_grant\"}')" >&2; exit 1 ;;
       quota) echo "ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED: Caller does not have required permission to use project 1. Grant the caller the roles/serviceusage.serviceUsageConsumer role. reason: USER_PROJECT_DENIED" >&2; exit 1 ;;
     esac
     [[ "$ver" == "$STUB_RING/cryptoKeys/$key/cryptoKeyVersions/1" && -f "$APP_STUB/keys/$key.pem" ]] ||
       { echo "ERROR: (gcloud.kms.asymmetric-sign) NOT_FOUND: $ver not found." >&2; exit 1; }
-    p="$(cut -d. -f2 < "$(cat "$src")" | tr '_-' '/+')"; while ((${#p} % 4)); do p+="="; done
-    env="$(base64 -d <<<"$p" | jq -r '.environment // ""')"
+    if [[ -n "${gce:-}" ]]; then env="vm:$STUB_GCE_SA"; else
+      p="$(cut -d. -f2 < "$(cat "$src")" | tr '_-' '/+')"; while ((${#p} % 4)); do p+="="; done
+      env="$(base64 -d <<<"$p" | jq -r '.environment // ""')"
+    fi
     grep -qE "^$key( .*)? $env( |\$)" "$APP_STUB/iam" || { echo "kms-denied $key $env" >> "$APP_STUB/api.log"
       echo "ERROR: (gcloud.kms.asymmetric-sign) PERMISSION_DENIED: Permission 'cloudkms.cryptoKeyVersions.useToSign' denied on resource '${ver%/cryptoKeyVersions/*}' (or it may not exist)." >&2; exit 1; }
     echo "signed $key $env" >> "$APP_STUB/api.log"

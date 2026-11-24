@@ -260,4 +260,20 @@ grep -qx 'tacplus-looper: refused (expected: signed)' <<<"$out" && grep -qF "the
 grep -qF eyJhbGciOiJSUzI1NiJ9 <<<"$out" && fail "the id_token is in the diagnosis"
 pass
 
+# On a project's looper VM (looper#238): no id_token, no federation; gcloud
+# signs as the VM's own service account, which the report app's key names
+# (tacplus-dev/cloud#108) and the manager's does not.
+NAME=vm
+vm() { : > "$TMP/api.log"
+  env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" APP_STUB="$TMP" TMPDIR="$TMP" STUB_RING="$RING" LOOPER_VM=/usr/local/bin/looper-vm \
+    LOOPER_KMS_KEYRING="$RING" LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 LOOPER_MANAGER_APP_ID=401 \
+    LOOPER_MANAGER_INSTALLATION_ID=41 "$@"; }
+t="$(vm STUB_GCE_SA=looper-vm-alpha "$ROOT/looper-token" mint report 2>"$TMP/err")" || fail "the VM's account: no token"
+[[ -n "$t" ]] && grep -qx 'signed tacplus-looper vm:looper-vm-alpha' "$TMP/api.log" || fail "the VM's account: $(cat "$TMP/api.log")"
+! vm STUB_GCE_SA=looper-vm-alpha "$ROOT/looper-token" mint manager >/dev/null 2>"$TMP/err" || fail "the VM minted the manager's token"
+! vm STUB_GCE_SA=looper-vm-beta "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "another VM's account signed"
+# Not on a VM, no id_token is still refused, as before.
+! vm STUB_GCE_SA=looper-vm-alpha LOOPER_VM= "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "minted with no id_token and no VM"
+pass
+
 echo "looper-token: all scenarios pass"

@@ -45,7 +45,7 @@ fixture() { # name
 }
 # The parent in the background: VM its pid, its output in $FIX/vm.out.
 vm() { # [VAR=value...]
-  env FIX="$FIX" LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 \
+  env FIX="$FIX" CLAUDE_CODE_OAUTH_TOKEN=test-token LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 \
     LOOPER_VM_COOLDOWN=1000 "$@" "$ROOT/looper-vm" --repo alpha > "$FIX/vm.out" 2>&1 & VM=$!
 }
 # Waits, at most 20 seconds, for a command to succeed.
