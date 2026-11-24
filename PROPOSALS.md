@@ -1134,3 +1134,15 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The relock on a GitLab forge** (2026-11-21, #212): it runs only where `LOOPER_FORGE=github` (the pins the build
   pipeline reads); a SeaBeam instance's repositories, once pinned, need the same step and the tacplus releases read
   from where that instance mirrors them.
+- **An unpinned release FROM fails the policy, once the hub's bugs are landed** (2026-11-24, #234): looper-scan
+  files an unpinned `FROM` of a release Dockerfile as a HIGH finding that fails no run (kind `pin`), since 12 service
+  repositories float today and a failing finding would turn their nightlies and releases red at once. Once they are
+  pinned (the hub's bugs), making it fail a land that adds one (and a release) keeps it so.
+- **A CI image's Dockerfile pinned by digest too** (2026-11-24, #234): the nightly maintenance pins only the
+  release Dockerfiles' floating `FROM`s; a Dockerfile under `ci/` (a CI image) at a floating tag stays as it is,
+  though the decision's point 2 asks immutable refs of CI images too. Pinning those the same way is one condition
+  less in `relock`.
+- **looper's own image pins its base** (2026-11-24, #234): `Dockerfile` builds `FROM ${BUILD_IMAGE}`, its default
+  `ghcr.io/tacplus-dev/tacplus/build:${TACPLUS_LINE}`, a floating tag built of ARGs: the maintenance cannot pin it (unread)
+  and looper-scan files it. Writing `BUILD_IMAGE`'s default as the line's dated build by digest
+  (`build:<YYYYMMDD>-<commit>@sha256:…`) lets the maintenance move it nightly, as it does build.lock's.
