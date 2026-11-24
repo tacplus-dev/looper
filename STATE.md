@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#234).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#240).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -270,7 +270,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   `LOOPER_FORGE=github` (gh, the default) or `gitlab` (the GitLab API through curl, `LOOPER_FORGE_TOKEN`, a git
   credential helper, the model's `glab`, in the image), every issue, clone and file call through `looper-lib.sh`'s
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, an issue's URL read as its reference and an unreadable
-  `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each where it runs (#84: the reports and manager of a repository whose gates are build jobs on the in-cluster control runner, `LOOPER_CONTROL_TAGS`, default `arm64, control`, with their kind's requests and limits as `KUBERNETES_*` variables, a report 150m/512Mi, a manager 250m/256Mi (#229, cluster#53: each kind's p90 of 2026-11-23, the cluster's slot count), the kicker and the plan 50m (#165: from the pods' use, limits unchanged; each pod logs its use at its end, the recap's requests against use per kind, an item once a p90 is over its request by more than LOOPER_RECAP_REQUEST_MARGIN, 10%), `LOOPER_REQUESTS_<kind>`; a job that still needs Docker, an unpinned repository's or any scan's, on the VM runners' tags: a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
+  `Blocked-by:` line held (#87), each project's VM spec, `looper.yaml` (#240; README: The project's VM spec: a c4a or t2a machine, or cpu and memory, a cache disk, spot, `vm:` for the kicker's VM start, #241), checked by `looper-spec` and logged by the plan for each repository it plans for, each gates job's peak CPU, memory and disk logged at its end, the recap's drift check of each spec against its builds' peak (the builds at once summed) filing its change up at once or down after 3 of 7 nights in that repository as an approved bug (the roadmap scan), tacplus's first spec its own issue (tacplus-dev/tacplus#968), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each where it runs (#84: the reports and manager of a repository whose gates are build jobs on the in-cluster control runner, `LOOPER_CONTROL_TAGS`, default `arm64, control`, with their kind's requests and limits as `KUBERNETES_*` variables, a report 150m/512Mi, a manager 250m/256Mi (#229, cluster#53: each kind's p90 of 2026-11-23, the cluster's slot count), the kicker and the plan 50m (#165: from the pods' use, limits unchanged; each pod logs its use at its end, the recap's requests against use per kind, an item once a p90 is over its request by more than LOOPER_RECAP_REQUEST_MARGIN, 10%), `LOOPER_REQUESTS_<kind>`; a job that still needs Docker, an unpinned repository's or any scan's, on the VM runners' tags: a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its kicker and plan as
@@ -366,6 +366,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   later, or #73 step 3 removes the CLI; it replaces `build:2.6`'s npm (11.21.1, ip-address 10.7.2's
   GHSA-rxp7-6hxx-x8q5) with 11.21.3 (#186) until `build:2.6` itself carries 11.21.3 or later; it builds Trivy and
   OSV-Scanner with otel v1.47.0 (GO-2026-6974) and gosec with gorilla/websocket's untagged fix (GO-2026-6278), versions
-  upstream did not test, smoke-scanned (#199), until a release of each requires them
+  upstream did not test, smoke-scanned (#199), until a release of each requires them; the VM spec's drift check has no data until the next looper image runs the gates jobs (their use line) and the
+  roadmap scan, and no spec is on any main until tacplus-dev/tacplus#968 lands; it sums per-build peaks, an upper
+  bound, until the VM logs its own use (PROPOSALS.md)
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
