@@ -491,8 +491,13 @@ NAME=requests-drift
 variant 1703 's/requested cpu 50m, memory 256Mi$/requested cpu 250m, memory 512Mi/'
 has "$(v '.items[] | select(.key == "requests/manager") | "\(.over) \(.summary)"')" "true manager pods (1): cpu requested 250m, used p50 20m, p90 20m, max 20m: the request 12.5 times the p90, the pool full on paper and idle in fact; memory requested 512Mi, used p50 90Mi, p90 90Mi, max 90Mi: the request 5.7 times the p90"
 variant 1800 's/cpu 12m mean/cpu 180m mean/'
-has "$(v '.items[] | select(.key == "requests/report") | .summary')" "report pods (1): cpu requested 100m, used p50 180m, p90 180m, max 180m: the p90 over the request, the scheduler holding less than the pods use (threshold 5 times;"
+has "$(v '.items[] | select(.key == "requests/report") | .summary')" "report pods (1): cpu requested 100m, used p50 180m, p90 180m, max 180m: the p90 over the request by more than 10%, the scheduler holding less than the pods use (threshold 5 times, margin 10%;"
 lacks "$(v '.items[] | select(.key == "requests/report") | .summary')" "memory"
+# The p90 over its request by no more than LOOPER_RECAP_REQUEST_MARGIN (10%, cluster#53) is no item: 110m of 100m.
+variant 1800 's/cpu 12m mean/cpu 110m mean/'
+lacks "$(v '.items[].key')" "requests/report"
+[[ "$(LOOPER_RECAP_REQUEST_MARGIN=0.05 FX="$TMP/fx" recap collect --until "$UNTIL" 2>/dev/null | jq -r '.items[] | select(.key == "requests/report") | .summary')" == *"over the request by more than 5%"*"margin 5%;"* ]] ||
+  fail "LOOPER_RECAP_REQUEST_MARGIN=0.05: 110m is over 100m by more than 5%"
 variant 1501 's/requested cpu 50m, memory 256Mi$/requested cpu 150m, memory 1Gi/'
 has "$(v '.items[] | select(.key == "requests/control") | .summary')" "control pods (1): cpu requested 150m, used p50 6m, p90 6m, max 6m: the request 25 times the p90"
 has "$(v '.items[] | select(.key == "requests/control") | .summary')" "memory requested 1024Mi"

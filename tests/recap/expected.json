@@ -1269,6 +1269,7 @@
   "merge_minutes": 120,
   "prepare_p90_s": 300,
   "queue_p90_s": 900,
+  "request_margin": 0.1,
   "request_ratio": 5.0,
   "scan_minutes": 60,
   "vm_wait_hours": 1.0,

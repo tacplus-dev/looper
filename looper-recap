@@ -109,7 +109,8 @@
 # control job's queue, its longest, looper#104), LOOPER_RECAP_BUILD_RATIO (1.1:
 # builds of the build project a commit, looper#134), LOOPER_RECAP_NIGHTLY_HOURS (3: the
 # quietest hours of the builds the nightly should start in, looper#185), LOOPER_RECAP_REQUEST_RATIO (5: a
-# kind's request against its pods' p90 use, looper#165). One more VM: LOOPER_RECAP_VM_MACHINE
+# kind's request against its pods' p90 use, looper#165), LOOPER_RECAP_REQUEST_MARGIN
+# (0.10: how far a kind's p90 may go over its request, tacplus-dev/cluster#53). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing); one more node of the normal pool (looper#84):
 # LOOPER_RECAP_NODE_MACHINE (c4a-standard-2) at LOOPER_RECAP_NODE_USD_HOUR
@@ -161,6 +162,7 @@ T = {
     "control_queue_s": int(num("LOOPER_RECAP_CONTROL_QUEUE", 600)),
     "high_share_pct": num("LOOPER_RECAP_HIGH_SHARE", 25),
     "request_ratio": num("LOOPER_RECAP_REQUEST_RATIO", 5),
+    "request_margin": num("LOOPER_RECAP_REQUEST_MARGIN", 0.10),
 }
 # The high model (looper#162): repo-looper's LOOPER_MODEL_HIGH, whose share of
 # a day's tokens over high_share_pct the recap names.
@@ -1255,10 +1257,11 @@ def requests_of(uses, items):
     and control (the plan and the kicker), each its pods' requests (the most
     common) and their use, the CPU's mean over each pod's run in millicores and
     its memory's peak in MiB, p50, p90 and max. An item when a kind's p90 is
-    over its request (its pods use more than the scheduler holds for them) or
+    over its request by more than LOOPER_RECAP_REQUEST_MARGIN (its pods use more
+    than the scheduler holds for them, tacplus-dev/cluster#53) or
     its request is LOOPER_RECAP_REQUEST_RATIO times its p90 or more (the pool
     full on paper and idle in fact; a p90 under USE_FLOOR counts as the floor)."""
-    out = {}
+    out, margin = {}, f"{whole(round(T['request_margin'] * 100, 1))}%"
     for kind, xs in sorted(uses.items()):
         k, drift = {"pods": len(xs)}, []
         for res, unit in (("cpu", "m"), ("memory", "Mi")):
@@ -1269,8 +1272,8 @@ def requests_of(uses, items):
             if req is None or used is None:
                 continue
             p90, over = used["p90"], None
-            if p90 > req:
-                over = "the p90 over the request, the scheduler holding less than the pods use"
+            if p90 > req * (1 + T["request_margin"]):
+                over = f"the p90 over the request by more than {margin}, the scheduler holding less than the pods use"
             elif req >= T["request_ratio"] * max(p90, USE_FLOOR[res]):
                 over = f"the request {whole(round(req / max(p90, 1), 1))} times the p90, the pool full on paper and idle in fact"
             if over:
@@ -1278,7 +1281,7 @@ def requests_of(uses, items):
         if drift:
             items.append({"key": f"requests/{kind}", "count": len(xs), "over": True, "recovered": False,
                           "summary": f"{kind} pods ({len(xs)}): " + "; ".join(drift)
-                                     + f" (threshold {whole(T['request_ratio'])} times; looper-dispatch's LOOPER_REQUESTS_<kind>, the CI file's .control)",
+                                     + f" (threshold {whole(T['request_ratio'])} times, margin {margin}; looper-dispatch's LOOPER_REQUESTS_<kind>, the CI file's .control)",
                           "evidence": sorted(x["url"] for x in xs)[:5]})
         out[kind] = k
     return out

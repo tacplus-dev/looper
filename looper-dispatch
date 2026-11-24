@@ -400,20 +400,22 @@ plain_tags() {
 # KUBERNETES_* job variables, within the control runner's ceilings (1500m and
 # 4Gi: tacplus-dev/cluster gitlab-runner/runners/control.yaml). An agent
 # mostly waits on the model's API (Jody, 2026-11-07: small requests, never the
-# 4 CPU/14 GB a gate needs). Requests from what the pods use (looper#165: the
-# ci namespace's job containers over 2 h, 10-minute max per pod, p50 8m, p90
-# 151m CPU, the pool full on paper at 5-15% used), limits unchanged: a report
-# asks 100m and 512Mi, limits the ceilings, and so does a scan (a model run
-# too, looper#73); a manager (git and the forge's API, no model step yet) 50m
-# and 256Mi, limits 1 and 2Gi. Each logs its use at its end (pod_use_log) and
-# the recap sets it against these, per kind, so a drift shows.
+# 4 CPU/14 GB a gate needs). Requests from what the pods use, per kind (the
+# recap of 2026-11-23, tacplus-dev/roadmap suggestions/recap/2026-11-23.md:
+# a report's p90 139m CPU over 526 pods, a manager's 210m over 117; looper#229,
+# tacplus-dev/cluster#53: the same numbers the cluster counts control's slots
+# at), limits unchanged: a report asks 150m and 512Mi, limits the ceilings, and
+# so does a scan (a model run too, looper#73); a manager (git and the forge's
+# API, no model step yet) 250m and 256Mi, limits 1 and 2Gi. Each logs its use
+# at its end (pod_use_log) and the recap sets it against these, per kind, so a
+# drift shows.
 # LOOPER_REQUESTS_<kind> ("<cpu> <memory> <cpu limit> <memory limit>") sets
 # one kind's. The kicker's and the
 # plan's are ci/tacplus-dev.gitlab-ci.yml's (.control, as .kick on the kick
 # runner: looper#222).
 requests() { # kind
   local v="LOOPER_REQUESTS_$1" d r
-  case "$1" in report|scan) d="100m 512Mi 1500m 4Gi" ;; *) d="50m 256Mi 1 2Gi" ;; esac
+  case "$1" in report|scan) d="150m 512Mi 1500m 4Gi" ;; *) d="250m 256Mi 1 2Gi" ;; esac
   read -r -a r <<<"${!v:-$d}"
   (( ${#r[@]} == 4 )) || die "$v is not \"<cpu> <memory> <cpu limit> <memory limit>\": ${!v}"
   printf '    KUBERNETES_CPU_REQUEST: %s\n    KUBERNETES_MEMORY_REQUEST: %s\n    KUBERNETES_CPU_LIMIT: %s\n    KUBERNETES_MEMORY_LIMIT: %s\n' "${r[@]}"

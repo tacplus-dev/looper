@@ -1134,10 +1134,10 @@ control_plan() { PLAN="$(env -u CI_PIPELINE_SOURCE -u GH_TOKEN -u LOOPER_JOB_TAG
 vars_of() { awk -v j="$1:" '$0 == j {f=1; next} /^[^ ]/ {f=0} f && /^  variables:/ {v=1; next} f && /^  [a-z]/ {v=0} f && v {sub(/^    /, ""); print}' <<<"$PLAN" | paste -sd' '; }
 control_plan BUILD_TRIGGER_TOKEN=glptt-x
 [[ "$(tags_of alpha-4)" == "[arm64, control]" ]] || fail "alpha's report: $(tags_of alpha-4): $PLAN"
-[[ "$(vars_of looper-alpha-4)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 100m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
+[[ "$(vars_of looper-alpha-4)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 150m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
   || fail "alpha's report's requests: $(vars_of looper-alpha-4)"
 [[ "$(tags_of alpha-manager)" == "[arm64, control]" ]] || fail "alpha's manager: $(tags_of alpha-manager)"
-[[ "$(vars_of looper-alpha-manager)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 50m KUBERNETES_MEMORY_REQUEST: 256Mi KUBERNETES_CPU_LIMIT: 1 KUBERNETES_MEMORY_LIMIT: 2Gi' ]] \
+[[ "$(vars_of looper-alpha-manager)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 250m KUBERNETES_MEMORY_REQUEST: 256Mi KUBERNETES_CPU_LIMIT: 1 KUBERNETES_MEMORY_LIMIT: 2Gi' ]] \
   || fail "alpha's manager's requests: $(vars_of looper-alpha-manager)"
 grep -qx '    - repo-looper --repo alpha --manage' <<<"$(job_of looper-alpha-manager)" || fail "alpha's manager: $(job_of looper-alpha-manager)"
 # tacplus, unpinned: its reports on their VM override, its split batch's jobs as before (the verdict runs its
@@ -1168,7 +1168,7 @@ control_plan
 printf '%s\n' alpha tacplus > "$FIX/repos"
 control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule LOOPER_SCAN_TAGS_alpha="arm64, lab"
 [[ "$(tags_of scan-alpha)" == "[arm64, control]" ]] || fail "alpha's scan: $(tags_of scan-alpha): $PLAN"
-[[ "$(vars_of looper-scan-alpha)" == *'KUBERNETES_CPU_REQUEST: 100m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
+[[ "$(vars_of looper-scan-alpha)" == *'KUBERNETES_CPU_REQUEST: 150m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
   || fail "alpha's scan's requests: $(vars_of looper-scan-alpha)"
 [[ "$(tags_of scan-tacplus)" == "[arm64, autoscale]" ]] || fail "tacplus's scan: $(tags_of scan-tacplus)"
 ! grep -q KUBERNETES_ <<<"$(job_of looper-scan-tacplus)" || fail "requests on a VM scan: $(job_of looper-scan-tacplus)"
