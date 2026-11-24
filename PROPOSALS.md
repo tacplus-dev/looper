@@ -4,6 +4,21 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The spec's drift measured on the VM itself** (2026-11-24, #240): the recap compares each project's `looper.yaml`
+  with its gates jobs' `build use at the end` lines, the builds running at once summed, each at its own peak. That
+  is an upper bound, and it leaves out the agents, git and the shared caches. Once a project runs on its own VM
+  (#238), `looper-vm` could log the VM's own peak CPU, memory and cache-disk use (one line, as `looper-build`'s), and
+  the recap could prefer it for that project.
+- **A build's disk with its caches** (2026-11-24, #240): `looper-build` measures the disk a build holds as its
+  checkout and outputs (`du` of `BUILD_OUT`). The dependency caches it fills (cargo's registry, Go's module cache)
+  live outside it in today's pods. On the VM they are the cache disk's (the decision's point 3), so the disk spec
+  should count them. Measuring them per build, or on the VM, would size `disk:` better.
+- **A `looper.yaml` checked at land** (2026-11-24, #240): an invalid spec reaches main today and is caught only
+  by the planner's log and the nightly recap's bug. The manager could refuse a land whose tree's `looper.yaml`
+  fails `looper-spec check`, as it refuses an unreadable `gates.yaml`.
+- **A spec change's cost in its issue** (2026-11-24, #240): the drift's issue names the new machine and disk but not
+  what they cost an hour busy. A price per machine type (from the billing, as `LOOPER_RECAP_VM_USD_HOUR`) would let
+  the issue say what the change costs or saves.
 - **A model's leftover processes stopped before the looper reads its files** (2026-11-24, #227): after a scan's
   model, the looper copies the files it takes out of the model's clone (`scan_take`, no symlink followed). A process
   the model left running as `looper-scan` could still change the clone while that copy runs. Stopping every process
