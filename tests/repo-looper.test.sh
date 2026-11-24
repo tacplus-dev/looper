@@ -4916,6 +4916,37 @@ lacks "$OUT" "did not fast-forward"
 for n in 4 5 6; do has "$(grep "^alpha#$n " "$FIX/comments")" "in a batch of 3 lands"; done
 main_green
 pass
+# Main moved by STATE.md alone during the build, conflicting with a land's
+# STATE.md commit (looper#230: fleet-seatrials' green candidate was thrown
+# away, one build more and a slot's wait): that commit is dropped, main's
+# STATE.md kept (looper#131), and the green candidate merged, no build more.
+scenario train-green-after-state-md-on-main
+printf '# State\n\nbase\n' > "$FIX/seed/STATE.md"
+train_seed; train_issues 5
+during_build 'printf "# State\n\ntheirs\n" > STATE.md && git commit -qam "STATE.md: theirs" && git push -q origin main'
+queue 4 2026-11-03T14:00:00Z f4.txt 4
+d="$FIX/q-5"; rm -rf "$d"; git clone -q "$FIX/origin.git" "$d"; git -C "$d" checkout -q -b looper/alpha-5
+echo 5 > "$d/f5.txt"; git -C "$d" add -A; git -C "$d" commit -qm "fix 5"
+printf '# State\n\nmine\n' > "$d/STATE.md"; git -C "$d" commit -qam "STATE.md: #5, its own commit (looper#131)"
+mkdir -p "$d/.looper"; printf 'id=q5\ngates=true\nstate=queued\nqueued=2026-11-03T15:00:00Z\n' > "$d/.looper/land"
+git -C "$d" add -A; git -C "$d" commit -qm "looper: work in progress on #5 (land queued)"; git -C "$d" push -q origin looper/alpha-5
+jq '.labels += [{name: "looper:landing"}]' "$FIX/issues/alpha-5.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-5.json"
+manage "${BUILDS[@]}"
+h="$(git -C "$FIX/seed" rev-parse HEAD)"
+[[ "$(builds_of)" == 1 ]] || fail "builds: $(cat "$FIX/builds")"
+has "$OUT" "main moved since the candidate by planning files alone (STATE.md)"
+has "$OUT" "main fast-forwarded: ${h:0:7}.."
+lacks "$OUT" "did not fast-forward"; lacks "$OUT" "conflicts in"
+[[ "$(landed f4.txt)" == 4 && "$(landed f5.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+[[ "$(landed STATE.md)" == $'# State\n\ntheirs' ]] || fail "main's STATE.md: $(landed STATE.md)"
+[[ "$(origin log --format=%s main | grep -v '^HISTORY.md' | head -n 3 | tac | paste -sd'|')" == "STATE.md: theirs|fix 4|fix 5" ]] || fail "main: $(origin log --oneline main)"
+c="$(grep '^alpha#5 ' "$FIX/comments")"
+has "$c" "The manager merged [\`looper/alpha-5\`]"; has "$c" "in a batch of 2 lands"
+has "$c" "dropped its STATE.md commit"; has "$(cat "$FIX/comments")" "+mine"; lacks "$c" "The branch is deleted"
+lacks "$(grep '^alpha#4 ' "$FIX/comments")" "dropped its STATE.md commit"
+[[ -n "$(origin for-each-ref refs/heads/looper/alpha-5)" ]] || fail "#5's branch was deleted with its STATE.md commit dropped"
+main_green
+pass
 scenario train-green-after-code-on-main
 train_seed; train_issues 5
 during_build 'echo other > other.txt && git add other.txt && git commit -qm "main: other.txt" && git push -q origin main'

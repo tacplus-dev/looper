@@ -2428,13 +2428,19 @@ stage_land() { # issue id sha rec-dir
 # which a HISTORY.md line had moved a minute after, and its green candidate
 # could not fast-forward: nothing landed in 27 h. Main fetched again: unmoved,
 # nothing changes. Moved by planning files alone (moved_by_planning), the lands
-# from the from-th, staged on main, are rebased onto it (the logs unioned, no
-# hook, nothing regenerated), TR_BEFORE and TR_AFTER naming their rebased
-# commits. Moved by anything else, or a rebase that conflicts or drops a
-# commit, fails: the lands are as they were, to be staged again on TRAIN_MAIN,
-# the new main. TRAIN_MAIN: main.
+# from the from-th, staged on main, are rebased onto it, a commit at a time
+# (the logs unioned, no hook, nothing regenerated), TR_BEFORE and TR_AFTER
+# naming their rebased commits. A land's commit that touches STATE.md alone and
+# conflicts in it is dropped, main's STATE.md kept, as stage_land's rebase does
+# (looper#131): its land's verdict quotes it (`dropped`). Fleet-seatrials'
+# green candidate was thrown away, a build more and a slot's wait, for a
+# STATE.md commit pushed to main during its build (looper#230): what no gate
+# reads moved, so the build still holds. Moved by anything else, or a rebase
+# that conflicts otherwise, empties a commit or leaves a land nothing, fails:
+# the lands are as they were, to be staged again on TRAIN_MAIN, the new main.
+# TRAIN_MAIN: main.
 train_onto() { # main from
-  local main="$1" from="$2" n=${#TR_N[@]} now wt attrs i j rc=0 old=() new=()
+  local main="$1" from="$2" n=${#TR_N[@]} now wt attrs i c files rc=0 drop=()
   local -A to=()
   TRAIN_MAIN="$main"
   fetch "$CHECKOUT" main || { log "could not fetch main: the candidate stays on main ${main:0:7}"; return 0; }
@@ -2446,19 +2452,42 @@ train_onto() { # main from
   log "main moved since the candidate by planning files alone ($(paste -sd, - <<<"$MOVED_FILES" | sed 's/,/, /g')): its $(( n - from )) land$(plural "$(( n - from ))") rebased onto main ${now:0:7}"
   attrs="$(mktemp)"; printf '%s\n' "$LOG_ATTRS" > "$attrs"
   wt="$(scratch_dir)"; rm -rf "$wt"
-  if git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "${TR_AFTER[n-1]}" >/dev/null 2>&1 &&
-     git -C "$wt" -c core.hooksPath=/dev/null -c "core.attributesFile=$attrs" rebase -q --onto "$now" "$main" >/dev/null 2>&1; then
-    mapfile -t old < <(git -C "$CHECKOUT" rev-list --reverse "$main..${TR_AFTER[n-1]}")
-    mapfile -t new < <(git -C "$wt" rev-list --reverse "$now..HEAD")
-    if (( ${#old[@]} == ${#new[@]} )); then
-      to[$main]="$now"; for j in "${!old[@]}"; do to[${old[j]}]="${new[j]}"; done
-      for (( i = from; i < n; i++ )); do TR_BEFORE[i]="${to[${TR_BEFORE[i]}]}"; TR_AFTER[i]="${to[${TR_AFTER[i]}]}"; done
-      git -C "$CHECKOUT" update-ref "$STAGING_REF" "${TR_AFTER[n-1]}"
-      log "the candidate ${old[-1]:0:7} rebased onto main ${now:0:7}: ${TR_AFTER[n-1]:0:7}"
-    else rc=1; log "the rebase onto main ${now:0:7} dropped commits of the candidate: not rebased"; fi
-  else
-    rc=1; log "the candidate's rebase onto main ${now:0:7} conflicts in: $(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
-    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+  local -a pick=(-C "$wt" -c core.hooksPath=/dev/null -c "core.attributesFile=$attrs" cherry-pick --allow-empty-message)
+  if git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$now" >/dev/null 2>&1; then
+    to[$main]="$now"
+    for (( i = from; i < n && rc == 0; i++ )); do
+      drop[i]=""
+      while read -r c && [[ -n "$c" ]]; do
+        if ! git "${pick[@]}" "$c" >/dev/null 2>&1; then
+          files="$(git -C "$wt" diff --name-only --diff-filter=U)"
+          if [[ "$files" == STATE.md && "$(git -C "$CHECKOUT" diff-tree --no-commit-id --name-only -r "$c")" == STATE.md ]]; then
+            drop[i]+="$(git -C "$CHECKOUT" show --format='commit %h %s' "$c")"$'\n'
+            git -C "$wt" cherry-pick --abort >/dev/null 2>&1 || git -C "$wt" reset -q --hard HEAD
+          else
+            rc=1
+            if [[ -n "$files" ]]; then log "the candidate's rebase onto main ${now:0:7} conflicts in: $(paste -sd, - <<<"$files" | sed 's/,/, /g')"
+            else log "the rebase onto main ${now:0:7} dropped commits of the candidate: not rebased"; fi
+            git -C "$wt" cherry-pick --abort >/dev/null 2>&1 || true
+            break
+          fi
+        fi
+        to[$c]="$(git -C "$wt" rev-parse HEAD)"
+      done < <(git -C "$CHECKOUT" rev-list --reverse "${TR_BEFORE[i]}..${TR_AFTER[i]}")
+      (( rc != 0 )) || [[ "${to[${TR_AFTER[i]}]}" != "${to[${TR_BEFORE[i]}]}" ]] ||
+        { rc=1; log "#${TR_N[i]}: nothing is left of its land once its STATE.md commit is dropped: not rebased"; }
+    done
+  else rc=1; log "could not check out main ${now:0:7}: the candidate is not rebased onto it"; fi
+  if (( rc == 0 )); then
+    c="${TR_AFTER[n-1]}"
+    for (( i = from; i < n; i++ )); do
+      TR_BEFORE[i]="${to[${TR_BEFORE[i]}]}"; TR_AFTER[i]="${to[${TR_AFTER[i]}]}"
+      [[ -n "${drop[i]}" ]] || continue
+      printf '%s' "${drop[i]}" >> "${TR_REC[i]}/dropped"
+      log "dropped its STATE.md commit, whose only conflict is STATE.md: main's STATE.md is kept, the rest lands (looper#131): $(sed -n 's/^commit //p' <<<"${drop[i]}" | paste -sd, - | sed 's/,/, /g')" >> "${TR_REC[i]}/out"
+      log "#${TR_N[i]}: its STATE.md commit dropped in the rebase onto main ${now:0:7}, main's STATE.md kept (looper#131, looper#230)"
+    done
+    git -C "$CHECKOUT" update-ref "$STAGING_REF" "${TR_AFTER[n-1]}"
+    log "the candidate ${c:0:7} rebased onto main ${now:0:7}: ${TR_AFTER[n-1]:0:7}"
   fi
   rm -f "$attrs"; drop_worktree "$wt"
   return "$rc"
