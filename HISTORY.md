@@ -180,3 +180,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-24 looper issue Nightly maintenance: re-pin each repository's CI image to its line's newest dated build tag, and fix tool advisories (bump, else a 14-day exception), one land a repository (#226)
 - 2026-11-24 looper issue Security floor: a land fails only on findings in what ships; findings in CI-only tooling are reported, never blocking (#225)
 - 2026-11-24 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#228)
+- 2026-11-24 looper issue looper-dispatch: managers request 250m (not 50m), reports 150m (not 100m); looper-recap's p90-over-request margin 10% (cluster#53) (#229)
