@@ -7,3 +7,13 @@ exceptions:
     reason: "looper#142: the image's syft carries github.com/blakesmith/ar, no fixed version; a crafted .deb panics syft and fails the security run closed; syft reads only what our own builds produce"
     decided_by: jodydadescott
     expires: 2026-12-13
+  - id: GO-2026-6278
+    reason: "gorilla/websocket v1.5.3 (Close) in the image's gh, which comes from the base build image (tacplus-dev/tacplus build:2.6): gh opens no WebSocket to a server we do not choose (GitHub's API only). The looper image is CI tooling (decisions/security-gates-ship-only-2026-11-23.md); it blocked the image's publish for a day (#199), and so the looper VMs (#238). Waits on a gh release built with a fixed gorilla/websocket in the base image (the nightly rebuild, tacplus#966)."
+    decided_by: "jodydadescott (hub, #199/#238, 2026-11-24, by tacplus-dev/roadmap decisions/security-gates-ship-only-2026-11-23.md: 14 days, this binary only)"
+    expires: 2026-12-08
+    where: usr/local/bin/gh
+  - id: GO-2026-6974
+    reason: "OpenTelemetry Go AttributeValue (trace.AddEvent; otel/trace v1.44.0) in the image's gh, from the base build image: gh exports no traces we read, and no attribute from outside reaches it. CI tooling (decisions/security-gates-ship-only-2026-11-23.md); blocked the image's publish (#199) and the looper VMs (#238). Waits on a gh built with otel >= v1.47.0 in the base image (tacplus#966)."
+    decided_by: "jodydadescott (hub, #199/#238, 2026-11-24, by tacplus-dev/roadmap decisions/security-gates-ship-only-2026-11-23.md: 14 days, this binary only)"
+    expires: 2026-12-08
+    where: usr/local/bin/gh
