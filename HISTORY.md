@@ -179,3 +179,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-23 looper issue ci/: pin the looper image of main at or after d8e72ad (carries #207's side-by-side scanners, #209): ci/build.gitlab-ci.yml still pins cd7d3689 (#221)
 - 2026-11-24 looper issue Nightly maintenance: re-pin each repository's CI image to its line's newest dated build tag, and fix tool advisories (bump, else a 14-day exception), one land a repository (#226)
 - 2026-11-24 looper issue Security floor: a land fails only on findings in what ships; findings in CI-only tooling are reported, never blocking (#225)
+- 2026-11-24 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#228)
