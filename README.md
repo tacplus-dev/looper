@@ -220,7 +220,11 @@ looper creates both labels in a repository that lacks them.
 - **The nightly scan** files each finding (a vulnerability, a failing gate, a stale pin) as a `bug`,
   `approved` when the fix is mechanical; an idea for new behaviour is a `feature`, never `approved`, and goes
   to PROPOSALS.md. The model leaves that file in the checkout and pushes nothing. The looper then commits that file's
-  change alone on main (looper#83), and its model runs as `looper-scan`, a user of its own. After the scan, an issue it
+  change alone on main (looper#83), and its model runs as `looper-scan`, a user of its own, in a clone of its own
+  (`LOOPER_WORK/NAME/scan`, never the manager's checkout). After the model the looper runs no git in that clone
+  (its config and hooks are the model's: looper#227): it copies the files it takes (no symlink followed) into a
+  scratch worktree of its own checkout, commits from there, and removes the clone. A checkout of the job's holding
+  a file another user owns is cloned again. After the scan, an issue it
   filed with no kind gets `bug`, and a feature it filed loses `approved`.
 - **STATE.md's `Blocked on`** (looper#132) is prose no report rewrites when another repository's issue closes, so the
   nightly scan reads it against the forge: the looper reads the state of each issue the item names (`#N`, the
@@ -1888,7 +1892,8 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
     wrapper read on every call. It is refreshed every 45 minutes for the job's life.
   - A job that still holds `GH_TOKEN`, or anything shaped like a personal token, refuses to run.
   - A scan's model runs as a user of its own (`looper-scan`, looper#68), so the manager's token, readable by the job's
-    user alone, stays out of its reach. Its `PROPOSALS.md` change is the looper's commit, not the model's push.
+    user alone, stays out of its reach. Its `PROPOSALS.md` change is the looper's commit, not the model's push,
+    made with no git run in the model's clone (looper#227).
   - Without the apps (`LOOPER_REPORT_APP_ID` unset), the jobs use `GH_TOKEN` as before.
 - **The private repositories** (fleet-dev, fleet-seatrials) would need GitHub Team for a ruleset, so no report works
   them. Their issues are left out of the kicker's and the plan's search (`--visibility public`) until Jody decides

@@ -4,6 +4,11 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A model's leftover processes stopped before the looper reads its files** (2026-11-24, #227): after a scan's
+  model, the looper copies the files it takes out of the model's clone (`scan_take`, no symlink followed). A process
+  the model left running as `looper-scan` could still change the clone while that copy runs. Stopping every process
+  of the model's user once its run ends (it is the scan's alone) would close that window. The model-owned run
+  directory's files are #232.
 - **The nightly maintenance after tacplus's Images, by schedule** (2026-11-23, #226): the scan follows whichever build
   of a line the registry has when it runs. The GitLab schedule that starts the nightly scan is not in this repository,
   and neither is tacplus-dev/tacplus#966's cron for the Images run. Check that the scan's schedule starts after the

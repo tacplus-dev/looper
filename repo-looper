@@ -560,6 +560,12 @@ fetch() { # dir [refspec...]
 # The repository's checkout at origin/main. Anything a previous run left
 # unpushed is kept on a local branch for a person to look at, never pushed.
 sync_checkout() {
+  # The job's checkout, a file of it another user's (a scan's model's before
+  # looper#227, which owned it), is cloned again: that user's git config and
+  # hooks would run as the job's.
+  if [[ "$CHECKOUT" == "$MAIN_CHECKOUT" && -e "$CHECKOUT" && -n "$(find "$CHECKOUT" ! -uid "$(id -u)" -print -quit 2>/dev/null)" ]]; then
+    log "the checkout $CHECKOUT holds files another user owns: cloned again"; rm -rf "$CHECKOUT"
+  fi
   if [[ ! -d "$CHECKOUT/.git" ]]; then
     forge_clone "$REPO" "$CHECKOUT"
   fi
@@ -3480,8 +3486,8 @@ model_user_up() { # user run-dir
   ( export HOME="$home"; forge_setup_git )
   chown -R "$u:$u" "$home" "$run"; chmod 0750 "$home"; chmod 0700 "$run"
   MODEL_ROOTS="$home"
-  # A scan's checkout is the job's main checkout, its model's for the scan (looper#83).
-  if [[ "$CHECKOUT" != "$MAIN_CHECKOUT" || "$MODE" == scan ]]; then
+  # A report's clone, or a scan's (scan_clone, looper#227): never the job's checkout.
+  if [[ "$CHECKOUT" != "$MAIN_CHECKOUT" ]]; then
     chown -R "$u:$u" "$CHECKOUT"; chmod 0750 "$CHECKOUT"; MODEL_ROOTS="$CHECKOUT:$home"
   fi
 }
@@ -5252,33 +5258,33 @@ $(provenance_rule)
 PR
 }
 
-# The new suggestions the model left in the checkout (files of suggestions/
-# that origin/main lacks), best ranked first; anything else it changed is
-# logged and left out.
-suggest_new() {
+# The new suggestions the model left (files of suggestions/ that the scan's
+# main lacks), from what scan_take took of its clone, best ranked first;
+# anything else it changed is logged and left out.
+suggest_new() { # taken worktree
   local p f
   while read -r p; do
     [[ -n "$p" ]] || continue
-    if [[ "$p" =~ ^suggestions/[0-9]{4}-[0-9]{2}-[0-9]{2}-[^/]+\.md$ ]] && ! git -C "$CHECKOUT" cat-file -e "origin/main:$p" 2>/dev/null && [[ -f "$CHECKOUT/$p" ]]; then
+    if [[ "$p" =~ ^suggestions/[0-9]{4}-[0-9]{2}-[0-9]{2}-[^/]+\.md$ ]] && ! git -C "$1" cat-file -e "HEAD:$p" 2>/dev/null && [[ -f "$1/$p" && ! -L "$1/$p" ]]; then
       f="${p#suggestions/}"
-      echo "$(sed -n 's/^Rank:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CHECKOUT/$p" | head -n 1 | grep . || echo 999) $f"
+      echo "$(sed -n 's/^Rank:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/$p" | head -n 1 | grep . || echo 999) $f"
     elif [[ "$p" != suggestions/INDEX.md ]]; then
       log "scan: left out, not a new suggestion: $p" >&2
     fi
-  done < <( { git -C "$CHECKOUT" diff --name-only origin/main --; git -C "$CHECKOUT" ls-files --others --exclude-standard; } | sort -u) \
+  done < <(git -C "$1" diff --cached --no-renames --name-only HEAD --) \
     | sort -n -k1,1 -k2 | awk '{ print $2 }'
 }
 
 # land()'s change, in its scratch worktree at origin/main: each new suggestion
 # in turn, kept when the change still passes looper-suggest check, at most
 # SUGGEST_MAX; the reasons for each one dropped in the run's dropped file.
-suggest_apply() { # run-dir file...
-  local run="$1" f n=0 why; shift
+suggest_apply() { # run-dir taken-worktree file...
+  local run="$1" taken="$2" f n=0 why; shift 2
   : > "$run/filed"; : > "$run/dropped"
   for f in "$@"; do
     (( n < SUGGEST_MAX )) || { echo "$f: over the night's $SUGGEST_MAX" >> "$run/dropped"; continue; }
     if [[ -e "suggestions/$f" ]]; then echo "$f: on main already" >> "$run/dropped"; continue; fi
-    cp "$CHECKOUT/suggestions/$f" "suggestions/$f"
+    cp -P "$taken/suggestions/$f" "suggestions/$f"
     "$SUGGEST" index . 2>/dev/null || true
     if why="$("$SUGGEST" check . HEAD 2>&1)"; then echo "$f" >> "$run/filed"; n=$((n + 1))
     else
@@ -5312,7 +5318,7 @@ recap_files() { # run-dir
 suggest_template() { [[ -e suggestions/TEMPLATE.md ]] || "$SUGGEST" template > suggestions/TEMPLATE.md; }
 
 suggest_scan() { # run-dir
-  local run="$1" ctx new
+  local run="$1" ctx new base taken=""
   if [[ ! -f "$CHECKOUT/suggestions/TYPES.md" ]]; then
     log "scan: $REPO has no suggestions/TYPES.md: no suggestion pass"; return 0
   fi
@@ -5320,19 +5326,22 @@ suggest_scan() { # run-dir
     land "suggestions/TEMPLATE.md: a suggestion's template (looper-suggest template, looper#50)" suggest_template
     sync_checkout
   fi
+  base="$(git -C "$CHECKOUT" rev-parse HEAD)"
+  scan_clone || { log "scan: its clone could not be made: no model ran"; return 0; }
   ctx="$( { suggest_context "$run"; recap_context "$run"; } )"
   suggest_prompt "$run" "$ctx" > "$run/prompt.md"
   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
-  mapfile -t new < <(suggest_new)
+  taken="$(scan_take "$base")" || { log "scan: the model's files could not be read"; scan_drop; return 0; }
+  mapfile -t new < <(suggest_new "$taken")
   if (( ${#new[@]} == 0 )) && [[ ! -f "$run/context/recap-classes.json" ]]; then log "scan: no new suggestion tonight"
   else
     (( ${#new[@]} )) || log "scan: no new suggestion tonight; the recap only"
-    land "Suggestions of $(date -u +%F) (the roadmap scan, looper#50; the nightly recap, looper#57)" suggest_apply "$run" "${new[@]+"${new[@]}"}"
+    land "Suggestions of $(date -u +%F) (the roadmap scan, looper#50; the nightly recap, looper#57)" suggest_apply "$run" "$taken" "${new[@]+"${new[@]}"}"
     [[ ! -s "$run/dropped" ]] || { log "scan: suggestions dropped:"; sed 's/^/  /' "$run/dropped"; }
     [[ ! -s "$run/filed" ]] || log "scan: suggestions filed: $(paste -sd' ' "$run/filed")"
   fi
-  # What the model left in the checkout is in the run's record now; the next run starts clean.
-  git -C "$CHECKOUT" checkout -q -f -B main origin/main && git -C "$CHECKOUT" clean -fdq
+  # What the model left is in the run's record now: its clone goes (looper#227).
+  scan_drop "$taken"
   log "scan of $REPO finished"
 }
 
@@ -5639,6 +5648,45 @@ access) for the looper's token to push it.
   accepted for that binary, its gates green on it.
 B
 }
+# A scan's model works in a clone of its own, LOOPER_WORK/NAME/scan (looper#227),
+# made afresh from the job's checkout at its HEAD: the model's user owns it
+# (looper#83), its git's config and hooks too, so the job's checkout, the
+# manager's, is never the model's. After the model the looper runs no git in
+# it (a hook, core.fsmonitor or a credential helper there would run as the
+# job's user, with the manager's token): scan_take copies the files it may
+# take out of it, and scan_drop removes it. CHECKOUT is the clone for the
+# model's run (run_claude, and its prompt), the job's checkout again after.
+SCAN_DIR=""
+scan_clone() {
+  SCAN_DIR="$WORK/scan"; rm -rf "$SCAN_DIR"
+  git clone -q --no-local "$MAIN_CHECKOUT" "$SCAN_DIR" &&
+    git -C "$SCAN_DIR" remote set-url origin "$(git -C "$MAIN_CHECKOUT" remote get-url origin)" ||
+    { rm -rf "$SCAN_DIR"; SCAN_DIR=""; return 1; }
+  CHECKOUT="$SCAN_DIR"
+}
+# The model's PATHs (top-level names; none, all of them) at BASE, in a scratch
+# worktree of the job's checkout, staged: no symlink of its followed (one is
+# copied as itself), no .git of its taken. Prints the worktree (scan_drop
+# removes it).
+scan_take() { # base [path...]
+  local base="$1" wt p all=(); shift
+  CHECKOUT="$MAIN_CHECKOUT"
+  wt="$(scratch_dir)" && git -C "$MAIN_CHECKOUT" worktree add -q -f --detach "$wt" "$base" || { rm -rf "$wt"; return 1; }
+  (( $# )) || mapfile -t -d '' all < <(find "$wt" ${SCAN_DIR:+"$SCAN_DIR"} -mindepth 1 -maxdepth 1 ! -name .git -printf '%f\0' | sort -zu)
+  (( $# )) || set -- "${all[@]+"${all[@]}"}"
+  for p in "$@"; do
+    rm -rf "${wt:?}/$p"
+    [[ -n "$SCAN_DIR" ]] && [[ -e "$SCAN_DIR/$p" || -L "$SCAN_DIR/$p" ]] || continue
+    cp -RP -- "$SCAN_DIR/$p" "$wt/$p" && find "$wt/$p" -name .git -prune -exec rm -rf {} + || { drop_worktree "$wt"; return 1; }
+  done
+  git -C "$wt" add -A && echo "$wt"
+}
+scan_drop() { # [taken worktree]
+  CHECKOUT="$MAIN_CHECKOUT"
+  [[ -z "${1:-}" ]] || drop_worktree "$1"
+  [[ -z "$SCAN_DIR" ]] || rm -rf "$SCAN_DIR"
+  SCAN_DIR=""
+}
 # The model's account of its CI tool fixes (looper#226), for the issue: its
 # tools.md, else the files it changed.
 maint_tools() { # tools.md [patch]
@@ -5647,9 +5695,8 @@ maint_tools() { # tools.md [patch]
 }
 # The scan's maintenance before its model (looper#226): main's pins relocked
 # in a clone of its own, the open maintenance issue, and whether it is at
-# work. A clone, not a worktree: the checkout is the model's (looper#83), its
-# git's config and hooks too, and the looper commits and pushes here after it
-# (the scan's other git after its model, looper#227).
+# work. A clone of its own, made before the model, never the model's
+# (looper#83, looper#227): the looper commits and pushes here after it.
 MAINT_WT="" MAINT_MAIN="" MAINT_N="" MAINT_HELD=""
 maint_prepare() { # run-dir
   local run="$1" b url
@@ -5723,15 +5770,14 @@ IT
 # After the model (looper#226): the model's CI tool fixes (security-exceptions.yaml
 # and ci/, nothing else of its) with the pins' moves, one commit on the
 # maintenance issue's branch, its land queued; the issue filed if none is open.
-maint_land() { # run-dir base report-dir
-  local run="$1" base="$2" n="$MAINT_N" new="" b id title msg f
+maint_land() { # run-dir taken-worktree report-dir
+  local run="$1" taken="$2" n="$MAINT_N" new="" b id title msg f
   [[ -n "$MAINT_WT" ]] || return 0
   if [[ -n "$MAINT_HELD" ]]; then rm -rf "$MAINT_WT"; MAINT_WT=""; return 0; fi
   : > "$run/tools.patch"
-  if [[ -n "${3:-}" ]]; then
-    # Its new files too (a first security-exceptions.yaml): the checkout is reset after the scan.
-    for f in security-exceptions.yaml ci; do [[ ! -e "$CHECKOUT/$f" ]] || git -C "$CHECKOUT" -c core.fsmonitor=false add -N -- "$f" 2>/dev/null || true; done
-    git -C "$CHECKOUT" -c core.fsmonitor=false diff --no-ext-diff --no-textconv --binary "$base" -- security-exceptions.yaml ci > "$run/tools.patch" 2>/dev/null ||
+  # Its new files too (a first security-exceptions.yaml): scan_take staged them.
+  if [[ -n "${3:-}" && -n "$taken" ]]; then
+    git -C "$taken" diff --cached --no-ext-diff --no-textconv --binary HEAD -- security-exceptions.yaml ci > "$run/tools.patch" 2>/dev/null ||
       : > "$run/tools.patch"
   fi
   if [[ -s "$run/tools.patch" ]] && ! git -C "$MAINT_WT" apply "$run/tools.patch" 2>"$run/tools.patch.log"; then
@@ -5771,7 +5817,7 @@ maint_land() { # run-dir base report-dir
 }
 
 scan() {
-  local run before report base gates=""; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
+  local run before report base taken gates=""; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
   # Its model runs as looper-scan (looper#83), its containers limited as a report's (looper#41).
   model_job_private
@@ -5821,18 +5867,23 @@ maintenance land, when you are done.
 $(opening_rule)
 $(provenance_rule)
 PR
-  base="$(git -C "$CHECKOUT" rev-parse HEAD)"
-  run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
-  maint_land "$run" "$base" "$report"
+  base="$(git -C "$CHECKOUT" rev-parse HEAD)" taken=""
+  if scan_clone; then
+    run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOUT" "$run" || log "scan exited non-zero"
+    taken="$(scan_take "$base" PROPOSALS.md security-exceptions.yaml ci)" || { log "scan: the model's files could not be read"; taken=""; }
+  else log "scan: its clone could not be made: no model ran"; fi
+  maint_land "$run" "$taken" "$report"
   [[ -z "$report" ]] || security_file_unfiled "$report"
   [[ -n "$before" ]] && scan_labels "$before"
   # Its PROPOSALS.md, the looper's commit (looper#83): the change since the
   # scan's main, on the current main; nothing else the model left.
-  git -C "$CHECKOUT" diff --binary "$base" -- PROPOSALS.md > "$run/proposals.patch" || : > "$run/proposals.patch"
+  : > "$run/proposals.patch"
+  [[ -z "$taken" ]] || git -C "$taken" diff --cached --no-ext-diff --no-textconv --binary HEAD -- PROPOSALS.md > "$run/proposals.patch" || : > "$run/proposals.patch"
   if [[ -s "$run/proposals.patch" ]]; then
     land "PROPOSALS.md: the nightly scan's proposals (looper)" git apply --3way "$run/proposals.patch"
   fi
-  git -C "$CHECKOUT" checkout -q -f -B main origin/main && git -C "$CHECKOUT" clean -fdq
+  # What the model left is in the run's record now: its clone goes (looper#227).
+  scan_drop "$taken"
   log "scan of $REPO finished"
 }
 
