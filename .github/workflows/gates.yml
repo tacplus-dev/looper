@@ -1,0 +1,37 @@
+# The gates on GitHub Actions (tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md; Jody, 2026-11-24):
+# the hub's branches (hub/**) run a gate set of gates.yaml, by default full, in the build image build.lock pins,
+# on GitHub's arm64 runners, so a change the hub lands by hand is tested without the GitLab build queue. It runs
+# exactly what the merge gate runs: the set's `run`, at the root of the checkout, LOOPER_GATES_BASE main.
+name: gates
+on:
+  push:
+    branches: ['hub/**']
+  workflow_dispatch:
+    inputs:
+      set:
+        description: the gates.yaml set to run
+        default: full
+permissions:
+  contents: read
+jobs:
+  gates:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: run the set in the pinned build image
+        env:
+          SET: ${{ inputs.set || 'full' }}
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^build_image: *//p' build.lock)"
+          [ -n "$image" ] || { echo "build.lock names no build_image" >&2; exit 1; }
+          cmd="$(awk -v s="$SET:" '$0==s{f=1;next} f&&/^  run:/{sub(/^  run: */,"");print;exit} f&&/^[^ #]/{exit}' gates.yaml)"
+          [ -n "$cmd" ] || { echo "gates.yaml has no set $SET" >&2; exit 1; }
+          cmd="${cmd#\'}"; cmd="${cmd%\'}"
+          echo "set $SET in $image: $cmd"
+          git fetch -q origin main
+          docker run --rm -v "$PWD:/w" -w /w -e LOOPER_GATES_BASE="$(git rev-parse origin/main)" \
+            -e HOME=/tmp -u "$(id -u):$(id -g)" "$image" bash -c "git config --global --add safe.directory /w; $cmd"
