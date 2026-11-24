@@ -16,7 +16,10 @@
 #                                   differs, left alone ("unchanged") if it matches, so a
 #                                   second run makes no write
 #   looper-ruleset check [REPO...]  read-only: a line per repository; fails listing each
-#                                   public one whose ruleset is missing or differs
+#                                   public one whose ruleset is missing or differs; with a
+#                                   report's token (the kicker's, the scan's: looper#233),
+#                                   to which GitHub shows no bypass actors, all but those,
+#                                   and the token must not bypass it
 #   looper-ruleset probe REPO       live, with a report's token in GH_TOKEN (no bypass
 #                                   actor's): a contents API write to main and a git push
 #                                   of an empty commit to main must both be refused; exits
@@ -42,8 +45,15 @@
 # and the log says so: rulesets on a private repository need GitHub Team, and
 # the planner skips their reports instead.
 #
-# Environment: GH_TOKEN (gh's: an org owner for apply and check, a report's
-# for probe), LOOPER_ORG, LOOPER_MANAGER_APP_ID (apply, check),
+# A ruleset's bypass_actors are shown only to a token that may edit it (an
+# org owner's); a report's, the tacplus-looper App's, sees none, and sees
+# current_user_can_bypass, its own: check then compares every other field and
+# fails a ruleset that token can bypass (looper#233). It cannot see a bypass
+# actor added beside the two: an org owner's check can.
+#
+# Environment: GH_TOKEN (gh's: an org owner for apply, an org owner or a
+# report's for check, a report's for probe), LOOPER_ORG, LOOPER_MANAGER_APP_ID
+# (apply, and check when it sees the bypass actors),
 # LOOPER_RULESET_OWNER, LOOPER_GITHUB_URL (probe's git remote, default
 # https://github.com: <url>/<org>/<repo>.git).
 set -euo pipefail
@@ -81,15 +91,19 @@ owner_actor() {
   jq -nc --argjson id "$id" '{actor_id: $id, actor_type: "User", bypass_mode: "always"}'
 }
 
-# The ruleset wanted, as the request body.
-wanted() {
-  [[ "${LOOPER_MANAGER_APP_ID:-}" =~ ^[0-9]+$ ]] || die "LOOPER_MANAGER_APP_ID (the manager App's id, tacplus-manager) is not set"
-  jq -nc --arg name "$RULESET_NAME" --argjson app "$LOOPER_MANAGER_APP_ID" --argjson owner "$(owner_actor)" '{
+# The ruleset wanted, as the request body; without its bypass actors, what a
+# report's token can compare (no App id and no user needed).
+wanted_rules() {
+  jq -nc --arg name "$RULESET_NAME" '{
     name: $name, target: "branch", enforcement: "active",
     conditions: {ref_name: {include: ["refs/heads/main"], exclude: []}},
     rules: [{type: "update", parameters: {update_allows_fetch_and_merge: false}},
-            {type: "non_fast_forward"}, {type: "deletion"}],
-    bypass_actors: [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}, $owner]}'
+            {type: "non_fast_forward"}, {type: "deletion"}]}'
+}
+wanted() {
+  [[ "${LOOPER_MANAGER_APP_ID:-}" =~ ^[0-9]+$ ]] || die "LOOPER_MANAGER_APP_ID (the manager App's id, tacplus-manager) is not set"
+  jq -c --argjson app "$LOOPER_MANAGER_APP_ID" --argjson owner "$(owner_actor)" \
+    '. + {bypass_actors: [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}, $owner]}' <<<"$(wanted_rules)"
 }
 
 # A ruleset reduced to the fields set here, in one order: what is compared. A
@@ -119,13 +133,27 @@ ruleset_id() { # repo
   head -n1 <<<"$ids"
 }
 
-# "missing", "unchanged" or "differs <id>" for a repository's ruleset.
-state() { # repo wanted-json
+# A repository's ruleset, in STATE: "missing", "unchanged", "differs <id>",
+# or, read with a token shown no bypass actors, "reader" (unchanged but for
+# those, which it cannot see, and it cannot bypass it) or "bypassed <id>
+# <how>" (current_user_can_bypass). WANT is the ruleset wanted, made the
+# first time a ruleset's bypass actors are seen.
+WANT=""
+state() { # repo
   local id have
   id="$(ruleset_id "$1")"
-  [[ -n "$id" ]] || { echo missing; return; }
+  [[ -n "$id" ]] || { STATE=missing; return; }
   have="$(gh api "repos/$LOOPER_ORG/$1/rulesets/$id")" || die "$LOOPER_ORG/$1: could not read ruleset $id"
-  if [[ "$(jq -cS "$NORMAL" <<<"$have")" == "$(jq -cS "$NORMAL" <<<"$2")" ]]; then echo unchanged; else echo "differs $id"; fi
+  if ! jq -e 'has("bypass_actors")' <<<"$have" >/dev/null; then
+    if [[ "$(jq -cS "$NORMAL | del(.bypass_actors)" <<<"$have")" != "$(jq -cS "$NORMAL | del(.bypass_actors)" <<<"$(wanted_rules)")" ]]; then
+      STATE="differs $id"
+    elif [[ "$(jq -r '.current_user_can_bypass // "unknown"' <<<"$have")" != never ]]; then
+      STATE="bypassed $id $(jq -r '.current_user_can_bypass // "unknown"' <<<"$have")"
+    else STATE=reader; fi
+    return
+  fi
+  [[ -n "$WANT" ]] || WANT="$(wanted)"
+  if [[ "$(jq -cS "$NORMAL" <<<"$have")" == "$(jq -cS "$NORMAL" <<<"$WANT")" ]]; then STATE=unchanged; else STATE="differs $id"; fi
 }
 
 skip_line() { # repo visibility
@@ -133,18 +161,19 @@ skip_line() { # repo visibility
 }
 
 apply() { # [repo...]
-  local want list r vis s
-  want="$(wanted)"; list="$(repos "$@")"
+  local list r vis s
+  WANT="$(wanted)"; list="$(repos "$@")"
   while read -r r vis; do
     [[ -n "$r" ]] || continue
     if [[ "$vis" != PUBLIC ]]; then skip_line "$r" "$vis"; continue; fi
-    s="$(state "$r" "$want")"
+    state "$r"; s="$STATE"
     case "$s" in
+      reader|bypassed*) die "$LOOPER_ORG/$r: GH_TOKEN is shown no bypass actors: apply needs an org owner's token" ;;
       unchanged) log "$LOOPER_ORG/$r: unchanged" ;;
-      missing) gh api -X POST "repos/$LOOPER_ORG/$r/rulesets" --input - <<<"$want" >/dev/null \
+      missing) gh api -X POST "repos/$LOOPER_ORG/$r/rulesets" --input - <<<"$WANT" >/dev/null \
                  || die "$LOOPER_ORG/$r: could not create the ruleset"
                log "$LOOPER_ORG/$r: created" ;;
-      differs*) gh api -X PUT "repos/$LOOPER_ORG/$r/rulesets/${s#differs }" --input - <<<"$want" >/dev/null \
+      differs*) gh api -X PUT "repos/$LOOPER_ORG/$r/rulesets/${s#differs }" --input - <<<"$WANT" >/dev/null \
                   || die "$LOOPER_ORG/$r: could not update ruleset ${s#differs }"
                 log "$LOOPER_ORG/$r: updated (ruleset ${s#differs } differed)" ;;
     esac
@@ -152,16 +181,18 @@ apply() { # [repo...]
 }
 
 check() { # [repo...]
-  local want list r vis s bad=""
-  want="$(wanted)"; list="$(repos "$@")"
+  local list r vis s bad=""
+  list="$(repos "$@")"
   while read -r r vis; do
     [[ -n "$r" ]] || continue
     if [[ "$vis" != PUBLIC ]]; then echo "$r skipped (${vis,,})"; continue; fi
-    s="$(state "$r" "$want")"
+    state "$r"; s="$STATE"
     case "$s" in
       unchanged) echo "$r ok" ;;
+      reader) echo "$r ok (its bypass actors not shown to this token, which cannot bypass it)" ;;
       missing) echo "$r missing"; bad+=" $r" ;;
       differs*) echo "$r differs (ruleset ${s#differs })"; bad+=" $r" ;;
+      bypassed*) s="${s#bypassed }"; echo "$r bypassed (this token can bypass ruleset ${s%% *}: ${s#* })"; bad+=" $r" ;;
     esac
   done <<<"$list"
   [[ -z "$bad" ]] || { log "main is not the manager's alone in:$bad (looper-ruleset apply)" >&2; return 1; }

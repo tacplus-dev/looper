@@ -178,7 +178,20 @@ cat > "$TMP/bin/sleep" <<'EOF'
 [[ "$1" =~ ^[0-9]+$ ]] || { echo "stub sleep: $1" >&2; exit 3; }
 echo "$(( $(cat "$FIX/clock") + $1 ))" > "$FIX/clock"
 EOF
-chmod +x "$TMP/bin/gh" "$TMP/bin/curl" "$TMP/bin/date" "$TMP/bin/sleep"
+# looper-ruleset check (looper#233), a stub: $FIX/ruleset-<repo> is what the
+# check prints for that repository, and it fails; no file, "<repo> ok". Each
+# call's arguments go to $FIX/ruleset.
+cat > "$TMP/bin/looper-ruleset" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FIX/ruleset"
+[[ "$1" == check ]] || exit 3
+shift; rc=0
+for r in "$@"; do if [[ -f "$FIX/ruleset-$r" ]]; then cat "$FIX/ruleset-$r"; rc=1; else echo "$r ok"; fi; done
+(( rc == 0 )) || echo "[2026-11-24T00:00:00Z] main is not the manager's alone in: $* (looper-ruleset apply)" >&2
+exit "$rc"
+EOF
+export LOOPER_RULESET="$TMP/bin/looper-ruleset"
+chmod +x "$TMP/bin/gh" "$TMP/bin/curl" "$TMP/bin/date" "$TMP/bin/sleep" "$TMP/bin/looper-ruleset"
 
 scenario() { # name: alpha has a ready issue #4
   NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues" "$FIX/home"; echo '[]' > "$FIX/jobs.json"
@@ -1071,6 +1084,48 @@ grep -qx '  environment: {name: looper-scan, action: prepare}' <<<"$PLAN" || fai
 # Without the apps, no id_token and no environment, as before.
 PLAN="$(env -u CI_PIPELINE_SOURCE LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok "$ROOT/looper-dispatch" plan 2>/dev/null)"
 ! grep -qE 'id_tokens|environment' <<<"$PLAN" || fail "without the apps: $PLAN"
+pass
+
+# Main's ruleset before a report (looper#233): with the apps a report holds
+# the report app's token, which only main's ruleset keeps off main, so the
+# kicker starts no pipeline, and the plan plans no report, for a public
+# repository whose `looper-ruleset check` fails (missing, differing, or a
+# check that cannot run), and says why, naming the hub's command; the
+# repository's manager is still planned, and another repository's report
+# still starts. Without the apps nothing is checked.
+scenario apps-ruleset
+echo "alpha missing" > "$FIX/ruleset-alpha"
+APPS_RUN=(env -u CI_PIPELINE_SOURCE -u GH_TOKEN "${APPS[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok)
+OUT="$("${APPS_RUN[@]}" "$ROOT/looper-dispatch" run 2>&1)" || fail "run failed: $OUT"
+! started || fail "started a pipeline for a repository with no ruleset: $OUT"
+grep -qF "alpha#4 is not started: alpha's main fails looper-ruleset check (alpha missing): a report's token could write it past the gates; the hub runs looper-ruleset apply alpha (looper#233)" <<<"$OUT" || fail "log: $OUT"
+[[ "$(cat "$FIX/ruleset")" == "check alpha" ]] || fail "checks: $(cat "$FIX/ruleset")"
+issue alpha 6 OPEN "Land it." looper:landing
+PLAN="$("${APPS_RUN[@]}" "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"
+! grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "planned a report for a repository with no ruleset: $PLAN"
+grep -qx 'looper-alpha-manager:' <<<"$PLAN" || fail "alpha's manager not planned: $(grep '^looper-' <<<"$PLAN")"
+grep -qF "alpha#4 is not planned: alpha's main fails looper-ruleset check (alpha missing)" "$FIX/err" || fail "plan log: $(cat "$FIX/err")"
+# Another repository's report starts; two of alpha's ready issues, one check a pass.
+issue alpha 5 OPEN "Fix it too." approved
+issue beta 9 OPEN "Fix it." approved
+: > "$FIX/ruleset"
+OUT="$("${APPS_RUN[@]}" "$ROOT/looper-dispatch" run 2>&1)" || fail "run failed: $OUT"
+started || fail "beta's report not started: $OUT"
+grep -q 'started the tacplus-dev/looper pipeline (beta#9 is ready)' <<<"$OUT" || fail "log: $OUT"
+[[ "$(cat "$FIX/ruleset")" == $'check alpha\ncheck beta' ]] || fail "checks: $(cat "$FIX/ruleset")"
+PLAN="$("${APPS_RUN[@]}" "$ROOT/looper-dispatch" plan 2>"$FIX/err")" || fail "plan failed: $(cat "$FIX/err")"
+grep -qx 'looper-beta-9:' <<<"$PLAN" && ! grep -qE '^looper-alpha-[0-9]+:' <<<"$PLAN" || fail "plan: $(grep '^looper-' <<<"$PLAN")"
+# A check that cannot run (GitHub down, say) refuses too: never a report on a main it could not read.
+rm "$FIX/started" "$FIX/ruleset-alpha" "$FIX/issues/beta-9.json" "$FIX/issues/alpha-6.json"
+printf '#!/usr/bin/env bash\necho "[t] FATAL tacplus-dev/alpha: could not list its rulesets" >&2; exit 2\n' > "$FIX/ruleset-fails"; chmod +x "$FIX/ruleset-fails"
+OUT="$("${APPS_RUN[@]}" LOOPER_RULESET="$FIX/ruleset-fails" "$ROOT/looper-dispatch" run 2>&1)" || fail "run failed: $OUT"
+! started || fail "started with a check that could not run: $OUT"
+grep -qE "alpha#[45] is not started: alpha's main could not be checked \(looper-ruleset check: \[t\] FATAL tacplus-dev/alpha: could not list its rulesets\)" <<<"$OUT" || fail "log: $OUT"
+# Without the apps: no check.
+echo "alpha missing" > "$FIX/ruleset-alpha"; : > "$FIX/ruleset"
+dispatch run
+started || fail "without the apps, not started: $OUT"
+[[ ! -s "$FIX/ruleset" ]] || fail "checked without the apps: $(cat "$FIX/ruleset")"
 pass
 
 # The manager split in two (looper#90): with the apps, a repository whose

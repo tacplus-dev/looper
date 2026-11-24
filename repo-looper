@@ -5989,6 +5989,48 @@ maint_land() { # run-dir taken-worktree report-dir
   rm -rf "$MAINT_WT"; MAINT_WT=""
 }
 
+# Main's ruleset, each night (looper#233): a public repository's
+# `looper-ruleset check`, with the scan's own token (a report's, with the
+# apps), fails when its ruleset is missing, differs or that token can bypass
+# it, and the kicker starts no report of it until it passes. The looper files
+# it, a bug approved priority:high (the hub runs looper-ruleset apply: no
+# report can), once while one is open; once the check passes, it closes it. A
+# check that cannot run files nothing: the next night checks again.
+RULESET_CMD="${LOOPER_RULESET:-$(dirname "$LOOPER_SELF")/looper-ruleset}"   # looper-ruleset (a test's stub)
+RULESET_TITLE="Main's ruleset fails looper-ruleset check"
+ruleset_bug() { # run-dir
+  local out rc=0 open i
+  [[ "$LOOPER_FORGE" == github ]] || return 0
+  out="$(LOOPER_ORG="$LOOPER_ORG" "$RULESET_CMD" check "$REPO" 2>"$1/ruleset.log")" || rc=$?
+  printf '%s\n' "$out" >> "$1/ruleset.log"
+  if (( rc > 1 )); then log "scan: looper-ruleset check of $REPO could not run ($(tail -n 1 "$1/ruleset.log")): the next scan checks again"; return 0; fi
+  open="$(forge_issue_list "$REPO" open 1000 number,title "[.[] | select(.title | startswith(\"$RULESET_TITLE\")) | .number] | .[]")" ||
+    { log "scan: the open issues could not be read: $REPO's ruleset is not filed nor closed (looper-ruleset check: $out)"; return 0; }
+  if (( rc == 0 )); then
+    for i in $open; do
+      forge_issue_comment "$REPO" "$i" "The nightly scan of $(date -u +%F): \`looper-ruleset check $REPO\` passes (\`$out\`): main is the manager's alone again (looper#233)." >/dev/null || true
+      if gh issue close "$i" --repo "$LOOPER_ORG/$REPO" >/dev/null; then log "scan: $REPO's ruleset passes looper-ruleset check: closed #$i"
+      else log "scan: $REPO's ruleset passes looper-ruleset check, and #$i could not be closed"; fi
+    done
+    return 0
+  fi
+  if [[ -n "$open" ]]; then log "scan: $REPO's ruleset fails looper-ruleset check ($out): already filed as #${open//$'\n'/, #}"; return 0; fi
+  ensure_labels "$REPO"
+  if i="$(forge_issue_create "$REPO" "$RULESET_TITLE: $REPO's main is not the manager's alone (the nightly scan)" "The nightly scan of $(date -u +%F) ran \`looper-ruleset check $REPO\` with a report's token (looper#233), and it fails:
+
+\`\`\`
+$out
+\`\`\`
+
+Main's ruleset (looper#83; README, Only the manager writes main) is what keeps a report's token from writing main past the gates: without it, or with one that differs or that a report's token can bypass, it could. Until the check passes, the kicker starts no report of $REPO.
+
+**The fix** is the hub's, as an org owner (a report's token cannot edit a ruleset): \`looper-ruleset apply $REPO\` (README, Only the manager writes main), then \`looper-ruleset check $REPO\`.
+
+**Acceptance:** \`looper-ruleset check $REPO\` passes, as an org owner and with a report's token, and \`looper-ruleset probe $REPO\` with a report's token passes. The nightly scan closes this issue once its check passes." "$LABEL_BUG" "$LABEL_APPROVED" "$LABEL_PRIORITY_HIGH")"; then
+    log "scan: $REPO's ruleset fails looper-ruleset check ($out): filed as #$i"
+  else log "scan: $REPO's ruleset fails looper-ruleset check ($out), and the issue could not be filed: the next scan files it"; fi
+}
+
 scan() {
   local run before report base taken gates=""; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
@@ -5996,6 +6038,7 @@ scan() {
   model_job_private
   LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
   choose_model "$run"
+  ruleset_bug "$run"
   # A pinned repository's scan, as its reports, with no container runtime
   # (looper#73): its gates are the nightly build's, read, not run.
   BUILD_JOBS=""

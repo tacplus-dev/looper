@@ -68,6 +68,38 @@ identity() {
   "$TOKEN_CMD" start report "$d" $$ >/dev/null || die "no report token (looper-token)"
   export GH_CONFIG_DIR="$d" GH_NO_UPDATE_NOTIFIER=1 LOOPER_GH_IDENTITY=1
 }
+
+# Main's ruleset before a report (looper#233): with the apps a report holds
+# the tacplus-looper App's token, which nothing but main's ruleset (looper#83)
+# keeps from writing main past the gates. So no report starts, nor is
+# planned, in a public repository whose `looper-ruleset check`, with the
+# kicker's own token (that App's), fails: its ruleset missing, differing or
+# one that token can bypass, or a check that could not run (never a report on
+# a main it could not read). Its manager still runs. The repository's nightly
+# scan files the bug for the hub (repo-looper, ruleset_bug). Without the apps
+# the jobs hold GH_TOKEN, which no ruleset is for: nothing is checked. Prints
+# why the repository is refused in WHY, a check a repository a pass or a
+# plan (RULESET_SEEN, reset by each); fails when it is not refused.
+RULESET_CMD="${LOOPER_RULESET:-$HERE/looper-ruleset}"   # looper-ruleset (a test's stub)
+declare -A RULESET_SEEN=()
+unguarded() { # repo
+  local out rc=0 err
+  WHY=""
+  apps || return 1
+  if [[ -z "${RULESET_SEEN[$1]+x}" ]]; then
+    err="$(mktemp)"
+    out="$("$RULESET_CMD" check "$1" 2>"$err")" || rc=$?
+    case "$rc" in
+      0) RULESET_SEEN[$1]="" ;;
+      1) RULESET_SEEN[$1]="$1's main fails looper-ruleset check ($(grep -v '^$' <<<"$out" | paste -sd';' | sed 's/;/; /g')): a report's token could write it past the gates; the hub runs looper-ruleset apply $1 (looper#233)" ;;
+      *) RULESET_SEEN[$1]="$1's main could not be checked (looper-ruleset check: $(tail -n 1 "$err")): no report on a main whose ruleset is not known (looper#233)" ;;
+    esac
+    rm -f "$err"
+  fi
+  WHY="${RULESET_SEEN[$1]}"
+  [[ -n "$WHY" ]]
+}
+
 INTERVAL="${LOOPER_INTERVAL:-180}"
 API="${CI_API_V4_URL:-https://gitlab.com/api/v4}/projects/${PIPELINE//\//%2F}"
 
@@ -176,6 +208,7 @@ held() {
 # Nothing during the looper's hold (looper#157).
 pass() {
   local statuses jobs ready repo n landing hold
+  RULESET_SEEN=()
   statuses="$(active_job_statuses)"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
   release_orphans "$jobs"
   # A plan under way will take every ready issue; wait for it.
@@ -188,6 +221,7 @@ pass() {
     [[ -n "$repo" ]] || continue
     busy "$repo" "$jobs" "$n" >/dev/null && continue
     if ! ready_itself "$repo" "$n"; then log "$repo#$n is not ready, read itself (the search lags, looper#175); not started"; continue; fi
+    if unguarded "$repo"; then log "$repo#$n is not started: $WHY"; continue; fi
     start_pipeline
     log "started the $PIPELINE pipeline ($repo#$n is ready)"
     return 0
@@ -228,6 +262,7 @@ pass() {
 # at least one.
 plan() {
   local jobs ready repo n t v any="" image
+  RULESET_SEEN=()
   image="$(job_image)" || exit 1
   printf 'variables:\n  GIT_STRATEGY: none\n  LOOPER_WORK: /builds/looper\n'
   for v in GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL; do
@@ -252,6 +287,7 @@ plan() {
       [[ -n "$repo" ]] || continue
       if busy "$repo" "$jobs" "$n" >/dev/null; then log "$repo#$n already has its report job; not planned again" >&2; continue; fi
       if ! ready_itself "$repo" "$n"; then log "$repo#$n is not ready, read itself (the search lags, looper#175); not planned" >&2; continue; fi
+      if unguarded "$repo"; then log "$repo#$n is not planned: $WHY" >&2; continue; fi
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
       reports+="$(plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n")"$'\n'; any=1

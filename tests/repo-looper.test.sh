@@ -81,7 +81,7 @@ done
 f="$FIX/issues/$repo-$n.json"
 # An issue's writers one at a time, each file replaced whole: a model's comment
 # and the manager's at once left one unparsable, and the manager waiting on it.
-case "$cmd" in "issue create"|"issue edit"|"issue comment") exec 9>"$FIX/issues.lock"; flock 9 ;; esac
+case "$cmd" in "issue create"|"issue edit"|"issue comment"|"issue close") exec 9>"$FIX/issues.lock"; flock 9 ;; esac
 save() { printf '%s\n' "$1" > "$f.$$" && mv "$f.$$" "$f"; }
 case "$cmd" in
   # A GitHub Actions run an issue waits on (looper#171): $FIX/runs/<id>.json, else HTTP 404.
@@ -143,12 +143,24 @@ case "$cmd" in
     for l in "${rm[@]+"${rm[@]}"}"; do t="$(jq --arg l "$l" '.labels |= map(select(.name != $l))' <<<"$t")"; done
     [[ -n "$has_body" ]] && t="$(jq --arg b "$body" '.body = $b' <<<"$t")"
     save "$t" ;;
+  "issue close") [[ -f "$f" ]] || { echo "stub gh: no issue $repo#$n" >&2; exit 1; }; save "$(jq '.state = "CLOSED"' "$f")" ;;
   "issue comment")
     t="$(jq --arg b "$body" --arg t "$(date -u +%FT%TZ)" '.comments += [{body: $b, created_at: $t}]' "$f")"; save "$t"
     printf '%s#%s %s\n' "$repo" "$n" "$body" >> "$FIX/comments" ;;
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
 esac
 EOF
+# looper-ruleset (looper#233), a stub: `check REPO` prints $FIX/ruleset-out
+# and exits $FIX/ruleset-rc (default 1) when $FIX/ruleset-out is there, else
+# "<repo> ok"; each call's arguments and LOOPER_ORG go to $FIX/ruleset.
+cat > "$TMP/bin/looper-ruleset-stub" <<'EOF'
+#!/usr/bin/env bash
+echo "$* ($LOOPER_ORG)" >> "$FIX/ruleset"
+[[ "$1" == check ]] || exit 3
+if [[ -f "$FIX/ruleset-out" ]]; then cat "$FIX/ruleset-out"; echo "[t] main is not the manager's alone in: $2" >&2; exit "$(cat "$FIX/ruleset-rc" 2>/dev/null || echo 1)"; fi
+echo "$2 ok"
+EOF
+chmod +x "$TMP/bin/looper-ruleset-stub"
 # The scenario's script for the prompt's role: $FIX/claude.sh works the issue,
 # classify.sh classifies it, propose.sh proposes a design, scan.sh is the
 # nightly scan, plan.sh the parent's plan (none: the model does nothing). Each prompt's first line is
@@ -420,7 +432,7 @@ looper() { # [VAR=value...] -- repo-looper args
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
       -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY -u LOOPER_IMAGE -u LOOPER_JOB_IMAGE LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
-      PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" \
+      PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" LOOPER_RULESET="$TMP/bin/looper-ruleset-stub" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
 }
@@ -1641,6 +1653,38 @@ rm -rf "$FIX"/project/looper-runs/*-scan
 before="$(origin rev-parse main)"; : > "$FIX/scan.sh"
 OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 [[ "$(origin rev-parse main)" == "$before" ]] || fail "a scan with no proposal committed: $(origin log --oneline -1 main)"
+pass
+
+# Main's ruleset, each night (looper#233): a scan whose repository fails
+# `looper-ruleset check` files it, a bug approved priority:high naming the
+# hub's command, once; a check that cannot run files nothing; once the check
+# passes, the scan closes it.
+scenario scan-ruleset
+templates
+: > "$FIX/scan.sh"
+echo "alpha missing" > "$FIX/ruleset-out"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(cat "$FIX/ruleset")" == "check alpha (tacplus-dev)" ]] || fail "checks: $(cat "$FIX/ruleset")"
+ruleset_bugs() { jq -rs 'map(select(.title | startswith("Main'"'"'s ruleset fails looper-ruleset check"))) | map(.number) | join(",")' "$FIX"/issues/alpha-*.json; }
+n="$(ruleset_bugs)"
+[[ "$n" =~ ^[0-9]+$ ]] || fail "ruleset bugs filed: $n"
+[[ "$(labels alpha "$n")" == "bug,approved,priority:high" ]] || fail "#$n labels $(labels alpha "$n")"
+has "$(body alpha "$n")" "looper-ruleset apply alpha"; has "$(body alpha "$n")" "alpha missing"; has "$(body alpha "$n")" "the kicker starts no report of alpha"
+has "$OUT" "scan: alpha's ruleset fails looper-ruleset check (alpha missing): filed as #$n"
+# Once only, while it is open.
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(ruleset_bugs)" == "$n" ]] || fail "filed again: $(ruleset_bugs)"
+has "$OUT" "already filed as #$n"
+# A check that cannot run neither files nor closes.
+echo 2 > "$FIX/ruleset-rc"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+has "$OUT" "looper-ruleset check of alpha could not run"
+[[ "$(jq -r .state "$FIX/issues/alpha-$n.json")" == OPEN ]] || fail "closed on a check that could not run"
+# The hub applied it: the check passes, and the scan closes it.
+rm "$FIX/ruleset-out" "$FIX/ruleset-rc"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(jq -r .state "$FIX/issues/alpha-$n.json")" == CLOSED ]] || fail "#$n not closed: $OUT"
+has "$(cat "$FIX/comments")" "alpha#$n The nightly scan of"; has "$OUT" "closed #$n"
 pass
 
 # The apps (looper#83): a job holds an app's token, gh's configuration that

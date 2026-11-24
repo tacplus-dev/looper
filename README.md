@@ -63,7 +63,7 @@ pushes to main and closes the issue. Moved here from `seabeam/tools/looper` (687
   link the job, not a path on it. See [After a run](#after-a-run).
 - **The nightly scan** changes no code: it files a `bug` per finding (dependency vulnerabilities,
   gates failing on main, pins off the latest MAJOR.MINOR line, a STATE.md `Blocked on` that names a closed
-  issue). A pin behind its line's newest patch or build or its tag's digest, and its model's fixes of the CI tools'
+  issue, main's ruleset failing `looper-ruleset check`: looper#233). A pin behind its line's newest patch or build or its tag's digest, and its model's fixes of the CI tools'
   advisories, are one `bug` whose land the looper queues for the manager, which lands it on the gates (looper#212,
   looper#226). Mechanical fixes are filed `approved`,
   the rest `needs-decision`; ideas for new behaviour go to PROPOSALS.md (see [Bug or feature](#bug-or-feature)).
@@ -1872,7 +1872,12 @@ which `git push --no-verify` or a contents API call skips. The hooks stay as ear
 - **A ruleset on main** in each public repository of the org (`looper-ruleset apply`, idempotent: run it again whenever a
   repository is added; `looper-ruleset check` lists any that lack it or differ). It restricts updates, and blocks
   force-pushes and deletion. Its only bypass actors are the `tacplus-manager` app and Jody's account; a repository's
-  admins are not among them.
+  admins are not among them. Since looper#233 the kicker and the plan start no report for a public repository whose
+  `looper-ruleset check`, with the kicker's own token (a report's), fails (its ruleset missing, differing or one that
+  token can bypass, or a check that cannot run), and log why; its manager still runs. That token is shown no bypass
+  actors: `check` compares the rest, and the token's own `current_user_can_bypass` must be `never`. Each repository's
+  nightly scan runs the same check and files a failing one as a `bug`, `approved` and `priority:high`, naming the hub's
+  `looper-ruleset apply <repo>`, once while it is open, and closes it once the check passes.
 - **Two GitHub Apps**, whose private keys are Cloud KMS signing keys, imported once as non-exportable keys (step 2 below):
   - `tacplus-manager` (contents and issues write; workflows write once it holds it) is the ruleset's bypass actor. It is held only by the managers'
     jobs, and by the scans for their commits to main, after their model is done: a scan's `PROPOSALS.md`, the planning
@@ -1978,7 +1983,9 @@ looper-ruleset apply | check [REPO...]        # main's ruleset on the public rep
 looper-ruleset probe REPO                     # with a report's token: a contents write and a push to main both refused
 looper-token diagnose                         # the job's claims, its attribute.role and each key's answer, against its binding (the hub, looper-token-diagnose)
 tests/looper-token.test.sh    # a stub WIF and KMS (a key signs only for the environments its binding names, a version parsed as gcloud does) and a stub GitHub (each app's JWT verified; tests/github-app-stub.sh, shared with repo-looper's manager-token-422): the report's token as gh's configuration, refreshed while its job lives and no longer; a report cannot mint the manager's; the manager's token names workflows: write only with LOOPER_MANAGER_WORKFLOWS=write (#112) and a report's only for an issue whose looper:workflows someone with write access set (#115: not a triager, a bot, a label removed, an issue it cannot read; the token that read it revoked), and without the installation's grant (422) the manager's is minted without it, at start and on each refresh; every call to GitHub has an end; an id_token not the project's protected main refused; each refusal says why (gcloud's error, its class: STS, the key's binding, a quota project, the key's path, gcloud's usage; the claims, never the token); the diagnosis
-tests/looper-ruleset.test.sh  # the ruleset created on the public repositories and the private ones skipped, a second apply writes nothing, a drifted one put back, check; the probe passes on refusals and fails when main accepts a write
+tests/looper-ruleset.test.sh  # the ruleset created on the public repositories and the private ones skipped, a second apply writes nothing, a drifted one put back, check, as an org owner and with a report's token (no bypass actors shown; one it can bypass fails, #233); the probe passes on refusals and fails when main accepts a write
+tests/looper-dispatch.test.sh # apps-ruleset (#233): with the apps, no pipeline started and no report planned for a repository whose `looper-ruleset check` fails or cannot run, its manager still planned, another repository's report started; without the apps nothing checked
+tests/repo-looper.test.sh     # scan-ruleset (#233): a scan whose repository fails `looper-ruleset check` files a bug, approved and priority:high, naming `looper-ruleset apply`, once; a check that cannot run files nothing; a passing one closes it
 ```
 
 **Setting it up** (Jody; `P=tacplus-ci`, `PN=79638967213` its number, `LOC=us-central1`, `LP` the id of the GitLab

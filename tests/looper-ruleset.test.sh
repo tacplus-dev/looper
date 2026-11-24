@@ -21,6 +21,10 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # _links, created_at), bypass_actors' OrganizationAdmin actor_id as 1, and
 # the update rule's parameters without update_allows_fetch_and_merge when it
 # is false, its default, which GitHub does not return (looper#96).
+# $FIX/reader: the token is a report's (an App installation's without
+# administration, looper#233), to which GitHub shows a ruleset without its
+# bypass_actors and with current_user_can_bypass the file's word, and which
+# has no user to read.
 # Every call is appended to $FIX/gh ("<METHOD> <path>"), every write's body
 # to $FIX/bodies. The contents API: $FIX/refuse-contents refuses a write as a
 # ruleset does (HTTP 409); an accepted one is $FIX/contents/<repo>.
@@ -51,14 +55,17 @@ store() { # file body id
                      | if .parameters.update_allows_fetch_and_merge == false then .parameters = {} else . end)' <<<"$2" > "$1"
 }
 case "$m $path" in
-  "GET user") echo '{"login":"jody"}' | out ;;
+  "GET user") [[ ! -f "$FIX/reader" ]] || { echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; }
+              echo '{"login":"jody"}' | out ;;
   "GET users/jody") echo '{"login":"jody","id":4242}' | out ;;
   GET\ repos/*/rulesets\?includes_parents=false)
     r="${path#repos/*/}"; r="${r%%/*}"; mkdir -p "$FIX/rulesets/$r"
     { ls "$FIX/rulesets/$r"/*.json >/dev/null 2>&1 && jq -s 'map({id, name, target, enforcement})' "$FIX/rulesets/$r"/*.json || echo '[]'; } | out ;;
   GET\ repos/*/rulesets/*)
     r="${path#repos/*/}"; r="${r%%/*}"; f="$FIX/rulesets/$r/${path##*/}.json"
-    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; out < "$f" ;;
+    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    if [[ -f "$FIX/reader" ]]; then jq --arg b "$(cat "$FIX/reader")" 'del(.bypass_actors) | .current_user_can_bypass = $b' "$f" | out
+    else out < "$f"; fi ;;
   POST\ repos/*/rulesets)
     r="${path#repos/*/}"; r="${r%%/*}"; mkdir -p "$FIX/rulesets/$r"; id="$(( $(cat "$FIX/next-id") + 1 ))"; echo "$id" > "$FIX/next-id"
     store "$FIX/rulesets/$r/$id.json" "$body" "$id"; out < "$FIX/rulesets/$r/$id.json" ;;
@@ -182,12 +189,37 @@ LOOPER_RULESET_OWNER=org-admins ruleset apply kernel >/dev/null 2>"$FIX/err" || 
 [[ "$(writes)" == 0 ]] || fail "not idempotent: $(cat "$FIX/gh")"
 pass
 
-# Without LOOPER_MANAGER_APP_ID apply and check die before any call.
+# Without LOOPER_MANAGER_APP_ID apply dies before any call, and so does check
+# once it reads a ruleset whose bypass actors it sees.
 scenario no-app-id
 rc=0; APP_ID="" ruleset apply >/dev/null 2>"$FIX/err" || rc=$?
 [[ "$rc" == 2 ]] && grep -q 'LOOPER_MANAGER_APP_ID' "$FIX/err" || fail "rc $rc: $(cat "$FIX/err")"
 [[ ! -s "$FIX/gh" ]] || fail "called gh: $(cat "$FIX/gh")"
-! APP_ID="" ruleset check >/dev/null 2>&1 || fail "check without the App id passed"
+ruleset apply kernel >/dev/null 2>&1 || fail "apply failed"
+rc=0; APP_ID="" ruleset check kernel >/dev/null 2>"$FIX/err" || rc=$?
+[[ "$rc" == 2 ]] && grep -q 'LOOPER_MANAGER_APP_ID' "$FIX/err" || fail "check without the App id: rc $rc: $(cat "$FIX/err")"
+pass
+
+# check with a report's token (looper#233: the kicker's and the scan's), to
+# which GitHub shows no bypass actors: the rest is compared, and the token
+# itself must not bypass the ruleset (current_user_can_bypass never). It
+# needs neither the App id nor a user: an installation token has none.
+scenario check-reader
+ruleset apply kernel >/dev/null 2>&1 || fail "apply failed"
+echo never > "$FIX/reader"; : > "$FIX/gh"
+APP_ID="" ruleset check kernel >"$FIX/out" 2>"$FIX/err" || fail "a reader's check failed: $(cat "$FIX/out")"
+[[ "$(cat "$FIX/out")" == "kernel ok (its bypass actors not shown to this token, which cannot bypass it)" ]] || fail "check: $(cat "$FIX/out")"
+! grep -qE '^GET users?( |/|$)' "$FIX/gh" || fail "read a user: $(cat "$FIX/gh")"
+rc=0; APP_ID="" ruleset check kernel looper >"$FIX/out" 2>"$FIX/err" || rc=$?
+[[ "$rc" == 1 ]] && grep -qx 'kernel ok (.*)' "$FIX/out" && grep -qx 'looper missing' "$FIX/out" || fail "missing: rc $rc: $(cat "$FIX/out")"
+K="$(ls "$FIX/rulesets/kernel/"*.json)"
+jq '.rules |= map(select(.type != "deletion"))' "$K" > "$FIX/t" && mv "$FIX/t" "$K"
+! APP_ID="" ruleset check kernel >"$FIX/out" 2>"$FIX/err" || fail "a reader's check passed on drift"
+grep -qx 'kernel differs (ruleset [0-9]*)' "$FIX/out" || fail "drift: $(cat "$FIX/out")"
+rm "$FIX/reader"; ruleset apply kernel >/dev/null 2>&1 || fail "apply failed"
+echo always > "$FIX/reader"
+! APP_ID="" ruleset check kernel >"$FIX/out" 2>"$FIX/err" || fail "a reader's check passed for a token that bypasses it"
+grep -qx 'kernel bypassed (this token can bypass ruleset [0-9]*: always)' "$FIX/out" || fail "bypass: $(cat "$FIX/out")"
 pass
 
 # probe: an origin (LOOPER_GITHUB_URL a directory) whose main a pre-receive
