@@ -244,8 +244,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   the CI file's manual `looper-token-diagnose` gives each environment's claims and each key's answer, the cutover not
   yet retried; the manager's token names `workflows: write` since #106, only with `LOOPER_MANAGER_WORKFLOWS=write` since #112 (the app does not hold it yet; asked for without the grant, GitHub refuses it with 422 and the token is minted without it, logged), and every call looper-token makes to GitHub has an end (#112); a report's names it only when its issue carries `looper:workflows`, set by someone with write access, #115; `image.yml` builds only on main and attests what it pushes, and the plan's jobs run the looper image by digest, the attested build of main's head, `ci/`'s files a pinned digest, and the recap compares `:main`'s digest with it, #115) and refreshed for the job's life as gh's configuration: `tacplus-manager`'s for the managers and the
   scans' commits to main, `tacplus-looper`'s (no bypass) for the reports, the scans' models, the kicker and the plan;
-  a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan` and leaves
-  its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes
+  a job that holds `GH_TOKEN` or a personal token refuses to run; the scan's model runs as `looper-scan`, in a clone of its own (#227: the looper runs no git
+  there after it, copying out what it takes, and removes it), and leaves its PROPOSALS.md change for the looper to commit; the manager split in two (#90; README, Only the manager writes
   main): with the apps, a repository whose gates are not build jobs gets, for each batch, `looper-<repo>-verdict`
   (environment `looper-report`: its queued lands merged onto `looper/staging`, regenerated and gated, with no job
   credential in the gates' environment, staging pushed with the report app's token, the verdict its artifacts, a
