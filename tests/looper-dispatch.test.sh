@@ -157,6 +157,13 @@ case "$m $url" in
   "GET https://gitlab.com/api/v4/projects/"*/pipelines/*)
     if [[ -f "$FIX/pipelines/${url##*/}.json" ]]; then reply 200 "$(cat "$FIX/pipelines/${url##*/}.json")"; else reply 404 '{"message":"404 Not found"}'; fi; exit 0 ;;
 esac
+# Compute (looper#241): a project's looper VM group, $FIX/vm-<repo> its target size (no file: 404).
+case "$m $url" in
+  "GET https://compute.googleapis.com/"*/instanceGroupManagers/looper-vm-*)
+    r="${url##*/looper-vm-}"; if [[ -f "$FIX/vm-$r" ]]; then reply 200 "{\"targetSize\": $(cat "$FIX/vm-$r")}"; else reply 404 '{"error":{"code":404}}'; fi; exit 0 ;;
+  "POST https://compute.googleapis.com/"*/instanceGroupManagers/looper-vm-*/resize\?size=1)
+    r="${url##*/looper-vm-}"; r="${r%%/*}"; echo "resize $r 1" >> "$FIX/vm-calls"; echo 1 > "$FIX/vm-$r"; reply 200 '{"status":"DONE"}'; exit 0 ;;
+esac
 [[ -f "$FIX/jobs.json" ]] || { reply 500 '{"message":"500 Internal Server Error"}'; exit 0; }
 case "$m $url" in
   "GET "*/jobs\?*) reply 200 "$(jq --arg s "$(grep -oE 'scope\[\]=[a-z_]+' <<<"$url" | cut -d= -f2 | paste -sd, -)" '[.[] | select(.status | IN($s | split(",")[]))]' "$FIX/jobs.json")" ;;
@@ -1063,6 +1070,7 @@ pass
 # its id_token and the environment GCP's binding of each app's key names.
 printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' \
   '  configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;' \
+  '  gcp-token) [[ ! -e "$FIX/no-gcp" ]] && echo gcp-tok ;;' \
   '  start) echo "start $2" >> "$FIX/token"; mkdir -p "$3"; echo 0 ;;' \
   '  *) exit 3 ;;' 'esac' > "$TMP/bin/looper-token-stub"
 chmod +x "$TMP/bin/looper-token-stub"
@@ -1291,6 +1299,38 @@ pass
 scenario no-install
 dispatch_fails install
 [[ ! -e "$FIX/home/Library" ]] || fail "installed something"
+pass
+
+# A project on its own looper VM (looper#241): its ready issue starts its VM
+# (its group sized 0 -> 1), and neither the kicker nor the plan gives it a
+# report job here; its lands still get their manager. A VM that cannot be read
+# or started never stalls the repository: its reports run here, as before.
+VMENV=(LOOPER_VM_REPOS=alpha LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/r)
+vm_plan() { env -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" "$@" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" plan 2>"$FIX/err"; }
+scenario vm-kick
+echo 0 > "$FIX/vm-alpha"
+OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"
+[[ "$(cat "$FIX/vm-calls" 2>/dev/null)" == "resize alpha 1" ]] || fail "the VM was not started: $(cat "$FIX/vm-calls" 2>/dev/null) $OUT"
+[[ ! -s "$FIX/started" ]] || fail "a pipeline was started for a VM project: $(cat "$FIX/started")"
+grep -qF "alpha's looper VM is up or started" <<<"$OUT" || fail "the log: $OUT"
+pass
+scenario vm-plan
+echo 1 > "$FIX/vm-alpha"
+issue alpha 6 OPEN "Land it." looper:landing
+PLAN="$(vm_plan)" || fail "plan failed: $(cat "$FIX/err")"
+grep -q '^looper-alpha-4:' <<<"$PLAN" && fail "a report job was planned for a VM project: $PLAN"
+grep -q '^looper-alpha-manager:' <<<"$PLAN" || fail "the VM project's lands got no manager: $PLAN"
+[[ ! -s "$FIX/vm-calls" ]] || fail "a running VM was resized: $(cat "$FIX/vm-calls")"
+pass
+scenario vm-fallback
+PLAN="$(vm_plan)" || fail "plan failed: $(cat "$FIX/err")"
+grep -q '^looper-alpha-4:' <<<"$PLAN" || fail "no VM group, and no report planned: $PLAN"
+grep -qF "alpha's looper VM did not start" "$FIX/err" || fail "the fallback is not logged: $(cat "$FIX/err")"
+touch "$FIX/no-gcp"; echo 0 > "$FIX/vm-alpha"
+PLAN="$(vm_plan)" || fail "plan failed: $(cat "$FIX/err")"
+grep -q '^looper-alpha-4:' <<<"$PLAN" && grep -qF 'no Google access token' "$FIX/err" || fail "no token, and no fallback: $PLAN $(cat "$FIX/err")"
 pass
 
 echo "looper-dispatch: all scenarios pass"

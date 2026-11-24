@@ -36,6 +36,10 @@
 #                                 caller) ends; prints that process's PID
 #   looper-token mint ROLE [ISSUE]
 #                                 one token on stdout
+#   looper-token gcp-token        a Google access token of this job's identity (its
+#                                 id_token federated, or on a looper VM the VM's
+#                                 account), on stdout: the kicker's calls to
+#                                 Compute, which start a project's looper VM (looper#241)
 #   looper-token configured       exits 0 when this deployment's jobs use the
 #                                 apps (LOOPER_REPORT_APP_ID is set)
 #   looper-token diagnose         the hub's diagnosis (looper#95): the id_token's
@@ -344,6 +348,10 @@ case "${1:-}" in
     d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
     gcp_login "$d"; mint "$2" "$d" "${3:-}" ;;
   configured) [[ -n "${LOOPER_REPORT_APP_ID:-}" ]] ;;
+  gcp-token)
+    d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+    gcp_login "$d"
+    gcloud auth print-access-token 2>"$d/err" || fail "no Google access token: $(gcloud_said < "$d/err")" ;;
   diagnose)
     d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
     diagnose "$d" ;;
