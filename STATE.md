@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#225).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#234).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -104,7 +104,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   (`build:<YYYYMMDD>-<commit>`, the dated tag at `build:X.Y`'s digest now; a dated pin's line the oldest release branch holding its
   commit, none unread), never a floating tag, every other file naming the moved ref with it but markdown, and the scan's model fixes
   the CI tools' advisories of the security report (a bump of the tool's pin, else a 14-day exception for that binary), its
-  `security-exceptions.yaml` and `ci/` changes alone landed with the moves as one land on the relock issue, which names them;
+  `security-exceptions.yaml` and `ci/` changes alone landed with the moves as one land on the relock issue, which names them; a release
+  Dockerfile's `FROM` at a floating tag (not a CI image's under `ci/`, nor a test's), a builder stage's and a global `ARG`'s default too,
+  pinned at its tag's digest in the same land, and moved nightly from then on, a ref built of `ARG`s unread (#234; looper's own
+  `Dockerfile` is one: PROPOSALS.md);
   dated pins need cloud#102 and onscreen#6 (their pin tests refuse a dated tag) and cluster#54 to land green there; the build
   pipeline (#17): `looper-build` and `ci/build.gitlab-ci.yml`, the `.gitlab-ci.yml` of gitlab.com/tacplus-dev/build
   (started with inputs `repo`, `sha`, `tag`, and `gates` and `base`: the commit's `gates.yaml` sets and their base,
@@ -176,7 +179,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
   counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); a SAST finding in test
   code (Rust's `#[cfg(test)]` modules and `tests/`, Go's `_test.go`, TS/JS's `test/` and `*.test.*`, Java's
-  `src/test/`) is listed (`test: true`), never failing, a secret there still fails (#179); a finding in CI tooling (a dependency under `bin/` or `ci/`, the base image of a Dockerfile under `ci/`: `scope: tooling`) is listed, never failing a land, a nightly or a release, the rest `shipped` and failing as before (#225; the repositories' own `ci/security.sh`: cloud#101, cluster#55, fleet-seatrials#72); a recorded baseline per repository (#146,
+  `src/test/`) is listed (`test: true`), never failing, a secret there still fails (#179); a finding in CI tooling (a dependency under `bin/` or `ci/`, the base image of a Dockerfile under `ci/`: `scope: tooling`) is listed, never failing a land, a nightly or a release, the rest `shipped` and failing as before (#225; the repositories' own `ci/security.sh`: cloud#101, cluster#55, fleet-seatrials#72); an unpinned `FROM` of a release Dockerfile (a builder stage's, a global `ARG`'s default) a HIGH finding (`pins`, `unpinned-from`) the nightly files, failing no run (#234); a recorded baseline per repository (#146,
   `security-baseline.json`, written by `looper-scan baseline`: MEDIUM, LOW and UNKNOWN findings counted per tool, rule
   and file, not line, are baselined, never new, so not filed; an issue's run is handed the repository's latest
   findings to record it from); SARIF and JSON reports, the new findings since the
