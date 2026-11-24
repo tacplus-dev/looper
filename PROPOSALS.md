@@ -4,6 +4,27 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **looper-vm's end-to-end run on tacplus** (2026-11-24, #238): the parent, its SIGTERM stop, the resume from the
+  forge, the shared cache and the local build are tested here with stubs (no container runtime in a report or a
+  build job). The issue's last criterion, a local run with a container runtime building a tacplus issue end to end,
+  needs looper#239's image (`looper-vm --self-test` in it) on cloud#108's VM, or any host with Docker: run
+  `looper-vm --repo tacplus` there with tacplus's credentials and a ready issue, and record the time to its first
+  verdict beside an in-cluster report's.
+- **One project, one place: a VM and the in-cluster reports never both** (2026-11-24, #238): on a VM, a report takes
+  an approved issue labelled `looper:in-progress` as one a stopped VM left. That holds once looper#241 starts no
+  in-cluster report for a project with a VM; while both run (the pilot "beside the current in-cluster looper"), a
+  VM would resume an issue an in-cluster report holds. The VM could read the looper project's GitLab jobs (as
+  `orphaned` does in a job) when it holds a token for them, or #241 could stop the in-cluster reports first.
+- **The cache's run records pruned** (2026-11-24, #238): each report's run directory (`work/NAME/runs`) and its
+  build logs stay on the cache disk; nothing removes them. A pass of the parent (a child, never the loop) could drop
+  those older than a week, as the cache is only a cache.
+- **A local build's read-only GitHub token** (2026-11-24, #238): a build job's gates get the tacplus-reader app's
+  read-only token (private Go modules of the org, a tacplus `depends` on tacplus-dev/registry); `looper-vm build`
+  passes none, so a build that needs a private dependency fails locally while its build job passes. The VM's service
+  account could mint the same read-only token for each build container.
+- **Maven's local repository shared** (2026-11-24, #238): it does not lock across processes by default, so each local
+  build has its own (the decision's per-child directory). Maven 3.9's named locks (`aether.syncContext.named.factory`)
+  would make one shared `~/.m2/repository` safe.
 - **The nightly maintenance after tacplus's Images, by schedule** (2026-11-23, #226): the scan follows whichever build
   of a line the registry has when it runs. The GitLab schedule that starts the nightly scan is not in this repository,
   and neither is tacplus-dev/tacplus#966's cron for the Images run. Check that the scan's schedule starts after the

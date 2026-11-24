@@ -127,6 +127,15 @@
 # nothing else, commenting nothing and leaving the label to the retry, which
 # resumes from that checkpoint. A run that cannot read GitLab keeps going.
 #
+# On a looper VM (looper#238; looper-vm, README: The looper VM) the reports
+# are a VM's children, LOOPER_VM its looper-vm: --list also names the issues a
+# stopped VM left (approved, looper:in-progress, otherwise ready), which a
+# report takes as a resume; SIGTERM, the VM stopping, is the run's end, its
+# work checkpointed and the issue told, the label kept; a pinned repository's
+# --build is a local build (looper-vm build, through the VM's container
+# socket); and each clone borrows the objects of the cache's shared git store,
+# LOOPER_GIT_STORE.
+#
 # Each run's record (prompt.md, claude.log, outcome) is a directory under
 # LOOPER_RUNS. The pipeline sets it inside the job's project directory and
 # uploads it as the job's artifacts: the runner VM does not outlive the job.
@@ -241,7 +250,8 @@
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
 # roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
 # job's user, not each as its own, looper#68) and LOOPER_USER_PREFIX (their
-# names, default looper-), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
+# names, default looper-), LOOPER_VM, LOOPER_GIT_STORE, LOOPER_STORE_LOCK and
+# LOOPER_VM_CHECKPOINT_SECONDS (a looper VM's, looper#238), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
 # job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
@@ -342,16 +352,31 @@ job_status() {
 # looper:in-progress, and no run holds it. The job for that issue takes it as a
 # resume when it is otherwise ready and no other report job of that issue
 # (this job excepted) is created, pending, waiting or running: the label is
-# this job's. Outside a GitLab job, or when GitLab cannot be read, never.
+# this job's. Outside a GitLab job, or when GitLab cannot be read, never; on
+# a looper VM (LOOPER_VM, looper#238), whenever it is otherwise ready.
 orphaned() { # issue
   local l jobs
-  [[ -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]] || return 1
+  [[ -n "${LOOPER_VM:-}" || ( -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ) ]] || return 1
   l="$(forge_issue_view "$REPO" "$1" state,labels 'select(.state == "OPEN") | .labels[].name')" || return 1
   grep -qx "$LABEL_IN_PROGRESS" <<<"$l" || return 1
   if grep -qxE "$LABEL_STUCK|$LABEL_DECISION" <<<"$l"; then return 1; fi
   ready "$REPO" "$1" || return 1
+  # On a looper VM (looper#238) the project's reports are its own: the VM
+  # starts this report only when none of its children works the issue.
+  # A run it stopped with its land queued waits for the manager's verdict.
+  [[ -z "${LOOPER_VM:-}" ]] || { ! grep -qx "$LABEL_LANDING" <<<"$l"; return; }
   jobs="$(project_jobs)" || return 1
   ! busy "$REPO" "$jobs" "$1" >/dev/null
+}
+
+# The approved issues looper:in-progress (and not stuck, needs-decision or
+# landing), in the order the ready are taken: on a looper VM, the runs a
+# stopped VM left (looper#238).
+vm_orphans() {
+  forge_issue_list "$REPO" open 200 number,labels,createdAt "
+      [.[] | select(any(.labels[].name; . == \"$LABEL_IN_PROGRESS\"))
+           | select(all(.labels[].name; . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
+      | sort_by($ISSUE_ORDER) | .[].number" "$LABEL_APPROVED"
 }
 
 # The plan (looper#16): a repository whose looper job is already created,
@@ -366,6 +391,9 @@ if [[ "$MODE" == list ]]; then
     log "could not read this project's jobs; planning $REPO anyway" >&2
   fi
   approved_issues "$REPO" | while read -r n; do if ready "$REPO" "$n"; then echo "$n"; fi; done
+  # A looper VM's list (looper#238) names the issues a stopped VM left too: its
+  # state is the forge's, never its disk's.
+  [[ -z "${LOOPER_VM:-}" ]] || vm_orphans | while read -r n; do if orphaned "$n"; then echo "$n"; fi; done
   exit 0
 fi
 [[ "$MODE" != checkpoint || -n "$ISSUE" ]] || die "--checkpoint needs --issue N"
@@ -557,11 +585,40 @@ fetch() { # dir [refspec...]
   return 1
 }
 
+# On a looper VM (looper#238), one git object store the reports' clones share,
+# LOOPER_GIT_STORE (a bare clone on the cache disk): a new clone borrows its
+# objects (alternates), its refs and work tree its own. The store is made or
+# refreshed (main fetched) first, under a lock waited on LOOPER_STORE_LOCK
+# seconds (default 10) at most: one busy is used as it is, and one missing,
+# unreadable or not made is no wait: the clone is made without it. Never
+# pruned (gc.auto 0): no object a clone borrows goes away. Fails when there is
+# no store to borrow from.
+store_refresh() {
+  local s="${LOOPER_GIT_STORE:-}"
+  [[ -n "$s" ]] || return 1
+  mkdir -p "$(dirname "$s")" 2>/dev/null || return 1
+  ( flock -w "${LOOPER_STORE_LOCK:-10}" 9 || exit 0
+    if [[ ! -d "$s/objects" ]]; then
+      rm -rf "$s.new"
+      forge_clone "$REPO" "$s.new" --bare >/dev/null 2>&1 && git -C "$s.new" config gc.auto 0 && mv "$s.new" "$s" ||
+        { rm -rf "$s.new"; log "could not make the shared store $s"; }
+    else
+      timeout 300 git -C "$s" fetch -q origin "+refs/heads/main:refs/heads/main" 2>/dev/null || log "could not refresh the shared store $s: used as it is"
+    fi
+  ) 9>"$s.lock" || true
+  git -C "$s" rev-parse -q --verify "refs/heads/main^{commit}" >/dev/null 2>&1
+}
+
 # The repository's checkout at origin/main. Anything a previous run left
 # unpushed is kept on a local branch for a person to look at, never pushed.
 sync_checkout() {
   if [[ ! -d "$CHECKOUT/.git" ]]; then
-    forge_clone "$REPO" "$CHECKOUT"
+    if store_refresh; then
+      forge_clone "$REPO" "$CHECKOUT" --reference-if-able "$LOOPER_GIT_STORE" ||
+        { rm -rf "$CHECKOUT"; log "a clone borrowing $LOOPER_GIT_STORE failed: cloning $REPO without it"; forge_clone "$REPO" "$CHECKOUT"; }
+    else
+      forge_clone "$REPO" "$CHECKOUT"
+    fi
   fi
   fetch "$CHECKOUT"
   # Keep what a previous run left before moving: a cancelled or killed run can
@@ -1594,6 +1651,13 @@ build_pending() { # run-dir
   for s in "$1"/builds/*.started; do
     [[ -f "$s" ]] || continue
     b="${s%.started}"; [[ ! -e "$b.ended" ]] || continue
+    if [[ "$(cut -d' ' -f1 "$s")" == local ]]; then   # a looper VM's (looper#238)
+      w="$(cat "$b.wait" 2>/dev/null)" || true; [[ "$w" =~ ^[0-9]+$ ]] || w="$BUILD_WAIT"
+      if [[ -s "$b.rc" ]]; then { grep '^verdict: ' "$b.log" 2>/dev/null || echo "failure: exit $(cat "$b.rc")"; } | tail -n 1 | sed 's/^verdict: //' > "$b.ended"
+      elif (( $(date +%s) >= $(stat -c %Y "$s") + w )); then echo "no verdict within $(hours "$w") of its start" > "$b.ended"
+      else rc=0; fi
+      continue
+    fi
     sha="$(sed -n 's/^sha=//p' "$b.taken" 2>/dev/null | head -n 1)"
     st="$(build_statuses "$sha" "$(cut -d' ' -f1 "$s")")" || st=""
     v="$(build_said "$st")" || v=""; started="$(build_started "$st")"
@@ -1897,6 +1961,7 @@ model_build() { # builds-dir sha gates base
   for (( i = 0; i < 300; i++ )); do [[ -s "$d/$id.started" || -s "$d/$id.refused" ]] && break; sleep 1; done
   [[ ! -s "$d/$id.refused" ]] || { BUILD_P="the looper did not start the build: $(cat "$d/$id.refused")"; return 5; }
   [[ -s "$d/$id.started" ]] || { BUILD_P="the looper did not start the build within 5 minutes"; return 5; }
+  if [[ "$(cut -d' ' -f1 "$d/$id.started")" == local ]]; then local_verdict "$d" "$id" "$sha" "$gates" "$base"; return; fi
   echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}$([[ ! -s "$d/$id.reused" ]] || echo " (reused: $(reused_what "$(cat "$d/$id.reused")"): this key's build, looper#134)")"
   BUILD_ENDED_FILE="$d/$id.cancelled" build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")" "" "$(cat "$d/$id.wait" 2>/dev/null)"
 }
@@ -1908,6 +1973,41 @@ commit_map() { # sha
   { git -C "$CHECKOUT" show "$1:$GATE_MAP" > "$f" 2>/dev/null && read_gate_map "$f" 2>/dev/null; } ||
     { GM_SETS=(); GM_RUN=(); GM_MIN=(); GM_MEM=(); GM_PATHS=(); }
   rm -f "$f"
+}
+
+# On a looper VM (looper#238) a build request is a local build: looper-vm
+# build, a child of this server, runs the gates in the commit's pinned build
+# image through the VM's container socket, its full log in builds/<id>.log
+# (the model reads it) and its exit in builds/<id>.rc. Its wait is the one a
+# build job would have (build_wait).
+local_build() { # builds-dir id sha gates base
+  local d="$1" id="$2"
+  commit_map "$3"; build_wait "$4" > "$d/$id.wait"
+  : > "$d/$id.log"; chmod 0644 "$d/$id.log"
+  ( rc=0; "$LOOPER_VM" build --repo "$REPO" --dir "$CHECKOUT" --sha "$3" --gates "$4" --base "$5" --log "$d/$id.log" >/dev/null 2>&1 || rc=$?
+    echo "$rc" > "$d/$id.rc.new" && mv -f "$d/$id.rc.new" "$d/$id.rc" ) </dev/null &
+  echo "local $d/$id.log" > "$d/$id.started"
+  log "started a local build of $REPO ${3:0:7} (the gates ${4:-full}) for its model: $d/$id.log"
+}
+
+# A local build's verdict (looper#238), as build_verdict's: its lines, exit 0
+# on a pass, 1 on a failure (the log's end printed), 2 with none within its wait.
+local_verdict() { # builds-dir id sha gates base
+  local d="$1" id="$2" w t0 said now v rc
+  w="$(cat "$d/$id.wait" 2>/dev/null)" || true; [[ "$w" =~ ^[0-9]+$ ]] || w="$BUILD_WAIT"
+  t0="$(date +%s)"; said="$t0"
+  echo "the local build of $REPO ${3:0:7}, the gates ${4:-full}${5:+ on base ${5:0:7}}, in the build image it pins, on this looper VM: its full log is $d/$id.log"
+  while [[ ! -s "$d/$id.rc" ]]; do
+    now="$(date +%s)"
+    if (( now >= t0 + w )); then echo "no verdict within $(hours "$w") of its start: its log so far is $d/$id.log"; return 2; fi
+    if (( now - said >= BUILD_SAY )); then log "waiting for the local build's verdict: running since $(hours "$(( now - t0 ))")" >&2; said="$now"; fi
+    sleep 1
+  done
+  rc="$(cat "$d/$id.rc")"; v="$(grep '^verdict: ' "$d/$id.log" | tail -n 1)" || v=""
+  echo "${v:-verdict: failure: the local build exited $rc with no verdict}"
+  [[ "$rc" == 0 ]] && return 0
+  echo "its log's end ($d/$id.log has it all):"; tail -n 40 "$d/$id.log"
+  return 1
 }
 
 # The report's looper serves its model's build requests (looper#71), every
@@ -1929,6 +2029,8 @@ build_server() { # run-dir
       base="$(sed -n 's/^base=//p' "$d/$id.taken" | head -n 1)"
       if ! [[ "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]]; then
         echo "not a build request (sha=, gates=, base=)" > "$d/$id.refused"
+      elif [[ -n "${LOOPER_VM:-}" ]]; then
+        local_build "$d" "$id" "$sha" "$gates" "$base"
       elif commit_map "$sha"; BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
         echo "$BUILD_W" > "$d/$id.wait"
         # A build of the same key, green or queued or running, is reused (looper#134).
@@ -2050,7 +2152,7 @@ pre_land_report() { # run-dir
     if git push -q -f origin "$sha:refs/heads/$b" > "$out" 2>&1; then
       model_build "$run/builds" "$sha" "$PRE_LAND" "$main" > "$out" 2>&1 || rc=$?
       git push -q origin --delete "$b" >/dev/null 2>&1 || true
-      (( rc != 1 )) || ! pre_land_infra "$sha" "$(sed -n 's|^the build job .*/pipelines/\([0-9]*\) of .*|\1|p' "$out" | tail -n 1)" "$out" || rc=2
+      (( rc != 1 )) || [[ -n "${LOOPER_VM:-}" ]] || ! pre_land_infra "$sha" "$(sed -n 's|^the build job .*/pipelines/\([0-9]*\) of .*|\1|p' "$out" | tail -n 1)" "$out" || rc=2
     else rc=5; fi
     url="$(sed -n 's/^the build job \([^ ]*\) of .*/\1/p' "$out" | tail -n 1)"
   else
@@ -3655,8 +3757,9 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
   limited=(PATH="$dir/bin:$PATH" LOOPER_MODEL_RUN="$4")
   if [[ -n "${BUILD_JOBS:-}" && -n "${5:-}" ]]; then
     builds=1; mkdir -p "$4/builds"
-    printf '#!/bin/sh\necho "docker: %s builds in build jobs (looper#71): a report has no container runtime. Build with: %s --repo %s --issue %s --build" >&2\nexit 125\n' \
-      "$REPO" "$LOOPER_SELF" "$REPO" "$5" > "$dir/bin/docker"
+    local how="builds in build jobs (looper#71)"; [[ -z "${LOOPER_VM:-}" ]] || how="builds locally on this looper VM, through --build (looper#238)"
+    printf '#!/bin/sh\necho "docker: %s %s: a report has no container runtime. Build with: %s --repo %s --issue %s --build" >&2\nexit 125\n' \
+      "$REPO" "$how" "$LOOPER_SELF" "$REPO" "$5" > "$dir/bin/docker"
   elif [[ -n "${BUILD_JOBS:-}" ]]; then   # a scan (looper#73): its gates are the nightly build's
     builds=0
     printf '#!/bin/sh\necho "docker: %s builds in build jobs (looper#71): a scan has no container runtime; the gates on main are the nightly build'"'"'s (looper#73)" >&2\nexit 125\n' \
@@ -4453,6 +4556,15 @@ memory_rule() {
 # (looper#71), with a build job: the model has no container runtime.
 verify_rule() { # issue
   if [[ -z "${BUILD_JOBS:-}" ]]; then echo "Verify with $(gates_hint)."; return 0; fi
+  if [[ -n "${LOOPER_VM:-}" ]]; then
+    printf '%s\n   %s\n   %s\n   %s\n   %s\n   %s' \
+      "Verify with a local build: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds your committed" \
+      "HEAD in the build image this repository pins, on the gate set your diff since main calls for, as a container this" \
+      "looper VM starts (looper#238), and prints its verdict and the path of its full log, which is yours to read (exit 0 on" \
+      "a pass, 1 on a failure, 2 with none within its wait). It is feedback only: the manager's merge builds again. You have" \
+      "no container runtime yourself (no \`docker\`, so no \`tacplus\` here either): your builds are --build's. What needs" \
+      "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
+  else
   printf '%s\n   %s\n   %s\n   %s\n   %s\n   %s' \
     "Verify with a build job: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds" \
     "your committed HEAD in the build image this repository pins, on the gate set your diff since main calls for, as the" \
@@ -4460,6 +4572,7 @@ verify_rule() { # issue
     "within its wait, 3 with none by this job's end, 4 when no runner took it within $(hours "$BUILD_START"): no verdict yet, and a later --build of the same commit takes it up). You" \
     "have no container runtime (no \`docker\`, so no \`tacplus\` here either): agents never build (looper#71). What needs" \
     "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
+  fi
   commit_map origin/main
   [[ -n "${GM_RUN[$PRE_LAND]:-}" ]] || return 0
   printf '\n   %s\n   %s' \
@@ -4469,14 +4582,15 @@ verify_rule() { # issue
 
 # Rule 2's word on tacplus: none in a report with no container runtime (looper#71).
 tacplus_rule() {
-  if [[ -n "${BUILD_JOBS:-}" ]]; then echo "\`tacplus\` runs in the build job only (rule 4)."
+  if [[ -n "${BUILD_JOBS:-}" && -n "${LOOPER_VM:-}" ]]; then echo "\`tacplus\` runs in your local builds only (rule 4)."
+  elif [[ -n "${BUILD_JOBS:-}" ]]; then echo "\`tacplus\` runs in the build job only (rule 4)."
   else printf '%s\n   %s' "\`tacplus\` in this container runs the compiler image for this repository's" "MAJOR.MINOR floor (tacplus.yaml), always its latest patch."; fi
 }
 
 # A report's outcome, for its job's log: closed, blocked,
 # needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), waiting (on another run, looper#171,
 # or until a date, looper#181), backed-off (nothing changed since its previous run, looper#181), stuck,
-# held or job-gone.
+# held, job-gone or vm-stopped (a looper VM stopping, looper#238).
 report() { # issue outcome
   log "#$1: $2"
 }
@@ -4499,6 +4613,42 @@ limit_hold() { # issue run-dir refusal [also-refused-model]
   log "#$n: held: the account's usage limit ($refusal); the looper holds until $(hold_iso "$until")${HOLD_PAGE:+ ($HOLD_PAGE)}: the issue keeps its labels, and the kicker starts it again after the reset"
 }
 
+# A function run with a deadline: killed, and failing, when it has not ended
+# within the seconds given (KILL: a SIGTERM the caller ignores, it does too).
+bounded() { # seconds function [args...]
+  local t p rc=0; t=$(( $(date +%s) + $1 )); shift
+  # As a caller's `if`: set -e does not end the function at its first failing test.
+  ( if "$@"; then exit 0; else exit $?; fi ) & p=$!
+  while kill -0 "$p" 2>/dev/null; do
+    (( $(date +%s) < t )) || { kill -KILL "$p" 2>/dev/null; wait "$p" 2>/dev/null; return 124; }
+    sleep 0.2
+  done
+  wait "$p" || rc=$?
+  return "$rc"
+}
+
+# The looper VM stops (looper#238): its parent's SIGTERM reached the run's
+# whole tree, the model and its watchers too, and the VM has about 25 seconds
+# left. The run's work is checkpointed to its branch (within
+# LOOPER_VM_CHECKPOINT_SECONDS, default 15) and the issue told so (within 5),
+# as a run stopped at its limit is; it stays looper:in-progress, which the
+# next VM's list names, and its next run resumes from that checkpoint.
+VM_ISSUE="" VM_RUN=""
+vm_stop() {
+  trap '' TERM
+  local n="$VM_ISSUE" c
+  [[ -z "$VM_RUN" ]] || echo vm-stopped > "$VM_RUN/stopped"
+  log "#$n: the looper VM is stopping (SIGTERM): checkpointing the run's work"
+  if bounded "${LOOPER_VM_CHECKPOINT_SECONDS:-15}" checkpoint "$n" "the VM is stopping" "$VM_RUN"; then
+    c="Its work in progress is checkpointed on [\`$(wip_branch "$n")\`]($(wip_url "$n"))"
+  else
+    c="Its checkpoint did not push in time: [\`$(wip_branch "$n")\`]($(wip_url "$n")) keeps its last one"
+  fi
+  bounded 5 forge_issue_comment "$REPO" "$n" "The looper VM of $REPO stopped this run: the VM is stopping (SIGTERM: a spot reclaim, or its shutdown). $c, and the issue stays \`$LABEL_IN_PROGRESS\`: the next looper VM of $REPO resumes it from there (looper#238). Run record: $(run_record "$VM_RUN")." >/dev/null || true
+  report "$n" vm-stopped
+  exit 0
+}
+
 # A report's run of an issue, in its clone (prepare_report made it).
 work_issue() { # issue
   local n="$1" run limit resumed
@@ -4510,6 +4660,8 @@ work_issue() { # issue
   # comment could read as what changed; the prompt names what did.
   local backed; backed="$(clear_backoff "$n" "$run")"
   forge_issue_edit "$REPO" "$n" --add-label "$LABEL_IN_PROGRESS" >/dev/null
+  # On a looper VM (looper#238), SIGTERM is the VM stopping: the run checkpoints and ends.
+  if [[ -n "${LOOPER_VM:-}" ]]; then VM_ISSUE="$n" VM_RUN="$run"; trap vm_stop TERM; fi
   limit="$(run_limit "$n")"
   # The run's model (looper#136), named in its start comment.
   choose_model "$run" "$n"
@@ -5905,7 +6057,8 @@ report_job() { # issue
   LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
   # A pinned repository's report builds in build jobs, with no container runtime (looper#71).
   BUILD_JOBS=""
-  if build_jobs origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: this report builds in build jobs, its model with no container runtime"
+  if [[ -n "${LOOPER_VM:-}" ]] && pinned origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: on this looper VM, its model builds locally through --build, with no container runtime of its own (looper#238)"
+  elif build_jobs origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: this report builds in build jobs, its model with no container runtime"
   elif [[ "$LOOPER_FORGE" == github ]] && pinned origin/main; then log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: its model keeps looper-docker (looper#71)"; fi
   work_issue "$n"
 }

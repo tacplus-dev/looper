@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-vm: the looper that runs on a project's own spot VM (looper#238;
+# tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md, points 2, 3,
+# 5, 9 and 10). It changes where and how a report runs, not what it does: each
+# issue is today's report, `repo-looper --repo NAME --issue N`, as a child.
+#
+#   looper-vm --repo NAME     the parent: works NAME's ready issues, all of them at once, until
+#                             it is idle (exit 0: the VM shuts down) or SIGTERM (exit 0 within
+#                             LOOPER_VM_STOP_GRACE seconds, each issue's work checkpointed)
+#   looper-vm build --repo NAME --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE
+#                             a local build: the gates of SHA (gates.yaml's SET, else its full,
+#                             else `just gates`) in the build image the commit pins (build.lock,
+#                             tacplus.lock), a child container through the VM's container socket;
+#                             the full log in FILE; exit 0 on a pass, 1 on a failure
+#   looper-vm --self-test     its tools, the container socket and the cache, checked
+#
+# The parent never blocks (decision point 2): its loop only schedules and
+# records. Everything that waits (reading the forge, a report, its model, its
+# builds) runs in a child process, with no limit on them and children of their
+# own allowed. Every LOOPER_VM_POLL seconds it reaps the children that ended,
+# starts a lister (`repo-looper --list`, at most one at a time, stopped after
+# LOOPER_VM_LIST_TIMEOUT) when none runs, and starts a report for each issue
+# the last list named that no child of its works. An issue whose report ended
+# is not started again for LOOPER_VM_COOLDOWN seconds (a report that fails at
+# once does not spin). Its records are in LOOPER_CACHE/vm: running (issue pid
+# start, one a line, rewritten each pass), vm.log, and each report's log.
+#
+# Resume from the forge, never the disk (point 3): the parent reads nothing it
+# wrote before it started. Its reports are LOOPER_VM's (repo-looper's VM mode):
+# their --list names the ready issues and the ones looper:in-progress but
+# otherwise ready, whose run a stopped VM left (this VM works its project
+# alone: looper#241 starts no in-cluster report for it); a report resumes from
+# the issue's work-in-progress branch and its checkpoint, as every report does.
+#
+# Shutdown (point 2; a spot VM gets about 30 s): on SIGTERM or SIGINT the
+# parent signals its whole tree (each child and every descendant, whatever
+# its process group) with SIGTERM once; each report checkpoints (its branch,
+# and a comment on its issue) and exits; what still runs
+# LOOPER_VM_STOP_GRACE - 3 seconds after the signal is killed, and the parent
+# exits 0 within LOOPER_VM_STOP_GRACE (default 25).
+#
+# Idle exit: with no report running and no ready issue for LOOPER_VM_IDLE_MINUTES
+# (default 15), it exits 0 and the VM shuts down (the kicker starts it again
+# when the project has work: scale to zero). A list that fails counts as none.
+#
+# The cache (point 3), LOOPER_CACHE (default /cache; the cache disk, else any
+# directory: it is only a cache). It must be at the same path on the VM's host
+# (LOOPER_CACHE_HOST, if it is not), since the build containers bind-mount it:
+#   .looper-vm        its stamp; a cache without it (half-written, another
+#                     layout) is discarded, moved aside at once and removed by
+#                     a child: never waited on, never repaired
+#   git/NAME.git      one shared git object store: each report's clone borrows
+#                     its objects (alternates), the clone's refs and work tree
+#                     its own; a report refreshes it under a lock it waits
+#                     LOOPER_STORE_LOCK seconds for at most, and the store is
+#                     never pruned (gc.auto 0), so no borrowed object goes away.
+#                     One git cannot read is discarded at start.
+#   work              LOOPER_WORK: the reports' clones, LOOPER_WORK/NAME/issues/N
+#   deps              the dependency and compiler caches every build container
+#                     shares (Go's module and build caches, cargo's registry
+#                     and git, npm's, Gradle's, sccache's and ccache's): stores
+#                     whose tools lock or address by content, so two builds at
+#                     once never corrupt them. Maven's local repository is not
+#                     shared (it does not lock): each build has its own.
+#   builds            each local build's checkout and verdict, removed after
+#   vm                the parent's records
+# A cache that cannot be written is left alone and a local one used
+# (LOOPER_VM_LOCAL_CACHE, default $TMPDIR/looper-vm-cache): slower, never stuck.
+#
+# Local builds (point 4): a report's --build, and its pre-land gate, are a
+# local build the report's looper runs (repo-looper's build_server, LOOPER_VM
+# set): `looper-build gates-local` in the commit's pinned build image, a
+# container started through the container socket (LOOPER_VM_DOCKER, default
+# docker), the cache mounted at its own path. Feedback only: the merge path
+# stays the manager's build (point 6).
+#
+# Environment: GH_TOKEN and the model's credentials, as repo-looper's;
+# LOOPER_CACHE, LOOPER_CACHE_HOST, LOOPER_VM_POLL (seconds, default 60),
+# LOOPER_VM_IDLE_MINUTES, LOOPER_VM_STOP_GRACE, LOOPER_VM_LIST_TIMEOUT (seconds,
+# default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER,
+# LOOPER_VM_REPO_LOOPER (default the repo-looper beside this script),
+# LOOPER_VM_LOOPER_BUILD (likewise, looper-build).
+set -euo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+HERE="$(dirname "$SELF")"
+REPO_LOOPER="${LOOPER_VM_REPO_LOOPER:-$HERE/repo-looper}"
+LOOPER_BUILD="${LOOPER_VM_LOOPER_BUILD:-$HERE/looper-build}"
+CACHE="${LOOPER_CACHE:-/cache}"
+POLL="${LOOPER_VM_POLL:-60}"
+IDLE=$(( ${LOOPER_VM_IDLE_MINUTES:-15} * 60 ))
+STOP_GRACE="${LOOPER_VM_STOP_GRACE:-25}"
+LIST_TIMEOUT="${LOOPER_VM_LIST_TIMEOUT:-300}"
+COOLDOWN="${LOOPER_VM_COOLDOWN:-300}"
+DOCKER="${LOOPER_VM_DOCKER:-docker}"
+# The cache's layout: a cache with another stamp is discarded.
+STAMP="looper-vm cache 1"
+
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+die() { log "FATAL $*" >&2; exit 2; }
+
+# --- the cache ----------------------------------------------------------------
+
+# A directory to discard: moved aside at once, removed by a child the parent
+# does not wait for.
+discard() { # dir why
+  local aside="$1.discarded-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  log "the cache $1 is discarded: $2"
+  if mv "$1" "$aside" 2>/dev/null; then (rm -rf "$aside" >/dev/null 2>&1 &)
+  else rm -rf "$1" 2>/dev/null || true; fi
+}
+
+# The cache, ready: LOOPER_CACHE when it can be written, else a local one; a
+# stale or half-written one discarded, its git store too when git cannot read
+# it. Sets CACHE. Never waits on the cache: every check is bounded.
+cache_ready() {
+  local probe
+  if ! mkdir -p "$CACHE" 2>/dev/null || ! probe="$(mktemp "$CACHE/.probe.XXXXXX" 2>/dev/null)"; then
+    log "the cache $CACHE cannot be written: a local one instead (slower, the same result)"
+    CACHE="${LOOPER_VM_LOCAL_CACHE:-${TMPDIR:-/tmp}/looper-vm-cache}"; mkdir -p "$CACHE"
+  else
+    rm -f "$probe"
+  fi
+  if [[ "$(cat "$CACHE/.looper-vm" 2>/dev/null)" != "$STAMP" ]]; then
+    if [[ -n "$(ls -A "$CACHE" 2>/dev/null)" ]]; then
+      local f; for f in "$CACHE"/* "$CACHE"/.[!.]*; do
+        [[ -e "$f" && "$f" != *.discarded-* && "$f" != "$CACHE/lost+found" ]] || continue   # a new disk's lost+found is the filesystem's
+        discard "$f" "no stamp (\"$STAMP\"): another layout, or half-written"
+      done
+    fi
+  fi
+  local g; for g in "$CACHE"/git/*.git; do
+    [[ -d "$g" ]] || continue
+    timeout 20 git -C "$g" rev-parse -q --verify "refs/heads/main^{commit}" >/dev/null 2>&1 &&
+      timeout 20 git -C "$g" count-objects >/dev/null 2>&1 || discard "$g" "git cannot read it"
+  done
+  cache_dirs
+  echo "$STAMP" > "$CACHE/.looper-vm"
+}
+cache_dirs() {
+  mkdir -p "$CACHE/git" "$CACHE/work" "$CACHE/builds" "$CACHE/vm" \
+    "$CACHE/deps/go/mod" "$CACHE/deps/go/build" "$CACHE/deps/cargo/registry" "$CACHE/deps/cargo/git" \
+    "$CACHE/deps/npm" "$CACHE/deps/gradle" "$CACHE/deps/sccache" "$CACHE/deps/ccache"
+  # Each report's model is its own user (looper#68): the shared caches are everyone's.
+  chmod 0755 "$CACHE" "$CACHE/git" "$CACHE/work" "$CACHE/builds" 2>/dev/null || true
+  chmod 1777 "$CACHE/deps" "$CACHE"/deps/* "$CACHE"/deps/*/* 2>/dev/null || true
+}
+
+# --- the parent ---------------------------------------------------------------
+
+# Every process of the trees under the pids given, the pids included: by
+# parent pid, read from /proc, so a child that left its process group (timeout,
+# setsid) is still in its parent's tree.
+tree_of() { # pid...
+  local -A kids=()
+  local f line p pp st out=() queue=("$@")
+  for f in /proc/[0-9]*/stat; do
+    read -r line < "$f" 2>/dev/null || continue
+    p="${line%% *}"; read -r st pp _ <<<"${line##*) }"
+    kids[$pp]+=" $p"
+  done
+  while (( ${#queue[@]} )); do
+    p="${queue[0]}"; queue=("${queue[@]:1}")
+    [[ -d "/proc/$p" ]] || continue
+    out+=("$p")
+    # shellcheck disable=SC2206
+    [[ -z "${kids[$p]:-}" ]] || queue+=(${kids[$p]})
+  done
+  echo "${out[*]}"
+}
+
+declare -A CHILD=() ENDED=()   # issue -> pid; issue -> when its report ended
+LISTER="" LISTED=0 IDLE_SINCE="" STOPPING="" STATE=""
+
+record() { # the running children, for a person or a test to read
+  local n
+  { for n in "${!CHILD[@]}"; do echo "$n ${CHILD[$n]}"; done; } > "$STATE/running.new"
+  mv -f "$STATE/running.new" "$STATE/running"
+}
+
+# A report of the issue, as a child: today's report, in this VM's mode.
+start_report() { # issue
+  local n="$1"
+  LOOPER_VM="$SELF" LOOPER_WORK="$CACHE/work" LOOPER_GIT_STORE="$CACHE/git/$REPO.git" LOOPER_CACHE="$CACHE" \
+    LOOPER_RUNS="$CACHE/work/$REPO/runs" \
+    "$REPO_LOOPER" --repo "$REPO" --issue "$n" >> "$STATE/issue-$n.log" 2>&1 < /dev/null &
+  CHILD[$n]=$!
+  log "#$n: its report started (pid $!, log $STATE/issue-$n.log)"
+}
+
+# The children that ended, reaped: `wait` on one that ended does not block.
+reap() {
+  local n rc
+  for n in "${!CHILD[@]}"; do
+    kill -0 "${CHILD[$n]}" 2>/dev/null && continue
+    rc=0; wait "${CHILD[$n]}" 2>/dev/null || rc=$?
+    log "#$n: its report ended (exit $rc); not started again for ${COOLDOWN}s"
+    ENDED[$n]=$(date +%s); unset "CHILD[$n]"
+  done
+  if [[ -n "$LISTER" ]] && ! kill -0 "$LISTER" 2>/dev/null; then
+    rc=0; wait "$LISTER" 2>/dev/null || rc=$?
+    if (( rc == 0 )); then mv -f "$STATE/list.new" "$STATE/list"
+    else log "the list of $REPO's ready issues failed (exit $rc): none taken from it"; : > "$STATE/list"; fi
+    LISTER=""; LISTED=1
+  fi
+}
+
+# One pass: never waits on anything but its own short file reads.
+pass() {
+  local n now; now=$(date +%s)
+  reap
+  if [[ -z "$LISTER" ]]; then
+    timeout -k 5 "$LIST_TIMEOUT" env LOOPER_VM="$SELF" LOOPER_WORK="$CACHE/work" "$REPO_LOOPER" --repo "$REPO" --list \
+      > "$STATE/list.new" 2>> "$STATE/vm.log" < /dev/null &
+    LISTER=$!
+  fi
+  local ready=0
+  if [[ -s "$STATE/list" ]]; then
+    while read -r n; do
+      [[ "$n" =~ ^[0-9]+$ ]] || continue
+      ready=1
+      [[ -z "${CHILD[$n]:-}" ]] || continue
+      (( now - ${ENDED[$n]:-0} >= COOLDOWN )) || continue
+      start_report "$n"
+    done < "$STATE/list"
+  fi
+  record
+  if (( ${#CHILD[@]} || ready || ! LISTED )); then IDLE_SINCE=""
+  else
+    IDLE_SINCE="${IDLE_SINCE:-$now}"
+    if (( now - IDLE_SINCE >= IDLE )); then
+      log "idle: no report running and no ready issue in $REPO for $(( IDLE / 60 ))m: exiting (the VM shuts down)"
+      [[ -z "$LISTER" ]] || kill -TERM $(tree_of "$LISTER") 2>/dev/null || true
+      exit 0
+    fi
+  fi
+}
+
+# SIGTERM: the tree signalled once (a process started after, a checkpoint's
+# push, is not), the reports' checkpoints given until 3 seconds before the
+# grace, the rest killed, and the parent out within the grace.
+stop() {
+  [[ -z "$STOPPING" ]] || return 0
+  STOPPING=$(date +%s)
+  local roots=("${CHILD[@]}") pids n
+  [[ -z "$LISTER" ]] || roots+=("$LISTER")
+  log "SIGTERM: stopping ${#CHILD[@]} report(s) (${!CHILD[*]}); each checkpoints its work, and this exits within ${STOP_GRACE}s"
+  pids="$(tree_of "${roots[@]}")"
+  # shellcheck disable=SC2086
+  [[ -z "$pids" ]] || kill -TERM $pids 2>/dev/null || true
+  while (( $(date +%s) < STOPPING + STOP_GRACE - 3 )); do
+    for n in "${!CHILD[@]}"; do kill -0 "${CHILD[$n]}" 2>/dev/null || { wait "${CHILD[$n]}" 2>/dev/null || true; unset "CHILD[$n]"; }; done
+    (( ${#CHILD[@]} )) || break
+    sleep 0.2
+  done
+  pids="$(tree_of "${CHILD[@]}" ${LISTER:+"$LISTER"})"
+  if [[ -n "$pids" ]]; then
+    log "killing what still runs $(( STOP_GRACE - 3 ))s after SIGTERM: report(s) ${!CHILD[*]}"
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
+  fi
+  CHILD=(); [[ -z "${STATE:-}" ]] || record
+  log "stopped in $(( $(date +%s) - STOPPING ))s"
+  exit 0
+}
+
+parent() {
+  [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "--repo NAME is required"
+  for v in POLL STOP_GRACE LIST_TIMEOUT COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
+  (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is under 5 seconds"
+  trap stop TERM INT
+  cache_ready
+  STATE="$CACHE/vm"; rm -f "$STATE/list" "$STATE/list.new"
+  log "looper-vm of $REPO: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m"
+  local z
+  while :; do
+    pass
+    sleep "$POLL" & z=$!
+    wait "$z" 2>/dev/null || true
+  done
+}
+
+# --- a local build ------------------------------------------------------------
+
+# The build image the checkout pins (looper-build's read_pin reads the same lines).
+pin_of() { # dir
+  local f; for f in tacplus.lock build.lock; do
+    [[ -f "$1/$f" ]] || continue
+    sed -n 's/^build_image:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$1/$f" | head -n 1 | grep . && return 0
+  done
+  return 1
+}
+
+# An image's environment variable, from its configuration.
+image_env() { # image name
+  "$DOCKER" image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null | sed -n "s/^$2=//p" | head -n 1
+}
+
+# The cache's path on the host, for a bind mount through the socket.
+host_path() { local h="${LOOPER_CACHE_HOST:-$CACHE}"; echo "$h${1#"$CACHE"}"; } # path under the cache
+
+build() {
+  local dir="" sha="" gates="" base="" logf=""
+  while (( $# )); do
+    case "$1" in
+      --repo) REPO="$2"; shift 2 ;; --dir) dir="$2"; shift 2 ;; --sha) sha="$2"; shift 2 ;;
+      --gates) gates="$2"; shift 2 ;; --base) base="$2"; shift 2 ;; --log) logf="$2"; shift 2 ;;
+      *) die "build: unknown argument $1" ;;
+    esac
+  done
+  [[ -n "$REPO" && -d "$dir" && "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && -n "$logf" ]] ||
+    die "build needs --repo NAME --dir CHECKOUT --sha SHA --log FILE"
+  [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || die "build: '$gates' is not a gate set"
+  : > "$logf"
+  exec >> "$logf" 2>&1
+  cache_dirs
+  local b objects image id rc=0 cargo m=()
+  b="$(mktemp -d "$CACHE/builds/$REPO-XXXXXX")"; chmod 0755 "$b"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$b'" EXIT
+  trap 'exit 143' TERM
+  # Its own checkout of the commit, borrowing the report's objects (and through
+  # them the shared store's): the report's own work tree is the model's.
+  objects="$(cd "$dir" && cd "$(git rev-parse --git-common-dir)/objects" && pwd)" || { echo "verdict: failure: $dir is no git checkout"; exit 1; }
+  git init -q "$b/src" && echo "$objects" > "$b/src/.git/objects/info/alternates"
+  git -C "$b/src" -c advice.detachedHead=false checkout -q --detach "$sha" 2>/dev/null ||
+    { echo "verdict: failure: the commit $sha is not in $dir"; exit 1; }
+  image="$(pin_of "$b/src")" || { echo "verdict: failure: $REPO pins no build image at ${sha:0:7} (build.lock, tacplus.lock): nothing built"; exit 1; }
+  cp "$LOOPER_BUILD" "$b/looper-build"; mkdir -p "$b/out"
+  id="looper-vm-$REPO-${sha:0:12}-$$"
+  echo "local build of $REPO ${sha:0:7}, the gates ${gates:-full}${base:+ on base ${base:0:7}}, in $image (container $id)"
+  "$DOCKER" pull -q "$image" >/dev/null 2>&1 || true   # by digest: a failure here is the run's to say
+  cargo="$(image_env "$image" CARGO_HOME)" || cargo=""
+  [[ -n "$cargo" ]] || cargo=/root/.cargo
+  m=(-v "$(host_path "$CACHE"):$CACHE"
+     -v "$(host_path "$CACHE/deps/cargo/registry"):$cargo/registry" -v "$(host_path "$CACHE/deps/cargo/git"):$cargo/git")
+  trap '"$DOCKER" rm -f "$id" >/dev/null 2>&1; exit 143' TERM
+  "$DOCKER" run --rm --name "$id" --label "looper-vm=$REPO" "${m[@]}" -w "$b/src" \
+    -e BUILD_REPO="$REPO" -e BUILD_SHA="$sha" -e BUILD_GATES="$gates" -e BUILD_BASE="$base" -e BUILD_IMAGE="$image" \
+    -e BUILD_SRC="$b/src" -e BUILD_OUT="$b/out" \
+    -e GOMODCACHE="$CACHE/deps/go/mod" -e GOCACHE="$CACHE/deps/go/build" -e npm_config_cache="$CACHE/deps/npm" \
+    -e GRADLE_USER_HOME="$CACHE/deps/gradle" -e SCCACHE_DIR="$CACHE/deps/sccache" -e CCACHE_DIR="$CACHE/deps/ccache" \
+    "$image" bash "$b/looper-build" gates-local < /dev/null || rc=$?
+  local v; v="$(cat "$b/out/build-verdict" 2>/dev/null)" || v=""
+  if [[ "$v" == pass && "$rc" == 0 ]]; then echo "verdict: success: the gates ${gates:-full} passed"; exit 0; fi
+  echo "verdict: failure: ${v:-the build container exited $rc with no verdict}"
+  exit 1
+}
+
+# --- the self-test (looper#239's image) ----------------------------------------
+
+self_test() {
+  local t bad=0
+  for t in bash git jq gh claude timeout flock "$DOCKER"; do
+    command -v "$t" >/dev/null || { echo "self-test: no $t on the PATH"; bad=1; }
+  done
+  [[ -x "$REPO_LOOPER" ]] || { echo "self-test: no repo-looper at $REPO_LOOPER"; bad=1; }
+  [[ -f "$LOOPER_BUILD" ]] || { echo "self-test: no looper-build at $LOOPER_BUILD"; bad=1; }
+  if command -v "$DOCKER" >/dev/null && ! timeout 20 "$DOCKER" version >/dev/null 2>&1; then
+    echo "self-test: $DOCKER cannot reach the container socket"; bad=1
+  fi
+  REPO=self-test cache_ready >/dev/null
+  echo "self-test: cache $CACHE"
+  (( bad == 0 )) && echo "self-test: ok"
+  return "$bad"
+}
+
+REPO=""
+case "${1:-}" in
+  build) shift; build "$@" ;;
+  --self-test) self_test ;;
+  -h|--help|"") usage ;;
+  *)
+    while (( $# )); do
+      case "$1" in
+        --repo) REPO="${2:-}"; shift 2 || die "--repo needs a name" ;;
+        *) die "unknown argument $1 (looper-vm --help)" ;;
+      esac
+    done
+    parent ;;
+esac

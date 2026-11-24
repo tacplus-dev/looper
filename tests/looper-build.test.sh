@@ -898,6 +898,29 @@ verdict_is "fail: just gates exited 3: a gate fails; error: "
 [[ "$(wc -l < "$OUT/build-verdict")" == 1 ]] || fail "not one line: $(cat "$OUT/build-verdict")"
 pass
 
+# A looper VM's local build (looper#238): the gates of a checkout on disk, in
+# the image looper-vm started; no fetch, no token, the same checks and verdict.
+local_wt() { rm -rf "$TMP/local-$1"; git -C "$work" worktree add -q --detach "$TMP/local-$1" "${SHA[$1]}"; } # commit
+NAME="gates-local: a checkout on disk, its gates and verdict, nothing fetched"
+local_wt pass; local_wt fail; local_wt dirty
+build BUILD_SHA="${SHA[pass]}" BUILD_SRC="$TMP/local-pass" -- gates-local 2>"$TMP/err" || fail "gates-local failed: $(cat "$TMP/err")"
+verdict_is pass
+grep -q "gates ok" "$OUT/gates.log" || fail "just gates did not run: $(cat "$OUT/gates.log")"
+[[ ! -s "$TMP/api.log" && ! -s "$SRV/log" ]] || fail "it reached GitHub: $(cat "$TMP/api.log" "$SRV/log")"
+if build BUILD_SHA="${SHA[fail]}" BUILD_SRC="$TMP/local-fail" -- gates-local 2>"$TMP/err"; then fail "a failing gate passed"; fi
+verdict_is "fail: just gates exited 3"
+if build BUILD_SHA="${SHA[dirty]}" BUILD_SRC="$TMP/local-dirty" -- gates-local 2>"$TMP/err"; then fail "passed"; fi
+verdict_is "fail: the build changed tracked files:  M data.txt"
+if build BUILD_SHA="${SHA[fail]}" BUILD_SRC="$TMP/local-pass" -- gates-local 2>"$TMP/err"; then fail "another commit's checkout passed"; fi
+verdict_is "fail: the build moved HEAD off ${SHA[fail]}"
+if build BUILD_SHA="${SHA[pass]}" BUILD_SRC="$TMP/nowhere" -- gates-local 2>"$TMP/err"; then fail "no checkout passed"; fi
+verdict_is "fail: BUILD_SRC '$TMP/nowhere' is not a checkout"
+# A tacplus project's: the image looper-vm started (BUILD_IMAGE) must be the one tacplus.lock pins.
+if build BUILD_SHA="${SHA[pass]}" BUILD_SRC="$TMP/local-pass" BUILD_IMAGE=ghcr.io/x/other@$DIGEST_A -- gates-local 2>"$TMP/err"; then fail "another image passed"; fi
+verdict_is "fail: the job runs in ghcr.io/x/other@$DIGEST_A, not the build image tacplus.lock pins"
+git -C "$work" worktree remove -f "$TMP/local-pass"; git -C "$work" worktree remove -f "$TMP/local-fail"; git -C "$work" worktree remove -f "$TMP/local-dirty"
+pass
+
 NAME="gates: a change to a tracked file fails the build"
 if build BUILD_SHA="${SHA[dirty]}" -- gates 2>"$TMP/err"; then fail "passed"; fi
 verdict_is "fail: the build changed tracked files:  M data.txt"
