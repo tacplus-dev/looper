@@ -27,7 +27,8 @@
 # The kinds (BUILD_SCAN_KIND): build (every build): OSV-Scanner, govulncheck,
 # cargo-deny, Semgrep CE, gitleaks, gosec, clippy, Bandit, SpotBugs with
 # FindSecBugs, Trivy on the release jars the gates built (the dependencies
-# they shade, looper#147), and a Syft SBOM; nightly and release add CodeQL
+# they shade, looper#147), the release Dockerfiles' FROMs by digest
+# (looper#234), and a Syft SBOM; nightly and release add CodeQL
 # and Trivy (filesystem, Kubernetes manifests, the Dockerfiles' base images).
 # They run side by side, BUILD_SCAN_JOBS at a time (default the job's CPUs),
 # each one's duration in the summary (looper#207); a build's gitleaks reads
@@ -40,7 +41,8 @@
 # a reason, who decided and an expiry date, fails too. Only a finding in what
 # ships fails (looper#225): one in CI tooling (a dependency of the pipeline's
 # tools, under bin/ or ci/, or a CI image's base image, a Dockerfile's under
-# ci/) is reported, never failing. A finding the commit's
+# ci/) is reported, never failing; so is an unpinned FROM of a release
+# Dockerfile (looper#234), HIGH, which the nightly files. A finding the commit's
 # security-baseline.json records (by tool, rule and file, not line: up to its
 # count) is baselined, never new (new: not the last nightly's, looper#211); a secret, a HIGH or CRITICAL finding, one
 # the policy fails or an exception accepts is never baselined. A land's build
@@ -740,6 +742,72 @@ base_images() { # tree
     LC_ALL=C sort -u | awk '!($1 in s) || $2 == "shipped" { s[$1] = $2 } END { for (r in s) print r, s[r] }' | LC_ALL=C sort
 }
 
+# The FROMs of a Dockerfile that name an image (not a stage, not scratch), as
+# repo-looper's dockerfile_froms reads them (looper#234), a line each,
+# tab-separated: the FROM's line, the line its ref is written on (an ARG's,
+# for a FROM of a global ARG: `ARG BASE=alpine:3.24` then `FROM ${BASE}`),
+# the ref as written there, the ref with the global ARGs' defaults in it
+# (a `$` left where one has none), and the ARG's name (- for none).
+DOCKERFILE_FROMS_AWK='
+function unq(v) { if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2); return v }
+function subst(v,   out, tok, name, def, i) {
+  out = ""
+  while (match(v, /\$\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\}|\$[A-Za-z_][A-Za-z0-9_]*/)) {
+    tok = substr(v, RSTART, RLENGTH); out = out substr(v, 1, RSTART - 1); v = substr(v, RSTART + RLENGTH)
+    name = tok; sub(/^\$\{?/, "", name); sub(/\}$/, "", name); def = ""
+    if ((i = index(name, ":-")) > 0) { def = substr(name, i + 2); name = substr(name, 1, i - 1) }
+    if ((name in arg) && arg[name] != "") out = out arg[name]; else if (def != "") out = out def; else out = out tok
+  }
+  return out v
+}
+toupper($1) == "ARG" && !seen_from {
+  for (i = 2; i <= NF; i++) if ((j = index($i, "=")) > 1) { n = substr($i, 1, j - 1); raw[n] = unq(substr($i, j + 1)); arg[n] = subst(raw[n]); at[n] = NR }
+  next
+}
+toupper($1) == "FROM" {
+  seen_from = 1; r = ""
+  for (i = 2; i <= NF; i++) if ($i !~ /^--/) { r = $i; break }
+  for (j = i + 1; j < NF; j++) if (toupper($j) == "AS") stage[tolower($(j + 1))] = 1
+  if (r == "" || r == "scratch" || (tolower(r) in stage)) next
+  n = r; sub(/^\$\{?/, "", n); sub(/\}$/, "", n)
+  if (r ~ /^\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/ && (n in raw) && raw[n] != "") print NR "\t" at[n] "\t" raw[n] "\t" arg[n] "\t" n
+  else print NR "\t" NR "\t" r "\t" subst(r) "\t-"
+}'
+dockerfile_froms() { # file
+  awk "$DOCKERFILE_FROMS_AWK" "$1" | awk -F '\t' '$4 != "scratch"'
+}
+# The Dockerfiles a release builds (looper#234): every one of the tree but a
+# CI image's (under ci/, looper#225) and a test's (under a test, tests or
+# testdata directory).
+release_dockerfiles() { # tree
+  find "$1" \( -name .git -o -name node_modules -o -name target \) -prune -o -type f \( -name Dockerfile -o -name '*.Dockerfile' -o -name 'Dockerfile.*' \) -print |
+    while read -r f; do
+      case "/${f#"$1"/}" in /ci/* | */test/* | */tests/* | */testdata/*) continue ;; esac
+      echo "$f"
+    done | LC_ALL=C sort
+}
+# An unpinned FROM in a Dockerfile a release builds (looper#234; tacplus-dev/
+# roadmap decisions/security-gates-ship-only-2026-11-23.md, point 2: immutable
+# refs only): a builder stage's too, any FROM whose image is not named by
+# digest. Each is a HIGH finding, the nightly scan's to file as a bug, never
+# failing the policy (kind pin): the nightly maintenance pins it by its tag's
+# digest (repo-looper's relock). A ref an ARG without a default names is not read.
+tool_pins() { # tree label prefix
+  local f rel fl pl raw ref out="$SCAN_OUT/norm/pins-$2.json" tmp
+  tmp="$(mktemp)"
+  while read -r f; do
+    rel="${f#"$1"/}"
+    while IFS=$'\t' read -r fl pl raw ref _; do
+      if [[ "$ref" == *'$'* ]]; then notes+=("pins: $3$rel:$fl: FROM $ref: not read (an ARG with no default)"); continue; fi
+      [[ "$ref" != *@sha256:* ]] || continue
+      jq -nc --arg where "$3$rel:$fl" --arg ref "$ref" --arg how "$( [[ "$pl" == "$fl" ]] || echo " (its ARG's default, line $pl)")" \
+        '{tool: "pins", kind: "pin", id: "unpinned-from", aliases: [], severity: "HIGH", fix: true, where: $where,
+          title: "FROM \($ref)\($how): a floating tag, not pinned by digest: a release builds whatever it names that day (pin it as \($ref | if test(":[^/]*$") then . else . + ":latest" end)@sha256:..., which the nightly maintenance moves; looper#234)"}' >> "$tmp"
+    done < <(dockerfile_froms "$f")
+  done < <(release_dockerfiles "$1")
+  jq -s . "$tmp" > "$out"; rm -f "$tmp"
+}
+
 codeql_bundle() {
   [[ -x "$CODEQL_DIR/codeql/codeql" ]] && return 0
   local tmp; tmp="$(mktemp -d)"
@@ -941,6 +1009,8 @@ scan_tree() { # src previous-findings started [base-findings]
   local tools=(osv govulncheck cargo_deny semgrep gitleaks gosec clippy bandit spotbugs jars)
   [[ "$SCAN_KIND" == build ]] || tools+=(codeql trivy)
   scan_tools "${trees[@]}" -- "${tools[@]}"
+  # The release Dockerfiles' FROMs (looper#234): the commit's, in every kind.
+  tool_pins "$src" source ""
   skip_generated_tree "$src"
   for t in "${trees[@]}"; do IFS='|' read -r tree label prefix <<<"$t"; mark_test_code "$tree" "$label" "$prefix"; done
   if need syft; then
@@ -1157,7 +1227,7 @@ scan_policy() { # dir previous-findings started [base-findings]
                           and ((has("where") | not) or (.where != "" and (.where as $w | $f | in_where($w)))))][0]) as $e
         | scope as $scope
         | . + {excepted: ($e.id // null), test: (.test == true), scope: $scope,
-               blocking: ($e == null and $scope == "shipped" and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
+               blocking: ($e == null and $scope == "shipped" and (.kind == "secret" or (.kind != "pin" and (.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
                new: ($old[.tool + "|" + .id + "|" + .where] | not)})
     | sort_by(.tool, .id, file_of, line_of)
     | reduce .[] as $f ({q: $quota, s: $standing, out: []};
@@ -1397,6 +1467,10 @@ write_summary() { # blocking started
   if jq -e 'any(.scope == "tooling")' "$f" >/dev/null; then
     echo; echo "### CI tooling (reported, never failing; looper#225)"
     jq -r '.[] | select(.scope == "tooling") | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)\(if .excepted then " (accepted)" else "" end)"' "$f"
+  fi
+  if jq -e 'any(.kind == "pin")' "$f" >/dev/null; then
+    echo; echo "### Unpinned FROMs of the release Dockerfiles (filed, never failing; looper#234)"
+    jq -r '.[] | select(.kind == "pin") | "- \(.where): \(.title)\(if .excepted then " (accepted)" else "" end)"' "$f"
   fi
   if jq -e 'any(.test)' "$f" >/dev/null; then
     echo; echo "### In test code (SAST: listed, never failing the policy; looper#179)"

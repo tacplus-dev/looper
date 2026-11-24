@@ -182,6 +182,15 @@ scan_commit scanbadkey "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-
 TOOLING=(); for ((i = 0; i < ${#VULN[@]}; i += 2)); do TOOLING+=("ci/tools/${VULN[i]}" "${VULN[i + 1]}"); done
 scan_commit scantooling "${TOOLING[@]}" ci/Dockerfile 'FROM debian:12'
 scan_commit scanshippedimage Dockerfile 'FROM debian:12'
+# Unpinned FROMs (looper#234): a release Dockerfile's builder stage at a tag, a
+# stage by digest, a base through a global ARG's default, a stage of its own;
+# a CI image's and a test's Dockerfiles, never a release's.
+scan_commit scanpins Dockerfile "ARG BASE_IMAGE=alpine:3.24
+FROM golang:1.25 AS build
+FROM golang:1.25@$DIGEST_A AS vet
+FROM \${BASE_IMAGE}
+COPY --from=build /out /
+FROM build AS again" ci/Dockerfile 'FROM debian:12' tests/fixture/Dockerfile 'FROM busybox'
 # A Java service whose release jar shades a vulnerable dependency (kernel#59:
 # Hazelcast's shaded Jackson, jackson-databind 2.9.8 here), and the exception
 # a repository may take for it.
@@ -1989,6 +1998,17 @@ grep -q '^[0-9]* finding(s): 0 failing the policy, .*, [1-9][0-9]* in CI tooling
   fail "$(cat "$OUT/security/summary.md")"
 jq -e '[.runs[].results[] | select(.ruleId == "GO-2021-0113") | .level == "warning" and .properties.scope == "tooling"] | length >= 2 and all' \
   "$OUT/security/findings.sarif" >/dev/null || fail "SARIF: $(cat "$OUT/security/findings.sarif")"
+pass
+
+NAME="security: an unpinned FROM of a release Dockerfile is a HIGH finding to file, a builder stage's too, never failing; one by digest, a CI image's or a test's is none (looper#234)"
+scan BUILD_SHA="${SHA[scanpins]}" -- run 2>"$TMP/err" || fail "an unpinned FROM failed the build: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+[[ "$(jq -r '[.[] | select(.kind == "pin") | "\(.tool) \(.id) \(.severity) \(.scope) \(.blocking) \(.where)"] | sort | join(";")' "$OUT/security/findings.json")" == \
+   "pins unpinned-from HIGH shipped false Dockerfile:2;pins unpinned-from HIGH shipped false Dockerfile:4" ]] || fail "$(cat "$OUT/security/findings.json")"
+jq -e '.[] | select(.where == "Dockerfile:4") | .title | startswith("FROM alpine:3.24 (its ARG'"'"'s default, line 1): a floating tag")' "$OUT/security/findings.json" >/dev/null ||
+  fail "$(cat "$OUT/security/findings.json")"
+sed -n '/^### Unpinned FROMs of the release Dockerfiles (filed, never failing; looper#234)$/,/^$/p' "$OUT/security/summary.md" |
+  grep -q '^- Dockerfile:2: FROM golang:1.25: a floating tag, not pinned by digest' || fail "not listed: $(cat "$OUT/security/summary.md")"
 pass
 
 NAME="security: a planted secret fails the build, and no report holds it"

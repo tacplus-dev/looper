@@ -264,6 +264,15 @@ looper creates both labels in a repository that lacks them.
   issue, `<!-- looper-relock -->`), which names the advisories, so no other issue is filed for them. When that
   issue is already at work, the model only comments its fixes there. A repository whose CI file the hub pins
   (cloud, cluster: `ci/pin.sh`) gets its land the same way, and the hub re-pins after it merges.
+- **A release image's base** (looper#234; the same decision, point 2) is pinned by the same maintenance. Each
+  `FROM` of a Dockerfile a release builds (every one but a CI image's, under `ci/`, and a test's), a builder
+  stage's too, at a floating tag (`alpine:3.24`, `gcr.io/distroless/cc-debian13`, `busybox`: `latest` when it names
+  no tag) is pinned at its tag's digest now (`alpine:3.24@sha256:…`), on the line it is written on: a global `ARG`'s
+  default where the `FROM` names it (`ARG BASE_IMAGE=…`, `FROM ${BASE_IMAGE}`). It lands with the CI re-pin, in the
+  same commit and land. From then on it is a `FROM` by digest, moved to its tag's digest each night as any is (an
+  `ARG`'s default too). A ref built of `ARG`s (`build:${TACPLUS_LINE}`), or named by an `ARG` with no default, is
+  unread (`relock-unread.txt`: the scan's model checks it), never guessed; looper-scan files each that stays
+  unpinned ([Security checks](#security-checks)).
 
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`, on GitLab `.../-/issues/N`) in
@@ -385,6 +394,7 @@ tests/repo-looper.test.sh      # other-repo-half-approved: the prompt's rule 1 f
 tests/repo-looper.test.sh      # prompt-trace-rule, scan-trace: the rule in the work prompt, the scan's check on main and its item 5
 tests/repo-looper.test.sh      # scan-blocked-on: STATE.md's Blocked on read against the issues' states, the closed ones the scan's item 6 (#132)
 tests/repo-looper.test.sh      # scan-relock: the pins behind their line's newest patch or their tag's digest moved, one approved bug filed and the relock queued on its branch, which the manager lands; queued already, left; a newer patch, the open bug's next relock; none behind, or the releases unread, nothing filed (#212)
+tests/repo-looper.test.sh      # scan-pin-from: a release Dockerfile's floating FROMs (a builder stage, a global ARG's default, no tag as latest) pinned at their tags' digests where they are written, as one land; a CI image's and a test's Dockerfiles not; a ref of ARGs or of an ARG with no default unread; the next night a pinned ARG's default moved to its tag's digest (#234)
 tests/repo-looper.test.sh      # scan-maintenance: build.lock's CI image at its line's floating tag, and a FROM at a dated tag, moved to the line's newest dated build by digest (its line from the release branch holding its commit), every file naming the old ref with it but markdown; the model's CI tool fixes (a bump, an exception) landed with them as one land on one issue naming the advisories, its other changes left out; at work already, the model told and nothing pushed; a dated pin of no line unread (#226)
 ```
 
@@ -1596,6 +1606,15 @@ Every finding has a `scope`, where it is:
   scan's to file as any HIGH or CRITICAL one, and fail no run: no land, no nightly, no release. An exception still
   accepts one.
 
+**An unpinned `FROM` of a release Dockerfile is filed, never failing** (looper#234; the same decision's point 2:
+immutable refs only, never a floating tag). Every run reads each `FROM` of each Dockerfile a release builds (every one
+but a CI image's, under `ci/`, and a test's, under a `test`, `tests` or `testdata` directory), a builder stage's too,
+a global `ARG`'s default where a `FROM` names it (`ARG BASE_IMAGE=alpine:3.24`, `FROM ${BASE_IMAGE}`). One whose image
+is not named by digest is a HIGH finding of tool `pins`, kind `pin`, id `unpinned-from`, at the `FROM`'s line: in the
+summary's "Unpinned FROMs", the nightly scan's to file as any HIGH one, failing no run, as the hub's bugs pin the
+repositories that float today (an exception still accepts one). The nightly maintenance pins it (below, Bugs and
+the nightly scan). A ref an `ARG` with no default names is not read (the summary's notes).
+
 The build image and the tool binaries a repository's own pipeline scans (its `ci/security.sh`: `govulncheck
 -mode=binary` on `bin/`, Trivy on the image its jobs run in) are CI tooling under the same policy: a repository's
 `ci/security.sh` reports them and fails only on what ships (tacplus-dev/cloud, cluster, fleet-seatrials, fleet-dev:
@@ -1689,7 +1708,7 @@ are filed the same way; a baselined finding is never new. An issue's run is hand
 ```sh
 looper-scan run | report | local DIR | sbom SOURCE DIR | image ROOT DIR   # the jobs; image: the Go binaries of an image (the Dockerfile's last step); local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them), its reports in a temporary directory its summary names (or BUILD_OUT/security, written once the scan is done): never in the tree it scans (looper#161)
 looper-scan baseline FINDINGS > security-baseline.json  # a run's findings as the repository's recorded baseline
-tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, the same pin in CI tooling passes, listed (looper#225: a module under ci/, a CI image's base image in a nightly; the same image shipped fails), an unexpired exception passes, an expired or incomplete one fails, one scoped by a where accepts there only (a path, a glob; not another file; unscoped warns; an unknown key fails), generated code, the last nightly's (looper#211: a finding a land's build saw first is new to the next nightly, and standing after it), a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), a land (looper#180: one adding no blocking finding passes on a red base, its findings standing; one adding one fails on it alone; standing by tool, rule and file up to the base's count; a nightly and a release fail on a standing one; a base no build published, its nearest published ancestor's, else the last nightly's (looper#217); none of these, every one fails), the report (latest and its commit's, a nightly's as the last nightly's too; a security job that left no findings: a summary saying so as the latest, its run, why and the last report, carried on, the findings left, red, looper#210; a summary's run under its header), a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
+tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, the same pin in CI tooling passes, listed (looper#225: a module under ci/, a CI image's base image in a nightly; the same image shipped fails), an unexpired exception passes, an expired or incomplete one fails, one scoped by a where accepts there only (a path, a glob; not another file; unscoped warns; an unknown key fails), generated code, the last nightly's (looper#211: a finding a land's build saw first is new to the next nightly, and standing after it), a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), a land (looper#180: one adding no blocking finding passes on a red base, its findings standing; one adding one fails on it alone; standing by tool, rule and file up to the base's count; a nightly and a release fail on a standing one; a base no build published, its nearest published ancestor's, else the last nightly's (looper#217); none of these, every one fails), the report (latest and its commit's, a nightly's as the last nightly's too; a security job that left no findings: a summary saying so as the latest, its run, why and the last report, carried on, the findings left, red, looper#210; a summary's run under its header), a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, an unpinned FROM of a release Dockerfile (a builder stage, a global ARG's default) a HIGH finding never failing, one by digest, a CI image's or a test's none (looper#234), local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
 tests/repo-looper.test.sh    # scan-security-report: the scan reads the report, its prompt saying which run it is (a run's, one naming none, no report: looper#210); scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes; issue-security-report: an issue's run is handed it
 tests/go-fetch.test.sh       # the image build's Go fetches: retried, bounded, over HTTP/1.1; every Go step of the Dockerfile fetches through it, then installs from the module cache (looper#169)
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)

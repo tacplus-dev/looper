@@ -5520,7 +5520,9 @@ IT
 # carrying .looper/land, pushed as a report's --land leaves its branch, with
 # the manager's identity (no new credential), the issue looper:landing until
 # the manager's verdict. Green, its next run closes it; red, it fixes what
-# came back. A maintenance issue with its branch already on origin (queued,
+# came back. A release Dockerfile's FROM at a floating tag (looper#234: not a
+# CI image's, under ci/, nor a test's), a builder stage's and a global ARG's
+# default too, is pinned at its tag's digest with them. A maintenance issue with its branch already on origin (queued,
 # or a report's work) is left to it, its model told.
 TACPLUS_IMAGE="${TACPLUS_IMAGE_REPO:-ghcr.io/tacplus-dev/tacplus/build}"
 TACPLUS_RELEASES="${TACPLUS_RELEASES_URL:-https://api.github.com/repos/tacplus-dev/tacplus/releases?per_page=100}"
@@ -5613,7 +5615,7 @@ tacplus_dated() { # MAJOR.MINOR
 # Nothing (and 1) when it cannot be read, 3 when a dated build's line cannot
 # be told; 2 for no ref by digest.
 relock_ref() { # name:tag@sha256:... [dated]
-  local name tag otag reg d line="" nt rc
+  local name tag otag d line="" nt rc
   [[ "$1" =~ ^([A-Za-z0-9][A-Za-z0-9._/:-]*):([A-Za-z0-9_][A-Za-z0-9._-]*)@sha256:[0-9a-f]{64}$ ]] || return 2
   name="${BASH_REMATCH[1]}" tag="${BASH_REMATCH[2]}" otag="${BASH_REMATCH[2]}"
   if [[ "$name" == "$TACPLUS_IMAGE" ]]; then
@@ -5632,15 +5634,73 @@ relock_ref() { # name:tag@sha256:... [dated]
     fi
     if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then tag="$(tacplus_follow "$tag")" || return 1; fi
   fi
-  # Docker Hub's names have no registry host.
-  reg="$name"
-  if [[ "${name%%/*}" != *[.:]* && "${name%%/*}" != localhost ]]; then
-    [[ "$name" == */* ]] || reg="library/$name"
-    reg="registry-1.docker.io/$reg"
-  fi
-  d="$(image_digest "$reg:$tag")" || return 1
+  d="$(image_digest "$(registry_name "$name"):$tag")" || return 1
   if [[ "$tag" == "$otag" ]]; then echo "$name:$tag@$d its tag's digest now"
   else echo "$name:$tag@$d the ${tag%.*} line's newest patch"; fi
+}
+# An image's name as its registry serves it: Docker Hub's have no host.
+registry_name() { # name
+  local reg="$1"
+  if [[ "${1%%/*}" != *[.:]* && "${1%%/*}" != localhost ]]; then
+    [[ "$1" == */* ]] || reg="library/$1"
+    reg="registry-1.docker.io/$reg"
+  fi
+  echo "$reg"
+}
+# The FROMs of a Dockerfile that name an image (not a stage, not scratch), as
+# looper-scan's dockerfile_froms reads them (looper#234), a line each,
+# tab-separated: the FROM's line, the line its ref is written on (an ARG's,
+# for a FROM of a global ARG: `ARG BASE=alpine:3.24` then `FROM ${BASE}`),
+# the ref as written there, the ref with the global ARGs' defaults in it
+# (a `$` left where one has none), and the ARG's name (- for none).
+DOCKERFILE_FROMS_AWK='
+function unq(v) { if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2); return v }
+function subst(v,   out, tok, name, def, i) {
+  out = ""
+  while (match(v, /\$\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\}|\$[A-Za-z_][A-Za-z0-9_]*/)) {
+    tok = substr(v, RSTART, RLENGTH); out = out substr(v, 1, RSTART - 1); v = substr(v, RSTART + RLENGTH)
+    name = tok; sub(/^\$\{?/, "", name); sub(/\}$/, "", name); def = ""
+    if ((i = index(name, ":-")) > 0) { def = substr(name, i + 2); name = substr(name, 1, i - 1) }
+    if ((name in arg) && arg[name] != "") out = out arg[name]; else if (def != "") out = out def; else out = out tok
+  }
+  return out v
+}
+toupper($1) == "ARG" && !seen_from {
+  for (i = 2; i <= NF; i++) if ((j = index($i, "=")) > 1) { n = substr($i, 1, j - 1); raw[n] = unq(substr($i, j + 1)); arg[n] = subst(raw[n]); at[n] = NR }
+  next
+}
+toupper($1) == "FROM" {
+  seen_from = 1; r = ""
+  for (i = 2; i <= NF; i++) if ($i !~ /^--/) { r = $i; break }
+  for (j = i + 1; j < NF; j++) if (toupper($j) == "AS") stage[tolower($(j + 1))] = 1
+  if (r == "" || r == "scratch" || (tolower(r) in stage)) next
+  n = r; sub(/^\$\{?/, "", n); sub(/\}$/, "", n)
+  if (r ~ /^\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/ && (n in raw) && raw[n] != "") print NR "\t" at[n] "\t" raw[n] "\t" arg[n] "\t" n
+  else print NR "\t" NR "\t" r "\t" subst(r) "\t-"
+}'
+dockerfile_froms() { # file
+  awk "$DOCKERFILE_FROMS_AWK" "$1" | awk -F '\t' '$4 != "scratch"'
+}
+# Whether a tracked Dockerfile is one a release builds (looper#234): not a CI
+# image's (under ci/, looper#225) nor a test's, as looper-scan reads them.
+release_dockerfile() { # path
+  case "/$1" in /ci/* | */test/* | */tests/* | */testdata/*) return 1 ;; esac
+}
+# Replaces a ref on one line of a file, where it stands whole (after a space,
+# a `=` or a quote; before a space, a quote or the line's end), and, given a
+# prefix (an ARG's `NAME=`), right after it, a quote between.
+replace_ref_on() { # file line old new [prefix]
+  local t; t="$(mktemp)"
+  awk -v l="$2" -v o="$3" -v n="$4" -v p="${5:-}" 'NR == l { s = $0; out = ""
+      while ((i = index(s, o)) > 0) {
+        b = (i > 1) ? substr(s, i - 1, 1) : substr(out, length(out), 1); a = substr(s, i + length(o), 1)
+        pre = out substr(s, 1, i - 1); q = pre; sub(/["\047]$/, "", q)
+        ok = (p == "") || (length(q) >= length(p) && substr(q, length(q) - length(p) + 1) == p &&
+                           (length(q) == length(p) || substr(q, length(q) - length(p), 1) ~ /[ \t]/))
+        if (ok && (b == "" || b ~ /[ \t="\047]/) && (a == "" || a ~ /[ \t"\047]/)) { out = out substr(s, 1, i - 1) n; s = substr(s, i + length(o)); break }
+        out = out substr(s, 1, i + length(o) - 1); s = substr(s, i + length(o))
+      }
+      $0 = out s } { print }' "$1" > "$t" && cat "$t" > "$1"; rm -f "$t"
 }
 # Replaces every occurrence of a string in a file, as it is.
 replace_in() { # file old new
@@ -5652,7 +5712,7 @@ replace_in() { # file old new
 # ("<file>: <from> → <to> (<why>)"), each pin it could not read one of the
 # unread file. Returns 0 whether or not anything moved.
 relock() { # dir record unread
-  local dir="$1" f ref v nv moves unread from to
+  local dir="$1" f ref v nv moves unread from to fl pl raw an
   : > "$2"; : > "$3"
   # A pin file moves whole or not at all: its tacplus and its image together.
   moves="$(mktemp)"; unread="$(mktemp)"
@@ -5678,9 +5738,20 @@ relock() { # dir record unread
   done
   rm -f "$moves" "$unread"
   while IFS= read -r f; do
+    # A release Dockerfile's FROM at a floating tag (looper#234), a builder
+    # stage's too: pinned at its tag's digest, where it is written.
+    if release_dockerfile "$f"; then
+      while IFS=$'\t' read -r fl pl raw ref an; do
+        [[ -n "$ref" && "$ref" != *@* ]] || continue
+        if [[ "$ref" == *'$'* ]]; then echo "$f:$fl: FROM $ref: an ARG with no default names it: not pinned" >> "$3"
+        elif [[ "$raw" != "$ref" ]]; then echo "$f:$pl: $raw ($ref): a ref built of ARGs: not pinned (pin it by hand, by digest)" >> "$3"
+        else pin_one "$dir" "$f" "$pl" "$ref" "$2" "$3" "${an#-}"; fi
+      done <<<"$(dockerfile_froms "$dir/$f" | awk -F '\t' '!seen[$2 FS $3]++')"
+    fi
+    # Every FROM by digest, written in it or in a global ARG's default.
     while read -r ref; do
       relock_one "$dir" "$f" "$ref" "$2" "$3"
-    done < <(sed -n -E 's/^[[:space:]]*FROM[[:space:]]+(--[^[:space:]]+[[:space:]]+)*([^[:space:]]+@sha256:[0-9a-f]{64}).*$/\2/Ip' "$dir/$f" | awk '!seen[$0]++')
+    done <<<"$(dockerfile_froms "$dir/$f" | awk -F '\t' '$3 == $4 && $4 ~ /@sha256:[0-9a-f]+$/ && !seen[$4]++ { print $4 }')"
   done < <(git -C "$dir" ls-files -- 'Dockerfile' '*/Dockerfile' 'Dockerfile.*' '*/Dockerfile.*' '*.Dockerfile' 'Containerfile' '*/Containerfile')
   # A moved ref moves wherever else it is named (looper#226), but in markdown.
   moves="$(sed -n -E 's/^[^ ]+: ([^ ]+@sha256:[0-9a-f]{64}) → ([^ ]+@sha256:[0-9a-f]{64}) \(.*$/\1 \2/p' "$2" | awk '!seen[$0]++')"
@@ -5693,6 +5764,17 @@ relock() { # dir record unread
     done < <(git -C "$dir" grep -lzIF -e "$from" -- . 2>/dev/null)
   done <<<"$moves"
   return 0
+}
+# A floating FROM's ref (looper#234) pinned at its tag's digest now (its
+# tag, latest when it names none), on the line it is written on.
+pin_one() { # dir file line ref record unread [arg]
+  local name="$4" tag=latest d
+  if [[ "${4##*/}" == *:* ]]; then name="${4%:*}" tag="${4##*:}"; fi
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._/:-]*$ && "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] ||
+    { echo "$2:$3: $4: not an image's name and tag" >> "$6"; return 0; }
+  d="$(image_digest "$(registry_name "$name"):$tag")" || { echo "$2:$3: $4: its tag's digest could not be read" >> "$6"; return 0; }
+  replace_ref_on "$1/$2" "$3" "$4" "$name:$tag@$d" "${7:+$7=}"
+  echo "$2: $4 → $name:$tag@$d (a floating FROM, pinned at its tag's digest now)" >> "$5"
 }
 relock_one() { # dir file ref record unread [dated]
   local out new why rc=0
@@ -5720,8 +5802,9 @@ $( [[ -s "$1" ]] && sed 's/^/- /' "$1" || echo "- No pin is behind.")
 $(maint_tools "$3")
 
 Every gate, compiler and security check of this repository runs in its pinned build image: a pin behind its line's
-newest build keeps them on an image whose fixes the line has released, and a FROM behind its tag ships a base
-without its fixes. A CI tool's advisory is fixed by its pin, else accepted for 14 days for that binary
+newest build keeps them on an image whose fixes the line has released, a FROM behind its tag ships a base
+without its fixes, and a release's FROM at a floating tag ships whatever that tag names the day it is built
+(tacplus-dev/looper#234). A CI tool's advisory is fixed by its pin, else accepted for 14 days for that binary
 (tacplus-dev/roadmap decisions/security-gates-ship-only-2026-11-23.md).
 
 ## Fix
@@ -5820,7 +5903,8 @@ relock_item() { # run-dir
 4. Pins that break the project's rule: a tacplus floor or base image that is not the latest released
    MAJOR.MINOR line it should follow. A pin's patch, dated build and digest are the looper's (tacplus-dev/looper#212,
    #226): it read main's pins (each pin file's \`build_image:\` and \`tacplus:\`, each Dockerfile FROM by digest, and
-   every file naming them) against their lines' newest patches and builds and their tags' digests now; file nothing for those.
+   every file naming them) against their lines' newest patches and builds and their tags' digests now, and pinned each
+   release Dockerfile's FROM at a floating tag at its tag's digest (#234); file nothing for those.
 IT
   if [[ ! -s "$run/relock.txt" ]]; then echo "   None is behind."
   elif [[ -n "$MAINT_HELD" ]]; then echo "   Behind ($run/relock.txt): the maintenance land is #$MAINT_N, already at work."

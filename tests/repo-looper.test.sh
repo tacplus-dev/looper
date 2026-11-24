@@ -244,6 +244,16 @@ case "$url" in
     k="${url##*/compare/}"; k="$FIX/compare/${k//\//_}"
     if [[ -f "$k" ]]; then reply 200 "{\"status\":\"$(cat "$k")\"}"; else reply 404 '{"message":"Not Found"}'; fi
     exit 0 ;;
+  # Docker Hub (looper#234): $FIX/registry/docker.io/<name>/<tag>, behind its own challenge.
+  https://auth.docker.io/token*) reply 200 '{"token":"hub"}'; exit 0 ;;
+  https://registry-1.docker.io/v2/*/manifests/*)
+    k="${url#https://registry-1.docker.io/v2/}"; k="$FIX/registry/docker.io/${k%%/manifests/*}/${k##*/manifests/}"
+    [[ -f "$k" ]] || { reply 404 '{"errors":[{"code":"MANIFEST_UNKNOWN"}]}'; exit 0; }
+    if [[ " ${hdrs[*]-} " != *" Authorization: Bearer hub "* ]]; then
+      reply 401 'WWW-Authenticate: Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/x:pull"'; exit 0
+    fi
+    echo "$url $(cat "$k")" >> "$FIX/image-reads"
+    reply 200 "Docker-Content-Digest: $(cat "$k")"; exit 0 ;;
   https://ghcr.io/v2/*/manifests/*)
     k="${url#https://ghcr.io/v2/}"; k="$FIX/registry/${k%%/manifests/*}/${k##*/manifests/}"
     [[ -f "$k" ]] || k="$FIX/image-digest"
@@ -4081,6 +4091,73 @@ OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited 
 d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
 has "$(cat "$d/relock-unread.txt")" "Dockerfile: $B:20261101-fffffff@$(dg b): its line could not be told: no tacplus release branch holds its commit"
 [[ ! -s "$d/relock.txt" ]] || fail "moved: $(cat "$d/relock.txt")"
+pass
+
+# A release Dockerfile's FROM at a floating tag (looper#234), a builder
+# stage's and a global ARG's default too, is pinned at its tag's digest by the
+# nightly maintenance (latest for a FROM with no tag), on the line it is
+# written on, and lands with the CI re-pin as one land; a CI image's
+# Dockerfile (ci/) and a test's are not a release's; a ref built of ARGs, or
+# of an ARG with no default, is unread. The next night, a pinned ARG's
+# default moves to its tag's digest then, as a FROM by digest does.
+scenario scan-pin-from
+templates; : > "$FIX/scan.sh"
+dg() { printf "sha256:%s" "$(printf "$1%.0s" {1..64})"; }
+mkdir -p "$FIX/seed/ci" "$FIX/seed/tests/fixture"
+cat > "$FIX/seed/Dockerfile" <<'DF'
+ARG BASE_IMAGE="debian:trixie-slim"
+ARG LINE=2.6
+FROM golang:1.25 AS build
+FROM ghcr.io/tacplus-dev/base:nonroot AS rootfs
+FROM ghcr.io/tacplus-dev/other:${LINE} AS other
+FROM $NODEF AS nodef
+FROM ${BASE_IMAGE}
+COPY --from=build /out /
+FROM busybox
+FROM build
+DF
+printf 'FROM debian:12
+' > "$FIX/seed/ci/Dockerfile"; printf 'FROM busybox
+' > "$FIX/seed/tests/fixture/Dockerfile"
+printf 'full:\n  run: "true"\n' > "$FIX/seed/gates.yaml"
+git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm floating && git -C "$FIX/seed" push -q origin main
+r="$FIX/registry/docker.io/library"; mkdir -p "$r/golang" "$r/debian" "$r/busybox" "$FIX/registry/tacplus-dev/base"
+dg a > "$r/golang/1.25"; dg b > "$r/debian/trixie-slim"; dg c > "$r/busybox/latest"; dg d > "$FIX/registry/tacplus-dev/base/nonroot"
+dg e > "$r/debian/12"
+main0="$(origin rev-parse main)"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ "$(cat "$d/relock.txt")" == "Dockerfile: golang:1.25 → golang:1.25@$(dg a) (a floating FROM, pinned at its tag's digest now)
+Dockerfile: ghcr.io/tacplus-dev/base:nonroot → ghcr.io/tacplus-dev/base:nonroot@$(dg d) (a floating FROM, pinned at its tag's digest now)
+Dockerfile: debian:trixie-slim → debian:trixie-slim@$(dg b) (a floating FROM, pinned at its tag's digest now)
+Dockerfile: busybox → busybox:latest@$(dg c) (a floating FROM, pinned at its tag's digest now)" ]] ||
+  fail "relock.txt: $(cat "$d/relock.txt" 2>&1)"
+has "$(cat "$d/relock-unread.txt")" 'Dockerfile:5: ghcr.io/tacplus-dev/other:${LINE} (ghcr.io/tacplus-dev/other:2.6): a ref built of ARGs: not pinned'
+has "$(cat "$d/relock-unread.txt")" 'Dockerfile:6: FROM $NODEF: an ARG with no default names it: not pinned'
+[[ "$(labels alpha 5)" == "approved,bug,looper:landing" ]] || fail "#5 labels $(labels alpha 5)"
+has "$(body alpha 5)" "- Dockerfile: busybox → busybox:latest@$(dg c)"
+[[ "$(origin rev-parse main)" == "$main0" ]] || fail "the scan moved main: $(origin log --oneline main)"
+[[ "$(origin diff --name-only main looper/alpha-5^ | paste -sd' ')" == "Dockerfile" ]] || fail "the land: $(origin diff --stat main looper/alpha-5^)"
+[[ "$(origin show looper/alpha-5^:Dockerfile)" == "ARG BASE_IMAGE=\"debian:trixie-slim@$(dg b)\"
+ARG LINE=2.6
+FROM golang:1.25@$(dg a) AS build
+FROM ghcr.io/tacplus-dev/base:nonroot@$(dg d) AS rootfs
+FROM ghcr.io/tacplus-dev/other:\${LINE} AS other
+FROM \$NODEF AS nodef
+FROM \${BASE_IMAGE}
+COPY --from=build /out /
+FROM busybox:latest@$(dg c)
+FROM build" ]] || fail "Dockerfile: $(origin show looper/alpha-5^:Dockerfile)"
+manage
+has "$(landed Dockerfile)" "FROM golang:1.25@$(dg a) AS build"
+# The next night: the ARG's default by digest moves to its tag's digest now.
+rm -rf "$FIX"/project/looper-runs/*-scan; dg f > "$r/debian/trixie-slim"
+jq '.state = "CLOSED"' "$FIX/issues/alpha-5.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-5.json"
+OUT="$(looper -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+d="$(ls -d "$FIX"/project/looper-runs/*-scan)"
+[[ "$(cat "$d/relock.txt")" == "Dockerfile: debian:trixie-slim@$(dg b) → debian:trixie-slim@$(dg f) (its tag's digest now)" ]] ||
+  fail "relock.txt: $(cat "$d/relock.txt" 2>&1)"
+has "$(origin show looper/alpha-6^:Dockerfile)" "ARG BASE_IMAGE=\"debian:trixie-slim@$(dg f)\""
 pass
 
 # A build is keyed by (repo, commit, gate set, base) (looper#134). Two requests
