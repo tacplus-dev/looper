@@ -1,0 +1,400 @@
+= thinking_tokens
+= thinking_tokens
+> Bash which just python3 shellcheck jq gh openssl; python3 --version; sed -n 980,1010p tests/looper-build.test.sh; grep -n "^build()" -A15 tests/looper-build.test.sh
+< /usr/local/bin/just /opt/venv/bin/python3 /usr/bin/jq /usr/local/bin/gh /usr/bin/openssl Python 3.13.5 verdict_is pass if build BUILD_SHA="${SHA[pass]}" BUILD_WAIT=3h -- gates 2>"$TMP/err"; then fail "built"; fi verdict_is "fail: BUILD_WAIT '3h' is not a number of seconds" pass  # A gate that hangs ...
+= thinking_tokens
+= thinking_tokens
+> Bash (nohup tests/looper-build.test.sh > /tmp/lb.log 2>&1 &) ; (nohup tests/looper-recap.test.sh > /tmp/lr.log 2>&1 &); sed -n 1,60p tests/looper-recap.test.sh
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # looper-recap (looper#57) against recorded API fixtures (tests/recap/: GitLab's # jobs and job logs, gh's repositories and workflow runs, and the recaps of # earlier nights) through stub curl, gh and gcloud:...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 5790,5800p repo-looper; grep -n "^forge_[a-z_]*()" looper-lib.sh repo-looper | head -50; sed -n 5992,6060p repo-looper
+<   echo "$2: $3 → $new ($why)" >> "$4" } # The open maintenance (relock) issue of the repository, if any. relock_issue() {   forge_issue_list "$REPO" open 100 number,body "[.[] | select(.body // \"\" | contains(\"$RELOCK_MARK\")) | .number] | min // empty" } relock_body() { # record main tools   cat ...
+= thinking_tokens
+= thinking_tokens
+Now writing the code, starting with the `looper-spec` validator and its tests.
+> Bash sed -n 247,270p looper-lib.sh; sed -n 335,350p looper-lib.sh; sed -n 520,534p looper-lib.sh; cat /tmp/lb.log | tail -3; tail -3 /tmp/lr.log
+< forge_issue_view() { # repo n fields jq   case "$LOOPER_FORGE" in     github) gh issue view "$2" --repo "$LOOPER_ORG/$1" --json "$3" --jq "$4" ;;     gitlab) local i; i="$(gl_api GET "$(gl_project "$1")/issues/$2")" || return 1             gl_issues <<<"$i" | jq -r "$4" ;;   esac }  # A repository's...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Write /builds/looper/looper/issues/240/looper-spec
+< File created successfully at: /builds/looper/looper/issues/240/looper-spec (file state is current in your context — no need to Read it back)
+= thinking_tokens
+= thinking_tokens
+> Write /builds/looper/looper/issues/240/tests/looper-spec.test.sh
+< File created successfully at: /builds/looper/looper/issues/240/tests/looper-spec.test.sh (file state is current in your context — no need to Read it back)
+> Bash chmod +x looper-spec tests/looper-spec.test.sh && tests/looper-spec.test.sh
+< ok a machine type ok cpu and memory: the smallest c4a machine with both; vm on ok every mistake named, a line each, exit 1 ok fit: the fewest vCPUs, then the least memory, of the family looper-spec: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Validator passes its tests. Next: the planner reading each project's looper.yaml in `looper-dispatch plan`.
+> Bash grep -n "contents" tests/looper-dispatch.test.sh | head -20; grep -n "^NAME=" tests/looper-dispatch.test.sh | head -80
+< 115:  # A file of a repository's main (looper#90): $FIX/contents/<repo>-<path>, else HTTP 404. 116:  api\ repos/*/contents/*) 117:    p="${cmd#api repos/*/}"; f="$FIX/contents/${p%%/*}-${p#*/contents/}" 1103:mkdir -p "$FIX/contents"; echo "build: x" > "$FIX/contents/alpha-build.lock" 1130:mkdir -p "...
+> Bash sed -n 1,30p tests/looper-dispatch.test.sh; sed -n 100,125p tests/looper-dispatch.test.sh; sed -n 1090,1170p tests/looper-dispatch.test.sh; tail -20 tests/looper-dispatch.test.sh
+< #!/usr/bin/env bash # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # looper-dispatch run: it starts the looper pipeline only for a repository with # a ready issue and no looper job of its own created, pending, waiting for its # resource_group or running (looper#16). A stub `...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 30,100p tests/looper-dispatch.test.sh; grep -n "^scenario()\|^issue()\|^plan()\|^dispatch()\|^jobs()\|^job_of\|^tags_of\|^split_plan" -A6 tests/looper-dispatch.test.sh | head -80
+< e="$FIX/http-${cmd//[ \/]/-}" if [[ -f "$e" ]] && read -r c s < "$e" && (( c > 0 )); then   echo "$((c - 1)) ${s:-502}" > "$e"   [[ "$cmd" != api\ * ]] || echo '{"message":"Server Error"}'   # gh api prints the body too   echo "HTTP ${s:-502}: Server Error (https://api.github.com/search/issues?q=lab...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='tests/looper-dispatch.test.sh' s=open(p).read() s=s.replace('''cmd="$1 $2"; shift 2 echo "$cmd" >> "$FIX/gh"''','''cmd="$1 $2"; shift 2; args="$*" echo "$cmd" >> "$FIX/gh"''',1) old='''    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; echo '{"type":"file"}';...
+< 1059:APPS=(LOOPER_TOKEN="$TMP/bin/looper-token-stub" LOOPER_REPORT_APP_ID=7 GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/r)
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-dispatch' s=open(p).read() old='''    for repo in $landing; do [[ "$managed" == *" $repo "* ]] || managed+="$repo "; done ''' new='''    for repo in $landing; do [[ "$managed" == *" $repo "* ]] || managed+="$repo "; done     for repo in $managed; do spec_log "$repo"; done...
+= task_started
+= task_notification
+< ok ci-control ok apps-no-pat ok plan-spec ok no-install looper-dispatch: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-dispatch' s=open(p).read() old='''# the jobs' too. With none to plan, one job that says so: a child pipeline has # at least one.''' new='''# the jobs' too. With none to plan, one job that says so: a child pipeline has # at least one. Each repository it plans for, its VM s...
+<  looper-dispatch               | 34 ++++++++++++++++++++++++++++++++--  tests/looper-dispatch.test.sh | 29 +++++++++++++++++++++++++++--  2 files changed, 59 insertions(+), 4 deletions(-)
+Planner part done and tested. Checkpointing, then adding the per-build use measurement to the gates job.
+> Bash /usr/local/bin/repo-looper --repo looper --issue 240 --checkpoint "looper-spec (format, validation, fit) with tests; the planner logs each planned repo's looper.yaml (vm_spec/spec_log in looper-dispatch) with tests. Left: gates job logs its peak use (looper-build), recap drift check (looper-recap co...
+< [2026-11-24T22:56:55Z] checkpoint of #240 (a step) pushed to looper/looper-240:  6 files changed, 751 insertions(+), 4 deletions(-)
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "BUILD_GATES_IDLE=\"\|^BUILD_[A-Z_]*=\"\${" looper-build | head; grep -n "BUILD_GATES_IDLE" looper-build | head
+< 54:BUILD_ORG="${BUILD_ORG:-tacplus-dev}" 55:BUILD_GITHUB_URL="${BUILD_GITHUB_URL:-https://github.com}" 56:BUILD_GITHUB_API="${BUILD_GITHUB_API:-https://api.github.com}" 57:BUILD_OUT="${BUILD_OUT:-$PWD}" 58:BUILD_RUNNER_TAGS="${BUILD_RUNNER_TAGS:-arm64, build}" 59:BUILD_REGISTRY="${BUILD_REGISTRY:-us...
+Now the test for the gates' use line, then the code.
+> Bash python3 - <<'EOF' p='tests/looper-build.test.sh' s=open(p).read() old='''case_commit nopin "$PASS_GATES"''' new='''case_commit busy 'gates:     printf "usage_usec 7000000\\n" > "$BUILD_CGROUP/cpu.stat"; sleep 2     mkdir -p target && head -c 3145728 /dev/zero > target/blob' "$LOCK" case_commit nopin...
+<   [[ -z "${BUILD_VERIFY_SINCE:-}" || "$BUILD_VERIFY_SINCE" =~ ^[0-9a-f]{40}$ ]] ||     verdict fail "BUILD_VERIFY_SINCE '$BUILD_VERIFY_SINCE' is not a full commit hash"   [[ "${BUILD_VERIFY_RESULT:-}" =~ ^(pass|fail)?$ ]] || verdict fail "BUILD_VERIFY_RESULT '$BUILD_VERIFY_RESULT' is not pass or fai...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-build' s=open(p).read() old='''BUILD_GATES_IDLE="${BUILD_GATES_IDLE:-3600}" ''' new='''BUILD_GATES_IDLE="${BUILD_GATES_IDLE:-3600}" # The gates' use, for the nightly recap's drift check of each project's VM # spec (looper#240; README: The project's VM spec): the job's cgr...
+< (Bash completed with no output)
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-build' s=open(p).read() old='''  local s mean="?" mem disk   use_sample now   s=$(( USE_T - USE_T0 )); (( s > 0 )) || s=1   [[ ! "$USE_U" =~ ^[0-9]+$ || ! "$USE_U0" =~ ^[0-9]+$ ]] || mean="$(( (USE_U - USE_U0) / s / 1000 ))"   mem="$(cat "$BUILD_CGROUP/memory.peak" 2>/dev...
+< 902:use_start() { 905:use_sample() { # [now]: sample whatever the interval 917:use_log() { 919:  use_sample now 943:  use_start 951:    use_sample 962:      use_log 968:  use_log
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n 'run_gates "' looper-build; time tests/looper-build.test.sh > /tmp/lb.log 2>&1; echo rc=$?; grep -v "^ok" /tmp/lb.log | tail -5; grep -c ^ok /tmp/lb.log
+= task_started
+= background_tasks_changed
+= task_updated
+< Command did not complete within its 120s timeout and was moved to the background (ID: bvoysu09m). Output is being written to: /builds/looper/looper/homes/looper-240/tmp/claude-61000/-builds-looper-looper-issues-240/203db88c-d5e7-4c18-92f8-b6d48803ac44/tasks/bvoysu09m.output. You will be notified whe...
+= thinking_tokens
+= thinking_tokens
+While the build test runs, I'm on the recap's drift check. Reading the recap's fixtures and report code.
+> Bash ls tests/recap tests/recap/* | head -60; sed -n 60,140p tests/looper-recap.test.sh
+< tests/recap/expected.json  tests/recap: docker expected.json gh gitlab history  tests/recap/docker: inspect.json manifest-main.json  tests/recap/gh: commit-main.json compare.json image-runs.json main-alpha.json main-gamma.json main-tacplus.json repos.json runs-looper.json runs-tacplus.json status-al...
+> Bash ls tests/recap/gitlab/tacplus-dev_build; cat tests/recap/gitlab/tacplus-dev_build/jobs-1.json | head -60; grep -n "NAME=" tests/looper-recap.test.sh
+< jobs-1.json pipeline-77.json trace-2001.txt trace-2002.txt [  {   "id": 2002,   "name": "gates",   "status": "failed",   "failure_reason": "script_failure",   "created_at": "2026-11-01T11:01:00.000Z",   "started_at": "2026-11-01T11:01:30.000Z",   "finished_at": "2026-11-01T11:31:30.000Z",   "pipelin...
+> Bash sed -n 434,540p tests/looper-recap.test.sh
+< NAME=collect-duplicate-builds rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; d="$TMP/fx/gitlab/tacplus-dev_build" jq '. + [range(78; 82) as $p | .[1] | .id = 2000 + $p | .pipeline.id = $p]' "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json" for p in 78:14:"build alpha $(printf '1%...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 140,190p looper-recap; sed -n 1425,1520p looper-recap; sed -n 1692,1760p looper-recap
+< def num(name, default):     try:         return float(ENV.get(name, default))     except ValueError:         return float(default)   T = {     "count": int(num("LOOPER_RECAP_COUNT", 3)),     "queue_p90_s": int(num("LOOPER_RECAP_QUEUE_P90", 900)),     "prepare_p90_s": int(num("LOOPER_RECAP_PREPARE_P9...
+> Bash sleep 60; cat /builds/looper/looper/homes/looper-240/tmp/claude-61000/-builds-looper-looper-issues-240/203db88c-d5e7-4c18-92f8-b6d48803ac44/tasks/bvoysu09m.output; grep -v "^ok" /tmp/lb.log | tail; grep "peak CPU" /tmp/lb.log
+< <tool_use_error>Blocked: sleep 60 followed by: cat /builds/looper/looper/homes/looper-240/tmp/claude-61000/-builds-looper-looper-issues-240/203db88c-d5e7-4c18-92f8-b6d48803ac44/tasks/bvoysu09m.output grep -v "^ok" /tmp/lb.log tail grep "peak CPU" /tmp/lb.log. To wait for a condition, use Monitor wit...
+> Bash grep -v "^ok" /tmp/lb.log | tail; grep "peak CPU" /tmp/lb.log; wc -l /tmp/lb.log
+< (security checks with the real scanners) ok gates: the build's peak CPU, memory and disk logged at its end, for the spec's drift check 91 /tmp/lb.log
+The build-use measurement passes its test. Now writing the recap's drift check.
+> Bash python3 - <<'EOF' p='looper-spec' s=open(p).read() old='''        print(got[0])         return 0''' new='''        print(f"{got[0]} {got[1]} {got[2]:g}")         return 0''' assert old in s; s=s.replace(old,new,1) old='''#                                the smallest machine type of FAMILY with at le...
+< looper-spec: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 1553,1692p looper-recap; sed -n 396,410p looper-recap
+< def report(night, classes, sdir, cov):     n = night["night"]     adv = advice(sdir, n)     cv = covered(cov, {x["key"] for x in classes["recurring"]})     L = [f"# Recap of {n}", "",          f"The 24 hours to {night['window']['until']}, gathered by `looper-recap collect` and classified against "  ...
+Now the recap edits.
+> Bash python3 - <<'EOF' p='looper-recap' s=open(p).read() def rep(old,new):     global s     assert s.count(old)==1, old     s=s.replace(old,new,1) rep('''    "request_margin": num("LOOPER_RECAP_REQUEST_MARGIN", 0.10), }''','''    "request_margin": num("LOOPER_RECAP_REQUEST_MARGIN", 0.10),     "spec_high"...
+< 1318:def actions(start, until, sources, items):
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-recap' s=open(p).read() new=r'''# --- each project's VM spec against its builds (looper#240) --------------------  SPEC = ENV.get("LOOPER_SPEC") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "looper-spec")   def spec_of(repo):     """A repository's VM spec,...
+< ok
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 236,240p looper-recap && python3 - <<'EOF' p='looper-recap' s=open(p).read() def rep(old,new):     global s     assert s.count(old)==1, old     s=s.replace(old,new,1) rep('''                      + f"\\n\\nThe peak, the builds running at once summed (each build's own peak: an upper bound): CP...
+<         return None     return {"n": len(v), "p50": pct(v, 50), "p90": pct(v, 90), "max": max(v)}   def whole(x): parsed
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-recap' s=open(p).read() old='''    return ", ".join(f"{k} {'?' if peak[f'{k}_{u}'] is None else str(peak[f'{k}_{u}']) + u.capitalize()}"                      for k, u in (("cpu", "m"), ("memory", "mi"), ("disk", "mi")))''' new='''    return ", ".join(f"{k} {'?' if peak[f]...
+< 93:#   looper-recap report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
+Now the header docs of looper-recap, then its test scenario.
+> Bash python3 - <<'EOF' p='looper-recap' s=open(p).read() def rep(old,new):     global s     assert s.count(old)==1, old     s=s.replace(old,new,1) rep('''#       is not read: nothing builds there (looper#85). A source it''','''#       is not read: nothing builds there (looper#85). Each project's VM #    ...
+< 367:variant() { # trace-id sed-script jq-filter 368-  rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; local d="$TMP/fx/gitlab/tacplus-dev_looper" 369-  [[ -z "$2" ]] || sed -i -E "$2" "$d/trace-$1.txt" 370-  jq "${3:-.}" "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json" 371-  FX="...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='tests/looper-recap.test.sh' s=open(p).read() old='''  *) echo "stub gh: unexpected $*" >&2; exit 3 ;; esac EOF''' new='''  # A repository's VM spec (looper#240): $FX/gh/spec-<repo>.yaml, else HTTP 404.   "api repos/tacplus-dev/"*/contents/looper.yaml) r="${2#repos/tacplus-dev/}"...
+= task_started
+= task_notification
+< ok image-main-not-heads-build jq: error: syntax error, unexpected '/', expecting end of file (Unix shell quoting issues?) at <top-level>, line 1: /builds/looper/looper/homes/looper-240/tmp/tmp.olObEL9ByC/v.json jq: 1 compile error FAIL spec-drift: tacplus's proposal:   tests/recap/expected.json | 5 ...
+= thinking_tokens
+= thinking_tokens
+> Bash sed -i 's/\$(v -c \([^)]*\))/$(jq -c \1 "$TMP\/v.json")/g' tests/looper-recap.test.sh && grep -c 'v -c' tests/looper-recap.test.sh; tests/looper-recap.test.sh 2>&1 | tail -3
+= task_started
+= task_notification
+< 0 ok image-main-is-heads-build ok image-main-not-heads-build FAIL spec-drift: tacplus's proposal: {"change":["machine: c4a-standard-8 → c4a-highmem-8","disk: 30 → 60"],"cpu":8,"disk_gb":60,"machine":"c4a-highmem-8","memory_gb":64}
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -i 's|disk = max(10, math.ceil(need\["disk"\] / 10) \* 10) if "disk" in moved|disk = max(10, math.ceil(round(need["disk"], 3) / 10) * 10) if "disk" in moved|' looper-recap && grep -n 'round(need\["disk"\]' looper-recap && tests/looper-recap.test.sh 2>&1 | tail -3
+= task_started
+= task_notification
+< 1418:        disk = max(10, math.ceil(round(need["disk"], 3) / 10) * 10) if "disk" in moved else spec["disk_gb"] ok image-main-is-heads-build ok image-main-not-heads-build FAIL spec-drift: tacplus's proposal: {"change":["machine: c4a-standard-8 → c4a-highmem-8","disk: 30 → 60"],"cpu":8,"disk_gb":60,...
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-recap' s=open(p).read() old='''        need = {k: use[k] * (has[k] / (1000 if k == "cpu" else 1024)) / T["spec_target"] for k in read}''' new='''        need = {k: peak[pk] / (1000 if k == "cpu" else 1024) / T["spec_target"]                 for k, pk in (("cpu", "cpu_m"),...
+= task_started
+= task_notification
+< - `capacity/pods`: 1 issue waited 0.35 h for room on the normal pool (kernel#5 21 min; kernel 1.18 h); the pool was full for 1 of 1 pods; queue p90 2 min; one more c4a-standard-2 node is about $2.14 a day (threshold 1 h; the scale-up is Jody's call) (once in 7 nights; recurring if it comes back). - ...
+> Bash tests/looper-recap.test.sh 2>&1 | grep -E "^FAIL|^ok spec|expected" | head; 
+= task_started
+= task_notification
+< FAIL spec-drift: expected "VM specs (looper#240, looper.yaml against the builds' peak): alpha c4a-standard-4, a 100 GB disk: cpu 500m, memory 1024Mi, disk 2048Mi at the peak (1 build, up to 1 at once), cpu 12%, memory 6%, disk 2%: down, cpu: 4 → 1; memory: 16 → 2; disk: 100 → 10; beta not valid; tac...
+> Bash tests/looper-recap.test.sh 2>&1 | grep "VM specs" | grep -v FAIL
+= task_started
+= task_notification
+< VM specs (looper#240, looper.yaml against the builds' peak): alpha c4a-standard-4, a 100 GB disk: cpu 500m, memory 1024Mi, disk 2048Mi at the peak (1 build, up to 1 at once), cpu 12%, disk 2%, memory 6%: down, cpu: 4 → 1; memory: 16 → 2; disk: 100 → 10; beta not valid; tacplus c4a-standard-8, a 30 G...
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='looper-recap' s=open(p).read() old='''            + ", ".join(f"{k} {round(v * 100)}%" for k, v in sp["use"].items() if v is not None)''' new='''            + use_line(sp["use"])''' assert s.count(old)==1; s=s.replace(old,new,1) old='''                      + ", ".join(f"{k} {ro...
+= task_started
+= task_notification
+< ok spec-drift looper-recap: all scenarios pass
+= thinking_tokens
+= thinking_tokens
+> Bash git diff tests/recap/expected.json; grep -v "^ok" /tmp/lb.log | tail -3
+< diff --git a/tests/recap/expected.json b/tests/recap/expected.json index 8e97a5f..92e3985 100644 --- a/tests/recap/expected.json +++ b/tests/recap/expected.json @@ -1256,6 +1256,7 @@    "gitlab:tacplus-dev/looper": "ok",    "image": "ok"   }, + "specs": {},   "thresholds": {    "backlog": 3,    "bui...
+> Bash tail -5 /builds/looper/looper/homes/looper-240/tmp/claude-61000/-builds-looper-looper-issues-240/203db88c-d5e7-4c18-92f8-b6d48803ac44/tasks/bvoysu09m.output; tail -3 /tmp/lb.log; pgrep -u $(id -u) -f looper-build.test | head
+< 1012:  run_gates "$src" "$run" || rc=$? ok security: without the generated crates, cargo-deny checks the Cargo.lock's crates alone, and the summary says so ok security: cargo-deny that cannot run fails the run with its reason ok security: an unexpired exception passes; an expired one, or one that do...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Recap drift check passes. Now the filing step: the roadmap's nightly scan files each drift as a bug in its project's repository. Looking at how the scan's recap path is tested.
+> Bash grep -n "recap" tests/repo-looper.test.sh | head -30
+< 1599:# only the roadmap's suggestion pass and recap run on the high model. 1928:# And the nightly recap (looper#57): gathered and classified before the model 1932:# leaves the night's recap as it is. Each job logs its disk at the end. 1934:mkdir -p "$FIX/seed/suggestions/recap" 1936:echo '{"night": ...
+> Bash sed -n 1900,2045p tests/repo-looper.test.sh
+< pp="$(cat "$d/prompt.md")" has "$pp" "6. STATE.md's Blocked on (tacplus-dev/looper#132): the state of each issue it names is $d/blocked-on.txt" has "$pp" "closed: tacplus-dev/alpha#2 tacplus-dev/alpha#5." has "$pp" "file one issue for them, labelled \`bug\` and \`approved\`" rm -rf "$d" jq '.state =...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n '"issue create"\|issue create)\|"issue list"\|issue list)\|issue comment)' tests/repo-looper.test.sh | head; grep -n "^looper()" -A12 tests/repo-looper.test.sh
+< 84:case "$cmd" in "issue create"|"issue edit"|"issue comment") exec 9>"$FIX/issues.lock"; flock 9 ;; esac 121:  "issue list") 128:  "issue create") 417:looper() { # [VAR=value...] -- repo-looper args 418-  local vars=(); while [[ "$1" != -- ]]; do vars+=("$1"); shift; done; shift 419-  timeout -k 10...
+> Bash sed -n 60,175p tests/repo-looper.test.sh
+<     jq -c '{data: .}' <<<"$data"; exit "$rc" ;;   # $FIX/gh-hang: GitHub does not answer (looper#112).   api\ repos/*/commits/*/statuses*) [[ ! -e "$FIX/gh-hang" ]] || sleep 60     c="${cmd#api repos/*/commits/}"; c="${c%%/*}"; cat "$FIX/statuses/$c.json" 2>/dev/null || echo '[]'; exit 0 ;; esac n="...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "trace\|jobs.json" tests/repo-looper.test.sh | head -20
+< 191:# GitLab's jobs API: $FIX/jobs.json ([{name,status,id}]) filtered by the URL's 370:[[ -f "$FIX/jobs.json" ]] || { reply 500 '{"message":"500 Internal Server Error"}'; exit 0; } 372:  */jobs\?*) reply 200 "$(jq --arg s "$(grep -oE 'scope\[\]=[a-z_]+' <<<"$url" | cut -d= -f2 | paste -sd, -)" '[.[]...
+> Bash sed -n 360,400p tests/repo-looper.test.sh; grep -n '"api ' tests/repo-looper.test.sh | head; sed -n 30,60p tests/repo-looper.test.sh
+<     exit 0 ;;   # The nightly's gates on main (looper#73): $FIX/gates/<file>.   */packages/generic/gates-*/latest/*)     if [[ -f "$FIX/gates/${url##*/}" ]]; then reply 200 "$(cat "$FIX/gates/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi     exit 0 ;;   */packages\?*)     if [[ -f ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 5418,5450p repo-looper; grep -n "^ensure_labels()" -A12 repo-looper | head -20
+<   base="$(git -C "$CHECKOUT" rev-parse HEAD)"   scan_clone || { log "scan: its clone could not be made: no model ran"; return 0; }   ctx="$( { suggest_context "$run"; recap_context "$run"; } )"   suggest_prompt "$run" "$ctx" > "$run/prompt.md"   run_claude "$run/prompt.md" "$run/claude.log" "$TIMEOU...
+> Bash grep -n "^ensure_labels\|ensure_labels()" repo-looper looper-lib.sh | head -3
+< looper-lib.sh:85:ensure_labels() { # repo [again]
+Adding the filing step to repo-looper.
+> Bash python3 - <<'EOF' p='repo-looper' s=open(p).read() def rep(old,new):     global s     assert s.count(old)==1, old     s=s.replace(old,new,1) rep('''  # What the model left is in the run's record now: its clone goes (looper#227).   scan_drop "$taken"   log "scan of $REPO finished" }  # The scan's tra...
+< 5305:plan or its runner did not start them, a backlog's what slows its manager. Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='repo-looper' s=open(p).read() old='''plan or its runner did not start them, a backlog's what slows its manager. Capacity is manual''' new='''plan or its runner did not start them, a backlog's what slows its manager. A \\`spec/<repo>/...\\` item (a project's VM spec, looper.yaml,...
+< (Bash completed with no output)
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='tests/repo-looper.test.sh' s=open(p).read() def rep(old,new):     global s     assert s.count(old)==1, old     s=s.replace(old,new,1) rep('''  "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; c...
+< 396:scenario() { # name: a fresh origin with one commit and an approved issue alpha#4 498:scenario pushed-gates-blocked 509:scenario pushed-gates-blocked-same-repo 517:scenario keeps-other-blockers 531:scenario blocked-nothing-pushed
+= thinking_tokens
+= thinking_tokens
+> Bash tail -3 /tmp/lb.log; nohup tests/repo-looper.test.sh > /tmp/rl.log 2>&1 & echo started $!
+< ok security: a land on a HISTORY.md-only head keeps main's findings standing, its nearest published ancestor's ok security: a land whose base and its ancestors published nothing compares with the last nightly's, and names its commit ok security: with no findings of the base, its ancestors or a night...
+= thinking_tokens
+= thinking_tokens
+Tests running in the background. Meanwhile, the docs: README section, gates.yaml set.
+> Bash grep -n "^#" README.md | head -80
+< 1:# looper 7:## Shape (Jody, 2026-10-26) 97:## Issues 119:### Who directs a run (prompt provenance) 157:### Priority 171:### The model per run 202:### Bug or feature 345:### Standing rules 354:### Trace propagation 401:### Managers and direct reports 547:### Build jobs 652:### Gates scaled to the di...
+> Bash sed -n 2059,2110p README.md; sed -n 1060,1105p README.md
+< ## Infrastructure  The pipeline is gitlab.com/tacplus-dev/looper. **Its jobs are pods of the in-cluster GitLab runners** (looper#84; Jody, 2026-11-04, `tacplus-dev/roadmap:decisions/only-vms-are-k8s-nodes-2026-11-04.md`: the only VMs are Kubernetes nodes; every CI job is a pod of the GitLab Kubernet...
+= thinking_tokens
+= thinking_tokens
+> Bash python3 - <<'EOF' p='README.md' s=open(p).read() def rep(old,new):     global s     assert s.count(old)==1, old     s=s.replace(old,new,1) rep('''  a control job waited for a runner behind reports, or the newest-kick rule did not hold.  **Classification, with no model**''','''  a control job waited ...
+< done
+= thinking_tokens
+= thinking_tokens
+> Bash sed -i 's/valid sizes nothing, and the nightly recap files it as a bug in its repository\./valid sizes nothing, and the nightly recap files it as a bug in its repository (one whose builds it read)./' README.md && grep -c "one whose builds it read" README.md && python3 - <<'EOF' p='gates.yaml' s=open...
+< 1 7:  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test....
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "looper-recap\|looper-suggest\|COPY" Dockerfile | head; grep -rn "looper-recap" --include=*.sh tests/planning-files.test.sh planning-files-check 2>/dev/null | head -3; grep -rn "looper-suggest looper-recap\|looper-recap looper" . --include=* 2>/dev/null | grep -v "^./.git" | head
+< 48:COPY --from=docker:29.10.0-cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d /usr/local/bin/docker /usr/local/bin/docker 81:COPY go-fetch /usr/local/lib/looper/ 226:COPY scanners/requirements.txt /opt/scanners/requirements.txt 227:COPY scanners/smoke/ /opt/scanners/smoke...
+> Bash sed -i '258s/looper-recap looper-trace/looper-recap looper-spec looper-trace/' Dockerfile && sed -n 250,268p Dockerfile; grep -n "looper-recap" tests/*.sh | grep -i docker | head
+<     printf 'package main\n\nimport (\n\t"os"\n\t"os/exec"\n)\n\nfunc main() {\n\t_ = exec.Command(os.Args[1]).Run()\n}\n' > "$g/main.go"; \     rc=0; (cd "$g" && gosec -quiet -fmt json -out /tmp/smoke.json ./...) || rc=$?; \     jq -e --argjson rc "$rc" '$rc == 1 and ([.Issues[].rule_id] | index("G2...
+= thinking_tokens
+= thinking_tokens
+Docs, gate set and image are updated. Checking on the background test runs.
+> Bash tail -3 /tmp/lb.log; grep -E "^FAIL" /tmp/lb.log /tmp/rl.log; tail -2 /tmp/rl.log; grep -c ^ok /tmp/rl.log
+< ok security: a land's Semgrep reads only the generated files its base's read differently, and takes the base's findings for the rest ok security: a recorded baseline: its findings, by tool, rule and file up to its count, are baselined, not new, wherever their lines move ok security: a baseline of 20...
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 1,40p STATE.md; grep -n "^#" STATE.md; sed -n 1,30p PROPOSALS.md
+< # State: looper  Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#234).  - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan   runs it by digest, the attested build of main, #115) is built FROM the ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Now the tacplus half (rule 1): checking tacplus for an existing issue holding looper.yaml before filing one.
+> Bash gh issue list --repo tacplus-dev/tacplus --state open --search "looper.yaml" --json number,title -q '.[]|"\(.number) \(.title)"'; gh issue list --repo tacplus-dev/tacplus --state open --search "VM spec" --json number,title -q '.[]|"\(.number) \(.title)"'; gh api repos/tacplus-dev/tacplus/contents/lo...
+< 196 Kitchensink: verify and fuzz the generator once per release; coverage check in every service build {"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"}gh: Not Found (HTTP 404) approved feature
+> Bash cat > /tmp/tacplus-body.md <<'EOF' Parent: tacplus-dev/looper#240  **Add `looper.yaml` at the repository's root: tacplus's VM spec, the pilot's first version** (tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md, point 9: each project names its own looper/builder VM in its repository, besi...
+< https://github.com/tacplus-dev/tacplus/issues/968
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+Filed tacplus-dev/tacplus#968. Now PROPOSALS.md follow-ups.
+> Bash python3 - <<'EOF' p='PROPOSALS.md' s=open(p).read() old='''## Open ''' new='''## Open - **The spec's drift measured on the VM itself** (2026-11-24, #240): the recap compares each project's `looper.yaml`   with its gates jobs' `build use at the end` lines, the builds running at once summed, each at i...
+< (security checks with the real scanners) skip security: a scanner the image lacks fails the run: the real scanners are here 10
+> Bash tail -1 /tmp/lb.log; pgrep -u $(id -u) -fa "looper-build.test" | head -2; tail -1 /tmp/rl.log
+< skip security: a scanner the image lacks fails the run: the real scanners are here 94926 /bin/bash -c source /builds/looper/looper/homes/looper-240/.claude/shell-snapshots/snapshot-bash-1795560590884-77l7ng.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'unse...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n "^- \*\*" STATE.md; grep -n "Requests against use\|#165" STATE.md | head -3
+< 5:- **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan 8:- **Works:** the kicker (`looper-dispatch`, in the image) runs as the GitLab pipeline's hourly kicker schedule, a 276:- **Released / deployed:** `main` runs as the GitLab pipeline ...
+> Bash grep -n "234" STATE.md | head; sed -n 330,371p STATE.md
+< 3:Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#234). 109:  pinned at its tag's digest in the same land, and moved nightly from then on, a ref built of `ARG`s unread (#234; looper's own 182:  `src/test/`) is listed (`test: true`), never failing, a secret ther...
+= thinking_tokens
+= thinking_tokens
+> Bash ./planning-files-check origin/main 2>&1 | tail -3; bash -n looper-build looper-dispatch repo-looper && echo syntax-ok
+< planning-files-check: ok syntax-ok
+Waiting on the two long test runs.
+> ToolSearch {"query":"select:Monitor","max_results":1}
+< 
+> Bash until grep -qE "all scenarios pass|^FAIL" /tmp/lb.log && grep -qE "all scenarios pass|^FAIL" /tmp/rl.log; do sleep 5; done; tail -2 /tmp/lb.log; grep -E "^FAIL|all scenarios" /tmp/rl.log
+= background_tasks_changed
+= task_started
+< Command running in background with ID: bowbfu0vx. Output is being written to: /builds/looper/looper/homes/looper-240/tmp/claude-61000/-builds-looper-looper-issues-240/203db88c-d5e7-4c18-92f8-b6d48803ac44/tasks/bowbfu0vx.output. You will be notified when it completes. To check interim output, use Rea...
+= thinking_tokens
+= thinking_tokens
+> Bash /usr/local/bin/looper-trace check . 2>&1 | tail -2; git status --short
+< looper-trace: /builds/looper/looper/issues/240 verdict: pass (0 handlers, 0 findings)  M Dockerfile  M PROPOSALS.md  M README.md  M gates.yaml  M looper-build  M looper-dispatch  M looper-recap  M repo-looper  M tests/looper-build.test.sh  M tests/looper-dispatch.test.sh  M tests/looper-recap.test.s...
+> Bash git add -A && git reset -q PROPOSALS.md && git commit -q -F - <<'EOF' looper.yaml: a per-project VM spec, read by the planner, right-sized by the recap (#240)  The decision to move loopers and builds onto one spot VM per project (tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md, point 9)...
+< dc0a853 PROPOSALS.md: the VM spec's follow-ups (#240) 905aea5 looper.yaml: a per-project VM spec, read by the planner, right-sized by the recap (#240) e2903f6 STATE.md: the nightly maintenance pins release FROMs by digest, and looper-scan files an unpinned one (#234)
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash git -c core.editor=true rebase -q -x 'git commit -q --amend -m "$(git log -1 --format=%B | sed "s/^Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>$/Co-Authored-By: Claude <noreply@anthropic.com>/")"' origin/main && git log -2 --format='%h %s%n%b' | grep -E "^[0-9a-f]{7}|Co-Auth"
+< a83aee2 PROPOSALS.md: the VM spec's follow-ups (#240) Co-Authored-By: Claude <noreply@anthropic.com> fa70d5b looper.yaml: a per-project VM spec, read by the planner, right-sized by the recap (#240) Co-Authored-By: Claude <noreply@anthropic.com>
+Now the STATE.md commit, then the build.
+> Bash python3 - <<'EOF' p='STATE.md' s=open(p).read() s=s.replace("Last updated: 2026-11-24 by looper (#234).","Last updated: 2026-11-24 by looper (#240).",1) old="""  `Blocked-by:` line held (#87),""" new="""  `Blocked-by:` line held (#87), each project's VM spec, `looper.yaml` (#240; README: The project...
+<   OSV-Scanner with otel v1.47.0 (GO-2026-6974) and gosec with gorilla/websocket's untagged fix (GO-2026-6278), versions   upstream did not test, smoke-scanned (#199), until a release of each requires them   ; the VM spec's drift check has no data until the next looper image runs the gates jobs (thei...
+> Bash python3 - <<'EOF' p='STATE.md' s=open(p).read() s=s.replace("""  upstream did not test, smoke-scanned (#199), until a release of each requires them   ; the VM spec's""","""  upstream did not test, smoke-scanned (#199), until a release of each requires them; the VM spec's""",1) open(p,'w').write(s) E...
+< planning-files-check: ok 6cb60b4 STATE.md: each project's VM spec, looper.yaml, read by the plan and right-sized by the recap (#240)
+> Bash nohup /usr/local/bin/repo-looper --repo looper --issue 240 --build > /tmp/build.log 2>&1 & echo $!
+< 220809
