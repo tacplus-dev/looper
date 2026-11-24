@@ -1985,8 +1985,9 @@ build_server() { # run-dir
 # - the manager's merge train, before it stages a batch (pre_land_train), for
 #   each land whose report's was not green on the main the batch starts from:
 #   all of them at once (one build each, in parallel), each red one sent back
-#   with the failure, the rest staged. A verdict job (looper#90) judges each
-#   land on its own gates already: it runs none.
+#   with the failure, the rest staged; one whose gate is queued, not about to
+#   arrive, held for the next batch, once (looper#231). A verdict job
+#   (looper#90) judges each land on its own gates already: it runs none.
 #
 # Main's gates.yaml without a pre-land, a rebase that conflicts, a land not on
 # full, no verdict (no runner, past its wait, an infrastructure failure), or a
@@ -2021,17 +2022,48 @@ pre_land_due() { # main
 }
 
 # A build's red that is its infrastructure's alone, its gates green (looper#173),
-# or its gates given no room in the build pool (looper#214): no verdict on the
-# land, said.
+# its gates given no room in the build pool (looper#214), or its pipeline
+# cancelled before a verdict (a held gate's, taken up: looper#231): no verdict
+# on the land, said.
 pre_land_infra() { # sha pipeline-id log
   local why
   if grep -q '^verdict: failure: no security verdict: ' "$3"; then why="$(sed -n 's/^verdict: failure: //p' "$3" | tail -n 1)"
+  elif build_cancelled "$1" "$2"; then why="the build was cancelled before a verdict"
   else why="$(build_infra "$1" "$2")" || why="$(build_no_room "$1" "$2")" || return 1; fi
   echo "$why" >> "$3"
 }
 
 # Why a pre-land gate has no verdict, from its log.
 pre_land_why() { grep -E '^(no verdict|no runner|verdict: |its gates job (passed|failed)|the looper did not)' "$1" | tail -n 1 | grep . || tail -n 1 "$1"; } # log
+
+# A manager's pre-land gate's state (looper#231), "<state>: <why>": ready, its
+# verdict to be read at once (build_verdict: one said, its pipeline ended, or
+# past its wait, BUILD_START or the job's end); running, about to arrive (its
+# gates job runs or has run, read with GITLAB_TOKEN; without it, its build
+# started), or triggered within PRE_LAND_GRACE; else queued (its gates job
+# waiting_for_resource behind the build project's report slots, say).
+PRE_LAND_GRACE="${LOOPER_PRE_LAND_GRACE:-300}"
+pre_land_state() { # sha pipeline-id triggered wait
+  local s started now end j g
+  s="$(build_statuses "$1" "$2")" || s=""
+  if [[ -n "$(build_said "$s")" ]]; then echo "ready: a verdict"; return; fi
+  if build_ended "$2" >/dev/null; then echo "ready: its pipeline ended"; return; fi
+  started="$(build_started "$s")"; now="$(date +%s)"; end="$(job_end)"
+  if [[ -n "$started" ]] && (( now >= started + $4 )); then echo "ready: past its wait"; return; fi
+  if [[ -z "$started" ]] && (( now >= $3 + BUILD_START )); then echo "ready: not started within $(hours "$BUILD_START")"; return; fi
+  if [[ -n "$end" ]] && (( now >= end - LAND_MARGIN )); then echo "ready: this job ends"; return; fi
+  if j="$(build_jobs_all "$2")"; then
+    g="$(jq -r '[.[] | select(.name == "gates") | .status] | first // empty' <<<"$j" 2>/dev/null)" || g=""
+    case "$g" in
+      running|success|failed) echo "running: its gates job ${g/success/passed}"; return ;;
+      "") g="no gates job yet" ;;
+      *) g="its gates job $g" ;;
+    esac
+  elif [[ -n "$started" ]]; then echo "running: started $(hours "$(( now - started ))") ago"; return
+  else g="not started"; fi
+  if (( now < $3 + PRE_LAND_GRACE )); then echo "running: triggered $(hours "$(( now - $3 ))") ago, $g"; return; fi
+  echo "queued: $g, triggered $(hours "$(( now - $3 ))") ago"
+}
 
 # The report's pre-land gate, before --land queues (looper#196). 0 to queue:
 # green (PRE_LANDED the main it was green on), none due, or no verdict, each
@@ -2074,15 +2106,24 @@ pre_land_report() { # run-dir
 
 # The manager's pre-land gates (looper#196), before a batch is staged on main:
 # of each queued land whose report's was not green on that main, all started,
-# then their verdicts. PRE_Q is the queue (queued_lands' lines) without the
-# red ones, which are sent back with the failure (post_land, exit 4).
+# then their verdicts, read together. PRE_Q is the queue (queued_lands' lines)
+# without the red ones, which are sent back with the failure (post_land, exit
+# 4), and without the held ones. A gate is waited on only while its verdict is
+# about to arrive (pre_land_state, looper#231: tacplus's manager held 15 green
+# lands for 3h, silently, on two gates queued behind 22 report jobs): one
+# queued is held, the land left out of this batch and queued, its build
+# recorded on its branch (build_record's lines) for the next batch to take
+# up, once: a land held on an earlier main is the batch's build's to judge.
+# Queued gates are waited on too when no other land would be staged. While it
+# waits it says what on, every BUILD_SAY.
 pre_land_train() { # queued lands, main
-  local q="$1" main="$2" n id sha m r rec b i rc
-  local -a pn=() pid=() psha=() pr=() pp=() pt=() pw=() prc=()
+  local q="$1" main="$2" n id sha m r rec b i rc st now said="" lands=0 queued held
+  local -a pn=() pid=() psha=() pr=() pp=() pt=() pw=() prc=() pheld=() pst=() pwhy=() waits=()
   PRE_Q="$q"
   pre_land_mapped "$main" || return 0
   while read -r _ _ n id sha; do
     [[ -n "$n" ]] || continue
+    lands=$(( lands + 1 ))
     m="$(git -C "$CHECKOUT" show "$sha:.looper/land" 2>/dev/null | sed -n "s/^$PRE_LAND=//p")" || m=""
     if [[ "$m" == "$main" ]]; then log "#$n: its pre-land gate was green on main ${main:0:7} already, at its report's --land"; continue; fi
     pre_land_tree "$sha^" || continue   # a conflict: stage_land sends it back
@@ -2090,26 +2131,71 @@ pre_land_train() { # queued lands, main
     if pre_land_due "$main"; then
       r="$(git rev-parse HEAD)"; rec="$MANAGER_RUN/$n-$id"; mkdir -p "$rec"
       if build_jobs HEAD .; then
-        b="looper/$PRE_LAND-$REPO-$n"
+        b="looper/$PRE_LAND-$REPO-$n"; held=""
+        if m="$(build_record "$b")" && [[ "$(sed -n 's/^base=//p' <<<"$m")" != "$main" ]]; then held=1
+        elif [[ -n "$m" ]] && [[ "$(git rev-parse -q --verify "$(sed -n 's/^sha=//p' <<<"$m")^{tree}" 2>/dev/null)" == "$(git rev-parse HEAD^{tree})" ]]; then
+          # Held by an earlier batch on this main: its build taken up, none started.
+          r="$(sed -n 's/^sha=//p' <<<"$m")"; BUILD_P="$(sed -n 's/^pipeline=//p' <<<"$m") $(sed -n 's/^url=//p' <<<"$m")"
+          log "#$n: its pre-land gate on main ${main:0:7}: the build job ${BUILD_P#* }, an earlier batch's, taken up"
+          pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=("$BUILD_P"); pt+=("$(sed -n 's/^triggered=//p' <<<"$m")")
+          pw+=("$(build_wait "$PRE_LAND")"); prc+=(""); pheld+=("")
+          popd >/dev/null; drop_worktree "$PL_WT"; continue
+        fi
         if get_build "$r" "$PRE_LAND" "$main" git push -q -f origin "$r:refs/heads/$b"; then
           log "#$n: its pre-land gate on main ${main:0:7}: the build job ${BUILD_P#* }${BUILD_REUSED:+ (reused, $(reused_what "$BUILD_REUSED"))}"
-          pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=("$BUILD_P"); pt+=("$(date +%s)"); pw+=("$BUILD_W"); prc+=("")
+          pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=("$BUILD_P"); pt+=("$(date +%s)"); pw+=("$BUILD_W"); prc+=(""); pheld+=("$held")
         else
           log "#$n: its pre-land gate is not run: $BUILD_P"; git push -q origin --delete "$b" >/dev/null 2>&1 || true
         fi
       elif [[ -z "$MANAGER_TOKEN" ]]; then
         # In this job, as the batch's gates would be (never beside the manager's token, looper#90).
         rc=0; LOOPER_GATES_BASE="$main" bash -c "${GM_RUN[$PRE_LAND]}" < /dev/null > "$rec/pre-land.log" 2>&1 || rc=1
-        pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=(""); pt+=(""); pw+=(""); prc+=("$rc")
+        pn+=("$n"); pid+=("$id"); psha+=("$sha"); pr+=("$r"); pp+=(""); pt+=(""); pw+=(""); prc+=("$rc"); pheld+=("")
       fi
     fi
     popd >/dev/null; drop_worktree "$PL_WT"
   done <<<"$q"
+  # Their states, read together until none is about to arrive.
+  while :; do
+    waits=(); queued=0
+    for i in "${!pn[@]}"; do
+      [[ -z "${prc[i]}" && "${pst[i]:-}" != ready ]] || continue
+      st="$(pre_land_state "${pr[i]}" "${pp[i]%% *}" "${pt[i]}" "${pw[i]}")"; pst[i]="${st%%:*}"; pwhy[i]="${st#*: }"
+      case "${pst[i]}" in
+        running) waits+=("#${pn[i]} (${pwhy[i]})") ;;
+        queued) queued=$(( queued + 1 )) ;;
+      esac
+    done
+    if (( ${#waits[@]} == 0 )); then
+      (( queued > 0 && queued == lands )) || break
+      for i in "${!pn[@]}"; do [[ "${pst[i]:-}" != queued ]] || waits+=("#${pn[i]} (${pwhy[i]})"); done
+    fi
+    now="$(date +%s)"
+    if [[ -z "$said" ]] || (( now - said >= BUILD_SAY )); then
+      log "waiting for the pre-land gates on main ${main:0:7} of $(printf '%s, ' "${waits[@]}" | sed 's/, $//')$( (( queued == 0 || queued != lands )) || echo ": no other land to stage")"
+      said="$now"
+    fi
+    sleep "$BUILD_POLL"
+  done
   for i in "${!pn[@]}"; do
-    n="${pn[i]}"; rec="$MANAGER_RUN/$n-${pid[i]}"; rc="${prc[i]}"
+    n="${pn[i]}"; rec="$MANAGER_RUN/$n-${pid[i]}"; rc="${prc[i]}"; b="looper/$PRE_LAND-$REPO-$n"
+    if [[ -z "$rc" && "${pst[i]:-}" == queued ]]; then
+      if [[ -n "${pheld[i]}" ]]; then
+        log "#$n: its pre-land gate on main ${main:0:7}, the build job ${pp[i]#* }, is queued (${pwhy[i]}), and it was held from a batch already: the batch's build judges it"
+        git -C "$CHECKOUT" push -q origin --delete "$b" >/dev/null 2>&1 || true
+        continue
+      fi
+      r="$(git -C "$CHECKOUT" commit-tree "${pr[i]}^{tree}" -p "${pr[i]}" -m "looper: the pre-land gate of ${pr[i]:0:7}, held for the next batch (looper#231)" \
+             -m "$(printf 'sha=%s\npipeline=%s\nurl=%s\nbase=%s\ngates=%s\ntriggered=%s' "${pr[i]}" "${pp[i]%% *}" "${pp[i]#* }" "$main" "$PRE_LAND" "${pt[i]}")")" &&
+        git -C "$CHECKOUT" push -q -f origin "$r:refs/heads/$b" ||
+        log "#$n: its pre-land gate's record could not be pushed to $b: the next batch builds it again"
+      log "#$n: held: its pre-land gate on main ${main:0:7}, the build job ${pp[i]#* }, is queued (${pwhy[i]}): it waits for the next batch, which takes its verdict up, and this one goes without it (looper#231)"
+      PRE_Q="$(grep -vF " ${pid[i]} " <<<"$PRE_Q" || true)"
+      continue
+    fi
     if [[ -z "$rc" ]]; then
       rc=0; build_verdict "${pr[i]}" "${pp[i]%% *}" "${pp[i]#* }" "${pt[i]}" "${pw[i]}" > "$rec/pre-land.log" 2>&1 || rc=$?
-      git -C "$CHECKOUT" push -q origin --delete "looper/$PRE_LAND-$REPO-$n" >/dev/null 2>&1 || true
+      git -C "$CHECKOUT" push -q origin --delete "$b" >/dev/null 2>&1 || true
       (( rc != 1 )) || ! pre_land_infra "${pr[i]}" "${pp[i]%% *}" "$rec/pre-land.log" || rc=2
     fi
     case "$rc" in
@@ -2920,6 +3006,9 @@ post_land() { # issue id sha rc rec-dir
   # Its green's record (looper#191), judged now.
   [[ -z "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/looper/green-$REPO-$n" 2>/dev/null)" ]] ||
     git -C "$CHECKOUT" push -q origin --delete "looper/green-$REPO-$n" >/dev/null 2>&1 || true
+  # Its held pre-land gate's record (looper#231), judged now.
+  [[ -z "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/looper/$PRE_LAND-$REPO-$n" 2>/dev/null)" ]] ||
+    git -C "$CHECKOUT" push -q origin --delete "looper/$PRE_LAND-$REPO-$n" >/dev/null 2>&1 || true
   # A refused ROADMAP.md change needs a person (looper#123), and so does a workflow change origin refused (looper#194).
   if (( rc == ROADMAP_RC || rc == WORKFLOWS_RC )); then forge_issue_edit "$REPO" "$n" --add-label "$LABEL_DECISION" --remove-label "$LABEL_LANDING" >/dev/null || true
   else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" >/dev/null || true; fi

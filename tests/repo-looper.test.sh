@@ -5442,6 +5442,63 @@ has "$OUT" "a batch of 3 lands (#4, #6, #7) on main"
 main_green
 pass
 
+# A pre-land gate queued behind the build project's report slots holds no
+# green land (looper#231: tacplus's manager waited 3h, silently, on two such
+# gates, 15 green lands held): #5's build started, its gates job
+# waiting_for_resource (read with GITLAB_TOKEN), is held, left queued, and the
+# batch of #4 and #6 is built at once. The next batch, on the new main, does
+# not hold it again: its gate built again, green, it lands then.
+scenario pre-land-train-held
+pre_land_seed pin; train_issues 5 6
+m="$(origin rev-parse main)"
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold-902"
+mkdir -p "$FIX/pipeline-jobs"; echo '[{"name": "plan", "status": "success"}, {"name": "gates", "status": "waiting_for_resource"}]' > "$FIX/pipeline-jobs/902.json"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_PRE_LAND_GRACE=0
+[[ "$(cut -d' ' -f4 "$FIX/builds" | paste -sd' ')" == "pre-land pre-land pre-land full pre-land full" ]] || fail "builds: $(cat "$FIX/builds")"
+has "$OUT" "#5: held: its pre-land gate on main ${m:0:7}, the build job https://gitlab.com/tacplus-dev/build/-/pipelines/902, is queued (its gates job waiting_for_resource, triggered"
+has "$OUT" "a batch of 2 lands (#4, #6) on main ${m:0:7}"
+lacks "$OUT" "waiting for the pre-land gates"
+for n in 4 5 6; do [[ "$(landed "f$n.txt")" == "$n" ]] || fail "main lacks f$n.txt: $(origin log --oneline main)"; done
+grep -q "#5: its pre-land gate on main [0-9a-f]*: the build job https://gitlab.com/tacplus-dev/build/-/pipelines/905$" <<<"$OUT" || fail "#5's gate not built again: $OUT"
+[[ -z "$(origin for-each-ref refs/heads/looper/pre-land-*)" ]] || fail "pre-land branches left: $(origin for-each-ref refs/heads/looper/)"
+main_green
+pass
+
+# A pre-land gate whose gates job runs is about to arrive: waited on, said
+# every LOOPER_BUILD_SAY, and its land is in the batch (looper#231).
+scenario pre-land-train-running
+pre_land_seed pin; train_issues 5 6
+m="$(origin rev-parse main)"
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+echo 4 > "$FIX/build-hold-902"
+mkdir -p "$FIX/pipeline-jobs"; echo '[{"name": "plan", "status": "success"}, {"name": "gates", "status": "running"}]' > "$FIX/pipeline-jobs/902.json"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_PRE_LAND_GRACE=0 LOOPER_BUILD_SAY=1
+[[ "$(cut -d' ' -f4 "$FIX/builds" | paste -sd' ')" == "pre-land pre-land pre-land full" ]] || fail "builds: $(cat "$FIX/builds")"
+has "$OUT" "waiting for the pre-land gates on main ${m:0:7} of #5 (its gates job running)"
+[[ "$(grep -c "waiting for the pre-land gates" <<<"$OUT")" -ge 2 ]] || fail "said once: $OUT"
+has "$OUT" "#5: its pre-land gate on main ${m:0:7} is green"
+has "$OUT" "a batch of 3 lands (#4, #5, #6) on main ${m:0:7}"
+main_green
+pass
+
+# Every land's pre-land gate queued: no other land to stage, so it is waited
+# on, said; not started within LOOPER_BUILD_START, the batch's build judges it.
+scenario pre-land-train-all-queued
+pre_land_seed pin
+m="$(origin rev-parse main)"
+queue 4 2026-11-03T14:00:00Z f4.txt 4
+echo queued > "$FIX/build-hold-901"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_PRE_LAND_GRACE=0 LOOPER_BUILD_START=3
+[[ "$(cut -d' ' -f4 "$FIX/builds" | paste -sd' ')" == "pre-land full" ]] || fail "builds: $(cat "$FIX/builds")"
+has "$OUT" "waiting for the pre-land gates on main ${m:0:7} of #4 (not started, triggered"
+has "$OUT" "): no other land to stage"
+has "$OUT" "#4: its pre-land gate on main ${m:0:7} has no verdict (no runner: "
+lacks "$OUT" "#4: held"
+[[ "$(landed f4.txt)" == 4 ]] || fail "main lacks f4.txt"
+main_green
+pass
+
 # The gate map's pre-land names no paths: no path calls for it.
 scenario pre-land-map
 [[ "$(lib "$(sed -n '/^read_gate_map() {/,/^}/p; /^read_sets() {/,/^}/p' "$ROOT/repo-looper"); PRE_LAND=pre-land; declare -A GM_RUN GM_MIN GM_MEM GM_PATHS; GM_SETS=()

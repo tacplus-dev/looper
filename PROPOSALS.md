@@ -9,6 +9,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   the model left running as `looper-scan` could still change the clone while that copy runs. Stopping every process
   of the model's user once its run ends (it is the scan's alone) would close that window. The model-owned run
   directory's files are #232.
+- **A held pre-land gate's build, cancelled or given its own branch** (2026-11-24, #231): the manager now holds a land
+  whose pre-land gate is still queued (its `gates` job `waiting_for_resource` behind the report slots) for the next
+  batch, at most once. Two loose ends. (1) When the next batch builds that gate again on a new main, the old build
+  still holds its place in the report queue and runs to no purpose. Cancelling it (`GITLAB_TOKEN`, `POST
+  /pipelines/:id/cancel`) would give its slot back. (2) The held record sits on `looper/pre-land-<repo>-<issue>`,
+  the branch the report's own `--land` pre-land gate pushes to and deletes. A report landing again while its land is
+  held drops the record, and the next batch builds the gate again. A branch of the manager's own
+  (`looper/pre-land-held-…`) would keep the two apart.
 - **The nightly maintenance after tacplus's Images, by schedule** (2026-11-23, #226): the scan follows whichever build
   of a line the registry has when it runs. The GitLab schedule that starts the nightly scan is not in this repository,
   and neither is tacplus-dev/tacplus#966's cron for the Images run. Check that the scan's schedule starts after the

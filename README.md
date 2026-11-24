@@ -707,8 +707,15 @@ before it reaches a batch, twice at most:
   Green, the land records the main it was green on (`.looper/land`'s `pre-land=`). The prompt's rule 5 says so when
   main's map names one.
 - **At the manager, before it stages a batch** (the merge train), for each land whose report's was not green on the
-  main the batch starts from: started all at once, a build each, then their verdicts; a red one is **sent back with
-  the failure** (its verdict, exit 4) before any batch, and the rest are staged. A verdict job
+  main the batch starts from: started all at once, a build each, then their verdicts, read together; a red one is
+  **sent back with the failure** (its verdict, exit 4) before any batch, and the rest are staged. **A gate is waited
+  on only while its verdict is about to arrive** (looper#231: tacplus's manager held 15 green lands 3h, silently, on
+  gates queued behind 22 report jobs): its `gates` job running or run (read with `GITLAB_TOKEN`; without it, its
+  build started), or triggered within `LOOPER_PRE_LAND_GRACE` (5 minutes). A land whose gate is still queued
+  (`waiting_for_resource` on the report slots, say) is **held**: left queued, out of this batch, which is built at
+  once from the rest, its build recorded on `looper/pre-land-<repo>-<issue>` for the next batch to take up; a land
+  held on an earlier main is not held again: the batch's build judges it. Queued gates are waited on too when no
+  other land would be staged. While it waits it says on what, every `LOOPER_BUILD_SAY`. A verdict job
   ([the manager split in two](#managers-and-direct-reports)) judges each land on its own gates already, and runs none.
 
 None runs when main's map has no `pre-land`, the rebase conflicts (the manager's verdict says what comes of it), the
@@ -722,7 +729,7 @@ gate, on the same commit and main (main not moved since), reuses that build. A m
 prompt's rule 4 says which.
 
 ```sh
-tests/repo-looper.test.sh   # pre-land-*: the report's red queues nothing and says why, its green on the same main is not run again; as a build job of the rebased commit, its branch deleted, asked for with `report: true` as the red round's are, a batch's never (looper#209); pre-land-report-build-set: a pinned report's `--build` on full builds pre-land, its `--land` reuses it, the batch builds full once (looper#204), build-job-report-full: without a pre-land it builds full; the manager's for lands not green on its main, the red one sent back before the batch; the map's pre-land takes no paths
+tests/repo-looper.test.sh   # pre-land-*: the report's red queues nothing and says why, its green on the same main is not run again; as a build job of the rebased commit, its branch deleted, asked for with `report: true` as the red round's are, a batch's never (looper#209); pre-land-report-build-set: a pinned report's `--build` on full builds pre-land, its `--land` reuses it, the batch builds full once (looper#204), build-job-report-full: without a pre-land it builds full; the manager's for lands not green on its main, the red one sent back before the batch; pre-land-train-held: a land whose gate's `gates` job is `waiting_for_resource` is held, the batch of the rest built at once, and the next batch, on the new main, takes it in; pre-land-train-running: a running gate is waited on, said; pre-land-train-all-queued: with no other land, a queued gate is waited on (looper#231); the map's pre-land takes no paths
 ```
 
 This repository's own map is [`gates.yaml`](gates.yaml): the planning files check for `*.md`, each script's own
