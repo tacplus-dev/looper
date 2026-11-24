@@ -48,6 +48,9 @@ case "$cmd" in
   "repo clone") git clone -q "$FIX/origin.git" "$2"; exit 0 ;;
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
+  # A repository's VM spec (looper#240): $FIX/specs/<repo>.yaml, else HTTP 404.
+  api\ repos/tacplus-dev/*/contents/looper.yaml) r="${cmd#api repos/tacplus-dev/}"; f="$FIX/specs/${r%%/*}.yaml"
+    [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$f"; exit 0 ;;
   # A commit's statuses (looper#71), newest first: $FIX/statuses/<sha>.json, which the stub build writes.
   "api graphql")
     echo "$2" >> "$FIX/graphql"; [[ ! -e "$FIX/graphql-fail" ]] || { echo "stub gh: HTTP 502" >&2; exit 1; }
@@ -1930,6 +1933,8 @@ pass
 # suggestion like the others, its files (the night's data and the report
 # linking the advice) committed with them; a second scan the same night
 # leaves the night's recap as it is. Each job logs its disk at the end.
+# A project's VM spec its builds outgrew (looper#240): its change filed in its
+# repository as an approved bug, once; the next night's numbers on it.
 scenario scan-suggestions
 mkdir -p "$FIX/seed/suggestions/recap"
 printf '| Type | Covers | Example |\n|---|---|---|\n| **Resiliency** | r | e |\n| **Security** | s | e |\n| **Documentation** | d | e |\n| **Operability** | o | e |\n' > "$FIX/seed/suggestions/TYPES.md"
@@ -1963,6 +1968,11 @@ S
 git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -q -m roadmap && git -C "$FIX/seed" push -q origin main
 before="$(origin rev-parse main)"
 echo "[{\"name\":\"tacplus-build\",\"stage\":\"gates\",\"status\":\"failed\",\"failure_reason\":\"script_failure\",\"id\":9,\"finished_at\":\"$(date -u -d '1 hour ago' +%FT%TZ)\",\"web_url\":\"https://gitlab.com/tacplus-dev/looper/-/jobs/9\"},{\"name\":\"old\",\"status\":\"failed\",\"id\":8,\"finished_at\":\"2020-01-01T00:00:00Z\"}]" > "$FIX/jobs.json"
+# A gates job's use line (the stub answers a job's trace with the job): tacplus's build over its c4a-standard-1.
+jq --arg s "$(date -u -d '3 hours ago' +%FT%TZ)" --arg f "$(date -u -d '2 hours ago' +%FT%TZ)" '. + [{name: "gates", status: "success", id: 10,
+    started_at: $s, created_at: $s, finished_at: $f, web_url: "https://gitlab.com/tacplus-dev/looper/-/jobs/10",
+    log: "build use at the end: tacplus cpu 3500m peak, 2000m mean over 3600 s, memory 14336Mi peak, disk 20480Mi"}]' "$FIX/jobs.json" > "$FIX/x" && mv "$FIX/x" "$FIX/jobs.json"
+mkdir -p "$FIX/specs"; printf 'machine: c4a-standard-1\ndisk: 10\nspot: true\n' > "$FIX/specs/tacplus.yaml"
 echo '[{"name":"security-kernel"},{"name":"security-kernel"},{"name":"other"}]' > "$FIX/packages.json"
 mkdir -p "$FIX/security"; echo '[]' > "$FIX/security/findings.json"; echo '## Security checks: kernel' > "$FIX/security/summary.md"
 cat > "$FIX/scan.sh" <<'EOS'
@@ -2032,11 +2042,22 @@ has "$pp" "each manager's score (\`managers\`"; has "$pp" "only two nights runni
 has "$pp" "Never advise a cap on a"; lacks "$pp" "caps.yaml"
 has "$pp" "\`capacity/vm\`'s advice is a scale-up"; has "$pp" "never an autoscaling change"; lacks "$pp" "capacity/<pool>"
 has "$pp" "to $run_dir/covered instead"; has "$pp" "Security first"
+# The spec's drift (looper#240): filed in tacplus, approved, its change the title; no advice asked of the model.
+has "$pp" "A \`spec/<repo>/...\` item"; has "$OUT" "scan: tacplus's spec drift filed: #1 (looper.yaml: resize the project's VM up: machine: c4a-standard-1 → c4a-standard-8; disk: 10 → 30)"
+[[ "$(jq -r '"\(.title)|\([.labels[].name] | sort | join(","))"' "$FIX/issues/tacplus-1.json")" == "looper.yaml: resize the project's VM up: machine: c4a-standard-1 → c4a-standard-8; disk: 10 → 30|approved,bug" ]] ||
+  fail "tacplus#1: $(cat "$FIX/issues/tacplus-1.json")"
+has "$(jq -r .body "$FIX/issues/tacplus-1.json")" "<!-- looper-spec-drift -->"
+has "$(jq -r .body "$FIX/issues/tacplus-1.json")" "cpu 3500m, memory 14336Mi, disk 20480Mi over 1 builds, up to 1 at once"
+has "$rp" "VM specs (looper#240, looper.yaml against the builds' peak): tacplus c4a-standard-1, a 10 GB disk:"
 # A night with nothing to suggest commits nothing.
 : > "$FIX/scan.sh"; before="$(origin rev-parse main)"
 OUT="$(looper "${RECAP_ENV[@]}" -- --repo roadmap --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 [[ "$(origin rev-parse main)" == "$before" ]] || fail "an empty night committed"
 has "$OUT" "no new suggestion tonight"; has "$OUT" "suggestions/recap/$d.md: on main already"
+# The spec's drift again: on tacplus#1, no second issue.
+has "$OUT" "scan: tacplus's spec drift is #1's already: the night's numbers added to it"
+grep -q "^tacplus#1 The nightly recap of $d" "$FIX/comments" || fail "comments: $(cat "$FIX/comments")"
+[[ ! -e "$FIX/issues/tacplus-2.json" ]] || fail "a second spec issue: $(cat "$FIX/issues/tacplus-2.json")"
 lacks "$(cat "$(ls -d "$FIX"/project/looper-runs/*-scan | tail -1)/prompt.md")" "failed jobs of the last 7 days"
 pass
 

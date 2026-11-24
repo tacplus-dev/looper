@@ -66,6 +66,10 @@ case "$1 $2" in
   "api repos/tacplus-dev/"*/commits/*/status) r="${2#repos/tacplus-dev/}"; sha="${r#*/commits/}"; sha="${sha%/status}"; r="${r%%/*}"
                                              [[ -f "$FX/gh/status-$r-$sha.json" ]] || exit 1; cat "$FX/gh/status-$r-$sha.json" ;;
   "api repos/tacplus-dev/looper/compare/aaaaaaaaaaaa1111111111111111111111111111...cccccccccccc3333333333333333333333333333") cat "$FX/gh/compare.json" ;;
+  # A repository's VM spec (looper#240): $FX/gh/spec-<repo>.yaml, else HTTP 404.
+  "api repos/tacplus-dev/"*/contents/looper.yaml) r="${2#repos/tacplus-dev/}"; r="${r%%/*}"; f="$FX/gh/spec-$r.yaml"
+     [[ "$*" == *"Accept: application/vnd.github.raw"* ]] || exit 1
+     [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$f" ;;
   *) echo "stub gh: unexpected $*" >&2; exit 3 ;;
 esac
 EOF
@@ -532,6 +536,57 @@ has "$(cat "$TMP/vr.md")" "Image: ghcr.io/tacplus-dev/looper:main is at main's h
 image_variant ""
 [[ "$(v '"\(.image.current) \(.image.head_digest) \(.sources.image)"')" == "false null ok" ]] || fail "image: $(v .image)"
 has "$(v '.items[] | select(.key == "image/tacplus-dev/looper") | "\(.over) \(.summary)"')" "true ghcr.io/tacplus-dev/looper:main is not the build of main's head: its digest sha256:d1d1d1d1d1d1 against main-ccccccc not built;"
+pass
+
+# Each project's VM spec against its builds (looper#240): the gates jobs' `build use at the end` lines,
+# the builds running at once summed. tacplus's two builds overlap: memory 30720Mi of its c4a-standard-8's 32 GB
+# and disk 35840Mi of 30 GB, over 90%: up at once, to the smallest c4a with 8 CPU and the peak at 70%
+# (c4a-highmem-8) and a 50 GB disk, its CPU (81%) left. alpha's one build, under 40% of each of its cpu: and
+# memory: form: down, filed only once seen on 3 of 7 nights. beta's spec is not valid; gamma has none.
+NAME=spec-drift
+rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; d="$TMP/fx/gitlab/tacplus-dev_build"
+use_job() { # id start end repo use
+  jq --argjson i "$1" --arg s "2026-11-01T$2:00.000Z" --arg f "2026-11-01T$3:00.000Z" \
+    '. + [.[0] | .id = $i | .status = "success" | del(.failure_reason) | .created_at = $s | .started_at = $s | .finished_at = $f
+          | .web_url = "https://gitlab.com/tacplus-dev/build/-/jobs/\($i)"]' "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json"
+  printf '[2026-11-01T%s:00Z] build use at the end: %s %s\n' "$3" "$4" "$5" > "$d/trace-$1.txt"
+}
+echo "[2026-11-01T11:31:00Z] build use at the end: tacplus cpu 3500m peak, 2000m mean over 1800 s, memory 14336Mi peak, disk 20480Mi" >> "$d/trace-2002.txt"
+use_job 2010 11:10 11:50 tacplus "cpu 3000m peak, 1500m mean over 2400 s, memory 16384Mi peak, disk 15360Mi"
+use_job 2011 13:00 13:30 alpha "cpu 500m peak, 300m mean over 1800 s, memory 1024Mi peak, disk 2048Mi"
+use_job 2012 14:00 14:30 beta "cpu ? peak, ? mean over 1800 s, memory ? peak, disk 100Mi"
+use_job 2013 15:00 15:30 gamma "cpu 100m peak, 50m mean over 1800 s, memory 100Mi peak, disk 100Mi"
+printf '# tacplus\nmachine: c4a-standard-8\ndisk: 30\nspot: true\n' > "$TMP/fx/gh/spec-tacplus.yaml"
+printf 'cpu: 4\nmemory: 16\ndisk: 100\nspot: true\n' > "$TMP/fx/gh/spec-alpha.yaml"
+printf 'machine: n2-standard-8\ndisk: 100\nspot: true\n' > "$TMP/fx/gh/spec-beta.yaml"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>"$TMP/err" || fail "collect: $(cat "$TMP/err")"
+[[ "$(v '.sources["github:specs"]')" == ok ]] || fail "sources: $(v .sources)"
+[[ "$(v '.specs.tacplus | "\(.builds) \(.at_once) \(.peak.cpu_m) \(.peak.memory_mi) \(.peak.disk_mi) \(.use.cpu) \(.use.memory) \(.use.disk) \(.drift)"')" == \
+   "2 2 6500 30720 35840 0.81 0.94 1.17 up" ]] || fail "tacplus: $(jq -c .specs.tacplus "$TMP/v.json")"
+[[ "$(v '.specs.tacplus.proposed | "\(.machine) \(.cpu) \(.memory_gb) \(.disk_gb) \(.change | join("; "))"')" == \
+   "c4a-highmem-8 8 64 50 machine: c4a-standard-8 → c4a-highmem-8; disk: 30 → 50" ]] || fail "tacplus's proposal: $(jq -c .specs.tacplus.proposed "$TMP/v.json")"
+has "$(v '.items[] | select(.key == "spec/tacplus/up") | "\(.over) \(.count) \(.summary) \(.evidence[0])"')" \
+  "true 2 tacplus: its builds' peak (up to 2 at once, 2 builds) against its VM spec c4a-standard-8 (8 CPU, 32 GB, a 30 GB disk): cpu 81%, memory 94%, disk 117% (threshold 90% up, 40% down): resize it up, machine: c4a-standard-8 → c4a-highmem-8; disk: 30 → 50 https://gitlab.com/tacplus-dev/build/-/jobs/2010"
+[[ "$(v '.specs.alpha | "\(.drift) \(.proposed.change | join("; "))"')" == "down cpu: 4 → 1; memory: 16 → 2; disk: 100 → 10" ]] || fail "alpha: $(jq -c .specs.alpha "$TMP/v.json")"
+[[ "$(v '.items[] | select(.key == "spec/alpha/down") | .over')" == false ]] || fail "alpha's item: $(jq -c .items "$TMP/v.json")"
+has "$(v '.items[] | select(.key == "spec/beta/invalid") | .summary')" "beta: its looper.yaml is not valid, so its VM is sized from nothing: machine: n2-standard-8: not an Arm machine type"
+[[ "$(v '.specs | keys | join(" ")')" == "alpha beta tacplus" ]] || fail "specs: $(jq -c .specs "$TMP/v.json")"
+FX="$TMP/fx" recap classify "$TMP/v.json" --history "$FX/history" > "$TMP/vc.json" || fail "classify"
+has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" \
+  "VM specs (looper#240, looper.yaml against the builds' peak): alpha c4a-standard-4, a 100 GB disk: cpu 500m, memory 1024Mi, disk 2048Mi at the peak (1 build, up to 1 at once), cpu 12%, memory 6%, disk 2%: down, cpu: 4 → 1; memory: 16 → 2; disk: 100 → 10; beta not valid; tacplus c4a-standard-8"
+# Tonight: tacplus's up and beta's invalid; alpha's down seen once, not yet.
+recap drift "$TMP/v.json" --history "$FX/history" > "$TMP/drift.json" || fail "drift"
+[[ "$(jq -r '[.[] | "\(.repo)/\(.direction)"] | join(" ")' "$TMP/drift.json")" == "beta/invalid tacplus/up" ]] || fail "drift: $(cat "$TMP/drift.json")"
+has "$(jq -r '.[] | select(.repo == "tacplus") | .title' "$TMP/drift.json")" "looper.yaml: resize the project's VM up: machine: c4a-standard-8 → c4a-highmem-8; disk: 30 → 50"
+has "$(jq -r '.[] | select(.repo == "tacplus") | .body' "$TMP/drift.json")" "cpu 6500m, memory 30720Mi, disk 35840Mi over 2 builds, up to 2 at once"
+# alpha's down on two nights before tonight: filed.
+mkdir -p "$TMP/hist"; cp "$FX"/history/*.json "$TMP/hist/"
+for n in 2026-10-31 2026-11-01; do
+  jq '.items += [{key: "spec/alpha/down", summary: "x", over: false, recovered: false}]' "$TMP/hist/$n.json" > "$TMP/h.json" && mv "$TMP/h.json" "$TMP/hist/$n.json"
+done
+recap drift "$TMP/v.json" --history "$TMP/hist" > "$TMP/drift.json" || fail "drift"
+[[ "$(jq -r '[.[] | "\(.repo)/\(.direction)"] | join(" ")' "$TMP/drift.json")" == "alpha/down beta/invalid tacplus/up" ]] || fail "drift: $(cat "$TMP/drift.json")"
+has "$(jq -r '.[] | select(.repo == "alpha") | .body' "$TMP/drift.json")" "down once seen on 3 of 7 nights (under 40% of every one) and it was on 3."
 pass
 
 NAME=collect-without-credentials

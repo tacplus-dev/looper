@@ -94,6 +94,11 @@ BUILD_REPORT_TAGS="${BUILD_REPORT_TAGS:-$BUILD_RUNNER_TAGS}"
 # (looper#195: a report build's job sat 1h52m silent after its test gate,
 # holding a build slot until the hub cancelled it by hand).
 BUILD_GATES_IDLE="${BUILD_GATES_IDLE:-3600}"
+# The gates' use, for the nightly recap's drift check of each project's VM
+# spec (looper#240; README: The project's VM spec): the job's cgroup (v2,
+# BUILD_CGROUP), its CPU sampled every BUILD_USE_INTERVAL seconds.
+BUILD_CGROUP="${BUILD_CGROUP:-/sys/fs/cgroup}"
+BUILD_USE_INTERVAL="${BUILD_USE_INTERVAL:-10}"
 # The security job's requests and limits where it runs CodeQL (a nightly's
 # and a release's, looper#189), as GitLab's KUBERNETES_* job variables:
 # "<cpu> <memory> <cpu limit> <memory limit>", within the build runner's
@@ -192,6 +197,8 @@ check_inputs() {
   [[ "${BUILD_WAIT:-}" =~ ^[0-9]*$ ]] || verdict fail "BUILD_WAIT '$BUILD_WAIT' is not a number of seconds"
   [[ "$BUILD_GATES_IDLE" =~ ^[0-9]{1,9}$ ]] && ((10#$BUILD_GATES_IDLE >= 1)) ||
     verdict fail "BUILD_GATES_IDLE '$BUILD_GATES_IDLE' is not a number of seconds (1 or more)"
+  [[ "$BUILD_USE_INTERVAL" =~ ^[0-9]{1,9}$ ]] && ((10#$BUILD_USE_INTERVAL >= 1)) ||
+    verdict fail "BUILD_USE_INTERVAL '$BUILD_USE_INTERVAL' is not a number of seconds (1 or more)"
   [[ "${BUILD_REPORT:-}" =~ ^(true|false)?$ ]] || verdict fail "BUILD_REPORT '$BUILD_REPORT' is not true or false"
   if [[ "${BUILD_REPORT:-}" == true ]]; then
     [[ -z "${BUILD_TAG:-}" && "${BUILD_NIGHTLY:-}" != true && "${BUILD_VERIFY:-}" != true ]] ||
@@ -885,6 +892,42 @@ span() { # seconds
   elif (( m % 60 )); then echo "$(( m / 60 ))h$(( m % 60 ))m"; else echo "$(( m / 60 ))h"; fi
 }
 
+# The gates' use (looper#240): the job's CPU, its peak (the most it used over
+# any BUILD_USE_INTERVAL seconds) and its mean, its memory's peak (memory.peak,
+# else the most memory.current was when sampled) and the disk the build holds
+# at the end (its checkout and what the gates wrote: BUILD_OUT), as the line
+# the nightly recap reads, `build use at the end: <repo> cpu <m>m peak, <m>m
+# mean over <s> s, memory <Mi>Mi peak, disk <Mi>Mi`; ? for what it cannot read.
+use_cpu() { awk '$1 == "usage_usec" { print $2 }' "$BUILD_CGROUP/cpu.stat" 2>/dev/null || true; }
+use_start() {
+  USE_T0="$(date +%s)"; USE_U0="$(use_cpu)"; USE_T="$USE_T0"; USE_U="$USE_U0"; USE_PEAK=""; USE_MEM=""
+}
+use_sample() { # [now]: sample whatever the interval
+  local t u m
+  t="$(date +%s)"
+  (( t > USE_T )) && { [[ -n "${1:-}" ]] || (( t - USE_T >= 10#$BUILD_USE_INTERVAL )); } || return 0
+  u="$(use_cpu)"
+  if [[ "$u" =~ ^[0-9]+$ && "$USE_U" =~ ^[0-9]+$ ]]; then
+    m=$(( (u - USE_U) / (t - USE_T) / 1000 )); (( ${USE_PEAK:-0} >= m )) && [[ -n "$USE_PEAK" ]] || USE_PEAK=$m
+  fi
+  USE_T="$t"; USE_U="$u"
+  m="$(cat "$BUILD_CGROUP/memory.current" 2>/dev/null)" || m=""
+  [[ ! "$m" =~ ^[0-9]+$ ]] || (( ${USE_MEM:-0} >= m )) || USE_MEM=$m
+}
+use_log() {
+  local s peak="?" mean="?" mem disk
+  use_sample now
+  s=$(( USE_T - USE_T0 )); (( s > 0 )) || s=1
+  [[ -z "$USE_PEAK" ]] || peak="${USE_PEAK}m"
+  [[ ! "$USE_U" =~ ^[0-9]+$ || ! "$USE_U0" =~ ^[0-9]+$ ]] || mean="$(( (USE_U - USE_U0) / s / 1000 ))m"
+  mem="$(cat "$BUILD_CGROUP/memory.peak" 2>/dev/null)" || mem=""
+  [[ "$mem" =~ ^[0-9]+$ ]] || mem="$USE_MEM"
+  if [[ "$mem" =~ ^[0-9]+$ ]]; then mem="$(( mem / 1048576 ))Mi"; else mem="?"; fi
+  disk="$(du -sxm "$BUILD_OUT" 2>/dev/null | cut -f1)" || disk=""
+  if [[ "$disk" =~ ^[0-9]+$ ]]; then disk="${disk}Mi"; else disk="?"; fi
+  log "build use at the end: $BUILD_REPO cpu $peak peak, $mean mean over $s s, memory $mem peak, disk $disk"
+}
+
 # The gates' command, in the commit's checkout, its output in gates.log and on
 # stderr; returns its exit status. Gates silent (gates.log unchanged) for
 # BUILD_GATES_IDLE seconds are hung (looper#195): their process group, the
@@ -897,6 +940,7 @@ run_gates() { # src command
   local log="$BUILD_OUT/gates.log" idle=$((10#$BUILD_GATES_IDLE)) pid rc=0 last t0 why=""
   t0="$(date +%s)"
   : > "$log"
+  use_start
   # Job control: the gates run in a process group of their own, whose id is $!.
   set -m
   { (cd "$1" && LOOPER_GATES_BASE="${BUILD_BASE:-}" exec bash -c "$2") 2>&1 | tee "$log" >&2; exit "${PIPESTATUS[0]}"; } &
@@ -904,6 +948,7 @@ run_gates() { # src command
   set +m
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1
+    use_sample
     last="$(stat -c %Y "$log" 2>/dev/null || date +%s)"
     if (( $(date +%s) - last >= idle )); then why="printed nothing for $(span "$idle"): stopped (BUILD_GATES_IDLE)"
     elif [[ -n "${BUILD_WAIT:-}" ]] && (( $(date +%s) - t0 >= 10#$BUILD_WAIT )); then
@@ -914,11 +959,13 @@ run_gates() { # src command
       kill -TERM -- "-$pid" 2>/dev/null || true
       sleep 5; kill -KILL -- "-$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      use_log
       verdict fail "the gates $why: $(log_tail "$log")"
     fi
     why=""
   done
   wait "$pid" || rc=$?
+  use_log
   return "$rc"
 }
 

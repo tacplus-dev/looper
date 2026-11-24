@@ -23,7 +23,7 @@
 #   looper-dispatch plan               the pipeline's child jobs: a report per ready issue (every
 #                                      one, looper#107), and its manager (with the apps, its verdict
 #                                      and manager jobs, looper#90; on a schedule, a scan per
-#                                      repository), as YAML
+#                                      repository), as YAML; it logs each one's VM spec (looper.yaml, looper#240)
 #                                      on stdout (ci/instance.gitlab-ci.yml, ci/tacplus-dev.gitlab-ci.yml)
 #   looper-dispatch uninstall          remove the launchd job earlier versions installed on a Mac
 #
@@ -225,7 +225,8 @@ pass() {
 # runner tags and requests are where_it_runs's (looper#84, below). The
 # plan's GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL, those it has, are
 # the jobs' too. With none to plan, one job that says so: a child pipeline has
-# at least one.
+# at least one. Each repository it plans for, its VM spec, main's looper.yaml,
+# checked and logged (spec_log, looper#240).
 plan() {
   local jobs ready repo n t v any="" image
   image="$(job_image)" || exit 1
@@ -259,6 +260,7 @@ plan() {
     done <<<"$ready"
     landing="$(landing_repos)" || landing=""
     for repo in $landing; do [[ "$managed" == *" $repo "* ]] || managed+="$repo "; done
+    for repo in $managed; do spec_log "$repo"; done
     for repo in $managed; do
       if split_manager "$repo"; then
         # A batch under way (its verdict or its manager active) is not doubled:
@@ -282,6 +284,34 @@ plan() {
   fi
   [[ -n "$any" ]] || printf 'looper-none:\n  image: %s\n  tags: [%s]\n  script:\n    - echo "no repository with a ready issue is free"\n' \
     "$image" "$(plain_tags)"
+}
+
+# A repository's VM spec (looper#240; README: The project's VM spec;
+# tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md, point 9): its
+# main's looper.yaml, checked by looper-spec (check: its line; json: its
+# fields) on stdout. Fails with none, silently, and with one that cannot be
+# read or is not valid, saying why on stderr in one line.
+SPEC_CMD="${LOOPER_SPEC:-$HERE/looper-spec}"
+vm_spec() { # repo [check|json]
+  local text err rc=0
+  err="$(mktemp)"
+  text="$(forge_file "$1" looper.yaml 2>"$err")" || rc=$?
+  if (( rc != 0 )); then
+    grep -q '404' "$err" || echo "could not be read: $(tail -n 1 "$err")" >&2
+    rm -f "$err"; return 1
+  fi
+  "$SPEC_CMD" "${2:-check}" - <<<"$text" 2>"$err" || rc=$?
+  (( rc == 0 )) || echo "is not valid, its VM not sized from it: $(sed 's/^-: //' "$err" | paste -sd';' - | sed 's/;/; /g')" >&2
+  rm -f "$err"; return "$rc"
+}
+# The plan's line on a repository's spec (the cloud pipeline sizes its VM
+# from it: tacplus-dev/cloud#108), or on why it has none to read.
+spec_log() { # repo
+  local s why
+  why="$(mktemp)"
+  if s="$(vm_spec "$1" check 2>"$why")"; then log "$1's VM spec (looper.yaml): $s" >&2
+  elif [[ -s "$why" ]]; then log "$1's looper.yaml $(cat "$why")" >&2; fi
+  rm -f "$why"
 }
 
 # The image the plan's jobs run (looper#115): the looper image by digest,

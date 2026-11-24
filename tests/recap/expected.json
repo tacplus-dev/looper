@@ -1256,6 +1256,7 @@
   "gitlab:tacplus-dev/looper": "ok",
   "image": "ok"
  },
+ "specs": {},
  "thresholds": {
   "backlog": 3,
   "build_ratio": 1.1,
@@ -1272,6 +1273,10 @@
   "request_margin": 0.1,
   "request_ratio": 5.0,
   "scan_minutes": 60,
+  "spec_down_nights": 3,
+  "spec_high": 0.9,
+  "spec_low": 0.4,
+  "spec_target": 0.7,
   "vm_wait_hours": 1.0,
   "vm_wait_s": 300,
   "wait_hours": 1.0

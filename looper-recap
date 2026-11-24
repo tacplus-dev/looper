@@ -78,7 +78,13 @@
 #       repository of LOOPER_ORG, each run with its ref (head_branch): a failed
 #       run is recovered only by a later success of its workflow on the same
 #       ref, and the item names the refs still red (looper#116). Cloud Build
-#       is not read: nothing builds there (looper#85). A source it
+#       is not read: nothing builds there (looper#85). Each project's VM
+#       spec, its main's looper.yaml (looper#240, looper-spec), against its
+#       builds' use (the gates jobs' `build use at the end` lines, looper-build):
+#       the peak CPU, memory and disk of the builds running at once, summed, over
+#       the spec's (specs), a drift up or down an item with the spec it
+#       proposes (spec/<repo>/up, spec/<repo>/down; one not valid,
+#       spec/<repo>/invalid). A source it
 #       cannot read is named in `sources`, never guessed. Then its `items`: what
 #       went wrong or crossed a threshold, each with a key the nights share.
 #   looper-recap classify NIGHT.json [--history DIR]
@@ -90,6 +96,12 @@
 #       every threshold, and recovered on retry: one line, no advice), or once
 #       (seen once, under every threshold, not recovered: one line, no advice;
 #       recurring if it comes back). JSON on stdout.
+#   looper-recap drift NIGHT.json [--history DIR]
+#       the VM spec changes to file tonight (looper#240), JSON on stdout:
+#       [{repo, direction, key, title, body}], each a bug the roadmap scan files
+#       in that repository (repo-looper spec_drift_file): a spec too small (up)
+#       or not valid at once, one too large (down) once seen on
+#       LOOPER_RECAP_SPEC_DOWN_NIGHTS of the 7 nights (DIR's and tonight).
 #   looper-recap report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
 #       the night's recap for Jody's daily report, suggestions/recap/<night>.md,
 #       on stdout: the one-screen summary, the recurring items with links to the
@@ -110,7 +122,10 @@
 # builds of the build project a commit, looper#134), LOOPER_RECAP_NIGHTLY_HOURS (3: the
 # quietest hours of the builds the nightly should start in, looper#185), LOOPER_RECAP_REQUEST_RATIO (5: a
 # kind's request against its pods' p90 use, looper#165), LOOPER_RECAP_REQUEST_MARGIN
-# (0.10: how far a kind's p90 may go over its request, tacplus-dev/cluster#53). One more VM: LOOPER_RECAP_VM_MACHINE
+# (0.10: how far a kind's p90 may go over its request, tacplus-dev/cluster#53), LOOPER_RECAP_SPEC_HIGH
+# (0.9: a project's builds' peak over its VM spec's, of any of CPU, memory and disk: up, looper#240),
+# LOOPER_RECAP_SPEC_LOW (0.4: under it, of every one: down), LOOPER_RECAP_SPEC_TARGET (0.7: the peak's
+# share of the spec proposed), LOOPER_RECAP_SPEC_DOWN_NIGHTS (3 of 7: a down filed). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing); one more node of the normal pool (looper#84):
 # LOOPER_RECAP_NODE_MACHINE (c4a-standard-2) at LOOPER_RECAP_NODE_USD_HOUR
@@ -163,6 +178,10 @@ T = {
     "high_share_pct": num("LOOPER_RECAP_HIGH_SHARE", 25),
     "request_ratio": num("LOOPER_RECAP_REQUEST_RATIO", 5),
     "request_margin": num("LOOPER_RECAP_REQUEST_MARGIN", 0.10),
+    "spec_high": num("LOOPER_RECAP_SPEC_HIGH", 0.9),
+    "spec_low": num("LOOPER_RECAP_SPEC_LOW", 0.4),
+    "spec_target": num("LOOPER_RECAP_SPEC_TARGET", 0.7),
+    "spec_down_nights": int(num("LOOPER_RECAP_SPEC_DOWN_NIGHTS", 3)),
 }
 # The high model (looper#162): repo-looper's LOOPER_MODEL_HIGH, whose share of
 # a day's tokens over high_share_pct the recap names.
@@ -335,6 +354,10 @@ DEFERRED = re.compile(r"\[lander\] \[[^]]+\] #(\d+): deferred to the next job")
 DISK = re.compile(r"disk at the end: (\d+)% used")
 # A control pod's use against its requests (looper#165; looper-lib.sh pod_use_log).
 POD_USE = re.compile(r"pod use at the end: cpu (\d+)m mean over (\d+) s, memory (?:(\d+)Mi|\?) peak; requested cpu (\S+), memory (\S+)")
+# A build's use at its end (looper#240; looper-build use_log): its repository, its CPU's peak and mean, its
+# memory's peak and its disk.
+BUILD_USE = re.compile(r"build use at the end: (\S+) cpu (?:(\d+)m|\?) peak, (?:(\d+)m|\?) mean over (\d+) s, "
+                       r"memory (?:(\d+)Mi|\?) peak, disk (?:(\d+)Mi|\?)")
 # The plan's line for each job it plans (looper-dispatch plan_job): its resource group.
 PLANNED = re.compile(r"\] planned (\S+) \(.*, resource_group (\S+)\)$")
 
@@ -399,7 +422,8 @@ def read_log(text, started, finished):
     room for it, looper#84), a pull or gate failure, and for a looper job its
     plans, holds, lands and disk, and a control pod's use against its requests."""
     out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False, "executor": None, "pod_pending": False, "pod_full": False,
-           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}, "pod_use": None}
+           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}, "pod_use": None,
+           "build_use": None}
     now = started
     waiting = {}   # issue -> (reason, since)
     landing = {}   # issue -> since
@@ -497,6 +521,11 @@ def read_log(text, started, finished):
         if m:
             out["pod_use"] = {"cpu_m": int(m.group(1)), "s": int(m.group(2)), "memory_mi": None if m.group(3) is None else int(m.group(3)),
                               "cpu_request_m": cpu_m(m.group(4)), "memory_request_mi": memory_mi(m.group(5))}
+            continue
+        m = BUILD_USE.search(line)
+        if m:
+            n = [None if m.group(i) is None else int(m.group(i)) for i in range(2, 7)]
+            out["build_use"] = {"repo": m.group(1), "cpu_m": n[0], "mean_m": n[1], "s": n[2], "memory_mi": n[3], "disk_mi": n[4]}
             continue
         m = PLANNED.search(line)
         if m:
@@ -670,7 +699,7 @@ def collect(until):
     queues, lands, scans, holdl = [], [], [], []
     passes, managers, vmwait, groups = [], {}, [], {}
     control = {name: [] for name in CONTROL}
-    uses = {}
+    uses, build_uses = {}, {}
 
     for project in projects:
         try:
@@ -745,6 +774,8 @@ def collect(until):
                 out["failed_jobs"].append({"project": project, "id": j["id"], "job": j.get("name"), "class": cls,
                                            "reason": j.get("failure_reason"), "recovered": rec,
                                            "before_ready": lg["prepare_at"] is None, "url": url})
+            if lg["build_use"] and s is not None and f is not None:
+                build_uses.setdefault(lg["build_use"]["repo"], []).append(dict(lg["build_use"], start=s, end=f, url=url))
             kind, repo = looper_repo(j.get("name"))
             if lg["pod_use"]:
                 uk = "control" if j.get("name") in control else {"work": "report"}.get(kind, kind)
@@ -929,6 +960,7 @@ def collect(until):
     out["capacity"] = capacity_of(queues, vmwait, out["runner_pools"], items)
     out["control"] = control_of(control, items)
     out["requests"] = requests_of(uses, items)
+    out["specs"] = specs_of(build_uses, sources, items)
     out["actions"] = actions(start, until, sources, items)
     out["image"] = image_check(until, sources, items)
 
@@ -1298,6 +1330,171 @@ def requests_line(rq):
         for k, r in rq.items()) + "."
 
 
+# --- each project's VM spec against its builds (looper#240) --------------------
+
+SPEC = ENV.get("LOOPER_SPEC") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "looper-spec")
+
+
+def spec_of(repo):
+    """A repository's VM spec, its main's looper.yaml read through looper-spec
+    json: (spec, None); (None, None) with none; (None, why) when it is not
+    valid. Unreadable when the file cannot be read."""
+    org = ENV.get("LOOPER_ORG", "tacplus-dev")
+    try:
+        text = run(["gh", "api", f"repos/{org}/{repo}/contents/looper.yaml", "-H", "Accept: application/vnd.github.raw"])
+    except Unreadable as e:
+        if "404" in str(e):
+            return None, None
+        raise
+    try:
+        p = subprocess.run([SPEC, "json", "-"], input=text, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Unreadable(f"looper-spec: {e}") from None
+    if p.returncode != 0:
+        return None, "; ".join(ln.removeprefix("-: ") for ln in p.stderr.splitlines() if ln.strip())
+    return json.loads(p.stdout), None
+
+
+def at_once(uses, key):
+    """The most of key the builds running at once held: at each build's start,
+    the sum over the builds running then (each build's own peak: an upper
+    bound). A key no build read (?) is None."""
+    if all(u[key] is None for u in uses):
+        return None
+    return max(sum(x[key] or 0 for x in uses if x["start"] <= u["start"] < x["end"]) for u in uses)
+
+
+def fit(family, cpu, memory_gb):
+    """The smallest machine of the family with cpu and memory: (type, cpu, GB), or None."""
+    try:
+        t, c, m = run([SPEC, "fit", family, f"{cpu:.2f}", f"{memory_gb:.2f}"]).split()
+    except (Unreadable, ValueError):
+        return None
+    return t, int(c), whole(float(m))
+
+
+def specs_of(build_uses, sources, items):
+    """Each project's VM spec (looper.yaml, looper#240; decisions/looper-build-
+    vms-2026-11-24.md, point 9) against its builds' use (looper-build's `build
+    use at the end` lines): its peak CPU, memory and disk, the builds running at
+    once summed (the VM runs them side by side), each over its spec's. Over
+    LOOPER_RECAP_SPEC_HIGH of any, the spec is too small (spec/<repo>/up, over
+    its threshold tonight); under LOOPER_RECAP_SPEC_LOW of every one read, too
+    large (spec/<repo>/down, filed once seen on LOOPER_RECAP_SPEC_DOWN_NIGHTS of
+    7: drift). Its proposal sizes what drifted to LOOPER_RECAP_SPEC_TARGET of the
+    peak (the smallest machine of the spec's family that holds it, the disk
+    rounded up to 10 GB). A spec that is not valid is an item (spec/<repo>/invalid);
+    a project with none, or with no build read, nothing."""
+    out = {}
+    for repo, uses in sorted(build_uses.items()):
+        try:
+            spec, why = spec_of(repo)
+        except Unreadable as e:
+            sources["github:specs"] = f"unavailable: {e}"
+            continue
+        sources.setdefault("github:specs", "ok")
+        if why:
+            out[repo] = {"spec": None, "invalid": why}
+            items.append({"key": f"spec/{repo}/invalid", "count": 1, "over": True, "recovered": False,
+                          "summary": f"{repo}: its looper.yaml is not valid, so its VM is sized from nothing: {why}",
+                          "evidence": [f"https://github.com/{ENV.get('LOOPER_ORG', 'tacplus-dev')}/{repo}/blob/main/looper.yaml"]})
+            continue
+        if spec is None:
+            continue
+        peak = {"cpu_m": at_once(uses, "cpu_m"), "memory_mi": at_once(uses, "memory_mi"), "disk_mi": at_once(uses, "disk_mi")}
+        has = {"cpu": spec["cpu"] * 1000, "memory": spec["memory_gb"] * 1024, "disk": spec["disk_gb"] * 1024}
+        use = {k: None if peak[pk] is None else round(peak[pk] / has[k], 2) for k, pk in (("cpu", "cpu_m"), ("memory", "memory_mi"), ("disk", "disk_mi"))}
+        read = [k for k in use if use[k] is not None]
+        drift = "up" if any(use[k] > T["spec_high"] for k in read) else "down" if read and all(use[k] < T["spec_low"] for k in read) else None
+        n = max(sum(1 for x in uses if x["start"] <= u["start"] < x["end"]) for u in uses)
+        sp = {"spec": spec, "builds": len(uses), "at_once": n, "peak": peak, "use": use, "drift": drift, "proposed": None}
+        out[repo] = sp
+        if not drift:
+            continue
+        moved = [k for k in read if (use[k] > T["spec_high"]) == (drift == "up") or drift == "down"]
+        need = {k: peak[pk] / (1000 if k == "cpu" else 1024) / T["spec_target"]
+                for k, pk in (("cpu", "cpu_m"), ("memory", "memory_mi"), ("disk", "disk_mi")) if k in read}
+        cpu = need["cpu"] if "cpu" in moved else spec["cpu"]
+        mem = need["memory"] if "memory" in moved else spec["memory_gb"]
+        disk = max(10, math.ceil(round(need["disk"], 3) / 10) * 10) if "disk" in moved else spec["disk_gb"]
+        family = spec["machine"].split("-")[0]
+        m = fit(family, cpu, mem) if "cpu" in moved or "memory" in moved else (spec["machine"], spec["cpu"], spec["memory_gb"])
+        lines = []
+        if m is None:
+            lines.append(f"no {family} machine has {math.ceil(cpu)} CPU and {math.ceil(mem)} GB")
+        elif m[0] != spec["machine"]:
+            lines += [f"machine: {spec['machine']} → {m[0]}"] if spec["form"] == "machine" else \
+                [f"cpu: {spec['cpu']} → {m[1]}", f"memory: {whole(spec['memory_gb'])} → {m[2]}"]
+        if disk != spec["disk_gb"]:
+            lines.append(f"disk: {spec['disk_gb']} → {disk}")
+        if not lines:
+            sp["drift"] = None
+            continue
+        sp["proposed"] = {"machine": None if m is None else m[0], "cpu": None if m is None else m[1],
+                          "memory_gb": None if m is None else m[2], "disk_gb": disk, "change": lines}
+        items.append({"key": f"spec/{repo}/{drift}", "count": len(uses), "over": drift == "up", "recovered": False,
+                      "summary": f"{repo}: its builds' peak (up to {n} at once, {len(uses)} build{'s' * (len(uses) != 1)}) against its VM spec "
+                                 f"{spec['machine']} ({spec['cpu']} CPU, {whole(spec['memory_gb'])} GB, a {spec['disk_gb']} GB disk): {use_line(use)} "
+                                 f"(threshold {round(T['spec_high'] * 100)}% up, {round(T['spec_low'] * 100)}% down): resize it {drift}, "
+                                 + "; ".join(lines),
+                      "evidence": [u["url"] for u in sorted(uses, key=lambda u: (-(u["memory_mi"] or 0), u["url"]))[:5]]})
+    return out
+
+
+def peak_line(peak):
+    return ", ".join(f"{k} {'?' if peak[f] is None else f'{peak[f]}{u}'}"
+                     for k, f, u in (("cpu", "cpu_m", "m"), ("memory", "memory_mi", "Mi"), ("disk", "disk_mi", "Mi")))
+
+
+def use_line(use):
+    return ", ".join(f"{k} {round(use[k] * 100)}%" for k in ("cpu", "memory", "disk") if use.get(k) is not None)
+
+
+def drift(night, history):
+    """The spec changes to file tonight (looper#240): each spec/<repo>/up and
+    spec/<repo>/invalid item, and each spec/<repo>/down seen on
+    LOOPER_RECAP_SPEC_DOWN_NIGHTS of the 7 nights (a quiet day is no drift),
+    as [{repo, direction, title, body}] for the roadmap scan to file in the
+    repository."""
+    d = dt.date.fromisoformat(night["night"])
+    seen = {}
+    for k in range(1, 7):
+        p = os.path.join(history, f"{(d - dt.timedelta(days=k)).isoformat()}.json") if history else ""
+        if p and os.path.isfile(p):
+            for x in load(p).get("items", []):
+                seen[x["key"]] = seen.get(x["key"], 0) + 1
+    out = []
+    for it in night.get("items", []):
+        m = re.fullmatch(r"spec/(.+)/(up|down|invalid)", it["key"])
+        if not m:
+            continue
+        repo, way = m.group(1), m.group(2)
+        nights = seen.get(it["key"], 0) + 1
+        if way == "down" and nights < T["spec_down_nights"]:
+            continue
+        sp = (night.get("specs") or {}).get(repo) or {}
+        if way == "invalid":
+            title = "looper.yaml is not valid: the project's VM is sized from nothing"
+            change = f"Make it valid (README of tacplus-dev/looper: The project's VM spec; `looper-spec check`): {sp.get('invalid')}"
+        else:
+            pr = sp["proposed"]
+            title = f"looper.yaml: resize the project's VM {way}: " + "; ".join(pr["change"])
+            change = ("Change looper.yaml so:\n\n" + "\n".join(f"- {c}" for c in pr["change"])
+                      + f"\n\nThe peak, the builds running at once summed (each build's own peak: an upper bound): "
+                      + peak_line(sp["peak"]) + f" over {sp['builds']} builds, up to {sp['at_once']} at once; of the spec: "
+                      + use_line(sp["use"])
+                      + f". The proposal holds the peak at {round(T['spec_target'] * 100)}% of the spec; up is filed at once "
+                      f"(over {round(T['spec_high'] * 100)}% of any), down once seen on {T['spec_down_nights']} of 7 nights "
+                      f"(under {round(T['spec_low'] * 100)}% of every one) and it was on {nights}.")
+        body = (f"The nightly recap of {night['night']} (tacplus-dev/looper#240; tacplus-dev/roadmap "
+                f"decisions/looper-build-vms-2026-11-24.md, point 9: each project's VM is right-sized from its measured use) found "
+                f"this project's VM spec drifting from its builds:\n\n{it['summary']}\n\n{change}\n\nThe builds: "
+                + ", ".join(it.get("evidence", [])) + "\n\nThe spec sizes the machine only, never the children it runs. "
+                "This lands through the project's normal review, as any other change.")
+        out.append({"repo": repo, "direction": way, "key": it["key"], "title": title, "body": body})
+    return out
+
+
 def actions(start, until, sources, items):
     org = ENV.get("LOOPER_ORG", "tacplus-dev")
     pat = re.compile(ENV.get("LOOPER_RECAP_WORKFLOWS", "nightly|release|image"), re.I)
@@ -1632,6 +1829,15 @@ def report(night, classes, sdir, cov):
                  + f"; one more {vm['machine']} VM is about ${vm['usd_day']} a day (${vm['usd_hour']} an hour), "
                  f"one more {node['machine']} node about ${node['usd_day']} a day (${node['usd_hour']} an hour)."
                  + requests_line(night.get("requests")))
+    specs = night.get("specs") or {}
+    if specs:
+        L.append("VM specs (looper#240, looper.yaml against the builds' peak): " + "; ".join(
+            f"{r} not valid" if sp.get("spec") is None else
+            f"{r} {sp['spec']['machine']}, a {sp['spec']['disk_gb']} GB disk: {peak_line(sp['peak'])} at the peak "
+            f"({sp['builds']} build{'s' * (sp['builds'] != 1)}, up to {sp['at_once']} at once), "
+            + use_line(sp["use"])
+            + (f": {sp['drift']}, " + "; ".join(sp["proposed"]["change"]) if sp.get("proposed") else "")
+            for r, sp in sorted(specs.items())) + ".")
     for name, what in (("looper-plan", "Plan"), ("looper-kick", "Kick")):
         c = (night.get("control") or {}).get(name)
         if c is None:
@@ -1746,6 +1952,12 @@ def main(argv):
         if len(rest) != 2:
             die("report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]")
         sys.stdout.write(report(load(rest[0]), load(rest[1]), o.get("--suggestions"), o.get("--covered")))
+        return 0
+    if cmd == "drift":
+        o, rest = opts(args, {"--history"})
+        if len(rest) != 1:
+            die("drift NIGHT.json [--history DIR]")
+        sys.stdout.write(json.dumps(drift(load(rest[0]), o.get("--history")), indent=1, sort_keys=True) + "\n")
         return 0
     die(f"unknown command: {cmd} (see --help)")
 

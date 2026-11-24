@@ -1078,6 +1078,18 @@ login; a secret it cannot read is named in `sources` and the project is not read
   canceled, for one canceled before it started), each its own line of the report (`Plan queue: ...`, `Kick queue:
   ...`), and an item, `control-queue/<job>`, when the longest is `LOOPER_RECAP_CONTROL_QUEUE` (600 seconds) or more:
   a control job waited for a runner behind reports, or the newest-kick rule did not hold.
+- **Each project's VM spec against its builds** (`specs`, looper#240; [The project's VM spec](#the-projects-vm-spec)):
+  for each repository whose builds logged their use (`build use at the end: <repo> cpu Nm peak, Nm mean over S s,
+  memory NMi peak, disk NMi`, the gates job's), its main's `looper.yaml` against the builds' peak CPU, memory and disk,
+  the builds running at once summed (each build's own peak: an upper bound of what the VM holds as it runs them side
+  by side). Over `LOOPER_RECAP_SPEC_HIGH` (0.9) of any, an item `spec/<repo>/up`, over its threshold; under
+  `LOOPER_RECAP_SPEC_LOW` (0.4) of every one read, `spec/<repo>/down`; each with the spec it proposes, what drifted
+  sized so the peak is `LOOPER_RECAP_SPEC_TARGET` (0.7) of it (the smallest machine of the spec's family that holds it,
+  `looper-spec fit`; the disk rounded up to 10 GB). A spec that is not valid is `spec/<repo>/invalid`. The report's
+  line `VM specs`. **The change is filed, not advised** (`looper-recap drift`): the roadmap scan files each up and
+  invalid at once, and a down once seen on `LOOPER_RECAP_SPEC_DOWN_NIGHTS` (3) of the 7 nights (a quiet day is no
+  drift), in the project's repository as an approved bug titled with the change; one open already (its
+  `<!-- looper-spec-drift -->`) gets the night's numbers as a comment. It lands through the project's own review.
 
 **Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
 `suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3
@@ -1098,8 +1110,60 @@ longest queues, lands and holds, the managers, the concurrency, the capacity, th
 them, and the transient list. The hub reads it into Jody's daily report. A night already recorded is left as it is.
 
 ```sh
-looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115); the gate builds by hour, summed over the nights, the quietest hours for the nightly and the busiest (#185)
+looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE] | drift NIGHT.json [--history DIR]
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115); the gate builds by hour, summed over the nights, the quietest hours for the nightly and the busiest (#185); spec-drift: each project's VM spec against its builds' peak, the builds at once summed, a spec too small up at once with its proposal (a machine and a disk), one too large down in the cpu:/memory: form, filed once seen on 3 of 7 nights, one not valid, one with none left out (#240)
+tests/repo-looper.test.sh    # scan-suggestions: the roadmap scan files a spec's drift in its repository, approved, once; the next night's numbers on that issue (#240)
+```
+
+## The project's VM spec
+
+**Each project names its own VM in `looper.yaml`, at its repository's root, beside `build.lock` and `gates.yaml`**
+(looper#240; `tacplus-dev/roadmap:decisions/looper-build-vms-2026-11-24.md`, point 9: one looper+builder per project on
+its own spot VM, outside the deployment cluster). It names the project's ideal looper/builder: its machine, its cache
+disk and whether it is spot. **It sizes the machine only: it never caps the children** the VM runs (the decision's
+point 2: the parent never blocks and has no limit on children). The cloud pipeline makes the project's VM from it
+(tacplus-dev/cloud#108), the kicker starts that VM for a project whose spec says `vm: true` (looper#241), and it is
+right-sized over time from measured use ([Nightly recap](#nightly-recap)).
+
+```yaml
+# looper.yaml
+machine: c4a-standard-32   # the machine type; or cpu: and memory: instead
+disk: 200                  # the cache disk, GB (10 to 65536): caches only, never tools (the decision's point 3)
+spot: true                 # a spot VM, or not
+vm: false                  # the kicker starts the project's VM (looper#241); default false
+```
+
+- **`machine:`** an Arm type (the decision's point 5: c4a, Container-Optimized OS): `c4a-highcpu-N`,
+  `c4a-standard-N` or `c4a-highmem-N` (N 1, 2, 4, 8, 16, 32, 48, 64 or 72; 2, 4 or 8 GB a vCPU), or `t2a-standard-N`
+  (N up to 48). **Or `cpu:` and `memory:`** (vCPUs, GB), which name the smallest c4a type with at least both (fewest
+  vCPUs, then least memory): c4a has no custom types.
+- **`disk:`** the cache disk in GB, a whole number. **`spot:`** `true` or `false`. **`vm:`** `true` or `false`, default
+  `false`.
+- A key a line, each once; `#` comments; nothing else (no nesting, no unknown key).
+
+**Its checks**: `looper-spec check [FILE]` prints the spec in one line (`c4a-standard-32: 32 CPU, 128 GB memory, a 200
+GB cache disk, spot, no VM yet`) or each mistake, a line each, and exits 1; `looper-spec json [FILE]` prints its fields
+(`machine`, `cpu`, `memory_gb`, `disk_gb`, `spot`, `vm`, `form`) for the tools that size from it. **The planner reads
+it**: `looper-dispatch plan` logs each repository it plans for with its spec (`tacplus's VM spec (looper.yaml):
+c4a-standard-32: ...`), or why it is not valid or cannot be read; a repository with none, nothing. A spec that is not
+valid sizes nothing, and the nightly recap files it as a bug in its repository (one whose builds it read).
+
+**Its measure**: every gates job logs its use at its end (`looper-build`, `use_log`): its cgroup's CPU at its peak
+over `BUILD_USE_INTERVAL` seconds (10) and its mean, its memory's peak and the disk its checkout and outputs hold
+(`BUILD_OUT`). The nightly recap sets each project's builds, those running at once summed, against its spec and files
+the change up or down when they drift ([Nightly recap](#nightly-recap)). Once a project runs on its VM, the VM's own
+use is the better measure (PROPOSALS.md).
+
+**tacplus first** (the pilot): its spec is sized from today's gate builds, 4 CPU and 14 GB each (a gates pod's
+ceiling 3500m and 12Gi, OOM-killed in 8Gi, looper#202), with room for parallel children: `c4a-standard-32` (32 vCPUs,
+128 GB) holds 8 such builds at once and the agents beside them, spot, a 200 GB cache disk (tacplus-dev/tacplus's own
+land; the other repositories follow at roll-out, one land each).
+
+```sh
+looper-spec check [FILE] | json [FILE] | fit FAMILY CPU MEMORY_GB
+tests/looper-spec.test.sh       # a machine type; cpu: and memory: as the smallest c4a with both; vm: false unless said; every mistake named, a line each (an x86 type, both forms, a disk out of range, a key twice or unknown, nesting, no spot:); fit
+tests/looper-dispatch.test.sh   # plan-spec: the plan logs each planned repository's spec, one not valid or unreadable with why, none silently, its jobs planned as before
+tests/looper-build.test.sh      # gates: the build's peak CPU, memory and disk logged at its end; ? where the cgroup cannot be read
 ```
 
 ## Build pipeline

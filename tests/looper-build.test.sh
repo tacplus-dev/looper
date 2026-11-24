@@ -61,6 +61,9 @@ case_commit hang 'gates:
     echo "a gate starts"; sleep 60; echo "never printed"' "$LOCK"
 case_commit chatty 'gates:
     for i in 1 2 3 4 5; do echo "still going $i"; sleep 1; done' "$LOCK"
+case_commit busy 'gates:
+    printf "usage_usec 7000000\n" > "$BUILD_CGROUP/cpu.stat"; sleep 2
+    mkdir -p target && head -c 3145728 /dev/zero > target/blob' "$LOCK"
 case_commit nopin "$PASS_GATES"
 case_commit tagpin "$PASS_GATES" "tacplus: 2.6.1
 build_image: us-docker.pkg.dev/jody1-328023/tacplus/build:2.6"
@@ -999,6 +1002,25 @@ if build BUILD_SHA="${SHA[fail]}" BUILD_GATES_IDLE=3 -- gates 2>"$TMP/err"; then
 verdict_is "fail: just gates exited 3"
 if build BUILD_SHA="${SHA[pass]}" BUILD_GATES_IDLE=1h -- gates 2>"$TMP/err"; then fail "built"; fi
 verdict_is "fail: BUILD_GATES_IDLE '1h' is not a number of seconds (1 or more)"
+pass
+
+# The gates' use (looper#240), for the nightly recap's drift check of each
+# project's VM spec: the job's cgroup's CPU at its peak over BUILD_USE_INTERVAL
+# and its mean, its memory's peak and the disk the build holds, in one line the
+# recap reads, the repository named; what cannot be read is a ?.
+NAME="gates: the build's peak CPU, memory and disk logged at its end, for the spec's drift check"
+mkdir -p "$TMP/cgroup"; printf 'usage_usec 1000000\n' > "$TMP/cgroup/cpu.stat"; echo 2147483648 > "$TMP/cgroup/memory.peak"
+build BUILD_SHA="${SHA[busy]}" BUILD_CGROUP="$TMP/cgroup" BUILD_USE_INTERVAL=1 -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+verdict_is pass
+use="$(grep -o 'build use at the end: .*' "$TMP/err")" || fail "no use line: $(cat "$TMP/err")"
+[[ "$use" =~ ^build\ use\ at\ the\ end:\ demo\ cpu\ ([0-9]+)m\ peak,\ ([0-9]+)m\ mean\ over\ ([0-9]+)\ s,\ memory\ 2048Mi\ peak,\ disk\ ([0-9]+)Mi$ ]] || fail "$use"
+(( BASH_REMATCH[1] >= 2000 && BASH_REMATCH[1] <= 6000 )) || fail "the peak: $use"
+(( BASH_REMATCH[2] >= 500 && BASH_REMATCH[2] <= BASH_REMATCH[1] )) || fail "the mean: $use"
+(( BASH_REMATCH[4] >= 3 )) || fail "the disk: $use"
+build BUILD_SHA="${SHA[pass]}" BUILD_CGROUP="$TMP/none" -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+grep -qE 'build use at the end: demo cpu \? peak, \? mean over [0-9]+ s, memory \? peak, disk [0-9]+Mi$' "$TMP/err" || fail "no cgroup: $(grep 'build use' "$TMP/err")"
+if build BUILD_SHA="${SHA[pass]}" BUILD_USE_INTERVAL=0 -- gates 2>"$TMP/err"; then fail "built"; fi
+verdict_is "fail: BUILD_USE_INTERVAL '0' is not a number of seconds (1 or more)"
 pass
 
 # A build past its ceiling (looper#198: tacplus's batch build ran 2h22m, its

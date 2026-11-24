@@ -1,0 +1,176 @@
+#!/usr/bin/env -S python3 -I
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-spec: a project's VM spec, looper.yaml at its repository's root
+# (looper#240; tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md,
+# point 9; README: The project's VM spec). It names the project's ideal
+# looper/builder VM: its machine, its cache disk and whether it is spot. It
+# sizes the machine only: it never caps the children the VM runs.
+#
+#   machine: c4a-standard-32   # the machine type; or cpu: and memory: instead
+#   disk: 200                  # the cache disk, GB
+#   spot: true                 # a spot VM, or not
+#   vm: false                  # the kicker starts the project's VM (looper#241); default false
+#
+# The VM is Arm (the decision's point 5: c4a, Container-Optimized OS), so the
+# machine is a c4a or t2a type; cpu: (vCPUs) and memory: (GB) instead name the
+# smallest c4a type with at least both. Each key once, a line each; comments
+# are `#` to the end of the line; nothing else.
+#
+#   looper-spec check [FILE]     the spec valid: one line on stdout, exit 0; else why, a line each
+#                                on stderr, exit 1 (FILE: default looper.yaml, - for stdin)
+#   looper-spec json [FILE]      the spec, checked, as JSON: machine, cpu, memory_gb, disk_gb, spot,
+#                                vm, and form (machine, or cpu: cpu: and memory: named it)
+#   looper-spec fit FAMILY CPU MEMORY_GB
+#                                the smallest machine type of FAMILY with at least CPU vCPUs and
+#                                MEMORY_GB of memory (fewest vCPUs, then least memory), "<type> <cpu>
+#                                <memory GB>"; exit 1 when none (the recap's drift check, looper-recap)
+import json
+import math
+import re
+import sys
+
+# The Arm machine families (GB of memory a vCPU, per class; the vCPU counts).
+FAMILIES = {
+    "c4a": ({"highcpu": 2, "standard": 4, "highmem": 8}, (1, 2, 4, 8, 16, 32, 48, 64, 72)),
+    "t2a": ({"standard": 4}, (1, 2, 4, 8, 16, 32, 48)),
+}
+DEFAULT_FAMILY = "c4a"
+KEYS = ("machine", "cpu", "memory", "disk", "spot", "vm")
+DISK_GB = (10, 65536)
+
+
+def machines(family):
+    gb, sizes = FAMILIES[family]
+    for cls, per in gb.items():
+        for n in sizes:
+            yield f"{family}-{cls}-{n}", n, n * per
+
+
+def machine_of(name):
+    """A machine type's vCPUs and GB of memory, or None when it is no type we know."""
+    m = re.fullmatch(r"([a-z0-9]+)-[a-z]+-\d+", name)
+    if not m or m.group(1) not in FAMILIES:
+        return None
+    for t, cpu, mem in machines(m.group(1)):
+        if t == name:
+            return cpu, mem
+    return None
+
+
+def fit(family, cpu, memory):
+    best = None
+    for t, c, m in machines(family):
+        if c >= cpu and m >= memory and (best is None or (c, m) < best[1:]):
+            best = (t, c, m)
+    return best
+
+
+def number(v):
+    return re.fullmatch(r"\d+(\.\d+)?", v) is not None
+
+
+def parse(text):
+    """The spec of a looper.yaml's text, and the reasons it is not one."""
+    vals, bad = {}, []
+    for i, line in enumerate(text.splitlines(), 1):
+        s = re.sub(r"(^|\s)#.*$", "", line).strip()
+        if not s:
+            continue
+        m = re.fullmatch(r"([a-z_]+):\s*(\S+)", s)
+        if not m or line[0].isspace():
+            bad.append(f"line {i}: not `key: value`: {line.strip()}")
+            continue
+        k, v = m.group(1), m.group(2).strip("\"'")
+        if k not in KEYS:
+            bad.append(f"line {i}: {k}: not a key of looper.yaml ({', '.join(KEYS)})")
+        elif k in vals:
+            bad.append(f"line {i}: {k}: twice")
+        else:
+            vals[k] = v
+    spec = {}
+    if "machine" in vals:
+        if "cpu" in vals or "memory" in vals:
+            bad.append("machine: and cpu:/memory: both: name the machine, or its cpu: and memory:")
+        got = machine_of(vals["machine"])
+        if got is None:
+            bad.append(f"machine: {vals['machine']}: not an Arm machine type of {' or '.join(sorted(FAMILIES))} "
+                       f"(the VM is Arm: tacplus-dev/roadmap decisions/looper-build-vms-2026-11-24.md)")
+        else:
+            spec.update(machine=vals["machine"], cpu=got[0], memory_gb=got[1], form="machine")
+    elif "cpu" in vals or "memory" in vals:
+        cpu, mem = vals.get("cpu"), vals.get("memory")
+        if cpu is None or mem is None:
+            bad.append("cpu: and memory: go together")
+        elif not re.fullmatch(r"[1-9]\d*", cpu):
+            bad.append(f"cpu: {cpu}: not a whole number of vCPUs")
+        elif not number(mem) or float(mem) <= 0:
+            bad.append(f"memory: {mem}: not a number of GB")
+        else:
+            got = fit(DEFAULT_FAMILY, int(cpu), float(mem))
+            if got is None:
+                bad.append(f"cpu: {cpu}, memory: {mem}: no {DEFAULT_FAMILY} machine is that large")
+            else:
+                spec.update(machine=got[0], cpu=got[1], memory_gb=got[2], form="cpu")
+    else:
+        bad.append("no machine: (or cpu: and memory:)")
+    if "disk" not in vals:
+        bad.append("no disk: (the cache disk, GB)")
+    elif not re.fullmatch(r"[1-9]\d*", vals["disk"]) or not DISK_GB[0] <= int(vals["disk"]) <= DISK_GB[1]:
+        bad.append(f"disk: {vals['disk']}: not a whole number of GB from {DISK_GB[0]} to {DISK_GB[1]}")
+    else:
+        spec["disk_gb"] = int(vals["disk"])
+    for k, required in (("spot", True), ("vm", False)):
+        if k not in vals:
+            if required:
+                bad.append(f"no {k}: (true or false)")
+            else:
+                spec[k] = False
+        elif vals[k] not in ("true", "false"):
+            bad.append(f"{k}: {vals[k]}: not true or false")
+        else:
+            spec[k] = vals[k] == "true"
+    return (None if bad else spec), bad
+
+
+def line(s):
+    return (f"{s['machine']}: {s['cpu']} CPU, {s['memory_gb']:g} GB memory, a {s['disk_gb']} GB cache disk, "
+            f"{'spot' if s['spot'] else 'not spot'}, {'its VM on' if s['vm'] else 'no VM yet'}")
+
+
+def read(path):
+    try:
+        if path == "-":
+            return sys.stdin.read()
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"{path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else ""
+    if cmd in ("check", "json") and len(argv) <= 3:
+        path = argv[2] if len(argv) == 3 else "looper.yaml"
+        spec, bad = parse(read(path))
+        if bad:
+            for b in bad:
+                print(f"{path}: {b}", file=sys.stderr)
+            return 1
+        print(line(spec) if cmd == "check" else json.dumps(spec, sort_keys=True))
+        return 0
+    if cmd == "fit" and len(argv) == 5 and argv[2] in FAMILIES and number(argv[3]) and number(argv[4]):
+        got = fit(argv[2], math.ceil(float(argv[3])), float(argv[4]))
+        if got is None:
+            print(f"no {argv[2]} machine has {argv[3]} CPU and {argv[4]} GB", file=sys.stderr)
+            return 1
+        print(f"{got[0]} {got[1]} {got[2]:g}")
+        return 0
+    print("usage: looper-spec check [FILE] | json [FILE] | fit FAMILY CPU MEMORY_GB", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

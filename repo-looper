@@ -5302,7 +5302,9 @@ its \`--cost\` the cost, and an \`--evidence\` with the numbers from recap.json 
 work that was serialized could have run in parallel and what would make it safe (the item's \`parallel\`: file-level
 conflicts instead of areas, a fresh job instead of idling, parallel lands of disjoint diffs). Never advise a cap on a
 repository's reports: loopers are never blocked (Jody, 2026-11-07); a \`wait/<repo>\`'s advice fixes why the kicker, the
-plan or its runner did not start them, a backlog's what slows its manager. Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
+plan or its runner did not start them, a backlog's what slows its manager. A \`spec/<repo>/...\` item (a project's VM
+spec, looper.yaml, against its builds: tacplus-dev/looper#240) gets no advice: the looper files its change in that
+repository itself. Capacity is manual (decisions/looper-job-per-issue-2026-11-03.md): \`capacity/vm\`'s advice is a scale-up
 for Jody to decide, its \`--cost\` one more VM a day from \`capacity.one_more_vm\`, its gain the hours of waiting for a
 VM; never an autoscaling change. A manager's red main or revert names the merges. Advice counts toward
 the night's $SUGGEST_MAX, ranked with the rest, Security first, then the hours of waiting removed. When an open
@@ -5429,9 +5431,38 @@ suggest_scan() { # run-dir
     [[ ! -s "$run/dropped" ]] || { log "scan: suggestions dropped:"; sed 's/^/  /' "$run/dropped"; }
     [[ ! -s "$run/filed" ]] || log "scan: suggestions filed: $(paste -sd' ' "$run/filed")"
   fi
+  spec_drift_file "$run"
   # What the model left is in the run's record now: its clone goes (looper#227).
   scan_drop "$taken"
   log "scan of $REPO finished"
+}
+
+# The recap's VM spec drift (looper#240; README: The project's VM spec;
+# looper-recap drift): each change it calls for filed in its repository as an
+# approved bug (the decision's point 9: the change lands through the
+# project's normal review), its title the change; a repository with one open
+# already (SPEC_MARK) gets the night's numbers on it instead.
+SPEC_MARK='<!-- looper-spec-drift -->'
+spec_drift_file() { # run-dir
+  local ctx="$1/context" row repo title body n
+  [[ -f "$ctx/recap.json" ]] || return 0
+  if ! "$RECAP" drift "$ctx/recap.json" --history "$CHECKOUT/suggestions/recap" > "$ctx/drift.json" 2>> "$ctx/recap.err"; then
+    log "scan: the recap's spec drift could not be read: $(tail -n 1 "$ctx/recap.err")"; return 0
+  fi
+  while IFS= read -r row; do
+    repo="$(jq -r .repo <<<"$row")"; title="$(jq -r .title <<<"$row")"; body="$(jq -r .body <<<"$row")"
+    if ! n="$(forge_issue_list "$repo" open 100 number,body "[.[] | select(.body // \"\" | contains(\"$SPEC_MARK\")) | .number] | min // empty")"; then
+      log "scan: the open issues of $repo could not be read: its spec drift is not filed ($title)"; continue
+    fi
+    if [[ -n "$n" ]]; then
+      if forge_issue_comment "$repo" "$n" "$body" >/dev/null; then log "scan: $repo's spec drift is #$n's already: the night's numbers added to it"
+      else log "scan: $repo's spec drift could not be added to #$n"; fi
+    else
+      ensure_labels "$repo" || true
+      if n="$(forge_issue_create "$repo" "$title" "$SPEC_MARK"$'\n'"$body" "$LABEL_BUG" "$LABEL_APPROVED")"; then log "scan: $repo's spec drift filed: #$n ($title)"
+      else log "scan: $repo's spec drift could not be filed ($title)"; fi
+    fi
+  done < <(jq -c '.[]' "$ctx/drift.json")
 }
 
 # The scan's trace propagation item (looper#51): looper-trace check of main,

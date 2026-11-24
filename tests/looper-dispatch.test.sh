@@ -23,7 +23,7 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-cmd="$1 $2"; shift 2
+cmd="$1 $2"; shift 2; args="$*"
 echo "$cmd" >> "$FIX/gh"
 # $FIX/http-<cmd, spaces as ->: "<count> [<status>]", GitHub answers that many
 # of the command's next calls with that status (default 502), as gh says it (looper#178).
@@ -115,7 +115,10 @@ case "$cmd" in
   # A file of a repository's main (looper#90): $FIX/contents/<repo>-<path>, else HTTP 404.
   api\ repos/*/contents/*)
     p="${cmd#api repos/*/}"; f="$FIX/contents/${p%%/*}-${p#*/contents/}"
-    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; echo '{"type":"file"}'; exit 0 ;;
+    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    # Raw (forge_file), the file itself; $FIX/http-file-<repo>-<path>, that error instead.
+    [[ ! -f "$FIX/http-file-${p%%/*}-${p#*/contents/}" ]] || { cat "$FIX/http-file-${p%%/*}-${p#*/contents/}" >&2; exit 1; }
+    if [[ "$args" == *vnd.github.raw* ]]; then cat "$f"; else echo '{"type":"file"}'; fi; exit 0 ;;
   # $FIX/private: the org's private repositories, one a line (--visibility public leaves them out).
   # GitHub's search index lags (looper#175): $FIX/search/<repo>-<n>.json is the
   # issue as the search still has it, where the issue itself has changed.
@@ -1230,6 +1233,28 @@ done
 ! started || fail "started a pipeline holding a personal token"
 GH_TOKEN="ghp_${FAKE}0123" dispatch run
 started || fail "without the apps a GH_TOKEN is as before: $OUT"
+pass
+
+# The project's VM spec (looper#240; README: The project's VM spec): the plan reads each repository it plans for
+# from its main's looper.yaml and logs it, checked; one that is not valid, or cannot be read, is logged with why,
+# its jobs planned as before; none, nothing said.
+scenario plan-spec
+issue beta 7 OPEN "Go." approved
+issue gamma 8 OPEN "Go." approved
+issue delta 9 OPEN "Go." approved
+mkdir -p "$FIX/contents"
+printf '# the VM\nmachine: c4a-standard-32\ndisk: 200\nspot: true\n' > "$FIX/contents/alpha-looper.yaml"
+printf 'machine: n2-standard-8\ndisk: 200\nspot: maybe\n' > "$FIX/contents/beta-looper.yaml"
+echo x > "$FIX/contents/delta-looper.yaml"; echo "HTTP 502: Server Error" > "$FIX/http-file-delta-looper.yaml"
+split_plan
+grep -qF "alpha's VM spec (looper.yaml): c4a-standard-32: 32 CPU, 128 GB memory, a 200 GB cache disk, spot, no VM yet" "$FIX/err" \
+  || fail "alpha's spec: $(cat "$FIX/err")"
+grep -qF "beta's looper.yaml is not valid, its VM not sized from it: machine: n2-standard-8: not an Arm machine type of c4a or t2a" "$FIX/err" \
+  || fail "beta's spec: $(cat "$FIX/err")"
+grep -qF "; spot: maybe: not true or false" "$FIX/err" || fail "beta's reasons, one line: $(cat "$FIX/err")"
+grep -qF "delta's looper.yaml could not be read: HTTP 502: Server Error" "$FIX/err" || fail "delta's spec: $(cat "$FIX/err")"
+! grep -q "gamma's" "$FIX/err" || fail "gamma has no looper.yaml: $(cat "$FIX/err")"
+for j in alpha-4 beta-7 gamma-8 delta-9; do grep -qx "looper-$j:" <<<"$PLAN" || fail "looper-$j not planned: $(grep '^looper-' <<<"$PLAN")"; done
 pass
 
 # Nothing runs on the Mac any more: there is no launchd install.
