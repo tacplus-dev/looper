@@ -37,7 +37,10 @@
 # fix (a fixed version, or our own code: a SAST finding outside test code,
 # looper#179, which is listed, never failing), unless an unexpired
 # exception names it; an exception that has expired, or says less than an id,
-# a reason, who decided and an expiry date, fails too. A finding the commit's
+# a reason, who decided and an expiry date, fails too. Only a finding in what
+# ships fails (looper#225): one in CI tooling (a dependency of the pipeline's
+# tools, under bin/ or ci/, or a CI image's base image, a Dockerfile's under
+# ci/) is reported, never failing. A finding the commit's
 # security-baseline.json records (by tool, rule and file, not line: up to its
 # count) is baselined, never new (new: not the last nightly's, looper#211); a secret, a HIGH or CRITICAL finding, one
 # the policy fails or an exception accepts is never baselined. A land's build
@@ -97,6 +100,19 @@ def line_of: (.where | capture(":(?<l>[0-9]+)(-[0-9]+)?$").l // "0") | tonumber;
 # files when no open issue names them (looper#211).
 JQ_STANDING='
 def standing_high: (.severity | IN("HIGH", "CRITICAL")) and (.new | not) and (.baselined | not) and .excepted == null;
+'
+# Where a finding is (looper#225; tacplus-dev/roadmap
+# decisions/security-gates-ship-only-2026-11-23.md): CI tooling, reported and
+# never failing, or shipped, which the policy fails. CI tooling is what only
+# the pipelines run: a dependency (sca) of the pipeline's tool binaries and
+# pins, its file (a dependency's, in its where's parentheses) under bin/ (what
+# ci/tools.sh fetches) or ci/, and a CI image's base image (a Dockerfile under
+# ci/: its scope set by tool_trivy). Everything else ships: the repository's
+# own code (a SAST finding, a secret, a misconfiguration, wherever it is), the
+# dependencies it builds with and the images it publishes.
+JQ_SCOPE='
+def dep_file: (.where | capture("^[^ ]+ \\((?<p>[^,)]+)[,)]").p) // file_of;
+def scope: .scope // (if .kind == "sca" and (dep_file | test("^(bin|ci)/")) then "tooling" else "shipped" end);
 '
 # An exception's where (looper#182), a path glob, as a regular expression on a
 # finding's file_of: * and ? match within a path segment, ** across them ("**/"
@@ -677,12 +693,13 @@ tool_trivy() { # tree label prefix
   trivy fs -q --scanners vuln,misconfig --format json -o "$raw" "$1" 2>"$SCAN_OUT/raw/trivy-$2.log" || rc=$?
   if ((rc != 0)); then tool_error trivy "$1" "$1" "exited $rc: $(tool_cause "$SCAN_OUT/raw/trivy-$2.log")"
   else norm "$SCAN_OUT/norm/trivy-$2.json" "$JQ_TRIVY" "$raw" --arg where "$3"; fi
-  # The Dockerfiles' base images (by name: a private one it cannot read is not analyzed).
-  while read -r ref; do
+  # The Dockerfiles' base images (by name: a private one it cannot read is not
+  # analyzed); a CI image's, only Dockerfiles under ci/ building on it, is CI tooling (looper#225).
+  while read -r ref scope; do
     i=$((i + 1)); raw="$SCAN_OUT/raw/trivy-$2-image-$i.json"; rc=0
     trivy image -q --scanners vuln --format json -o "$raw" "$ref" 2>"$raw.log" || rc=$?
     if ((rc != 0)); then notes+=("trivy: image $ref: not analyzed ($(tool_cause "$raw.log"))"); continue; fi
-    norm "$SCAN_OUT/norm/trivy-$2-image-$i.json" "$JQ_TRIVY" "$raw" --arg where "image $ref: "
+    norm "$SCAN_OUT/norm/trivy-$2-image-$i.json" "$JQ_TRIVY | map(. + {scope: \$scope})" "$raw" --arg where "image $ref: " --arg scope "$scope"
   done < <(base_images "$1")
 }
 # A package in a jar is where the jar is (PkgPath), else where the result is.
@@ -709,14 +726,18 @@ tool_jars() { # tree label prefix
   norm "$SCAN_OUT/norm/trivy-jars-$2.json" "$JQ_TRIVY" "$raw" --arg where "$3"
 }
 
-# The images a tree's Dockerfiles build FROM: by name, not a stage, not scratch.
+# The images a tree's Dockerfiles build FROM: by name, not a stage, not
+# scratch; each "<ref> <scope>", tooling when only Dockerfiles under ci/ (CI
+# images) build on it, else shipped (looper#225).
 base_images() { # tree
   local f
   while read -r f; do
-    awk 'toupper($1) == "FROM" { r = ""; for (i = 2; i <= NF; i++) if ($i !~ /^--/) { r = $i; break }
+    awk -v scope="$([[ "${f#"$1"/}" == ci/* ]] && echo tooling || echo shipped)" \
+        'toupper($1) == "FROM" { r = ""; for (i = 2; i <= NF; i++) if ($i !~ /^--/) { r = $i; break }
            for (j = i + 1; j < NF; j++) if (toupper($j) == "AS") stage[tolower($(j + 1))] = 1
-           if (r != "" && r != "scratch" && r !~ /\$/ && !(tolower(r) in stage)) print r }' "$f"
-  done < <(find "$1" \( -name .git -o -name node_modules -o -name target \) -prune -o -type f \( -name Dockerfile -o -name '*.Dockerfile' -o -name 'Dockerfile.*' \) -print) | LC_ALL=C sort -u
+           if (r != "" && r != "scratch" && r !~ /\$/ && !(tolower(r) in stage)) print r, scope }' "$f"
+  done < <(find "$1" \( -name .git -o -name node_modules -o -name target \) -prune -o -type f \( -name Dockerfile -o -name '*.Dockerfile' -o -name 'Dockerfile.*' \) -print) |
+    LC_ALL=C sort -u | awk '!($1 in s) || $2 == "shipped" { s[$1] = $2 } END { for (r in s) print r, s[r] }' | LC_ALL=C sort
 }
 
 codeql_bundle() {
@@ -1126,7 +1147,7 @@ scan_policy() { # dir previous-findings started [base-findings]
   # The baseline's count of a tool, rule and file goes to its findings in line
   # order, and so does the base's.
   jq -s --slurpfile exc "$SCAN_WORK/exceptions.json" --arg today "$today" --slurpfile base "$SCAN_WORK/baseline.json" --slurpfile prev <(cat "$previous" 2>/dev/null || echo '[]') \
-        --slurpfile landbase <(cat "$base" 2>/dev/null || echo '[]') "$JQ_BASELINE$JQ_GLOB"'
+        --slurpfile landbase <(cat "$base" 2>/dev/null || echo '[]') "$JQ_BASELINE$JQ_GLOB$JQ_SCOPE"'
     ($prev[0] // [] | map(.tool + "|" + .id + "|" + .where) | map({(.): true}) | add // {}) as $old
     | ($base[0] | map({(.tool + "|" + .id + "|" + .file): .count}) | add // {}) as $quota
     | ($landbase[0] // [] | map(.tool + "|" + .id + "|" + file_of) | group_by(.) | map({(.[0]): length}) | add // {}) as $standing
@@ -1134,8 +1155,9 @@ scan_policy() { # dir previous-findings started [base-findings]
         . as $f
         | ([$exc[0][] | select(.expires >= $today and (.id as $x | $f.id == $x or any($f.aliases[]; . == $x))
                           and ((has("where") | not) or (.where != "" and (.where as $w | $f | in_where($w)))))][0]) as $e
-        | . + {excepted: ($e.id // null), test: (.test == true),
-               blocking: ($e == null and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
+        | scope as $scope
+        | . + {excepted: ($e.id // null), test: (.test == true), scope: $scope,
+               blocking: ($e == null and $scope == "shipped" and (.kind == "secret" or ((.severity == "HIGH" or .severity == "CRITICAL") and .fix and (.test != true)))),
                new: ($old[.tool + "|" + .id + "|" + .where] | not)})
     | sort_by(.tool, .id, file_of, line_of)
     | reduce .[] as $f ({q: $quota, s: $standing, out: []};
@@ -1338,9 +1360,9 @@ write_sarif() {
        runs: (group_by(.tool) | map({tool: {driver: {name: .[0].tool, informationUri: "https://github.com/tacplus-dev/looper#security-checks",
          rules: (map({id: .id, properties: {severity: .severity}}) | unique_by(.id))}},
          results: map({ruleId: .id, level: (if .blocking then "error" elif .excepted or .baselined or .test then "note" else "warning" end),
-           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" elif .test then " (in test code)" else "" end)
+           message: {text: ((.title // "") + (if .excepted then " (accepted: security-exceptions.yaml)" elif .baselined then " (baselined: security-baseline.json)" elif .test then " (in test code)" elif .scope == "tooling" then " (CI tooling: never failing)" else "" end)
                             + (if .standing then " (standing: the base has it)" else "" end))},
-           properties: {severity: .severity, fix: .fix, kind: .kind, new: .new, baselined: .baselined, test: .test, standing: .standing, aliases: .aliases},
+           properties: {severity: .severity, fix: .fix, kind: .kind, scope: .scope, new: .new, baselined: .baselined, test: .test, standing: .standing, aliases: .aliases},
            locations: [{physicalLocation: {artifactLocation: {uri: (.where | sub(":[0-9]+$"; ""))},
              region: {startLine: ((.where | capture(":(?<l>[0-9]+)$").l // "1") | tonumber)}}}]})}))}' \
     "$SCAN_OUT/findings.json"
@@ -1352,7 +1374,7 @@ write_summary() { # blocking started
   # Its run (looper#210): the commit is main's night after night, the pipeline and the time are not.
   echo; echo "$(run_of) started $2."
   echo
-  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the last nightly, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing)."' "$f"
+  jq -r '"\(length) finding(s): \([.[] | select(.blocking)] | length) failing the policy, \([.[] | select(.new)] | length) new since the last nightly, \([.[] | select(.baselined)] | length) baselined (security-baseline.json), \([.[] | select(.excepted)] | length) accepted by an exception, \([.[] | select(.test)] | length) SAST in test code (listed, never failing), \([.[] | select(.scope == "tooling")] | length) in CI tooling (reported, never failing)."' "$f"
   if [[ -n "$SCAN_BASE_READ" ]]; then
     echo; printf '%s finding(s) standing (%s'"'"'s), %s of them failing the policy: main'"'"'s, reported and not failed here (the nightly'"'"'s to file); this build fails only on what its change adds (looper#180).\n' \
       "$(jq '[.[] | select(.standing)] | length' "$f")" "$([[ -n "$SCAN_BASE_FROM" ]] || echo "the base ")${SCAN_BASE:0:12}" "$(jq '[.[] | select(.blocking and .standing)] | length' "$f")"
@@ -1372,6 +1394,10 @@ write_summary() { # blocking started
     jq -r "$JQ_STANDING"'.[] | select(standing_high) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"
   fi
   if jq -e 'any(.excepted)' "$f" >/dev/null; then echo; echo "### Accepted (security-exceptions.yaml)"; jq -r '.[] | select(.excepted) | "- \(.excepted): \(.tool) \(.where)"' "$f"; fi
+  if jq -e 'any(.scope == "tooling")' "$f" >/dev/null; then
+    echo; echo "### CI tooling (reported, never failing; looper#225)"
+    jq -r '.[] | select(.scope == "tooling") | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)\(if .excepted then " (accepted)" else "" end)"' "$f"
+  fi
   if jq -e 'any(.test)' "$f" >/dev/null; then
     echo; echo "### In test code (SAST: listed, never failing the policy; looper#179)"
     jq -r '.[] | select(.test) | "- \(.severity) \(.tool) \(.id): \(.where)\(if .title != "" then ": " + .title else "" end)"' "$f"

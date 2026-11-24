@@ -18,6 +18,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   report. A `--build` of the maintenance commit before it is queued (as a report's `--build` does) would keep a bad
   bump out of a batch.
 
+- **CI tooling a repository names itself** (2026-11-23, #225): looper-scan's `tooling` scope is a fixed rule (a
+  dependency under `bin/` or `ci/`, a base image of a Dockerfile under `ci/`). A build image's Dockerfile elsewhere
+  (fleet-seatrials' `images/tacplus-build.Dockerfile`, its #56: Trivy's DS-0002 on it is a config finding, so shipped)
+  or a tools module outside `ci/` is shipped. A `tooling:` list of path globs in a file the repository owns would cover
+  them, a public contract for Jody to settle. Two more left as they were: the nightly scan still files a HIGH/CRITICAL
+  tooling finding as a `bug` (the decision's item 3, a nightly job that bumps a tool pin or writes a 14-day exception,
+  would take them instead: tacplus-dev/roadmap `decisions/security-gates-ship-only-2026-11-23.md`), and
+  `looper-scan image` counts the looper image's base-image binaries as shipped (the image is published).
 - **Text the model reads itself, past the rule** (2026-11-22, #219): `repo-looper --issue-text` and `--pr-text` wrap a
   run's later reads in its prompt's nonce blocks, but only the prompt's rules send the model there: its `gh` still
   reads an issue unwrapped. A `gh` first on the model's PATH (as its `pkill` and `docker` are, looper#61, #71) that

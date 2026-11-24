@@ -1553,7 +1553,7 @@ tacplus's own `security-exceptions.yaml`. A repository with no `tacplus.yaml` at
 that names no `output-dir` or whose generated tree is not a directory inside the tree, has nothing skipped (a note
 says so).
 
-**Policy.** A run fails on:
+**Policy.** A run fails on findings in **what ships** only (below, looper#225), and there on:
 
 - any **secret** (gitleaks);
 - a **HIGH or CRITICAL** finding **with a fix**: a fixed version (OSV-Scanner, govulncheck, cargo-deny, Trivy), or our
@@ -1565,6 +1565,27 @@ says so).
 - a tool that cannot run on the tree's root project (a nested fixture or example that does not load is listed as
   not analyzed instead), and a scanner missing from the image;
 - an exception that has expired or is malformed.
+
+**A finding in CI tooling is reported, never failing** (looper#225; tacplus-dev/roadmap
+`decisions/security-gates-ship-only-2026-11-23.md`, Jody, 2026-11-23: in the 7 days to that day 34% of the closed issues
+were security, almost all upstream advisories against tools only the pipelines run, each one stopping unrelated lands).
+Every finding has a `scope`, where it is:
+- **`shipped`**: the repository's own code (any SAST finding, misconfiguration or license, source or ban error,
+  wherever it is), every secret in its tree and history, the dependencies it builds with (its lockfiles), the jars it
+  releases and the images it publishes or deploys (a Dockerfile's base image outside `ci/`). The policy above fails them,
+  as before.
+- **`tooling`**: CI tooling, what only the pipelines run: a dependency finding (OSV-Scanner, govulncheck, cargo-deny,
+  Trivy) whose file (the dependency's, in its `where`'s parentheses) is under `bin/` (the tool binaries `ci/tools.sh`
+  fetches: tofu, tflint, lego, osv-scanner, gitleaks, buildx, kubectl) or `ci/` (the pins and modules of the pipeline's
+  tools), and the base image of a Dockerfile under `ci/` (a CI image; an image a Dockerfile outside `ci/` builds on too is
+  shipped). They are reported (the summary's "CI tooling", a SARIF `warning`, `findings.json`'s `scope`), the nightly
+  scan's to file as any HIGH or CRITICAL one, and fail no run: no land, no nightly, no release. An exception still
+  accepts one.
+
+The build image and the tool binaries a repository's own pipeline scans (its `ci/security.sh`: `govulncheck
+-mode=binary` on `bin/`, Trivy on the image its jobs run in) are CI tooling under the same policy: a repository's
+`ci/security.sh` reports them and fails only on what ships (tacplus-dev/cloud, cluster, fleet-seatrials, fleet-dev:
+looper#225's issues there).
 
 **A land fails only on what it adds** (looper#180; Jody, 2026-11-17). A build with a base (`BUILD_BASE`: the manager's
 land, on main's commit it rebased onto, and a report's `--build`, on its merge-base) reads the findings of that
@@ -1631,7 +1652,7 @@ any other. A file that is not a list of exactly `{tool, id, file, count}` (a cou
 take a fixed finding out, or a new one in, record it again.
 
 **Reports**, the security job's artifact `security/` (90 days): `findings.json` (every finding, normalized: tool,
-kind, id, aliases, severity, fix, where, title, `excepted`, `test`, `blocking`, `new`, `baselined`, `standing`), `findings.sarif` (one SARIF 2.1.0 log,
+kind, id, aliases, severity, fix, where, title, `scope`, `excepted`, `test`, `blocking`, `new`, `baselined`, `standing`), `findings.sarif` (one SARIF 2.1.0 log,
 a run per tool), `summary.md` (under its header, the commit and kind, the run: its pipeline, its job and the time it started, looper#210; the counts, what fails, what is **new since the last nightly**, the **standing HIGH/CRITICAL, not baselined, not excepted** (the last nightly's too, looper#211), how many are baselined, what is accepted, what
 is in test code, what was not analyzed or only in part, the databases and tools; also in the job's log), `databases.json`, `tools.json`, `sbom.cdx.json` and
 `sbom.spdx.json`, and `raw/`, each tool's own report (JSON or SARIF) and log.
@@ -1654,7 +1675,7 @@ are filed the same way; a baselined finding is never new. An issue's run is hand
 ```sh
 looper-scan run | report | local DIR | sbom SOURCE DIR | image ROOT DIR   # the jobs; image: the Go binaries of an image (the Dockerfile's last step); local: the same checks on a checkout by hand (BUILD_SCAN_KIND=nightly for all of them), its reports in a temporary directory its summary names (or BUILD_OUT/security, written once the scan is done): never in the tree it scans (looper#161)
 looper-scan baseline FINDINGS > security-baseline.json  # a run's findings as the repository's recorded baseline
-tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, an unexpired exception passes, an expired or incomplete one fails, one scoped by a where accepts there only (a path, a glob; not another file; unscoped warns; an unknown key fails), generated code, the last nightly's (looper#211: a finding a land's build saw first is new to the next nightly, and standing after it), a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), a land (looper#180: one adding no blocking finding passes on a red base, its findings standing; one adding one fails on it alone; standing by tool, rule and file up to the base's count; a nightly and a release fail on a standing one; a base no build published, its nearest published ancestor's, else the last nightly's (looper#217); none of these, every one fails), the report (latest and its commit's, a nightly's as the last nightly's too; a security job that left no findings: a summary saying so as the latest, its run, why and the last report, carried on, the findings left, red, looper#210; a summary's run under its header), a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
+tests/looper-build.test.sh   # stub scanners shaped as the real ones' output, or the real ones when installed: a planted vulnerable pin and a planted secret fail, the same pin in CI tooling passes, listed (looper#225: a module under ci/, a CI image's base image in a nightly; the same image shipped fails), an unexpired exception passes, an expired or incomplete one fails, one scoped by a where accepts there only (a path, a glob; not another file; unscoped warns; an unknown key fails), generated code, the last nightly's (looper#211: a finding a land's build saw first is new to the next nightly, and standing after it), a recorded baseline (moved lines, a count exceeded, never a HIGH, a malformed file), a land (looper#180: one adding no blocking finding passes on a red base, its findings standing; one adding one fails on it alone; standing by tool, rule and file up to the base's count; a nightly and a release fail on a standing one; a base no build published, its nearest published ancestor's, else the last nightly's (looper#217); none of these, every one fails), the report (latest and its commit's, a nightly's as the last nightly's too; a security job that left no findings: a summary saying so as the latest, its run, why and the last report, carried on, the findings left, red, looper#210; a summary's run under its header), a missing scanner, nightly CodeQL and Trivy (public repositories only), the release SBOM, local on a checkout (no scanner reads its reports, the checkout left as it was), image: an image's Go binaries (a fixed version fails, the base image's attributed, a stripped one said, an exception accepts, an unreadable binary fails)
 tests/repo-looper.test.sh    # scan-security-report: the scan reads the report, its prompt saying which run it is (a run's, one naming none, no report: looper#210); scan-security-cause: 3 findings of one cause give one issue, its Blocked-by line from the start, not planned until that issue closes; issue-security-report: an issue's run is handed it
 tests/go-fetch.test.sh       # the image build's Go fetches: retried, bounded, over HTTP/1.1; every Go step of the Dockerfile fetches through it, then installs from the module cache (looper#169)
 tests/looper-secrets.test.sh # this repository's own tree under the security job's gitleaks: no secret, so a test's fake token is built at run time, never a literal (looper#117)

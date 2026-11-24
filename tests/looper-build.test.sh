@@ -176,6 +176,12 @@ scan_commit scanglob "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12
 scan_commit scanelsewhere "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'where: tools/go.mod')"
 scan_commit scanemptywhere "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'where: ""')"
 scan_commit scanbadkey "${VULN[@]}" security-exceptions.yaml "$(exceptions 2099-12-31 jodydadescott 'path: go.mod')"
+# CI tooling (looper#225): the planted pin in a module of the pipeline's tools
+# (ci/tools/) and a CI image's Dockerfile (ci/), never shipped; the same base
+# image in a Dockerfile at the root, shipped.
+TOOLING=(); for ((i = 0; i < ${#VULN[@]}; i += 2)); do TOOLING+=("ci/tools/${VULN[i]}" "${VULN[i + 1]}"); done
+scan_commit scantooling "${TOOLING[@]}" ci/Dockerfile 'FROM debian:12'
+scan_commit scanshippedimage Dockerfile 'FROM debian:12'
 # A Java service whose release jar shades a vulnerable dependency (kernel#59:
 # Hazelcast's shaded Jackson, jackson-databind 2.9.8 here), and the exception
 # a repository may take for it.
@@ -606,14 +612,17 @@ cat > "$SB/osv-scanner" <<EOF
 #!/usr/bin/env bash
 $(opt --output)
 echo "osv-scanner job-token=\${CI_JOB_TOKEN:-none} key=\${TACPLUS_READER_APP_KEY:-none}" >> "$TMP/scan-env"
-if grep -qs 'golang.org/x/text v0.3.0' "\$tree/go.mod"; then
-  cat > "\$out" <<J
-{"results":[{"source":{"path":"\$tree/go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/text","version":"0.3.0","ecosystem":"Go"},
+# Each go.mod with the planted pin (-r: at the root, ci/tools/go.mod).
+mods=(); while read -r m; do mods+=("\$m"); done < <(grep -rls --include=go.mod 'golang.org/x/text v0.3.0' "\$tree" | LC_ALL=C sort)
+if ((\${#mods[@]})); then
+  for m in "\${mods[@]}"; do cat <<J
+{"source":{"path":"\$m","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/text","version":"0.3.0","ecosystem":"Go"},
  "vulnerabilities":[{"id":"GO-2021-0113","summary":"Out-of-bounds read in golang.org/x/text/language","aliases":["CVE-2021-38561","GHSA-ppp9-7jff-5vj2"],"affected":[{"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"0.3.7"}]}]}]},
   {"id":"GO-2026-5970","aliases":["CVE-2026-56852"],"affected":[{"ranges":[{"type":"SEMVER","events":[{"introduced":"0"}]}]}]}],
  "groups":[{"ids":["GO-2021-0113","GHSA-ppp9-7jff-5vj2"],"aliases":["CVE-2021-38561","GHSA-ppp9-7jff-5vj2","GO-2021-0113"],"max_severity":"7.5"},
-  {"ids":["GO-2026-5970"],"aliases":["CVE-2026-56852","GO-2026-5970"],"max_severity":""}]}]}]}
+  {"ids":["GO-2026-5970"],"aliases":["CVE-2026-56852","GO-2026-5970"],"max_severity":""}]}]}
 J
+  done | jq -s '{results: .}' > "\$out"
   exit 1
 fi
 echo '{"results": []}' > "\$out"
@@ -654,6 +663,10 @@ case "\$1" in
   fs) if [[ -f "\$tree/k8s/pod.yaml" ]]; then
         echo '{"Results":[{"Target":"k8s/pod.yaml","Class":"config","Type":"kubernetes","Misconfigurations":[{"ID":"KSV-0017","Severity":"HIGH","Status":"FAIL","Title":"Privileged container"}]}]}' > "\$out"
       else echo '{"Results":[]}' > "\$out"; fi ;;
+  # A Dockerfile's base image: a Debian package with a fixed version (krb5, as cloud#97's).
+  image) jq -n --arg ref "\$tree" '{Results: [{Target: (\$ref + " (debian 12.11)"), Class: "os-pkgs", Type: "debian",
+      Vulnerabilities: [{VulnerabilityID: "CVE-2026-40001", PkgName: "libkrb5-3", InstalledVersion: "1.20.1-2+deb12u3",
+        FixedVersion: "1.20.1-2+deb12u4", Severity: "HIGH", Title: "krb5: a planted advisory"}]}]}' > "\$out" ;;
   # The release jars (looper#147): jackson-databind 2.9.8, shaded in a jar, has its CVE at the jar's path.
   rootfs) echo "trivy \$* (\$(cd "\$tree" && find . -type f | sed 's:^\./::' | LC_ALL=C sort | paste -sd ' ' -))" >> "$TMP/trivy.log"
     for j in \$(cd "\$tree" && grep -rla --include='*.jar' 'artifactId=jackson-databind' . | sed 's:^\./::' | LC_ALL=C sort); do
@@ -1961,6 +1974,23 @@ grep -q '^### Failing the policy' "$OUT/security/summary.md" || fail "$(cat "$OU
 cp "$OUT/security/findings.json" "$TMP/vuln-findings.json"
 pass
 
+NAME="security: a finding in CI tooling is reported, never failing; a shipped one stays red (looper#225)"
+jq -e '[.[] | select(.id == "GO-2021-0113")] | length >= 2 and all(.scope == "shipped" and .blocking)' "$TMP/vuln-findings.json" >/dev/null ||
+  fail "the planted pin at the root is not shipped and blocking: $(cat "$TMP/vuln-findings.json")"
+scan BUILD_SHA="${SHA[scantooling]}" -- run 2>"$TMP/err" || fail "a finding in CI tooling failed the build: $(cat "$OUT/security/verdict")"
+scan_verdict_is pass
+jq -e '[.[] | select(.id == "GO-2021-0113")] | length >= 2 and all(.scope == "tooling" and (.blocking | not))' "$OUT/security/findings.json" >/dev/null ||
+  fail "$(cat "$OUT/security/findings.json")"
+[[ -z "$(blocking)" ]] || fail "blocking: $(blocking)"
+sed -n '/^### CI tooling (reported, never failing; looper#225)$/,/^$/p' "$OUT/security/summary.md" |
+  grep -qxF -- "- HIGH osv-scanner GO-2021-0113: golang.org/x/text@0.3.0 (ci/tools/go.mod): Out-of-bounds read in golang.org/x/text/language" ||
+  fail "not listed: $(cat "$OUT/security/summary.md")"
+grep -q '^[0-9]* finding(s): 0 failing the policy, .*, [1-9][0-9]* in CI tooling (reported, never failing)\.$' "$OUT/security/summary.md" ||
+  fail "$(cat "$OUT/security/summary.md")"
+jq -e '[.runs[].results[] | select(.ruleId == "GO-2021-0113") | .level == "warning" and .properties.scope == "tooling"] | length >= 2 and all' \
+  "$OUT/security/findings.sarif" >/dev/null || fail "SARIF: $(cat "$OUT/security/findings.sarif")"
+pass
+
 NAME="security: a planted secret fails the build, and no report holds it"
 if scan BUILD_SHA="${SHA[scansecret]}" -- run 2>"$TMP/err"; then fail "passed"; fi
 scan_verdict_is "fail: "
@@ -2042,6 +2072,15 @@ pass
 # A nightly's security checks, its own tools (CodeQL, Trivy) the stubs.
 mkdir -p "$TMP/scanbin-nightly"; cp "$SB/codeql" "$SB/trivy" "$TMP/scanbin-nightly/"
 NIGHTLY=(BUILD_SCAN_KIND=nightly PATH="$TMP/bin:$TMP/scanbin-nightly:$( ((REAL_SCAN)) || echo "$SB:")$PATH")
+NAME="security: a nightly fails on no finding in CI tooling either: a CI image's base image (a Dockerfile under ci/) is tooling, the same image shipped is not (looper#225)"
+scan BUILD_SHA="${SHA[scantooling]}" "${NIGHTLY[@]}" -- run 2>"$TMP/err" || fail "a nightly failed on CI tooling: $(cat "$OUT/security/verdict")"
+jq -e '.[] | select(.id == "CVE-2026-40001") | .scope == "tooling" and .blocking == false and .where == "libkrb5-3@1.20.1-2+deb12u3 (image debian:12: debian:12 (debian 12.11))"' \
+  "$OUT/security/findings.json" >/dev/null || fail "$(cat "$OUT/security/findings.json")"
+if scan BUILD_SHA="${SHA[scanshippedimage]}" "${NIGHTLY[@]}" -- run 2>"$TMP/err"; then fail "a shipped image's finding passed"; fi
+scan_verdict_is "fail: "
+blocking | grep -qxF 'trivy CVE-2026-40001 libkrb5-3@1.20.1-2+deb12u3 (image debian:12: debian:12 (debian 12.11))' || fail "$(blocking)"
+pass
+
 NAME="security: code the gates generated is scanned too; a build's gitleaks reads the commit's templates, not it, a nightly's reads it (looper#207)"
 mkdir -p "$TMP/out-$((n + 1))/generated/model"; printf 'key = "%s"\n' "$AKIA" > "$TMP/out-$((n + 1))/generated/model/keys.txt"
 scan BUILD_SHA="${SHA[scanclean]}" -- run 2>"$TMP/err" || fail "a build's gitleaks read the generated code: $(blocking)"
@@ -2704,7 +2743,7 @@ govulncheck GO-2026-6859 stdlib@go1.26.10 (/usr/local/bin/docker, the base image
 # A stripped binary's findings are every vulnerable function of a package it links: counted, and said.
 jq -e '[.[] | select(.id == "GO-2026-6905")] == [{tool: "govulncheck", kind: "sca", id: "GO-2026-6905", aliases: [], severity: "HIGH", fix: false,
   where: "github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb (/usr/local/bin/sub/plain, read stripped, called: github.com/blakesmith/ar.Next)",
-  title: "the planted GO-2026-6905", excepted: null, test: false, blocking: false, new: true, baselined: false, standing: false}]' "$OUT/security/findings.json" >/dev/null ||
+  title: "the planted GO-2026-6905", excepted: null, test: false, scope: "shipped", blocking: false, new: true, baselined: false, standing: false}]' "$OUT/security/findings.json" >/dev/null ||
   fail "$(cat "$OUT/security/findings.json")"
 [[ "$(sort "$TMP/image.log")" == "$(printf '%s\n' "$IMG/usr/local/bin/docker" "$IMG/usr/local/bin/gh" "$IMG/usr/local/bin/ours" "$IMG/usr/local/bin/sub/plain")" ]] ||
   fail "govulncheck read: $(cat "$TMP/image.log")"
@@ -2820,7 +2859,7 @@ jq -e '[.[] | select(.test)] | length == 11 and all(.severity == "CRITICAL" and 
   fail "$(cat "$OUT/security/findings.json")"
 jq -e 'all(.test | type == "boolean")' "$OUT/security/findings.json" >/dev/null || fail "a finding without test: $(cat "$OUT/security/findings.json")"
 s="$OUT/security/summary.md"
-grep -q ', 11 SAST in test code (listed, never failing)[.]$' "$s" || fail "$(cat "$s")"
+grep -q ', 11 SAST in test code (listed, never failing), 0 in CI tooling (reported, never failing)[.]$' "$s" || fail "$(cat "$s")"
 grep -qxF '### In test code (SAST: listed, never failing the policy; looper#179)' "$s" || fail "$(cat "$s")"
 grep -qxF -e '- CRITICAL codeql rust/hard-coded-cryptographic-value: webapp-login/test/page.test.ts:31: a hard-coded value' "$s" || fail "$(cat "$s")"
 [[ "$(jq -r '[.runs[] | select(.tool.driver.name == "codeql") | .results[] | select(.properties.test) | .level] | unique | join(" ")' "$OUT/security/findings.sarif")" == note ]] ||
