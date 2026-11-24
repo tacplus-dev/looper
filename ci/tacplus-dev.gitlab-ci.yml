@@ -93,7 +93,8 @@ stages:
 # bash, gh and git, and wait on the forge; 50m CPU from what they use,
 # looper#165, the recap's "Requests against use"). None of them runs Docker. The plan's
 # reports and managers get their tags and requests from looper-dispatch plan:
-# the control runner for a repository whose gates are build jobs, the VM
+# the control runner for a repository whose gates are build jobs (its manager
+# the manager runner's, .manager below), the VM
 # runners' tags for a job that still needs Docker. A control job's retry is on
 # its runner lost, never its own timeout.
 .control:
@@ -106,6 +107,21 @@ stages:
     KUBERNETES_MEMORY_REQUEST: 256Mi
     KUBERNETES_CPU_LIMIT: 1
     KUBERNETES_MEMORY_LIMIT: 1Gi
+
+# The managers' (looper#236, tacplus-dev/cluster#60): a repository's manager on
+# the manager runner (`arm64, manager`, a slot per repository with a manager),
+# never queued behind reports on the control runner, with a manager's requests.
+# No job of this file is one: looper-dispatch plan gives these tags and requests
+# to the managers it plans (LOOPER_MANAGER_RUNNER_TAGS, LOOPER_REQUESTS_manager),
+# and tests/looper-dispatch.test.sh (plan-control) holds them to this.
+.manager:
+  extends: .control
+  tags: [arm64, manager]
+  variables:
+    KUBERNETES_CPU_REQUEST: 250m
+    KUBERNETES_MEMORY_REQUEST: 256Mi
+    KUBERNETES_CPU_LIMIT: 1
+    KUBERNETES_MEMORY_LIMIT: 2Gi
 
 # The jobs that start work rather than do it, the kicker and the plan, on the
 # kick runner (`arm64, kick`, tacplus-dev/cluster#39, its 2 slots theirs alone;

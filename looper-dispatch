@@ -362,9 +362,12 @@ build_jobs_repo() { # repo
 # decisions/only-vms-are-k8s-nodes-2026-11-04.md): every CI job is a pod of the
 # in-cluster GitLab runners, with requests and limits; builds on the spot pool
 # (tacplus-dev/build's jobs, `arm64, build`), control work on the normal pool.
-# A report, manager or scan of a repository whose gates are build jobs (above) runs
+# A report or scan of a repository whose gates are build jobs (above) runs
 # on the control runner, LOOPER_CONTROL_TAGS (default `arm64, control`,
-# tacplus-dev/cluster#13), with the requests of its kind (requests below); a
+# tacplus-dev/cluster#13), its manager on the manager runner,
+# LOOPER_MANAGER_RUNNER_TAGS (default `arm64, manager`, ci/tacplus-dev.gitlab-ci.yml's
+# .manager; looper#236, tacplus-dev/cluster#60: a slot of its own, never queued
+# behind reports), each with the requests of its kind (requests below); a
 # repository moves the day its pin lands, with no change here, and its
 # per-repository tag override is not read then. A job that would hold
 # looper-docker (an unpinned repository's reports, verdict, manager and scan:
@@ -375,6 +378,7 @@ build_jobs_repo() { # repo
 # LOOPER_JOB_TAGS, else `arm64, autoscale`. Prints "<tags>" and, on the control
 # runner, the job's kind on a second line.
 CONTROL_TAGS="${LOOPER_CONTROL_TAGS:-arm64, control}"
+MANAGER_RUNNER_TAGS="${LOOPER_MANAGER_RUNNER_TAGS:-arm64, manager}"
 VM_TAGS="${LOOPER_JOB_TAGS:-arm64, autoscale}"
 where_it_runs() { # repo repo-looper-args...
   local repo="$1" v kind=""; shift
@@ -384,7 +388,10 @@ where_it_runs() { # repo repo-looper-args...
     *" --verdict "*|*" --merge "*) v=LOOPER_JOB_TAGS ;;   # a split batch's jobs (looper#90): never a build-jobs repository's
     *) v=LOOPER_JOB_TAGS; kind=report ;;
   esac
-  if [[ -n "$kind" ]] && build_jobs_repo "$repo"; then printf '%s\n%s\n' "$CONTROL_TAGS" "$kind"; return 0; fi
+  if [[ -n "$kind" ]] && build_jobs_repo "$repo"; then
+    if [[ "$kind" == manager ]]; then printf '%s\n%s\n' "$MANAGER_RUNNER_TAGS" "$kind"; else printf '%s\n%s\n' "$CONTROL_TAGS" "$kind"; fi
+    return 0
+  fi
   v="${v}_${repo//[^A-Za-z0-9_]/_}"; echo "${!v:-$VM_TAGS}"
 }
 # The tags of a job that runs no looper (looper-none, looper-held): the

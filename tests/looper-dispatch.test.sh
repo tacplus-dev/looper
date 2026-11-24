@@ -1118,7 +1118,8 @@ pass
 
 # The in-cluster runners (looper#84; tacplus-dev/roadmap decisions/only-vms-are-k8s-nodes-2026-11-04.md): a
 # repository whose gates are build jobs (its main pinned, the project holding the trigger and the apps: none of
-# its jobs runs Docker) has its reports and manager on the control runner, `arm64, control`, each pod with its
+# its jobs runs Docker) has its reports on the control runner, `arm64, control`, its manager on the manager runner,
+# `arm64, manager` (looper#236, tacplus-dev/cluster#60: never queued behind reports), each pod with its
 # kind's requests and limits (GitLab's KUBERNETES_* variables, within that runner's ceilings); its per-repository
 # tag override is not read, so a repository moves the day its pin lands, with nothing changed here. A job that
 # would hold looper-docker stays on the VM runners' tags: an unpinned repository's reports, verdict, manager and
@@ -1136,7 +1137,7 @@ control_plan BUILD_TRIGGER_TOKEN=glptt-x
 [[ "$(tags_of alpha-4)" == "[arm64, control]" ]] || fail "alpha's report: $(tags_of alpha-4): $PLAN"
 [[ "$(vars_of looper-alpha-4)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 150m KUBERNETES_MEMORY_REQUEST: 512Mi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] \
   || fail "alpha's report's requests: $(vars_of looper-alpha-4)"
-[[ "$(tags_of alpha-manager)" == "[arm64, control]" ]] || fail "alpha's manager: $(tags_of alpha-manager)"
+[[ "$(tags_of alpha-manager)" == "[arm64, manager]" ]] || fail "alpha's manager: $(tags_of alpha-manager)"
 [[ "$(vars_of looper-alpha-manager)" == 'LOOPER_RUNS: $CI_PROJECT_DIR/looper-runs KUBERNETES_CPU_REQUEST: 250m KUBERNETES_MEMORY_REQUEST: 256Mi KUBERNETES_CPU_LIMIT: 1 KUBERNETES_MEMORY_LIMIT: 2Gi' ]] \
   || fail "alpha's manager's requests: $(vars_of looper-alpha-manager)"
 grep -qx '    - repo-looper --repo alpha --manage' <<<"$(job_of looper-alpha-manager)" || fail "alpha's manager: $(job_of looper-alpha-manager)"
@@ -1152,13 +1153,15 @@ grep -qF 'planned looper-alpha-4 (5h, tags arm64, control, resource_group looper
 # tacplus pinned: its jobs move, its override unread, nothing else changed.
 echo "tacplus: x" > "$FIX/contents/tacplus-tacplus.lock"
 control_plan BUILD_TRIGGER_TOKEN=glptt-x
-[[ "$(tags_of tacplus-5)" == "[arm64, control]" && "$(tags_of tacplus-manager)" == "[arm64, control]" ]] || fail "tacplus pinned: $(tags_of tacplus-5) $(tags_of tacplus-manager)"
+[[ "$(tags_of tacplus-5)" == "[arm64, control]" && "$(tags_of tacplus-manager)" == "[arm64, manager]" ]] || fail "tacplus pinned: $(tags_of tacplus-5) $(tags_of tacplus-manager)"
 ! grep -q 'looper-tacplus-verdict:' <<<"$PLAN" || fail "tacplus pinned, still split: $(grep '^looper-' <<<"$PLAN")"
 rm "$FIX/contents/tacplus-tacplus.lock"
-# The control tags and a kind's requests are the instance's to set.
+# The control and manager tags and a kind's requests are the instance's to set.
 control_plan BUILD_TRIGGER_TOKEN=glptt-x LOOPER_CONTROL_TAGS="arm64, ctl" LOOPER_REQUESTS_report="1 2Gi 1500m 4Gi"
-[[ "$(tags_of alpha-4)" == "[arm64, ctl]" && "$(tags_of alpha-manager)" == "[arm64, ctl]" ]] || fail "LOOPER_CONTROL_TAGS: $(tags_of alpha-4)"
+[[ "$(tags_of alpha-4)" == "[arm64, ctl]" && "$(tags_of alpha-manager)" == "[arm64, manager]" ]] || fail "LOOPER_CONTROL_TAGS: $(tags_of alpha-4) $(tags_of alpha-manager)"
 [[ "$(vars_of looper-alpha-4)" == *'KUBERNETES_CPU_REQUEST: 1 KUBERNETES_MEMORY_REQUEST: 2Gi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] || fail "LOOPER_REQUESTS_report: $(vars_of looper-alpha-4)"
+control_plan BUILD_TRIGGER_TOKEN=glptt-x LOOPER_MANAGER_RUNNER_TAGS="arm64, mgr"
+[[ "$(tags_of alpha-4)" == "[arm64, control]" && "$(tags_of alpha-manager)" == "[arm64, mgr]" ]] || fail "LOOPER_MANAGER_RUNNER_TAGS: $(tags_of alpha-4) $(tags_of alpha-manager)"
 # Without the trigger a pinned repository's jobs hold looper-docker (looper#71): the VM tags, no requests.
 control_plan
 [[ "$(tags_of alpha-4)" == "[arm64, autoscale]" && "$(tags_of alpha-manager)" == "[arm64, autoscale]" ]] || fail "without the trigger: $(tags_of alpha-4) $(tags_of alpha-manager)"
@@ -1193,6 +1196,25 @@ holds() { local t; for t in ${2//,/ }; do [[ " ${1//,/ } " == *" $t "* ]] || ret
 while read -r t; do
   ! holds "$t" "$kick" && ! holds "$kick" "$t" || fail "the kick jobs' tags [$kick] and a planned job's [$t] share a runner"
 done < <(sort -u "$FIX/plan-tags")
+# A build-jobs repository's manager carries `manager`, the tags of ci/tacplus-dev.gitlab-ci.yml's .manager, with
+# its requests (looper#236, tacplus-dev/cluster#60); a report, a scan and looper-none never carry it, so a manager
+# never waits behind a report for a slot.
+manager="$(sed -n '/^\.manager:$/,/^[^ ]/s/^  tags: \[\(.*\)\]$/\1/p' "$ROOT/ci/tacplus-dev.gitlab-ci.yml")"
+[[ "$manager" == "arm64, manager" ]] || fail "ci/tacplus-dev.gitlab-ci.yml's .manager tags: [$manager]"
+mreq="$(awk '$0 == ".manager:" {f=1; next} /^[^ ]/ {f=0} f && /^    KUBERNETES_/ {sub(/^    /, ""); print}' "$ROOT/ci/tacplus-dev.gitlab-ci.yml" | paste -sd' ')"
+only_managers() { # every planned job whose tags hold `manager` is a manager
+  local j; for j in $(grep -oE '^looper-[a-z0-9-]+' <<<"$PLAN"); do
+    [[ " $(tags_of "${j#looper-}" | tr -d '[],') " != *" manager "* || "$j" == *-manager ]] || fail "$j carries manager: $(tags_of "${j#looper-}")"
+  done; }
+jobs; issue alpha 7 OPEN "Go." approved; issue alpha 6 OPEN "Land it." looper:landing
+control_plan BUILD_TRIGGER_TOKEN=glptt-x
+[[ "$(tags_of alpha-manager)" == "[$manager]" ]] || fail "alpha's manager not on .manager's tags: $(tags_of alpha-manager): $PLAN"
+[[ "$(vars_of looper-alpha-manager)" == "LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs $mreq" ]] || fail "alpha's manager's requests not .manager's [$mreq]: $(vars_of looper-alpha-manager)"
+[[ "$(tags_of alpha-7)" == "[arm64, control]" ]] || fail "alpha's report: $(tags_of alpha-7): $PLAN"
+only_managers
+control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule
+[[ "$(tags_of scan-alpha)" == "[arm64, control]" ]] || fail "alpha's scan: $(tags_of scan-alpha)"
+only_managers
 pass
 
 # The control jobs of tacplus-dev's own pipeline file (looper#84): the hub's probes on the control runner, the
