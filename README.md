@@ -1717,6 +1717,57 @@ tests/looper-secrets.test.sh # this repository's own tree under the security job
 Left to the hub: a pipeline schedule per repository on tacplus-dev/build (inputs `repo`, `nightly: true`), and the
 package registry left on (the default). `ci/build.gitlab-ci.yml` is copied there as is.
 
+## The looper VM
+
+**`looper-vm`: the looper that runs on a project's own spot VM** (looper#238; `tacplus-dev/roadmap:decisions/looper-build-vms-2026-11-24.md`,
+points 2, 3, 5, 9 and 10; the pilot is tacplus). It changes where and how a report runs, not what a report does:
+each issue is today's report, `repo-looper --repo NAME --issue N`, a child of the VM's parent, with `LOOPER_VM` set.
+Merges stay with the repository's manager (point 6). Its image is looper#239's, its VM cloud#108's, its spec
+`looper.yaml` looper#240's, and the kicker that starts it looper#241's.
+
+- **A parent that never blocks.** `looper-vm --repo NAME` only schedules and records. Every `LOOPER_VM_POLL` seconds
+  (60) it reaps the children that ended, starts a lister (`repo-looper --list`, one at a time, stopped after
+  `LOOPER_VM_LIST_TIMEOUT`) when none runs, and a report for each issue the last list named that no child of its
+  works: as many as there are, with no limit, each with children of its own (the model, its builds, sub-agents). A
+  report that ended is not started again for `LOOPER_VM_COOLDOWN` seconds (300). A list or a report that hangs holds
+  up nothing. Its records are in the cache's `vm/` (`running`, a log per report).
+- **SIGTERM (a spot reclaim gives about 30 s):** the parent signals its whole tree once, each child and every
+  descendant by parent pid (a `timeout` or `setsid` child included); each report checkpoints (its branch, within
+  `LOOPER_VM_CHECKPOINT_SECONDS`, 15) and comments on its issue that the VM stopped it, the issue staying
+  `looper:in-progress`; what still runs `LOOPER_VM_STOP_GRACE` - 3 seconds after the signal is killed, and the
+  parent exits 0 within `LOOPER_VM_STOP_GRACE` (25).
+- **Resume from the forge, never the disk.** The parent reads nothing it wrote before it started. On a VM a report's
+  `--list` names the ready issues, then those `looper:in-progress` but otherwise ready (not `looper:landing`, stuck,
+  needs-decision or blocked): the runs a stopped VM left, since a project on its VM has no in-cluster report
+  (looper#241). Such a report resumes from the issue's branch and checkpoint, as every report does.
+- **The cache** (`LOOPER_CACHE`, default `/cache`: the cache disk, at the same path on the VM's host, else
+  `LOOPER_CACHE_HOST`): `.looper-vm`, its stamp; `git/NAME.git`, **one git object store** each report's clone borrows
+  from (`--reference-if-able`: its refs and work tree its own), made or refreshed under a lock waited on
+  `LOOPER_STORE_LOCK` seconds (10) at most and never pruned; `work/`, the reports' clones (`LOOPER_WORK`); `deps/`,
+  the **dependency and compiler caches every build shares** (Go's module and build caches, cargo's registry and git,
+  npm's, Gradle's, sccache's, ccache's: tools that lock or address by content; Maven's local repository, which does
+  not lock, stays each build's own); `builds/`, each local build's checkout, removed after. **A bad cache is
+  discarded, never waited on:** one without the stamp (another layout, half-written) is moved aside at once and
+  removed by a child, a git store git cannot read likewise, and one that cannot be written is left for a local
+  directory (`LOOPER_VM_LOCAL_CACHE`): slower, the same result.
+- **Local builds** (point 4). On a VM, a pinned repository's report builds locally: its model's `--build` (and its
+  pre-land gate) is `looper-vm build`, which its looper's build server runs: `looper-build gates-local` (the gate set,
+  the checks of a tracked file changed or HEAD moved, the verdict, as a build job's gates) in the build image the
+  commit pins, a container started through the VM's container socket, the cache mounted at its own path, with the
+  commit checked out on its own borrowing the report's objects. The model gets the verdict and the path of the
+  **full log**, which it reads. Feedback only: the manager's build is the merge's verdict. The model itself still
+  has no container runtime.
+- **Idle exit.** With no report running and no ready issue for `LOOPER_VM_IDLE_MINUTES` (15), it exits 0 and the VM
+  shuts down (scale to zero); a list that fails counts as none.
+
+```sh
+looper-vm --repo NAME          # the parent: until idle (exit 0) or SIGTERM (exit 0 within 25 s, each report checkpointed)
+looper-vm build --repo NAME --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE   # a local build (exit 0 pass, 1 fail)
+looper-vm --self-test          # its tools, the container socket and the cache (looper#239's image)
+tests/looper-vm.test.sh        # the parent: two reports that never end and a third started beside them, a list that hangs holding up nothing; SIGTERM: a report's checkpoint, a tree with setsid and timeout children and a report that ignores it, all gone and the parent out within 25 s; idle exit, never while a report runs; a cache with no stamp, an unreadable git store and an unwritable cache; two local builds at once, one green and one red, sharing the cache's dependency caches, each its own checkout; the host's path of the cache (stub docker)
+tests/repo-looper.test.sh      # vm-list: a VM's list names the runs a stopped VM left; vm-sigterm: a report's SIGTERM is its checkpoint and comment within 25 s, then, the disk gone, the next VM lists and resumes it from the forge; vm-store: two reports' clones borrow one store, made once; vm-build: --build is a local build, its log's path in the verdict
+```
+
 ## Running it
 
 ```sh

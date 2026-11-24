@@ -45,7 +45,7 @@ set -euo pipefail
 cmd="$1 $2"; shift 2
 case "$cmd" in
   "auth setup-git") git config --global --add safe.directory '*'; exit 0 ;;   # the local origin, a model user's too (looper#68)
-  "repo clone") git clone -q "$FIX/origin.git" "$2"; exit 0 ;;
+  "repo clone") git clone -q "${@:5}" "$FIX/origin.git" "$2"; echo "$2 ${*:5}" >> "$FIX/clones"; exit 0 ;;   # gh repo clone R DIR -- --quiet [git clone options]
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
   # A commit's statuses (looper#71), newest first: $FIX/statuses/<sha>.json, which the stub build writes.
@@ -5625,6 +5625,134 @@ scenario pre-land-map
 [[ "$(lib "$(sed -n '/^read_gate_map() {/,/^}/p; /^read_sets() {/,/^}/p' "$ROOT/repo-looper"); PRE_LAND=pre-land; declare -A GM_RUN GM_MIN GM_MEM GM_PATHS; GM_SETS=()
   printf 'full:\n  run: a\npre-land:\n  run: b\n' > '$FIX/g1'; read_gate_map '$FIX/g1' && echo ok1
   printf 'full:\n  run: a\npre-land:\n  run: b\n  paths: [x]\n' > '$FIX/g2'; read_gate_map '$FIX/g2' 2>&1 || true")" == "ok1"$'\n'"pre-land: no paths: it runs on every land on full, before it is queued and before a batch" ]] || fail "the map's pre-land"
+pass
+
+# --- a looper VM's reports (looper#238) -------------------------------------------
+# On a project's own VM, looper-vm's parent starts each report with LOOPER_VM
+# set: its list names the runs a stopped VM left, SIGTERM (the VM stopping) is
+# a checkpoint and the run's end, its next run resumes from the forge alone,
+# the clones share one git object store, and a --build is a local build.
+VMS=(LOOPER_VM="$ROOT/looper-vm")
+
+# Its list: the ready issues, then those a stopped VM left (approved,
+# looper:in-progress, otherwise ready), not one landing (the manager's verdict
+# frees it), stuck or blocked. Outside a VM, none of them.
+scenario vm-list
+issue alpha 4 OPEN approved,bug,looper:in-progress "Fix it."
+issue alpha 5 OPEN approved,bug "Fix it too."
+issue alpha 6 OPEN approved,bug,looper:in-progress,looper:landing "Landing."
+issue alpha 7 OPEN approved,bug,looper:in-progress,looper:stuck "Stuck."
+issue alpha 8 OPEN approved,bug,looper:in-progress "Blocked-by: #5"
+issue alpha 9 OPEN bug,looper:in-progress "Not approved."
+list "${VMS[@]}"
+[[ "$OUT" == $'5\n4' ]] || fail "listed: $OUT"
+list
+[[ "$OUT" == 5 ]] || fail "outside a VM: $OUT"
+pass
+
+# SIGTERM to every process of the report's tree at once, as looper-vm's parent
+# sends it (the `looper` wrapper's timeout spared: it is the test's).
+term_tree() { # pid
+  local all=() q=("$1") p c
+  while (( ${#q[@]} )); do p="${q[0]}"; q=("${q[@]:1}"); for c in $(pgrep -P "$p"); do all+=("$c"); q+=("$c"); done; done
+  kill -TERM "${all[@]}" 2>/dev/null || true
+}
+# SIGTERM within 25 seconds: the work checkpointed (the branch, the issue
+# told), nothing landed, and the issue looper:in-progress for the next VM.
+scenario vm-sigterm
+cat > "$FIX/claude.sh" <<'EOS'
+echo x > a.txt
+"$ROOT/repo-looper" --repo alpha --issue 4 --checkpoint "a.txt written; left: b.txt, close it"
+echo y > b.txt; touch "$FIX/working"
+sleep 300
+EOS
+looper "${VMS[@]}" -- --repo alpha --issue 4 > "$FIX/report-4.log" 2>&1 & p=$!
+for _ in $(seq 600); do [[ -e "$FIX/working" ]] && break; kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+[[ -e "$FIX/working" ]] || { cat "$FIX/report-4.log"; fail "the model did not start"; }
+sleep 1; t0=$SECONDS
+term_tree "$p"
+rc=0; wait "$p" || rc=$?
+OUT="$(cat "$FIX/report-4.log")"
+(( rc == 0 )) || { echo "$OUT"; fail "exited $rc$(bound_hit "$rc")"; }
+(( SECONDS - t0 < 25 )) || fail "took $(( SECONDS - t0 ))s after SIGTERM"
+has "$OUT" "#4: the looper VM is stopping (SIGTERM): checkpointing the run's work"; has "$OUT" "#4: vm-stopped"
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt " ]] \
+  || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
+has "$(origin log -1 --format=%B looper/alpha-4)" "(the VM is stopping)"
+has "$(others)" "The looper VM of alpha stopped this run: the VM is stopping (SIGTERM: a spot reclaim, or its shutdown). Its work in progress is checkpointed on [\`looper/alpha-4\`]"
+[[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
+main_unchanged
+# Resume from the forge, never the disk: a new VM, its cache gone, lists the
+# issue and resumes it from its branch and checkpoint.
+rm -rf "$FIX/work" "$FIX/project"
+list "${VMS[@]}"
+[[ "$OUT" == 4 ]] || fail "the next VM listed: $OUT"
+: > "$FIX/prompts"
+cat > "$FIX/claude.sh" <<'EOS'
+cat a.txt b.txt > "$FIX/checkout"
+git add -A && git commit -q -m fix && "$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates true
+jq '.state = "CLOSED"' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+EOS
+run "${VMS[@]}"
+has "$OUT" "is looper:in-progress, but no other report job of it is active: its run is gone; this job resumes it"
+has "$OUT" "resuming #4 from looper/alpha-4"
+[[ "$(cat "$FIX/checkout")" == $'x\ny' ]] || fail "not resumed from the checkpoint: $(cat "$FIX/checkout")"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "a.txt written; left: b.txt, close it"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+[[ "$(origin show main:b.txt)" == y ]] || fail "work not on main"
+pass
+
+# Two reports at once share one git object store on the cache: made once (a
+# bare clone, never pruned), each clone borrowing its objects, its own refs
+# and work tree. A store that cannot be made is no wait: the clone is made
+# without it.
+scenario vm-store
+issue alpha 5 OPEN approved,bug "Fix it too."
+STORE="$FIX/cache/git/alpha.git"
+cat > "$FIX/claude.sh" <<'EOS'
+cat .git/objects/info/alternates > "$FIX/alternates-$ISSUE"
+echo "$ISSUE" > "n-$ISSUE.txt" && git add -A && git commit -qm "fix $ISSUE" && "$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait --gates true
+EOS
+close_all
+reports "${VMS[@]}" LOOPER_GIT_STORE="$STORE" -- 4 5
+closed 4; closed 5
+[[ "$(landed n-4.txt) $(landed n-5.txt)" == "4 5" ]] || fail "main: $(origin log --oneline main)"
+[[ "$(grep -c "^$STORE.new --bare\$" "$FIX/clones")" == 1 ]] || fail "the store made: $(cat "$FIX/clones")"
+for n in 4 5; do
+  has "$(cat "$FIX/clones")" "$FIX/work/alpha/issues/$n --reference-if-able $STORE"
+  [[ "$(cat "$FIX/alternates-$n")" == "$STORE/objects" ]] || fail "#$n's clone borrows: $(cat "$FIX/alternates-$n")"
+done
+[[ "$(git -C "$STORE" config gc.auto)" == 0 && "$(git -C "$STORE" rev-parse --is-bare-repository)" == true ]] || fail "the store"
+pass
+scenario vm-store-none
+run "${VMS[@]}" LOOPER_GIT_STORE=/dev/null/alpha.git
+has "$(cat "$FIX/clones")" "$FIX/work/alpha/issues/4 "; lacks "$(cat "$FIX/clones")" "reference"
+pass
+
+# A --build on a VM is a local build (looper-vm build, here a stub), never a
+# build job: its verdict and the path of its full log; the prompt says so.
+scenario vm-build
+pin_seed; build_model notes.md "the docs"
+cat > "$FIX/vm-stub" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1" == build ]] || exit 9
+echo "$*" >> "$FIX/vm-builds"
+while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
+{ echo "the gates' output"; echo "verdict: success: the gates docs passed"; } >> "$log"
+EOS
+chmod +x "$FIX/vm-stub"
+main0="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+b="$(cat "$FIX/build-4")"
+has "$b" "the local build of alpha $(cut -c1-7 "$FIX/head"), the gates docs on base ${main0:0:7}, in the build image it pins, on this looper VM: its full log is $FIX/project/looper-runs/"
+has "$b" "verdict: success: the gates docs passed"; has "$b" "rc 0"
+has "$(cat "$FIX/vm-builds")" "build --repo alpha --dir $FIX/work/alpha/issues/4 --sha $(cat "$FIX/head") --gates docs --base $main0 --log $FIX/project/looper-runs/"
+[[ ! -e "$FIX/builds" ]] || fail "a build job was triggered: $(cat "$FIX/builds")"
+has "$(cat "$FIX/land-4")" "The manager merged"
+has "$(cat "$FIX/probe")" "docker: alpha builds locally on this looper VM, through --build (looper#238): a report has no container runtime. Build with: "
+pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pr" "Verify with a local build: "; has "$pr" "as a container this
+   looper VM starts (looper#238)"; has "$pr" "\`tacplus\` runs in your local builds only (rule 4)."
 pass
 
 echo "repo-looper: all scenarios pass"

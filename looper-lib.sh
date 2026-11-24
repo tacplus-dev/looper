@@ -542,10 +542,10 @@ forge_setup_git() {
   esac
 }
 
-forge_clone() { # repo dir
+forge_clone() { # repo dir [git clone option...]
   case "$LOOPER_FORGE" in
-    github) gh repo clone "$LOOPER_ORG/$1" "$2" -- --quiet ;;
-    gitlab) git clone -q "$LOOPER_FORGE_URL/$LOOPER_ORG/$1.git" "$2" ;;
+    github) gh repo clone "$LOOPER_ORG/$1" "$2" -- --quiet "${@:3}" ;;
+    gitlab) git clone -q "${@:3}" "$LOOPER_FORGE_URL/$LOOPER_ORG/$1.git" "$2" ;;
   esac
 }
 

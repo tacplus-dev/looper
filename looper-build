@@ -124,6 +124,7 @@ usage() {
   cat <<'EOF'
 usage: looper-build plan                  write build-gates.yml (the gates job, in the pinned image)
        looper-build gates                 just gates on the commit, in this directory's checkout
+       looper-build gates-local           the gates of the checkout BUILD_SRC at BUILD_SHA (a looper VM's local build)
        looper-build status STATE [TEXT]   the commit status: pending, success or failure
        looper-build publish [--dry-run]   the release image, its digest and archive (--dry-run: build only)
        looper-build sbom                  the release image's SBOM, of publish's archive (image.tar)
@@ -939,16 +940,28 @@ cmd_gates() {
   # Private Go modules of the org come from GitHub through the token, not the proxy.
   export GOPRIVATE="${GOPRIVATE:-github.com/$BUILD_ORG/*}"
 
-  local src="$BUILD_OUT/src" rc=0 changed run what
+  local src="$BUILD_OUT/src"
   fetch_commit "$src"
   refuse_push_credential "$src"
+  gates_of "$src" fetch
+  built "$src"
+  generated "$src"
+  verdict pass
+}
+
+# The gates of the checkout src, at BUILD_SHA, in this image: the set asked for
+# from its gates.yaml, else `just gates`; red when they fail, change a tracked
+# file or move HEAD. With fetch, BUILD_BASE is fetched from origin first (a
+# build job's checkout is shallow).
+gates_of() { # src [fetch]
+  local src="$1" rc=0 changed run what
   image_tacplus "$src"
   if [[ -f "$src/gates.yaml" ]]; then
     # The set the manager's diff calls for (looper#71), from the commit's own map.
     run="$(gate_run "$src/gates.yaml" "${BUILD_GATES:-full}")" || verdict fail "$run"
     what="the gates ${BUILD_GATES:-full} (gates.yaml)"
     if [[ -n "${BUILD_BASE:-}" ]]; then
-      git -C "$src" fetch -q --depth 1 origin "$BUILD_BASE" 2>&1 | tail -5 >&2 || true
+      [[ -z "${2:-}" ]] || { git -C "$src" fetch -q --depth 1 origin "$BUILD_BASE" 2>&1 | tail -5 >&2 || true; }
       git -C "$src" rev-parse -q --verify "$BUILD_BASE^{commit}" >/dev/null 2>&1 ||
         verdict fail "$BUILD_ORG/$BUILD_REPO has no base commit $BUILD_BASE (or it cannot be read)"
     fi
@@ -967,8 +980,20 @@ cmd_gates() {
   [[ -z "$changed" ]] || verdict fail "the build changed tracked files: $(echo "$changed" | head -20 | tr '\n' ' ')"
   [[ "$(git -C "$src" rev-parse HEAD)" == "$BUILD_SHA" ]] || verdict fail "the build moved HEAD off $BUILD_SHA"
   ((rc == 0)) || verdict fail "$what exited $rc: $(log_tail "$BUILD_OUT/gates.log")"
-  built "$src"
-  generated "$src"
+}
+
+# A looper VM's local build (looper#238; looper-vm build): the gates of a
+# checkout already on disk (BUILD_SRC, at BUILD_SHA), in the pinned build image
+# this runs in, which looper-vm started through the VM's container socket. No
+# fetch and no credential: feedback for its report only, never a land's
+# verdict (the manager's build is). Its verdict, the gates' log and nothing
+# else (no built files, no generated code: no security checks follow it).
+cmd_gates_local() {
+  refuse_write_credentials
+  check_inputs
+  [[ -n "${BUILD_SRC:-}" && -e "$BUILD_SRC/.git" ]] || verdict fail "BUILD_SRC '${BUILD_SRC:-}' is not a checkout"
+  mkdir -p "$BUILD_OUT"
+  gates_of "$BUILD_SRC"
   verdict pass
 }
 
@@ -982,10 +1007,11 @@ cmd_gates() {
 image_tacplus() { # src
   [[ -f "$1/tacplus.lock" ]] || return 0
   local pin; pin="$(read_pin "$1")"
-  if [[ -z "${CI_JOB_IMAGE:-}" ]]; then
+  local image="${BUILD_IMAGE:-${CI_JOB_IMAGE:-}}"
+  if [[ -z "$image" ]]; then
     log "no CI_JOB_IMAGE: not a build job, the justfile's own tacplus"; return 0
   fi
-  [[ "$CI_JOB_IMAGE" == "$pin" ]] || verdict fail "the job runs in $CI_JOB_IMAGE, not the build image tacplus.lock pins ($pin)"
+  [[ "$image" == "$pin" ]] || verdict fail "the job runs in $image, not the build image tacplus.lock pins ($pin)"
   command -v tacplus >/dev/null || verdict fail "the build image tacplus.lock pins ($pin) has no tacplus"
   export TACPLUS_BIN=tacplus
   log "TACPLUS_BIN=tacplus: the image's own tacplus ($pin)"
@@ -1496,6 +1522,7 @@ release_sbom() { # oci-archive
 case "${1:-}" in
   plan) cmd_plan ;;
   gates) cmd_gates ;;
+  gates-local) cmd_gates_local ;;
   status) shift; cmd_status "$@" ;;
   publish) shift; cmd_publish "$@" ;;
   sbom) cmd_sbom ;;

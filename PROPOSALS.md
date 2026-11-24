@@ -4,19 +4,27 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
-- **A model's leftover processes stopped before the looper reads its files** (2026-11-24, #227): after a scan's
-  model, the looper copies the files it takes out of the model's clone (`scan_take`, no symlink followed). A process
-  the model left running as `looper-scan` could still change the clone while that copy runs. Stopping every process
-  of the model's user once its run ends (it is the scan's alone) would close that window. The model-owned run
-  directory's files are #232.
-- **A held pre-land gate's build, cancelled or given its own branch** (2026-11-24, #231): the manager now holds a land
-  whose pre-land gate is still queued (its `gates` job `waiting_for_resource` behind the report slots) for the next
-  batch, at most once. Two loose ends. (1) When the next batch builds that gate again on a new main, the old build
-  still holds its place in the report queue and runs to no purpose. Cancelling it (`GITLAB_TOKEN`, `POST
-  /pipelines/:id/cancel`) would give its slot back. (2) The held record sits on `looper/pre-land-<repo>-<issue>`,
-  the branch the report's own `--land` pre-land gate pushes to and deletes. A report landing again while its land is
-  held drops the record, and the next batch builds the gate again. A branch of the manager's own
-  (`looper/pre-land-held-…`) would keep the two apart.
+- **looper-vm's end-to-end run on tacplus** (2026-11-24, #238): the parent, its SIGTERM stop, the resume from the
+  forge, the shared cache and the local build are tested here with stubs (no container runtime in a report or a
+  build job). The issue's last criterion, a local run with a container runtime building a tacplus issue end to end,
+  needs looper#239's image (`looper-vm --self-test` in it) on cloud#108's VM, or any host with Docker: run
+  `looper-vm --repo tacplus` there with tacplus's credentials and a ready issue, and record the time to its first
+  verdict beside an in-cluster report's.
+- **One project, one place: a VM and the in-cluster reports never both** (2026-11-24, #238): on a VM, a report takes
+  an approved issue labelled `looper:in-progress` as one a stopped VM left. That holds once looper#241 starts no
+  in-cluster report for a project with a VM; while both run (the pilot "beside the current in-cluster looper"), a
+  VM would resume an issue an in-cluster report holds. The VM could read the looper project's GitLab jobs (as
+  `orphaned` does in a job) when it holds a token for them, or #241 could stop the in-cluster reports first.
+- **The cache's run records pruned** (2026-11-24, #238): each report's run directory (`work/NAME/runs`) and its
+  build logs stay on the cache disk; nothing removes them. A pass of the parent (a child, never the loop) could drop
+  those older than a week, as the cache is only a cache.
+- **A local build's read-only GitHub token** (2026-11-24, #238): a build job's gates get the tacplus-reader app's
+  read-only token (private Go modules of the org, a tacplus `depends` on tacplus-dev/registry); `looper-vm build`
+  passes none, so a build that needs a private dependency fails locally while its build job passes. The VM's service
+  account could mint the same read-only token for each build container.
+- **Maven's local repository shared** (2026-11-24, #238): it does not lock across processes by default, so each local
+  build has its own (the decision's per-child directory). Maven 3.9's named locks (`aether.syncContext.named.factory`)
+  would make one shared `~/.m2/repository` safe.
 - **The nightly maintenance after tacplus's Images, by schedule** (2026-11-23, #226): the scan follows whichever build
   of a line the registry has when it runs. The GitLab schedule that starts the nightly scan is not in this repository,
   and neither is tacplus-dev/tacplus#966's cron for the Images run. Check that the scan's schedule starts after the
@@ -1134,15 +1142,3 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The relock on a GitLab forge** (2026-11-21, #212): it runs only where `LOOPER_FORGE=github` (the pins the build
   pipeline reads); a SeaBeam instance's repositories, once pinned, need the same step and the tacplus releases read
   from where that instance mirrors them.
-- **An unpinned release FROM fails the policy, once the hub's bugs are landed** (2026-11-24, #234): looper-scan
-  files an unpinned `FROM` of a release Dockerfile as a HIGH finding that fails no run (kind `pin`), since 12 service
-  repositories float today and a failing finding would turn their nightlies and releases red at once. Once they are
-  pinned (the hub's bugs), making it fail a land that adds one (and a release) keeps it so.
-- **A CI image's Dockerfile pinned by digest too** (2026-11-24, #234): the nightly maintenance pins only the
-  release Dockerfiles' floating `FROM`s; a Dockerfile under `ci/` (a CI image) at a floating tag stays as it is,
-  though the decision's point 2 asks immutable refs of CI images too. Pinning those the same way is one condition
-  less in `relock`.
-- **looper's own image pins its base** (2026-11-24, #234): `Dockerfile` builds `FROM ${BUILD_IMAGE}`, its default
-  `ghcr.io/tacplus-dev/tacplus/build:${TACPLUS_LINE}`, a floating tag built of ARGs: the maintenance cannot pin it (unread)
-  and looper-scan files it. Writing `BUILD_IMAGE`'s default as the line's dated build by digest
-  (`build:<YYYYMMDD>-<commit>@sha256:…`) lets the maintenance move it nightly, as it does build.lock's.
