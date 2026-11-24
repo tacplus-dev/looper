@@ -120,6 +120,12 @@ RUN set -eu; export PATH="$PATH:/usr/local/lib/looper"; \
 # the fixed version, its <TOOL>_COMPRESS_VERSION or <TOOL>_BROTLI_VERSION, and the
 # build checks it is the one built in. Drop each when that tool's release requires
 # the fixed version or later.
+# OSV-Scanner and gosec too (looper#199), and Trivy's otel: Trivy 0.76.2 (containerd/v2
+# v2.4.2, GO-2026-7007) and OSV-Scanner 2.7.1, the latest, require go.opentelemetry.io/otel
+# before v1.47.0 (GO-2026-6974), and gosec 2.30.0, the latest, github.com/gorilla/websocket
+# v1.5.3 (GO-2026-6278, fixed in an untagged commit): <TOOL>_OTEL_VERSION and
+# GOSEC_WEBSOCKET_VERSION, versions upstream did not test, so the smoke below runs
+# each. Syft 1.57.2 requires otel v1.47.0 itself.
 # Trivy built so reports GO-2026-4919 alone, not applicable: the compromised
 # v0.69.4 release (CVE-2026-33634), whose range has no fix event and so matches
 # every later version. Trivy is a long build: its own layer, before the others,
@@ -130,29 +136,29 @@ RUN set -eu; export PATH="$PATH:/usr/local/lib/looper"; \
 # Semgrep CE and Bandit by every wheel's hash (scanners/requirements.txt) in a
 # venv of their own. CodeQL (nightly and release) is fetched by looper-scan
 # when a run needs it, checked against its pinned checksum there.
-ARG TRIVY_VERSION=0.76.1 TRIVY_COMPRESS_VERSION=1.20.2
+ARG TRIVY_VERSION=0.76.2 TRIVY_COMPRESS_VERSION=1.20.2 TRIVY_OTEL_VERSION=1.47.0
 RUN set -eu; d="$(mktemp -d)"; export PATH="$PATH:/usr/local/lib/looper"; \
     (cd "$d"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; tr=github.com/aquasecurity/trivy; \
       go-fetch version; go mod init looper.local/trivy 2>/dev/null; \
-      go mod edit -require "$tr@v$TRIVY_VERSION" -require "github.com/klauspost/compress@v$TRIVY_COMPRESS_VERSION" -tool "$tr/cmd/trivy"; \
+      go mod edit -require "$tr@v$TRIVY_VERSION" -require "github.com/klauspost/compress@v$TRIVY_COMPRESS_VERSION" -tool "$tr/cmd/trivy" \
+        -require "go.opentelemetry.io/otel/sdk@v$TRIVY_OTEL_VERSION" -require "go.opentelemetry.io/otel/trace@v$TRIVY_OTEL_VERSION"; \
       go-fetch mod tidy; go build -ldflags "-w -X $tr/pkg/version/app.ver=$TRIVY_VERSION" -o /usr/local/bin/trivy "$tr/cmd/trivy"); \
     trivy --version | grep -qx "Version: $TRIVY_VERSION"; \
     go version /usr/local/bin/trivy | grep -qx "/usr/local/bin/trivy: $GO_TOOLCHAIN"; \
     go version -m /usr/local/bin/trivy | grep -q "github.com/klauspost/compress[[:space:]]*v$TRIVY_COMPRESS_VERSION[[:space:]]"; \
+    for m in sdk trace; do go version -m /usr/local/bin/trivy | grep -q "go.opentelemetry.io/otel/$m[[:space:]]*v$TRIVY_OTEL_VERSION[[:space:]]"; done; \
     go clean -cache -modcache; rm -rf "$d"
-ARG OSV_SCANNER_VERSION=2.7.1
+ARG OSV_SCANNER_VERSION=2.7.1 OSV_SCANNER_OTEL_VERSION=1.47.0
 ARG CARGO_DENY_VERSION=0.20.2 CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d
-ARG SYFT_VERSION=1.57.1
+ARG SYFT_VERSION=1.57.2
 ARG GITLEAKS_VERSION=8.30.1 GITLEAKS_XZ_VERSION=0.5.15 GITLEAKS_COMPRESS_VERSION=1.20.2 GITLEAKS_BROTLI_VERSION=1.2.7
-ARG GOSEC_VERSION=2.30.0
+ARG GOSEC_VERSION=2.30.0 GOSEC_WEBSOCKET_VERSION=1.5.4-0.20240701034025-d67f41855da4
 ARG SPOTBUGS_VERSION=4.10.5 SPOTBUGS_SHA256=cce3244900cc215ccd9f5a8db29ed9468fc47824faf662f4fad005343d96007e
 ARG FINDSECBUGS_VERSION=1.14.0 FINDSECBUGS_SHA256=6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8
 ARG GOVULNCHECK_VERSION=1.9.0
 RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=https://github.com; \
     export PATH="$PATH:/usr/local/lib/looper"; (export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; go-fetch version; \
       go-fetch install -n "golang.org/x/vuln/cmd/govulncheck@v$GOVULNCHECK_VERSION"; \
-      go-fetch install -n "github.com/securego/gosec/v2/cmd/gosec@v$GOSEC_VERSION"; \
-      go-fetch install -n "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
       CGO_ENABLED=0 go-fetch install -n "github.com/anchore/syft/cmd/syft@v$SYFT_VERSION"); \
     fetched="file://$(go env GOMODCACHE)/cache/download"; \
     get() { curl -fsSL -o "$d/$1" "$2"; echo "$3  $d/$1" | sha256sum -c -; }; \
@@ -170,11 +176,18 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
       { echo "govulncheck: a go 1.27 module importing net/http does not scan" >&2; exit 1; }; \
     jq -s -e --arg go "$GO_TOOLCHAIN" '[.[] | .config? // empty | .go_version] == [$go]' "$d/govulncheck.json" >/dev/null; \
     jq -s -e '[.[] | .finding? // empty | select(.trace[0].function == "Parse") | .osv] | index("GO-2021-0113")' "$d/govulncheck.json" >/dev/null; \
-    GOPROXY="$fetched" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install \
-      -ldflags "-w -X main.Version=$GOSEC_VERSION -X main.GitTag=v$GOSEC_VERSION" "github.com/securego/gosec/v2/cmd/gosec@v$GOSEC_VERSION"; \
+    mkdir "$d/gosec"; (cd "$d/gosec"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gs=github.com/securego/gosec/v2; \
+      go-fetch version; go mod init looper.local/gosec 2>/dev/null; \
+      go mod edit -require "$gs@v$GOSEC_VERSION" -tool "$gs/cmd/gosec" -require "github.com/gorilla/websocket@v$GOSEC_WEBSOCKET_VERSION"; \
+      go-fetch mod tidy; go build -ldflags "-w -X main.Version=$GOSEC_VERSION -X main.GitTag=v$GOSEC_VERSION" -o /usr/local/bin/gosec "$gs/cmd/gosec"); \
     gosec -version | grep -qx "Version: $GOSEC_VERSION"; \
-    GOPROXY="$fetched" GOTOOLCHAIN="$GO_TOOLCHAIN" GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@v$OSV_SCANNER_VERSION"; \
+    go version -m /usr/local/bin/gosec | grep -q "github.com/gorilla/websocket[[:space:]]*v$GOSEC_WEBSOCKET_VERSION[[:space:]]"; \
+    mkdir "$d/osv-scanner"; (cd "$d/osv-scanner"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; os=github.com/google/osv-scanner/v2; \
+      go-fetch version; go mod init looper.local/osv-scanner 2>/dev/null; \
+      go mod edit -require "$os@v$OSV_SCANNER_VERSION" -tool "$os/cmd/osv-scanner" -require "go.opentelemetry.io/otel/trace@v$OSV_SCANNER_OTEL_VERSION"; \
+      go-fetch mod tidy; go build -ldflags -w -o /usr/local/bin/osv-scanner "$os/cmd/osv-scanner"); \
     osv-scanner --version | grep -qx "osv-scanner version: $OSV_SCANNER_VERSION"; \
+    go version -m /usr/local/bin/osv-scanner | grep -q "go.opentelemetry.io/otel/trace[[:space:]]*v$OSV_SCANNER_OTEL_VERSION[[:space:]]"; \
     mkdir "$d/gitleaks"; (cd "$d/gitleaks"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; gl=github.com/zricethezav/gitleaks/v8; \
       go-fetch version; go mod init looper.local/gitleaks 2>/dev/null; \
       go mod edit -require "$gl@v$GITLEAKS_VERSION" -tool "$gl" -replace "github.com/ulikunitz/xz=github.com/ulikunitz/xz@v$GITLEAKS_XZ_VERSION" \
@@ -191,6 +204,7 @@ RUN set -eu; test "$(dpkg --print-architecture)" = arm64; d="$(mktemp -d)"; gh=h
         { echo "$1: $2 ${v:-missing}, not v$3 or later" >&2; exit 1; }; }; \
     atleast osv-scanner github.com/klauspost/compress 1.20.2; \
     atleast syft github.com/andybalholm/brotli 1.2.7; atleast syft golang.org/x/net 0.62.0; \
+    atleast syft go.opentelemetry.io/otel/sdk 1.47.0; atleast syft go.opentelemetry.io/otel/trace 1.47.0; \
     for b in gosec osv-scanner gitleaks syft; do go version "/usr/local/bin/$b" | grep -qx "/usr/local/bin/$b: $GO_TOOLCHAIN"; done; \
     go clean -cache -modcache; \
     rm -rf "$d"
@@ -207,6 +221,8 @@ RUN rustup component add clippy && cargo clippy --version
 # planted in a repository made here (the key put together at run time: the tree's
 # own scan finds no secret in this file), in its history and in its files, and
 # exit as the release does: 1 on a leak, 0 with --exit-code 0 and on a clean file.
+# gosec, built with GOSEC_WEBSOCKET_VERSION (looper#199), must report G204 in a Go
+# file made here at run time, as the key is, so the tree scans do not report it.
 COPY scanners/requirements.txt /opt/scanners/requirements.txt
 COPY scanners/smoke/ /opt/scanners/smoke/
 RUN set -eu; python3 -m venv /opt/scanners/venv; \
@@ -230,6 +246,11 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
     gitleaks dir --no-banner --exit-code 0 "$g" 2>/dev/null || { echo "gitleaks: --exit-code 0 exited $?" >&2; exit 1; }; \
     rm "$g/env.txt"; echo clean > "$g/ok.txt"; \
     gitleaks dir --no-banner "$g/ok.txt" 2>/dev/null || { echo "gitleaks: a clean file exited $?" >&2; exit 1; }; \
+    rm -rf "$g"; g="$(mktemp -d)"; (cd "$g" && go mod init looper.local/smoke 2>/dev/null); \
+    printf 'package main\n\nimport (\n\t"os"\n\t"os/exec"\n)\n\nfunc main() {\n\t_ = exec.Command(os.Args[1]).Run()\n}\n' > "$g/main.go"; \
+    rc=0; (cd "$g" && gosec -quiet -fmt json -out /tmp/smoke.json ./...) || rc=$?; \
+    jq -e --argjson rc "$rc" '$rc == 1 and ([.Issues[].rule_id] | index("G204"))' /tmp/smoke.json >/dev/null || \
+      { echo "gosec: exited $rc, the planted G204 is not found" >&2; cat /tmp/smoke.json >&2; exit 1; }; \
     rm -rf "$g" /tmp/smoke.json
 COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
