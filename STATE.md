@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-23 by looper (#226).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#225).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -176,7 +176,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-23 by lo
   `output-name` in its `output-dir`) is tacplus's to scan: its SAST findings and secrets are kept aside (`security/generated.json`), not
   counted, its dependencies still checked (#108; blobstore's main, run by hand: 436 set aside); a SAST finding in test
   code (Rust's `#[cfg(test)]` modules and `tests/`, Go's `_test.go`, TS/JS's `test/` and `*.test.*`, Java's
-  `src/test/`) is listed (`test: true`), never failing, a secret there still fails (#179); a recorded baseline per repository (#146,
+  `src/test/`) is listed (`test: true`), never failing, a secret there still fails (#179); a finding in CI tooling (a dependency under `bin/` or `ci/`, the base image of a Dockerfile under `ci/`: `scope: tooling`) is listed, never failing a land, a nightly or a release, the rest `shipped` and failing as before (#225; the repositories' own `ci/security.sh`: cloud#101, cluster#55, fleet-seatrials#72); a recorded baseline per repository (#146,
   `security-baseline.json`, written by `looper-scan baseline`: MEDIUM, LOW and UNKNOWN findings counted per tool, rule
   and file, not line, are baselined, never new, so not filed; an issue's run is handed the repository's latest
   findings to record it from); SARIF and JSON reports, the new findings since the
