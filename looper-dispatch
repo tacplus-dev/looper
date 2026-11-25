@@ -220,16 +220,19 @@ held() {
 # reports are planned here as before, and the log says why.
 VM_REPOS="${LOOPER_VM_REPOS:-}"
 vm_repo() { [[ " $VM_REPOS " == *" $1 "* ]]; } # repo
-vm_api() { # method repo path-suffix
-  local t; t="$("$TOKEN_CMD" gcp-token 2>/dev/null)" && [[ -n "$t" ]] || { WHY="no Google access token (looper-token gcp-token)"; return 1; }
-  curl -sf --max-time 30 -X "$1" -H "Authorization: Bearer $t" \
+VM_TOKEN=""
+vm_api() { # method repo path-suffix (VM_TOKEN set: vm_start's)
+  curl -sf --max-time 30 -X "$1" -H "Authorization: Bearer $VM_TOKEN" \
     "https://compute.googleapis.com/compute/v1/projects/${LOOPER_VM_PROJECT:-tacplus-ci}/zones/${LOOPER_VM_ZONE:-us-central1-b}/instanceGroupManagers/looper-vm-$2$3" ||
     { WHY="Compute refused ${1} looper-vm-$2$3"; return 1; }
 }
 vm_size() { vm_api GET "$1" "" | jq -er '.targetSize' 2>/dev/null; } # repo: its group's target size
 # The repository's VM, up or started: 0 when it is (or now will be), else 1, WHY set.
 vm_start() { # repo
-  local s; s="$(vm_size "$1")" || { WHY="${WHY:-its group looper-vm-$1 could not be read}"; return 1; }
+  local s
+  # The token here, not in vm_api: a WHY set in a command substitution is lost.
+  VM_TOKEN="$("$TOKEN_CMD" gcp-token 2>/dev/null)" && [[ -n "$VM_TOKEN" ]] || { WHY="no Google access token (looper-token gcp-token)"; return 1; }
+  s="$(vm_size "$1")" || { WHY="its group looper-vm-$1 could not be read (Compute)"; return 1; }
   (( s >= 1 )) && return 0
   vm_api POST "$1" "/resize?size=1" >/dev/null
 }
