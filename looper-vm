@@ -89,6 +89,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 HERE="$(dirname "$SELF")"
 REPO_LOOPER="${LOOPER_VM_REPO_LOOPER:-$HERE/repo-looper}"
 LOOPER_BUILD="${LOOPER_VM_LOOPER_BUILD:-$HERE/looper-build}"
+TOKEN_CMD="${LOOPER_TOKEN:-$HERE/looper-token}"
 CACHE="${LOOPER_CACHE:-/cache}"
 POLL="${LOOPER_VM_POLL:-60}"
 IDLE=$(( ${LOOPER_VM_IDLE_MINUTES:-15} * 60 ))
@@ -204,7 +205,7 @@ reap() {
   if [[ -n "$LISTER" ]] && ! kill -0 "$LISTER" 2>/dev/null; then
     rc=0; wait "$LISTER" 2>/dev/null || rc=$?
     if (( rc == 0 )); then mv -f "$STATE/list.new" "$STATE/list"
-    else log "the list of $REPO's ready issues failed (exit $rc): none taken from it"; : > "$STATE/list"; fi
+    else log "the list of $REPO's ready issues failed (exit $rc): none taken from it: $(tail -n 2 "$STATE/vm.log" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"; : > "$STATE/list"; fi
     LISTER=""; LISTED=1
   fi
 }
@@ -287,6 +288,20 @@ vm_credentials() {
   export CLAUDE_CODE_OAUTH_TOKEN="$t"; rm -f "$STATE/secret-err"
 }
 
+# The parent's own GitHub identity, for its lister (looper#238): repo-looper
+# mints a token for a report's run, never for --list, which in GitLab runs
+# under the plan's. Here the parent holds the report app's token as gh's
+# configuration, kept fresh by looper-token for the parent's life, and its
+# lister reads it (GH_CONFIG_DIR); each report still mints its own. Without
+# it gh had no login and every list failed (exit 4), the VM idled and stopped.
+vm_identity() {
+  [[ -z "${GH_TOKEN:-}" ]] || return 0
+  local d="$STATE/gh"; rm -rf "$d"; mkdir -p "$d"; chmod 0700 "$d"
+  "$TOKEN_CMD" start report "$d" $$ >/dev/null 2>>"$STATE/vm.log" ||
+    die "no report token for the lister (looper-token start report): $(tail -n 3 "$STATE/vm.log" | tr '\n' ' ' | cut -c1-300)"
+  export GH_CONFIG_DIR="$d" GH_NO_UPDATE_NOTIFIER=1
+}
+
 parent() {
   [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "--repo NAME is required"
   for v in POLL STOP_GRACE LIST_TIMEOUT COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
@@ -295,6 +310,7 @@ parent() {
   cache_ready
   STATE="$CACHE/vm"; mkdir -p "$STATE"; rm -f "$STATE/list" "$STATE/list.new"
   vm_credentials
+  vm_identity
   log "looper-vm of $REPO: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m"
   local z
   while :; do
