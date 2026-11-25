@@ -1259,8 +1259,9 @@ cmd_status() { # state [description]
        fi
        text="${text:-${BUILD_NO_VERDICT:-the build failed}}" ;;
   esac
-  local token body url="${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" set
-  token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" || { log "no token for the commit status"; exit 1; }
+  local token="${BUILD_STATUS_TOKEN:-}" body url="${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" set
+  unset BUILD_STATUS_TOKEN
+  [[ -n "$token" ]] || token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" || { log "no token for the commit status"; exit 1; }
   # A release's own "the build failed" (report-fail) leaves the reason its security job set on this pipeline.
   if [[ "$state" == failure && "$text" == "the build failed" && -n "$url" ]] &&
      set="$(curl -fsS -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
@@ -1287,9 +1288,18 @@ cmd_status() { # state [description]
 # left no verdict (its runner lost or timed out, looper#148); else the
 # security checks' (looper#144); else pass, but a release's, which the
 # parent's report-pass sets once publish passed. A nightly's sets none.
-# Exits as the scan did, or 1 when the status could not be set.
+# Exits as the scan did, or 1 when the status could not be set. The status's
+# token is minted first: looper-scan run removes the app's key before the
+# repository's code runs, and with it every later token (every candidate red
+# on its status alone, its gates and checks green: 2026-11-25). The token is
+# no exported variable: the scan and the code it runs never see it; only the
+# status step is given it.
 cmd_scan() {
-  local rc=0 st=()
+  local rc=0 st=() token=""
+  if [[ "${BUILD_NIGHTLY:-}" != true ]]; then
+    token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" ||
+      log "scan: no token for the commit status before the checks (the status step tries again)"
+  fi
   looper-scan run || rc=$?
   looper-scan report || log "scan: the security report failed (it fails no build)"
   if [[ "${BUILD_NIGHTLY:-}" == true ]]; then log "scan: a nightly: no commit status"; return "$rc"; fi
@@ -1302,7 +1312,7 @@ cmd_scan() {
   else
     st=("$SELF" status success)
   fi
-  BUILD_OUT="$BUILD_OUT" env "${st[@]}" || { log "scan: the commit status was not set"; return 1; }
+  BUILD_OUT="$BUILD_OUT" BUILD_STATUS_TOKEN="$token" env "${st[@]}" || { log "scan: the commit status was not set"; return 1; }
   return "$rc"
 }
 

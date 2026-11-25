@@ -1355,7 +1355,10 @@ cat > "$TMP/scanstub/looper-scan" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$TMP/scan-calls"
 case "\$1" in
-  run) [[ -z "\${SCAN_VERDICT:-}" ]] || { mkdir -p "\$BUILD_OUT/security"; echo "\$SCAN_VERDICT" > "\$BUILD_OUT/security/verdict"; }
+  # As the real one: the app's key is gone before the repository's code runs, and the status's token is not here.
+  run) [[ -z "\${TACPLUS_READER_APP_KEY:-}" ]] || rm -f "\$TACPLUS_READER_APP_KEY"
+       [[ -z "\${BUILD_STATUS_TOKEN:-}\${token:-}" ]] || { echo "the scan was given the status token" >&2; exit 9; }
+       [[ -z "\${SCAN_VERDICT:-}" ]] || { mkdir -p "\$BUILD_OUT/security"; echo "\$SCAN_VERDICT" > "\$BUILD_OUT/security/verdict"; }
        exit "\${SCAN_RC:-0}" ;;
   report) exit "\${REPORT_RC:-0}" ;;
 esac
@@ -1366,9 +1369,9 @@ chmod +x "$TMP/scanstub/looper-scan"
 scan_job() { # gates-verdict [VAR=value...]
   OUT="$TMP/out-scan"; rm -rf "$OUT"; mkdir -p "$OUT"; : > "$TMP/api.log"; : > "$TMP/scan-calls"
   [[ "$1" == none ]] || echo "$1" > "$OUT/build-verdict"
-  scan_rc=0
+  scan_rc=0; cp "$TMP/app.pem" "$OUT/app.pem"   # the job's file variable: the scan removes it
   env -i PATH="$TMP/scanstub:$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" \
-    TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" BUILD_SCAN_KIND=build \
+    TACPLUS_READER_APP_KEY="$OUT/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" BUILD_SCAN_KIND=build \
     CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/2 BUILD_STATUS_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1 \
     "${@:2}" "$ROOT/looper-build" scan 2>"$TMP/err" || scan_rc=$?
 }
