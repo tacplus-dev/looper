@@ -195,7 +195,7 @@ for p in $(cat "$FIX/tree") $(sed -n 's/^start [0-9]* \([0-9]*\) .*/\1/p' "$FIX/
   ! kill -0 "$p" 2>/dev/null || fail "pid $p of the tree still runs ($(ps -o args= -p "$p"))"
 done
 out="$(cat "$FIX/vm.out")"
-has "$out" "SIGTERM: stopping 3 report(s)"; has "$out" "killing what still runs 22s after SIGTERM: report(s) 3"
+has "$out" "SIGTERM: stopping 3 report(s)"; has "$out" "killing what still runs 22s after SIGTERM: report(s) alpha#3"
 pass
 
 # --- idle exit ---------------------------------------------------------------------
