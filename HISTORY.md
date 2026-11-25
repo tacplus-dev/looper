@@ -186,3 +186,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-25 looper issue Nightly maintenance moves release Dockerfile FROM digests; looper-scan files an unpinned FROM (#234)
 - 2026-11-25 looper issue manager: holds every green land for a queued pre-land gate (up to 3h), silently; tacplus main stuck 24 h with 15 green lands (#231)
 - 2026-11-25 looper issue A new public repository is refused by the kicker until looper-ruleset check passes, and the nightly files the missing ruleset (#233)
+- 2026-11-25 looper issue The looper image is not published: the image workflow fails on main (#199)
