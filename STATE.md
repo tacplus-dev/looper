@@ -366,6 +366,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   later, or #73 step 3 removes the CLI; it replaces `build:2.6`'s npm (11.21.1, ip-address 10.7.2's
   GHSA-rxp7-6hxx-x8q5) with 11.21.3 (#186) until `build:2.6` itself carries 11.21.3 or later; it builds Trivy and
   OSV-Scanner with otel v1.47.0 (GO-2026-6974) and gosec with gorilla/websocket's untagged fix (GO-2026-6278), versions
-  upstream did not test, smoke-scanned (#199), until a release of each requires them
+  upstream did not test, smoke-scanned (#199), until a release of each requires them; it replaces `build:2.6`'s gh
+  (otel/trace v1.44.0, GO-2026-6974; gorilla/websocket v1.5.3, GO-2026-6278) with gh 2.105.0 built here on the same
+  websocket fix (#199) until `build:2.6` carries a fixed gh (tacplus-dev/tacplus#969)
 - **Blocked on:** #15 (the looper image separate from the build image) waits on the build pipeline (#17);
   publishing waits on tacplus-dev/tacplus#223 (Artifact Registry and WIF)
