@@ -1326,6 +1326,23 @@ OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOP
 [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "the VM's label was removed: $(labels alpha 4) $OUT"
 [[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
 pass
+# An org's shared VM (decision point 12): `*=shared` takes every repository not
+# named on its own, so alpha's ready issue starts looper-vm-shared, and a
+# repository named on its own (alpha=solo) keeps its own group.
+scenario vm-shared
+echo 0 > "$FIX/vm-shared"
+OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOPER_VM_REPOS='beta *=shared' LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"
+[[ "$(cat "$FIX/vm-calls" 2>/dev/null)" == "resize shared 1" ]] || fail "the shared VM was not started: $(cat "$FIX/vm-calls" 2>/dev/null) $OUT"
+[[ ! -s "$FIX/started" ]] || fail "a pipeline was started for a shared-VM project: $(cat "$FIX/started")"
+grep -qF "alpha's looper VM is up or started (looper-vm-shared)" <<<"$OUT" || fail "the log: $OUT"
+pass
+scenario vm-own-over-shared
+echo 0 > "$FIX/vm-solo"; echo 0 > "$FIX/vm-shared"
+OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOPER_VM_REPOS='*=shared alpha=solo' LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"
+[[ "$(cat "$FIX/vm-calls" 2>/dev/null)" == "resize solo 1" ]] || fail "alpha's own VM was not the one started: $(cat "$FIX/vm-calls" 2>/dev/null) $OUT"
+pass
 scenario vm-plan
 echo 1 > "$FIX/vm-alpha"
 issue alpha 6 OPEN "Land it." looper:landing

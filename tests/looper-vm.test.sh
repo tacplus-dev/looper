@@ -32,15 +32,16 @@ mkdir -p "$3"; echo "github.com: {oauth_token: stub}" > "$3/hosts.yml"; echo "to
 EOF
 chmod +x "$TMP/bin/looper-token"
 
-# The stub repo-looper: --list prints $FIX/ready (or hangs, with $FIX/list-hang);
+# The stub repo-looper: --list prints $FIX/ready-REPO, else $FIX/ready (or hangs, with $FIX/list-hang);
 # --issue N records its start and runs $FIX/issue-N.sh (default: until $FIX/end-N).
 cat > "$TMP/bin/repo-looper" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$3" in
-  --list) echo "list gh=${GH_CONFIG_DIR:-none}" >> "$FIX/calls"; [[ ! -e "$FIX/list-hang" ]] || { sleep 1000 & wait; }; cat "$FIX/ready" 2>/dev/null || true ;;
+  --list) echo "list gh=${GH_CONFIG_DIR:-none}" >> "$FIX/calls"; [[ ! -e "$FIX/list-hang" ]] || { sleep 1000 & wait; }
+          if [[ -f "$FIX/ready-$2" ]]; then cat "$FIX/ready-$2"; else cat "$FIX/ready" 2>/dev/null || true; fi ;;
   --issue)
-    n="$4"; echo "start $n $$ vm=${LOOPER_VM:+set} work=$LOOPER_WORK store=$LOOPER_GIT_STORE" >> "$FIX/calls"
+    n="$4"; echo "start $n $$ repo=$2 vm=${LOOPER_VM:+set} work=$LOOPER_WORK store=$LOOPER_GIT_STORE" >> "$FIX/calls"
     if [[ -f "$FIX/issue-$n.sh" ]]; then source "$FIX/issue-$n.sh"
     else until [[ -e "$FIX/end-$n" ]]; do sleep 0.2; done; fi ;;
 esac
@@ -54,10 +55,12 @@ kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c";
 fixture() { # name
   NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX"; : > "$FIX/calls"; : > "$FIX/ready"
 }
-# The parent in the background: VM its pid, its output in $FIX/vm.out.
+# The parent in the background: VM its pid, its output in $FIX/vm.out; its
+# arguments ARGS (default --repo alpha).
+ARGS=(--repo alpha)
 vm() { # [VAR=value...]
   env FIX="$FIX" CLAUDE_CODE_OAUTH_TOKEN=test-token LOOPER_TOKEN="$TMP/bin/looper-token" LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 \
-    LOOPER_VM_COOLDOWN=1000 "$@" "$ROOT/looper-vm" --repo alpha > "$FIX/vm.out" 2>&1 & VM=$!
+    LOOPER_VM_COOLDOWN=1000 "$@" "$ROOT/looper-vm" "${ARGS[@]}" > "$FIX/vm.out" 2>&1 & VM=$!
 }
 # Waits, at most 20 seconds, for a command to succeed.
 until_true() { # what command...
@@ -66,8 +69,8 @@ until_true() { # what command...
   fail "not within 20s: $what"
 }
 started() { grep -q "^start $1 " "$FIX/calls"; } # issue
-running() { grep -q "^$1 " "$FIX/cache/vm/running" 2>/dev/null; } # issue
-not_running() { [[ -f "$FIX/cache/vm/running" ]] && ! grep -q "^$1 " "$FIX/cache/vm/running"; } # issue
+running() { grep -q "^alpha#$1 " "$FIX/cache/vm/running" 2>/dev/null; } # issue
+not_running() { [[ -f "$FIX/cache/vm/running" ]] && ! grep -q "^alpha#$1 " "$FIX/cache/vm/running"; } # issue
 
 # --- the parent never blocks ----------------------------------------------------
 # Issues 1 and 2 start at once and never end; 3, ready later, starts beside
@@ -89,6 +92,50 @@ has "$(cat "$FIX/vm.out")" "#2: its report ended (exit 0)"
 has "$(cat "$FIX/calls")" "start 1 "; has "$(cat "$FIX/calls")" "vm=set work=$FIX/cache/work store=$FIX/cache/git/alpha.git"
 (( $(grep -c '^start 1 ' "$FIX/calls") == 1 )) || fail "1 started more than once: $(cat "$FIX/calls")"
 kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+pass
+
+# --- an org's shared VM (decision point 12) ------------------------------------
+# One parent works several repositories: --org lists the org's repositories
+# with an approved issue (one search, the stub gh's $FIX/org), less --except's,
+# and each one's ready issues; a report runs per REPO#N, with that
+# repository's store. A repository whose list fails costs only its own issues.
+cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "search issues" ]] || exit 1
+echo "gh $*" >> "$FIX/calls"
+[[ ! -e "$FIX/gh-fails" ]] || exit 1
+cat "$FIX/org"
+EOF
+chmod +x "$TMP/bin/gh"
+fixture org
+printf 'alpha\nbeta\ngamma\nbeta\n' > "$FIX/org"
+echo 3 > "$FIX/ready-beta"; echo 5 > "$FIX/ready-gamma"; echo 9 > "$FIX/ready-alpha"
+ARGS=(--org tacplus-dev --except alpha)
+vm PATH="$TMP/bin:$PATH"
+until_true "beta#3 and gamma#5 started" eval 'grep -q "^start 3 .* repo=beta " "$FIX/calls" && grep -q "^start 5 .* repo=gamma " "$FIX/calls"'
+grep -q '^start 9 ' "$FIX/calls" && fail "alpha, on its own VM, was worked"
+has "$(cat "$FIX/calls")" "repo=beta vm=set work=$FIX/cache/work store=$FIX/cache/git/beta.git"
+has "$(cat "$FIX/calls")" "gh search issues --owner tacplus-dev --state open --label approved"
+has "$(cat "$FIX/vm.out")" "looper-vm of tacplus-dev (but alpha)"
+grep -q '^beta#3 ' "$FIX/cache/vm/running" && grep -q '^gamma#5 ' "$FIX/cache/vm/running" || fail "running: $(cat "$FIX/cache/vm/running")"
+kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+pass
+fixture org-search-fails
+touch "$FIX/gh-fails"; printf 'beta\n' > "$FIX/org"; echo 3 > "$FIX/ready-beta"
+vm PATH="$TMP/bin:$PATH" LOOPER_VM_IDLE_MINUTES=0
+rc=0; wait "$VM" || rc=$?; VM=""
+(( rc == 0 )) || fail "exited $rc"
+grep -q '^start ' "$FIX/calls" && fail "started a report with no list"
+has "$(cat "$FIX/vm.out")" "the list of tacplus-dev failed"
+pass
+fixture org-args
+for a in "--org tacplus-dev --repo alpha" "--repo alpha --except beta" "--org bad/org"; do
+  # shellcheck disable=SC2206
+  ARGS=($a); vm
+  rc=0; wait "$VM" || rc=$?; VM=""
+  (( rc == 2 )) || fail "$a: exited $rc"
+done
+ARGS=(--repo alpha)
 pass
 
 # --- SIGTERM: the tree stopped within 25 seconds --------------------------------

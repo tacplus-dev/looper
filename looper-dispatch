@@ -213,31 +213,47 @@ held() {
 # decisions/looper-build-vms-2026-11-24.md): LOOPER_VM_REPOS, the repositories
 # whose reports run on that VM (looper-vm) instead of in report jobs here,
 # space-separated, empty by default: a repository is moved by adding it once
-# its VM is up (tacplus-dev/cloud#108). For such a repository with a ready
+# its VM is up (tacplus-dev/cloud#108). Each is REPO (its own VM, the group
+# looper-vm-REPO) or REPO=GROUP (the group looper-vm-GROUP), and `*=GROUP` is
+# every other repository's (an org's shared VM, decision point 12): a
+# repository named on its own wins over `*`. For such a repository with a ready
 # issue, the kicker starts its VM, sizing its instance group
-# looper-vm-<repo> (LOOPER_VM_PROJECT, LOOPER_VM_ZONE) from 0 to 1 as this
+# looper-vm-<group> (LOOPER_VM_PROJECT, LOOPER_VM_ZONE) from 0 to 1 as this
 # job's Google identity (looper-token gcp-token), and the plan gives it no
 # report job; the VM works every ready issue itself and sizes its group back
 # to 0 when idle. Its lands are still the manager's, here (decision point 6).
 # A VM the kicker cannot read or start is no reason to stall: the repository's
 # reports are planned here as before, and the log says why.
 VM_REPOS="${LOOPER_VM_REPOS:-}"
-vm_repo() { [[ " $VM_REPOS " == *" $1 "* ]]; } # repo
+# The repository's VM group (its looper-vm-<group> name's end), or 1 when it has none.
+vm_group() { # repo
+  local e d=""
+  for e in $VM_REPOS; do
+    case "$e" in
+      "$1") echo "$1"; return 0 ;;
+      "$1="*) echo "${e#*=}"; return 0 ;;
+      "*="*) d="${e#*=}" ;;
+    esac
+  done
+  [[ -n "$d" ]] && echo "$d"
+}
+vm_repo() { vm_group "$1" >/dev/null; } # repo
 VM_TOKEN=""
-vm_api() { # method repo path-suffix (VM_TOKEN set: vm_start's)
+vm_api() { # method group path-suffix (VM_TOKEN set: vm_start's)
   curl -sf --max-time 30 -X "$1" -H "Authorization: Bearer $VM_TOKEN" \
     "https://compute.googleapis.com/compute/v1/projects/${LOOPER_VM_PROJECT:-tacplus-ci}/zones/${LOOPER_VM_ZONE:-us-central1-b}/instanceGroupManagers/looper-vm-$2$3" ||
     { WHY="Compute refused ${1} looper-vm-$2$3"; return 1; }
 }
-vm_size() { vm_api GET "$1" "" | jq -er '.targetSize' 2>/dev/null; } # repo: its group's target size
+vm_size() { vm_api GET "$1" "" | jq -er '.targetSize' 2>/dev/null; } # group: its target size
 # The repository's VM, up or started: 0 when it is (or now will be), else 1, WHY set.
 vm_start() { # repo
-  local s
+  local s g
+  g="$(vm_group "$1")" || { WHY="$1 has no looper VM"; return 1; }
   # The token here, not in vm_api: a WHY set in a command substitution is lost.
   VM_TOKEN="$("$TOKEN_CMD" gcp-token 2>/dev/null)" && [[ -n "$VM_TOKEN" ]] || { WHY="no Google access token (looper-token gcp-token)"; return 1; }
-  s="$(vm_size "$1")" || { WHY="its group looper-vm-$1 could not be read (Compute)"; return 1; }
+  s="$(vm_size "$g")" || { WHY="its group looper-vm-$g could not be read (Compute)"; return 1; }
   (( s >= 1 )) && return 0
-  vm_api POST "$1" "/resize?size=1" >/dev/null
+  vm_api POST "$g" "/resize?size=1" >/dev/null
 }
 
 pass() {
@@ -257,7 +273,7 @@ pass() {
     if ! ready_itself "$repo" "$n"; then log "$repo#$n is not ready, read itself (the search lags, looper#175); not started"; continue; fi
     if unguarded "$repo"; then log "$repo#$n is not started: $WHY"; continue; fi
     if vm_repo "$repo"; then
-      if vm_start "$repo"; then log "$repo#$n is ready: $repo's looper VM is up or started (looper-vm-$repo); its VM works it"; continue; fi
+      if vm_start "$repo"; then log "$repo#$n is ready: $repo's looper VM is up or started (looper-vm-$(vm_group "$repo")); its VM works it"; continue; fi
       log "$repo's looper VM did not start ($WHY): its reports run here instead"
     fi
     start_pipeline
@@ -327,7 +343,7 @@ plan() {
       if ! ready_itself "$repo" "$n"; then log "$repo#$n is not ready, read itself (the search lags, looper#175); not planned" >&2; continue; fi
       if unguarded "$repo"; then log "$repo#$n is not planned: $WHY" >&2; continue; fi
       if vm_repo "$repo"; then
-        if vm_start "$repo"; then log "$repo#$n is not planned: $repo's looper VM works it (looper-vm-$repo)" >&2; continue; fi
+        if vm_start "$repo"; then log "$repo#$n is not planned: $repo's looper VM works it (looper-vm-$(vm_group "$repo"))" >&2; continue; fi
         log "$repo's looper VM did not start ($WHY): $repo#$n is planned here" >&2
       fi
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h

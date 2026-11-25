@@ -9,7 +9,12 @@
 #
 #   looper-vm --repo NAME     the parent: works NAME's ready issues, all of them at once, until
 #                             it is idle (exit 0: the VM shuts down) or SIGTERM (exit 0 within
-#                             LOOPER_VM_STOP_GRACE seconds, each issue's work checkpointed)
+#                             LOOPER_VM_STOP_GRACE seconds, each issue's work checkpointed);
+#                             --repo again adds a repository to the same parent
+#   looper-vm --org ORG [--except NAME,...]
+#                             the same parent for an org's shared VM (decision point 12): every
+#                             ORG repository with an open approved issue, less those named (each
+#                             on a VM of its own), its children across all of them
 #   looper-vm build --repo NAME --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE
 #                             a local build: the gates of SHA (gates.yaml's SET, else its full,
 #                             else `just gates`) in the build image the commit pins (build.lock,
@@ -174,7 +179,7 @@ tree_of() { # pid...
   echo "${out[*]}"
 }
 
-declare -A CHILD=() ENDED=()   # issue -> pid; issue -> when its report ended
+declare -A CHILD=() ENDED=()   # REPO#N -> pid; REPO#N -> when its report ended
 LISTER="" LISTED=0 IDLE_SINCE="" STOPPING="" STATE=""
 
 record() { # the running children, for a person or a test to read
@@ -184,13 +189,42 @@ record() { # the running children, for a person or a test to read
 }
 
 # A report of the issue, as a child: today's report, in this VM's mode.
-start_report() { # issue
-  local n="$1"
-  LOOPER_VM="$SELF" LOOPER_WORK="$CACHE/work" LOOPER_GIT_STORE="$CACHE/git/$REPO.git" LOOPER_CACHE="$CACHE" \
-    LOOPER_RUNS="$CACHE/work/$REPO/runs" \
-    "$REPO_LOOPER" --repo "$REPO" --issue "$n" >> "$STATE/issue-$n.log" 2>&1 < /dev/null &
-  CHILD[$n]=$!
-  log "#$n: its report started (pid $!, log $STATE/issue-$n.log)"
+start_report() { # REPO#N
+  local k="$1" r="${1%%#*}" n="${1#*#}"
+  LOOPER_VM="$SELF" LOOPER_WORK="$CACHE/work" LOOPER_GIT_STORE="$CACHE/git/$r.git" LOOPER_CACHE="$CACHE" \
+    LOOPER_RUNS="$CACHE/work/$r/runs" \
+    "$REPO_LOOPER" --repo "$r" --issue "$n" >> "$STATE/$r-$n.log" 2>&1 < /dev/null &
+  CHILD[$k]=$!
+  log "$k: its report started (pid $!, log $STATE/$r-$n.log)"
+}
+
+# The repositories this parent works, one a line: those --repo named, or
+# (--org) the org's with an open approved issue (one search, not a list per
+# repository: an org has dozens), less --except's. Only public ones, as the
+# kicker's search, unless LOOPER_PRIVATE_REPORTS is 1.
+vm_repos() {
+  if [[ -z "$ORG" ]]; then printf '%s\n' "${REPOS[@]}"; return 0; fi
+  local vis=(--visibility public) names
+  [[ "${LOOPER_PRIVATE_REPORTS:-}" != 1 ]] || vis=()
+  names="$(timeout -k 5 60 gh search issues --owner "$ORG" --state open --label "${LOOPER_VM_LABEL:-approved}" --limit 1000 \
+    --json repository --jq '.[].repository.name' "${vis[@]}" < /dev/null)" || return 1
+  local skip=(-e '') x
+  for x in ${EXCEPT//,/ }; do skip+=(-e "$x"); done
+  sort -u <<<"$names" | grep -vxF "${skip[@]}" || true
+}
+
+# The lister, a child: each repository's `repo-looper --list`, its issues as
+# "REPO N" lines. One repository whose list fails costs only its own issues,
+# not the others' (it says so and exits 1).
+list_all() {
+  local r rs rc=0 out
+  rs="$(vm_repos)" || { log "the repositories of $ORG could not be read (gh search)" >&2; return 1; }
+  for r in $rs; do
+    if out="$(timeout -k 5 "$LIST_TIMEOUT" env LOOPER_VM="$SELF" LOOPER_WORK="$CACHE/work" "$REPO_LOOPER" --repo "$r" --list < /dev/null)"; then
+      sed -n "s/^\([0-9][0-9]*\)\$/$r \1/p" <<<"$out"
+    else rc=1; log "the list of $r's ready issues failed" >&2; fi
+  done
+  return "$rc"
 }
 
 # The children that ended, reaped: `wait` on one that ended does not block.
@@ -199,34 +233,33 @@ reap() {
   for n in "${!CHILD[@]}"; do
     kill -0 "${CHILD[$n]}" 2>/dev/null && continue
     rc=0; wait "${CHILD[$n]}" 2>/dev/null || rc=$?
-    log "#$n: its report ended (exit $rc); not started again for ${COOLDOWN}s"
+    log "$n: its report ended (exit $rc); not started again for ${COOLDOWN}s"
     ENDED[$n]=$(date +%s); unset "CHILD[$n]"
   done
   if [[ -n "$LISTER" ]] && ! kill -0 "$LISTER" 2>/dev/null; then
     rc=0; wait "$LISTER" 2>/dev/null || rc=$?
-    if (( rc == 0 )); then mv -f "$STATE/list.new" "$STATE/list"
-    else log "the list of $REPO's ready issues failed (exit $rc): none taken from it: $(tail -n 2 "$STATE/vm.log" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"; : > "$STATE/list"; fi
+    mv -f "$STATE/list.new" "$STATE/list"
+    (( rc == 0 )) || log "the list of $WHAT failed (exit $rc): only what it named is taken: $(tail -n 2 "$STATE/vm.log" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
     LISTER=""; LISTED=1
   fi
 }
 
 # One pass: never waits on anything but its own short file reads.
 pass() {
-  local n now; now=$(date +%s)
+  local r n k now; now=$(date +%s)
   reap
   if [[ -z "$LISTER" ]]; then
-    timeout -k 5 "$LIST_TIMEOUT" env LOOPER_VM="$SELF" LOOPER_WORK="$CACHE/work" "$REPO_LOOPER" --repo "$REPO" --list \
-      > "$STATE/list.new" 2>> "$STATE/vm.log" < /dev/null &
+    list_all > "$STATE/list.new" 2>> "$STATE/vm.log" < /dev/null &
     LISTER=$!
   fi
   local ready=0
   if [[ -s "$STATE/list" ]]; then
-    while read -r n; do
-      [[ "$n" =~ ^[0-9]+$ ]] || continue
-      ready=1
-      [[ -z "${CHILD[$n]:-}" ]] || continue
-      (( now - ${ENDED[$n]:-0} >= COOLDOWN )) || continue
-      start_report "$n"
+    while read -r r n; do
+      [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$n" =~ ^[0-9]+$ ]] || continue
+      ready=1; k="$r#$n"
+      [[ -z "${CHILD[$k]:-}" ]] || continue
+      (( now - ${ENDED[$k]:-0} >= COOLDOWN )) || continue
+      start_report "$k"
     done < "$STATE/list"
   fi
   record
@@ -234,7 +267,7 @@ pass() {
   else
     IDLE_SINCE="${IDLE_SINCE:-$now}"
     if (( now - IDLE_SINCE >= IDLE )); then
-      log "idle: no report running and no ready issue in $REPO for $(( IDLE / 60 ))m: exiting (the VM shuts down)"
+      log "idle: no report running and no ready issue in $WHAT for $(( IDLE / 60 ))m: exiting (the VM shuts down)"
       [[ -z "$LISTER" ]] || kill -TERM $(tree_of "$LISTER") 2>/dev/null || true
       exit 0
     fi
@@ -305,7 +338,18 @@ vm_identity() {
 }
 
 parent() {
-  [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "--repo NAME is required"
+  local r
+  if [[ -n "$ORG" ]]; then
+    (( ${#REPOS[@]} == 0 )) || die "--org and --repo are one or the other"
+    [[ "$ORG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--org '$ORG' is not an org's name"
+    [[ "$EXCEPT" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*(,[A-Za-z0-9][A-Za-z0-9._-]*)*)?$ ]] || die "--except '$EXCEPT' is not NAME,..."
+    WHAT="$ORG${EXCEPT:+ (but ${EXCEPT//,/, })}"
+  else
+    [[ -z "$EXCEPT" ]] || die "--except goes with --org"
+    (( ${#REPOS[@]} )) || die "--repo NAME (or --org ORG) is required"
+    for r in "${REPOS[@]}"; do [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--repo '$r' is not a repository's name"; done
+    WHAT="${REPOS[*]}"; WHAT="${WHAT// /, }"
+  fi
   for v in POLL STOP_GRACE LIST_TIMEOUT COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
   (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is under 5 seconds"
   trap stop TERM INT
@@ -313,7 +357,7 @@ parent() {
   STATE="$CACHE/vm"; mkdir -p "$STATE"; rm -f "$STATE/list" "$STATE/list.new"
   vm_credentials
   vm_identity
-  log "looper-vm of $REPO: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m"
+  log "looper-vm of $WHAT: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m"
   local z
   while :; do
     pass
@@ -407,7 +451,7 @@ self_test() {
   return "$bad"
 }
 
-REPO=""
+REPO="" REPOS=() ORG="" EXCEPT="" WHAT=""
 case "${1:-}" in
   build) shift; build "$@" ;;
   --self-test) self_test ;;
@@ -415,7 +459,9 @@ case "${1:-}" in
   *)
     while (( $# )); do
       case "$1" in
-        --repo) REPO="${2:-}"; shift 2 || die "--repo needs a name" ;;
+        --repo) REPOS+=("${2:-}"); shift 2 || die "--repo needs a name" ;;
+        --org) ORG="${2:-}"; shift 2 || die "--org needs a name" ;;
+        --except) EXCEPT="${2:-}"; shift 2 || die "--except needs NAME,..." ;;
         *) die "unknown argument $1 (looper-vm --help)" ;;
       esac
     done
