@@ -26,6 +26,8 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/looper-token" <<'EOF'
 #!/usr/bin/env bash
 [[ "$1 $2" == "start report" && ! -e "$FIX/no-token" ]] || { echo "stub looper-token: refused $*" >&2; exit 1; }
+# As the real one: with no id_token it signs only on a VM (LOOPER_VM).
+[[ -n "${LOOPER_VM:-}" ]] || { echo "stub looper-token: no id_token and no LOOPER_VM" >&2; exit 1; }
 mkdir -p "$3"; echo "github.com: {oauth_token: stub}" > "$3/hosts.yml"; echo "token $2 $3" >> "$FIX/calls"; echo 0
 EOF
 chmod +x "$TMP/bin/looper-token"

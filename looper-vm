@@ -297,7 +297,9 @@ vm_credentials() {
 vm_identity() {
   [[ -z "${GH_TOKEN:-}" ]] || return 0
   local d="$STATE/gh"; rm -rf "$d"; mkdir -p "$d"; chmod 0700 "$d"
-  "$TOKEN_CMD" start report "$d" $$ >/dev/null 2>>"$STATE/vm.log" ||
+  # LOOPER_VM tells looper-token it is on a VM (sign as the VM's account, no
+  # id_token); the parent is a VM's too, not only its children.
+  LOOPER_VM="$SELF" "$TOKEN_CMD" start report "$d" $$ >/dev/null 2>>"$STATE/vm.log" ||
     die "no report token for the lister (looper-token start report): $(tail -n 3 "$STATE/vm.log" | tr '\n' ' ' | cut -c1-300)"
   export GH_CONFIG_DIR="$d" GH_NO_UPDATE_NOTIFIER=1
 }
