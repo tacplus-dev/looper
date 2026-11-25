@@ -4714,14 +4714,22 @@ limit_hold() { # issue run-dir refusal [also-refused-model]
 # A function run with a deadline: killed, and failing, when it has not ended
 # within the seconds given (KILL: a SIGTERM the caller ignores, it does too).
 bounded() { # seconds function [args...]
-  local t p rc=0; t=$(( $(date +%s) + $1 )); shift
+  local t p rc f; t=$(( $(date +%s) + $1 )); shift
+  # The function's status is written to a file, not read from `wait`: in a
+  # trap handler (vm_stop, on the VM's SIGTERM) bash may already have reaped
+  # the child for the wait the trap interrupted, and `wait` then answers 127
+  # for a function that succeeded (looper#238: a checkpoint pushed in time and
+  # was told it had not).
+  f="$(mktemp)"
   # As a caller's `if`: set -e does not end the function at its first failing test.
-  ( if "$@"; then exit 0; else exit $?; fi ) & p=$!
+  ( if "$@"; then echo 0 > "$f"; else echo $? > "$f"; fi ) & p=$!
   while kill -0 "$p" 2>/dev/null; do
-    (( $(date +%s) < t )) || { kill -KILL "$p" 2>/dev/null; wait "$p" 2>/dev/null; return 124; }
+    (( $(date +%s) < t )) || { kill -KILL "$p" 2>/dev/null; wait "$p" 2>/dev/null; rm -f "$f"; return 124; }
     sleep 0.2
   done
-  wait "$p" || rc=$?
+  wait "$p" 2>/dev/null || true
+  rc="$(cat "$f" 2>/dev/null)"; rm -f "$f"
+  [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
   return "$rc"
 }
 
