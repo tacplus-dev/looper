@@ -146,11 +146,14 @@ newer_kick() {
 # looper:in-progress. An issue labelled so with no report job of its own
 # (looper-<repo>-<issue>, looper#70) created, pending, waiting or running is
 # held by no run: the label goes, the issue says why, and its next report
-# resumes it from its checkpoint.
+# resumes it from its checkpoint. A project on its own looper VM (looper#241)
+# is skipped: its reports are the VM's, never a job here, and the VM's --list
+# takes up the issues looper:in-progress that a stopped VM left.
 release_orphans() { # active jobs
   local repo n
   forge_search_issues "$LABEL_IN_PROGRESS" 200 repository,number '.[] | "\(.repository.name) \(.number)"' \
   | while read -r repo n; do
+      vm_repo "$repo" && continue
       busy "$repo" "$1" "$n" >/dev/null && continue
       forge_issue_edit "$repo" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
       forge_issue_comment "$repo" "$n" "This issue was \`$LABEL_IN_PROGRESS\`, but it has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true

@@ -1316,6 +1316,16 @@ OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOP
 [[ ! -s "$FIX/started" ]] || fail "a pipeline was started for a VM project: $(cat "$FIX/started")"
 grep -qF "alpha's looper VM is up or started" <<<"$OUT" || fail "the log: $OUT"
 pass
+# The VM's own reports hold looper:in-progress with no job here: the kicker
+# leaves the label (the VM resumes the issue itself).
+scenario vm-orphan-kept
+in_progress
+echo 1 > "$FIX/vm-alpha"
+OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"
+[[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "the VM's label was removed: $(labels alpha 4) $OUT"
+[[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
+pass
 scenario vm-plan
 echo 1 > "$FIX/vm-alpha"
 issue alpha 6 OPEN "Land it." looper:landing
