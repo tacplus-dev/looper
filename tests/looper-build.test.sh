@@ -1417,7 +1417,8 @@ pass
 NAME="scan: a release's pass is report-pass's, after publish; its failure the security job's"
 scan_job pass BUILD_TAG=v1.2.3
 (( scan_rc == 0 )) || fail "exited $scan_rc: $(cat "$TMP/err")"
-[[ ! -s "$TMP/api.log" ]] || fail "a release's pass set before its publish: $(cat "$TMP/api.log")"
+# Its token is minted before the checks (looper#246), for a failure's status; a pass sets none.
+! grep -q '^status ' "$TMP/api.log" || fail "a release's pass set before its publish: $(cat "$TMP/api.log")"
 grep -q "a release: its pass is report-pass's" "$TMP/err" || fail "$(cat "$TMP/err")"
 scan_job pass BUILD_TAG=v1.2.3 SCAN_RC=1 SCAN_VERDICT="fail: trivy: CVE-2026-1 in libfoo"
 (( scan_rc == 1 )) || fail "exited $scan_rc"
