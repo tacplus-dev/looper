@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#234).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#237).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -115,11 +115,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   tacplus project: the looper's pins the looper image by digest, #71; a `tacplus.lock` project's gates and verify run
   with the image's own tacplus, `TACPLUS_BIN=tacplus`, once the job's image is checked to be the pin, #137), no agent, read-only
   source through the `tacplus-reader` app, a fail verdict without a pin, the GitHub commit status (a red gates or
-  security job's why, a red gate's with the gates log's last lines, set by the child pipeline's `gates-failed` and
-  `security-failed`, #148, #144; every build job, the child pipeline's and the fan-out's too, is retried on an image not
+  security job's why, a red gate's with the gates log's last lines, set by the child pipeline's security job,
+  `looper-build scan`, after its scan, #148, #144, #237; every build job, the child pipeline's and the fan-out's too, is retried on an image not
   pulled, `runner_external_dependency_failure`, and on `api_failure`, and a land's build red in its infrastructure alone,
-  its gates green (`security-failed`'s `no security verdict`, or `the build failed` with the pipeline's jobs read with
-  `GITLAB_TOKEN`), is built again once, gates and all, by the manager, which cannot retry jobs alone (#173; reading
+  its gates green (the security job's `no security verdict`, or `the build failed` or no verdict at all with the
+  pipeline's jobs read with `GITLAB_TOKEN`), is built again once, gates and all, by the manager, which cannot retry jobs alone (#173; reading
   tacplus-dev/build's jobs needs its bot a Reporter there, else only the first case is told); a manager waits
   its gate set's wait from the build's start, never its trigger: the sum of its sets' `minutes` in the commit's
   `gates.yaml` and `LOOPER_BUILD_MARGIN` (30m), at least `LOOPER_BUILD_WAIT` (3h), #158; a build with no verdict by its job's end leaves the
@@ -135,8 +135,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   at least one) and its child jobs on `BUILD_REPORT_TAGS`, a nightly's gates in a report slot too, and a land's build
   not started within `LOOPER_BUILD_START` while other builds run (read with `GITLAB_TOKEN`) is waited on, not "no
   runner" (#209: four non-land builds held the spot pool's 2 nodes and a 24-land batch's manager gave up; preemption,
-  a `build-report` runner with a low PriorityClass, is tacplus-dev/cluster#42); the build's light jobs (`pending`, `plan`, `report-pass`, `report-fail`: looper-build alone) run on `arm64, build-light`, never behind the build runner's slots (#224: 84 of them queued behind 6 slots, a land candidate 77 min at `pending`; in effect once tacplus-dev/cloud#100 bumps `build_ci_commit` after tacplus-dev/cluster#51's runner is online); gates silent for `BUILD_GATES_IDLE` (1h) are stopped, their
-  process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a build whose pipeline was cancelled or failed with no verdict is red at once (a land's cancelled one built again, once, and cancelled again no red but left queued, nothing built; in a red round no verdict on its own: #209; so is a land's build whose `gates` job failed `runner_system_failure` with no gates verdict, the pool having had no room, a batch built again as one, never fanned out per land: #214), its status read with `GITLAB_TOKEN` (a report's model told by its looper), and reused by no request, and gates still running their requester's wait after they started are stopped, red (#198: the manager waited on a cancelled build for hours); a pending or green status names its key, gate set and base: a build
+  a `build-report` runner with a low PriorityClass, is tacplus-dev/cluster#42); the build's light jobs (`pending`, `plan`, `report-pass`, `report-fail`: looper-build alone) run on `arm64, build-light`, never behind the build runner's slots (#224: 84 of them queued behind 6 slots, a land candidate 77 min at `pending`; in effect once tacplus-dev/cloud#100 bumps `build_ci_commit` after tacplus-dev/cluster#51's runner is online); no build is started while tacplus-dev/build's active jobs are within `LOOPER_BUILD_JOB_ROOM` (50) of GitLab's job activity limit (500), waiting `LOOPER_BUILD_ROOM_WAIT` (15m) at most for room (#237), and a build's child pipeline is `gates` and `security-<repo>` alone (#237: `gates-failed`, `security-report` and `security-failed` folded into the security job); with the CI file's `BUILD_CHILD_VERDICT` "true", an ordinary build is 4 jobs, `plan` setting pending and the `pending`, `report-pass` and `report-fail` jobs a release's alone: it is "" until the CI file pins a looper image with `looper-build scan` (#237, waiting on #199's image), then the hub's copy (tacplus-dev/cloud); gates silent for `BUILD_GATES_IDLE` (1h) are stopped, their
+  process group too, and the verdict is red (#195: a hung report build held a slot 1 h 52 min); a build whose pipeline was cancelled or failed with no verdict is red at once (a land's cancelled one built again, once, and cancelled again no red but left queued, nothing built; in a red round no verdict on its own: #209; so is a land's build whose `gates` job failed `runner_system_failure` with no gates verdict, the pool having had no room, a batch built again as one, never fanned out per land: #214; and a build whose child pipeline GitLab refused, failed with no job past the free plan's job activity limit, a land's built again after `LOOPER_BUILD_BACKOFF` (5m), once, refused again left queued, a report's `--build` no verdict, exit 2: #237), its status read with `GITLAB_TOKEN` (a report's model told by its looper), and reused by no request, and gates still running their requester's wait after they started are stopped, red (#198: the manager waited on a cancelled build for hours); a pending or green status names its key, gate set and base: a build
   runs once per repository, commit, gate set and base, a green or queued or running one reused by every request for
   its key and a land whose rebased tree a green build passed on the same base merging on that verdict, its comment
   linking it; the nightly recap counts builds against the commits they built, #134), and on a release
