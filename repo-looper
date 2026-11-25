@@ -1191,6 +1191,7 @@ land_request() {
     state_last "$n"
     # Its fast unit gate on current main first (looper#196): red queues nothing.
     pre_land_report "$run" || exit 4
+    vm_land_gate "$run" || exit 4
     id="$(date -u +%Y%m%dT%H%M%SZ)-$n-$RANDOM$RANDOM"
     # Before the land, whose merge can close the issue while the model still
     # works: what it wrote until now is no closing report (looper#54, #143).
@@ -2025,7 +2026,8 @@ build_request() {
   choose_gates . "$base" "" || die "nothing built: $GATES_WHY"
   [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
   # Full, and the map names a pre-land: the batch's build runs full (looper#204).
-  if [[ "$gates" == full && -n "${GM_RUN[$PRE_LAND]:-}" ]]; then
+  # Not on a looper VM: its builds are its own, and it finds its own reds (vm_land_gate).
+  if [[ -z "${LOOPER_VM:-}" && "$gates" == full && -n "${GM_RUN[$PRE_LAND]:-}" ]]; then
     gates="$PRE_LAND"; GATES_WHY="${GATES_WHY:+$GATES_WHY: }the full gates are the batch's build, a report's its $PRE_LAND set, looper#204"
   fi
   checkpoint "$ISSUE" "a build" "$run" || die "nothing built: the build job builds $(wip_branch "$ISSUE"), and the checkpoint to it did not push"
@@ -2303,6 +2305,40 @@ pre_land_report() { # run-dir
          tail -n 30 "$out"; } >&2
        return 1 ;;
     *) log "$what${url:+: the build job $url}: no verdict ($(pre_land_why "$out")); the land is queued all the same, and the manager runs its pre-land gate before the batch" ;;
+  esac
+}
+
+# On a looper VM, the land's own gates before it is queued (decisions/
+# looper-build-vms-2026-11-24.md, point 4: loopers build for themselves): the
+# set its diff calls for, as the batch's build will run it, on its commits
+# rebased onto main, a local build. Until this a report queued on the pre-land
+# gate alone, and a land red on its own gates was found by the batch's build,
+# an hour in, then judged and bisected for hours with every land beside it
+# (tacplus, 2026-11-25: #273 and #909, a batch of 6). 0 to queue: green, none
+# due (no commits, no map, or the set is the pre-land gate's, just run), or no
+# verdict, each said; 1 red, the failure said: nothing is queued. Never on a
+# build job: the batch's build is the manager's there (looper#204).
+vm_land_gate() { # run-dir
+  local run="$1" main sha out rc=0 set what
+  [[ -n "${LOOPER_VM:-}" && -d "$run/builds" ]] || return 0
+  main="$(git -C "$CHECKOUT" rev-parse origin/main)"
+  pre_land_tree "$(git -C "$CHECKOUT" rev-parse HEAD)" || return 0   # a conflict: pre_land_report said so, or the manager will
+  pushd "$PL_WT" >/dev/null
+  if [[ "$(git rev-list --count "$main..HEAD")" == 0 ]] || ! choose_gates . "$main" "" 2>/dev/null ||
+     [[ -z "$GATES_MAPPED" || "$GATES_SET" == "$PRE_LAND" ]]; then
+    popd >/dev/null; drop_worktree "$PL_WT"; return 0
+  fi
+  set="$GATES_SET"; sha="$(git rev-parse HEAD)"; out="$run/land-gates.log"
+  what="your land's own gates ($GATE_MAP's $set) on your commits rebased on main ${main:0:7}"
+  log "$what: a local build on this looper VM before the land is queued"
+  model_build "$run/builds" "$sha" "$set" "$main" > "$out" 2>&1 || rc=$?
+  popd >/dev/null; drop_worktree "$PL_WT"
+  case "$rc" in
+    0) log "$what: green" ;;
+    1) { log "nothing queued: $what failed. The batch's build runs these same gates, and a red land turns its whole batch red: fix it here first. Rebase on main (git fetch origin && git rebase origin/main), fix it, commit, verify with --build and land again. Its end ($out has it all):"
+         tail -n 40 "$out"; } >&2
+       return 1 ;;
+    *) log "$what: no verdict ($(pre_land_why "$out")); the land is queued all the same, and the batch's build judges it" ;;
   esac
 }
 

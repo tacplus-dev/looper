@@ -5923,4 +5923,46 @@ has "$pr" "Verify with a local build: "; has "$pr" "as a container this
    looper VM starts (looper#238)"; has "$pr" "\`tacplus\` runs in your local builds only (rule 4)."
 pass
 
+# On a VM a land's own gates run locally before it is queued: the set its
+# diff maps to, on its commits rebased onto main. Red queues nothing and says
+# why; green queues, and the manager merges. (--build above ran them at HEAD;
+# the land's are the rebased commit's.)
+scenario vm-land-gates-red
+pin_seed; build_model notes.md "red docs"
+cat > "$FIX/vm-stub" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1" == build ]] || exit 9
+echo "$*" >> "$FIX/vm-builds"
+while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
+{ echo "notes.md holds red"; echo "verdict: failure: fail: the gates docs (gates.yaml) exited 1"; } >> "$log"; exit 1
+EOS
+chmod +x "$FIX/vm-stub"
+m="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+l="$(cat "$FIX/land-4")"
+has "$l" "nothing queued: your land's own gates (gates.yaml's docs) on your commits rebased on main ${m:0:7} failed"
+has "$l" "verdict: failure: fail: the gates docs (gates.yaml) exited 1"; has "$l" "rc 4"
+lacks "$l" "queued: the manager"
+[[ "$(origin rev-parse main)" == "$m" ]] || fail "a red land reached main"
+lacks "$(labels alpha 4)" "looper:landing"
+pass
+
+scenario vm-land-gates-green
+pin_seed; build_model notes.md "the docs"
+cat > "$FIX/vm-stub" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1" == build ]] || exit 9
+echo "$*" >> "$FIX/vm-builds"
+while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
+echo "verdict: success: the gates docs passed" >> "$log"
+EOS
+chmod +x "$FIX/vm-stub"
+m="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+l="$(cat "$FIX/land-4")"
+has "$l" "your land's own gates (gates.yaml's docs) on your commits rebased on main ${m:0:7}: green"
+has "$l" "The manager merged"
+[[ "$(grep -c -- "--gates docs --base $m " "$FIX/vm-builds")" == 2 ]] || fail "not the --build's and the land's local builds: $(cat "$FIX/vm-builds")"
+pass
+
 echo "repo-looper: all scenarios pass"
