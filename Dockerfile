@@ -86,6 +86,30 @@ RUN set -eu; export PATH="$PATH:/usr/local/lib/looper"; \
       -ldflags "-w -X main.version=v$GLAB_VERSION" "gitlab.com/gitlab-org/cli/cmd/glab@v$GLAB_VERSION"; \
     go clean -cache -modcache; glab --version | grep -q "^glab $GLAB_VERSION "; \
     go version /usr/local/bin/glab | grep -qx "/usr/local/bin/glab: $GO_TOOLCHAIN"
+# gh, replaced as the docker CLI is (looper#199): build:2.6's gh has
+# go.opentelemetry.io/otel/trace v1.44.0 (GO-2026-6974) and
+# github.com/gorilla/websocket v1.5.3 (GO-2026-6278, fixed in an untagged
+# commit). 2.105.0 requires otel v1.47.0 but still websocket v1.5.3: built here
+# in a module made here with GH_WEBSOCKET_VERSION, a version upstream did not
+# test (only gh codespace uses it), after the record above, so the scan says it
+# is this image's. Its version as the release sets it (.goreleaser.yml), its
+# symbol table kept as Trivy's. Drop the override when a gh release requires
+# the fixed websocket, and the step when build:2.6 itself carries a fixed gh
+# (tacplus-dev/tacplus#969).
+ARG GH_VERSION=2.105.0 GH_WEBSOCKET_VERSION=1.5.4-0.20240701034025-d67f41855da4
+RUN set -eu; d="$(mktemp -d)"; export PATH="$PATH:/usr/local/lib/looper"; \
+    (cd "$d"; export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS=-mod=mod; c=github.com/cli/cli/v2; \
+      go-fetch version; go mod init looper.local/gh 2>/dev/null; \
+      go mod edit -require "$c@v$GH_VERSION" -tool "$c/cmd/gh" -require "github.com/gorilla/websocket@v$GH_WEBSOCKET_VERSION"; \
+      go-fetch mod tidy; go build -ldflags "-w -X $c/internal/build.Version=$GH_VERSION" -o /usr/local/bin/gh "$c/cmd/gh"); \
+    gh --version | grep -q "^gh version $GH_VERSION"; \
+    go version /usr/local/bin/gh | grep -qx "/usr/local/bin/gh: $GO_TOOLCHAIN"; \
+    go version -m /usr/local/bin/gh | grep -q "github.com/gorilla/websocket[[:space:]]*v$GH_WEBSOCKET_VERSION[[:space:]]"; \
+    for m in otel otel/trace; do v="$(go version -m /usr/local/bin/gh | awk -v m="go.opentelemetry.io/$m" '$1 == "dep" && $2 == m { print $3 }')"; \
+      test -n "$v" && test "$(printf '%s\n' v1.47.0 "$v" | sort -V | head -n1)" = v1.47.0 || \
+        { echo "gh: go.opentelemetry.io/$m ${v:-missing}, not v1.47.0 or later" >&2; exit 1; }; done; \
+    gh help api >/dev/null; \
+    go clean -cache -modcache; rm -rf "$d"
 # The build pipeline's security checks (looper-scan, looper#49): every scanner
 # pinned, each release archive checked against its sha256 here (linux/arm64,
 # as the image), govulncheck, OSV-Scanner, Trivy and gosec by their module checksums

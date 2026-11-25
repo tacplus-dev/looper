@@ -1489,7 +1489,7 @@ against: OSV's API and the query time, govulncheck's `db_last_modified`, cargo-d
 Trivy's database `UpdatedAt`/`DownloadedAt`, its Java database's `UpdatedAt` and its check bundle, the Semgrep rules and the fetch time. The tools'
 versions as run are `security/tools.json`. glab (1.130.0, the model's GitLab CLI, not a scanner) is built the same way, by its
 module checksum with Go 1.27.4, its symbol table kept: its release binary is built with go1.27.3, whose net/http has
-GO-2026-6859 (looper#159). Each Go step fetches through `go-fetch` first (looper#169): the toolchain and every
+GO-2026-6859 (looper#159). gh (2.105.0) replaces the base image's the same way, in a module made here (looper#199): build:2.6's has otel/trace v1.44.0 (GO-2026-6974), and every gh release requires github.com/gorilla/websocket v1.5.3 (GO-2026-6278): the module requires the fixed, untagged v1.5.4-0.20240701034025-d67f41855da4, and the build checks both are built in. Each Go step fetches through `go-fetch` first (looper#169): the toolchain and every
 module, over HTTP/1.1 (`GODEBUG=http2client=0`), each fetch retried up to 5 times (an HTTP/2 stream reset from
 proxy.golang.org or sum.golang.org failed two image builds in a row); its build then reads the module cache alone
 (`GOPROXY=file://`, the checksums still checked). To move a tool, change its version and checksum in the `Dockerfile` (the
@@ -1523,7 +1523,7 @@ finding; an exception for one goes in `security-exceptions.yaml` like any other 
 needs no scan of its own for them.
 
 **The looper image's binaries** (looper#167). The tree's scans never read the Go binaries inside the looper image:
-the scanners and glab the `Dockerfile` builds, and the base image's (the docker CLI, gh, protoc-gen-go); every Go
+the scanners, glab and gh the `Dockerfile` builds, and the base image's (protoc-gen-go, and the docker CLI and gh before this image replaced them); every Go
 advisory in them was found by hand (#64, #88, #101, #124, #159, #166). So the `Dockerfile`'s last step runs
 `looper-scan image / /usr/local/share/looper`: `govulncheck -mode=binary` on every Go binary under `/usr/local/bin`
 (`go version` says which are Go; the others are listed as not read), under the policy of every other finding (a
