@@ -21,13 +21,22 @@ trap cleanup EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 mkdir -p "$TMP/bin"
 
+# The stub looper-token: `start report DIR PID` writes gh's configuration in DIR
+# and records the call; $FIX/no-token refuses it.
+cat > "$TMP/bin/looper-token" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "start report" && ! -e "$FIX/no-token" ]] || { echo "stub looper-token: refused $*" >&2; exit 1; }
+mkdir -p "$3"; echo "github.com: {oauth_token: stub}" > "$3/hosts.yml"; echo "token $2 $3" >> "$FIX/calls"; echo 0
+EOF
+chmod +x "$TMP/bin/looper-token"
+
 # The stub repo-looper: --list prints $FIX/ready (or hangs, with $FIX/list-hang);
 # --issue N records its start and runs $FIX/issue-N.sh (default: until $FIX/end-N).
 cat > "$TMP/bin/repo-looper" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$3" in
-  --list) echo "list" >> "$FIX/calls"; [[ ! -e "$FIX/list-hang" ]] || { sleep 1000 & wait; }; cat "$FIX/ready" 2>/dev/null || true ;;
+  --list) echo "list gh=${GH_CONFIG_DIR:-none}" >> "$FIX/calls"; [[ ! -e "$FIX/list-hang" ]] || { sleep 1000 & wait; }; cat "$FIX/ready" 2>/dev/null || true ;;
   --issue)
     n="$4"; echo "start $n $$ vm=${LOOPER_VM:+set} work=$LOOPER_WORK store=$LOOPER_GIT_STORE" >> "$FIX/calls"
     if [[ -f "$FIX/issue-$n.sh" ]]; then source "$FIX/issue-$n.sh"
@@ -45,7 +54,7 @@ fixture() { # name
 }
 # The parent in the background: VM its pid, its output in $FIX/vm.out.
 vm() { # [VAR=value...]
-  env FIX="$FIX" CLAUDE_CODE_OAUTH_TOKEN=test-token LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 \
+  env FIX="$FIX" CLAUDE_CODE_OAUTH_TOKEN=test-token LOOPER_TOKEN="$TMP/bin/looper-token" LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 \
     LOOPER_VM_COOLDOWN=1000 "$@" "$ROOT/looper-vm" --repo alpha > "$FIX/vm.out" 2>&1 & VM=$!
 }
 # Waits, at most 20 seconds, for a command to succeed.
@@ -86,6 +95,26 @@ pass
 # process group of its own); report 3 ignores SIGTERM. The parent exits 0
 # within 25 seconds of the signal, report 1's checkpoint made, and nothing of
 # the tree is left.
+# The lister runs as the parent's GitHub identity (the report app's token,
+# kept by looper-token start; repo-looper mints none for --list), and a VM
+# with no token stops at once, saying so.
+fixture list-identity
+printf '1\n' > "$FIX/ready"
+vm
+until_true "1 started" started 1
+grep -q "^token report $FIX/cache/vm/gh\$" "$FIX/calls" || fail "no report token for the lister: $(cat "$FIX/calls")"
+grep -q "^list gh=$FIX/cache/vm/gh\$" "$FIX/calls" || fail "the lister has no GH_CONFIG_DIR: $(cat "$FIX/calls")"
+kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+pass
+fixture list-identity-refused
+touch "$FIX/no-token"
+vm
+until_true "the VM stops without a token" eval '! kill -0 "$VM" 2>/dev/null'
+has "$(cat "$FIX/vm.out")" "no report token for the lister"
+grep -q '^list' "$FIX/calls" 2>/dev/null && fail "it listed without a token: $(cat "$FIX/calls")"
+VM=""
+pass
+
 fixture sigterm
 printf '1\n2\n3\n' > "$FIX/ready"
 cat > "$FIX/issue-1.sh" <<'EOF'
