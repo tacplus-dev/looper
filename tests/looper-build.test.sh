@@ -780,22 +780,18 @@ grep -A3 -xF 'default:' "$y" | paste -sd'|' - | grep -qxF 'default:|  retry:|   
 # and on an image not pulled, runner_external_dependency_failure (tacplus#340's land, looper#173), and api_failure.
 grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml" | paste -sd'|' - | grep -qF '|  tags: [arm64, build]|  retry:|    max: 2|    when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure, unknown_failure, runner_external_dependency_failure, api_failure]' ||
   fail "ci/build.gitlab-ci.yml's default is not the build runner with a spot retry: $(grep -A5 -xF 'default:' "$ROOT/ci/build.gitlab-ci.yml")"
-# A failed gates job's verdict, the gates' own or none (its runner lost), is the commit's status, linking this pipeline.
-sed -n '/^gates-failed:$/,/^[^ ]/p' "$y" > "$TMP/gates-failed.yml"
-for l in '  needs: [{job: gates, artifacts: true}]' '  when: on_failure' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' \
-         '    - looper-build status failure'; do
-  grep -qxF -- "$l" "$TMP/gates-failed.yml" || fail "the gates-failed job lacks '$l': $(cat "$TMP/gates-failed.yml")"
+# The build's verdict is the security job's (looper-build scan, looper#237), after the gates, also when they
+# fail, as the commit's status linking this (the parent's) pipeline; no job of its own.
+sed -n '/^security-demo:$/,/^[^ ]/p' "$y" > "$TMP/security-job.yml"
+for l in '  image: "ghcr.io/tacplus-dev/looper:main"' '  needs: [{job: gates, artifacts: true}]' '  when: always' \
+         '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' '    BUILD_GATES: ""' '    BUILD_TAG: ""' \
+         '    - looper-build scan'; do
+  grep -qxF -- "$l" "$TMP/security-job.yml" || fail "the security job lacks '$l': $(cat "$TMP/security-job.yml")"
 done
-grep -q '^    BUILD_NO_VERDICT: ".*runner_system_failure' "$TMP/gates-failed.yml" || fail "no text for a gates job with no verdict: $(cat "$TMP/gates-failed.yml")"
-# A failed security job's verdict, the gates green, is the commit's status too (looper#144); never a nightly's.
-sed -n '/^security-failed:$/,/^[^ ]/p' "$y" > "$TMP/security-failed.yml"
-for l in '  image: "ghcr.io/tacplus-dev/looper:main"' '  needs: [{job: gates, artifacts: true}, {job: "security-demo", artifacts: true}]' \
-         '  when: on_failure' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' '    BUILD_STATUS_OF: security' \
-         '    - looper-build status failure'; do
-  grep -qxF -- "$l" "$TMP/security-failed.yml" || fail "the security-failed job lacks '$l': $(cat "$TMP/security-failed.yml")"
+! grep -q 'BUILD_NIGHTLY' "$TMP/security-job.yml" || fail "a build's security job is a nightly's: $(cat "$TMP/security-job.yml")"
+for j in gates-failed security-report security-failed; do
+  ! grep -q "^$j:" "$y" || fail "the child pipeline still has $j: $(grep -n '^[a-z]' "$y")"
 done
-grep -q '^    BUILD_NO_VERDICT: "no security verdict: .*runner_system_failure' "$TMP/security-failed.yml" ||
-  fail "no text for a security job with no verdict: $(cat "$TMP/security-failed.yml")"
 grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"},"repositories":["demo"]}' "$TMP/api.log" ||
   fail "the plan's token is not contents read-only on the repository: $(cat "$TMP/api.log")"
 [[ ! -e "$OUT/plan-src" ]] || fail "the plan left its checkout behind"
@@ -1052,7 +1048,7 @@ build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true CI_PIPELINE_ID=3086905974 -- pl
 [[ "$(rg_of gates)" == report-slot-2 ]] || fail "a report's gates not in slot 2 of 4 (the default): '$(rg_of gates)'"
 grep -q "plan: a report's build: its gates in report-slot-2, 4 report builds at a time" "$TMP/err" || fail "the plan does not say its slot: $(cat "$TMP/err")"
 "$ROOT/looper-ci-lint" "$OUT/build-gates.yml" > "$TMP/lint" 2>&1 || fail "the report's pipeline is not valid GitLab CI: $(cat "$TMP/lint")"
-for j in gates-failed security-demo; do [[ -z "$(rg_of "$j")" ]] || fail "$j holds a slot: '$(rg_of "$j")'"; done
+for j in security-demo; do [[ -z "$(rg_of "$j")" ]] || fail "$j holds a slot: '$(rg_of "$j")'"; done
 build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_REPORT_SLOTS=5 CI_PIPELINE_ID=3086905974 -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
 [[ "$(rg_of gates)" == report-slot-4 ]] || fail "a report's gates not in slot 4 of 5: '$(rg_of gates)'"
 build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
@@ -1096,7 +1092,7 @@ for s in 0 x -1 1000; do
   verdict_is "fail: BUILD_POOL_NODES '$s' is not a number of build pool nodes (1 to 999)"
 done
 build BUILD_SHA="${SHA[pass]}" BUILD_REPORT=true BUILD_REPORT_TAGS="arm64, build-report" -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
-for j in gates gates-failed security-demo security-report security-failed; do
+for j in gates security-demo; do
   [[ "$(tags_of "$j")" == "[arm64, build-report]" ]] || fail "a report's $j not on BUILD_REPORT_TAGS: '$(tags_of "$j")'"
 done
 grep -q "its jobs on arm64, build-report" "$TMP/err" || fail "the plan does not say its tags: $(cat "$TMP/err")"
@@ -1138,6 +1134,91 @@ for j in pending plan report-pass report-fail; do
     fail "$j is not on arm64, build-light: $(sed -n "/^$j:\$/,/^[^ ]/p" "$c")"
 done
 [[ "$(grep -c '^ *tags: .*build-light' "$c")" == 4 ]] || fail "build-light is not the four light jobs' alone: $(grep -n '^ *tags: .*build-light' "$c")"
+pass
+
+# Fewer jobs a build (looper#237): GitLab's free plan counts every job of the alive pipelines, bridges and the
+# child's too, against ~500. With BUILD_CHILD_VERDICT "true" (set with the image pin that has looper-build scan) an
+# ordinary build (no release, nightly or verify run) is at most 4: plan and the gates trigger here, gates and
+# security-<repo> in the child; a release's report-pass and report-fail are its alone. Unset, the parent is as it
+# was (the old image's child sets no success), and the new child works under it.
+# Whether a rules: if: holds for a build of these inputs: its clauses joined by &&, each $V, $V == "x" or $V != "x".
+rule_holds() { # if inputs(VAR=value...)
+  local -A v=(); local a cl
+  for a in "${@:2}"; do v[${a%%=*}]="${a#*=}"; done
+  while read -r cl; do
+    if [[ "$cl" =~ ^\$([A-Z_]+)$ ]]; then [[ -n "${v[${BASH_REMATCH[1]}]-}" ]] || return 1
+    elif [[ "$cl" =~ ^\$([A-Z_]+)\ (==|!=)\ \"([^\"]*)\"$ ]]; then
+      if [[ "${v[${BASH_REMATCH[1]}]-}" == "${BASH_REMATCH[3]}" ]]; then [[ "${BASH_REMATCH[2]}" == "==" ]] || return 1
+      else [[ "${BASH_REMATCH[2]}" == "!=" ]] || return 1; fi
+    else fail "a rule this test cannot read: '$cl' in '$1'"; fi
+  done < <(sed 's/ && /\n/g' <<<"$1")
+}
+# The CI file's jobs a build of these inputs creates: a job (no hidden one) with no rules, or one of whose rules
+# (its own, or .build-run's it extends) holds.
+parent_jobs() { # inputs(VAR=value...)
+  local j body ifs i
+  for j in $(sed -n '/^---$/,$p' "$c" | sed -n 's/^\([a-z][A-Za-z0-9_-]*\):$/\1/p' | grep -vxE 'workflow|variables|default'); do
+    body="$(sed -n "/^$j:\$/,/^[^ ]/p" "$c")"
+    ! grep -qxF '  extends: .build-run' <<<"$body" || body+=$'\n'"$(sed -n '/^\.build-run:$/,/^[^ ]/p' "$c")"
+    ifs="$(sed -n 's/^    - if: //p' <<<"$body")"
+    if [[ -z "$ifs" ]]; then echo "$j"; continue; fi
+    while read -r i; do if rule_holds "$i" "$@"; then echo "$j"; break; fi; done <<<"$ifs"
+  done
+}
+NAME="an ordinary build is at most 4 jobs, parent and child, with BUILD_CHILD_VERDICT; a release's verdict waits for its publish (looper#237)"
+c="$ROOT/ci/build.gitlab-ci.yml"
+grep -qxF '  BUILD_CHILD_VERDICT: ""' "$c" ||
+  fail "BUILD_CHILD_VERDICT is not declared empty: $(grep -n BUILD_CHILD_VERDICT "$c")"
+BUILD_IN=(BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_TAG= BUILD_SMOKE=false BUILD_RUNNER_IMAGE=false BUILD_NIGHTLY=false BUILD_VERIFY=false)
+for cv in "" false; do
+  [[ "$(parent_jobs "${BUILD_IN[@]}" BUILD_CHILD_VERDICT="$cv" | paste -sd' ')" == "pending plan gates report-pass report-fail" ]] ||
+    fail "the parent with BUILD_CHILD_VERDICT '$cv' is not as it was: '$(parent_jobs "${BUILD_IN[@]}" BUILD_CHILD_VERDICT="$cv" | paste -sd' ')'"
+  [[ "$(parent_jobs "${BUILD_IN[@]}" BUILD_CHILD_VERDICT="$cv" BUILD_NIGHTLY=true | paste -sd' ')" == "plan gates" ]] ||
+    fail "a nightly's parent jobs: '$(parent_jobs "${BUILD_IN[@]}" BUILD_CHILD_VERDICT="$cv" BUILD_NIGHTLY=true | paste -sd' ')'"
+done
+BUILD_IN+=(BUILD_CHILD_VERDICT=true)
+parent="$(parent_jobs "${BUILD_IN[@]}" | paste -sd' ')"
+[[ "$parent" == "plan gates" ]] || fail "an ordinary build's parent jobs: '$parent'"
+[[ "$(parent_jobs "${BUILD_IN[@]}" BUILD_TAG=v1.2.3 | paste -sd' ')" == "plan gates report-pass report-fail" ]] ||
+  fail "a release's parent jobs: '$(parent_jobs "${BUILD_IN[@]}" BUILD_TAG=v1.2.3 | paste -sd' ')'"
+[[ "$(parent_jobs "${BUILD_IN[@]}" BUILD_SMOKE=true BUILD_REPO= BUILD_SHA= | paste -sd' ')" == "macos-smoke" ]] ||
+  fail "the smoke's jobs: '$(parent_jobs "${BUILD_IN[@]}" BUILD_SMOKE=true BUILD_REPO= BUILD_SHA= | paste -sd' ')'"
+for r in false true; do
+  build BUILD_SHA="${SHA[pass]}" BUILD_REPORT="$r" BUILD_GATES=docs -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$TMP/err")"
+  child="$(sed -n 's/^\([a-z][A-Za-z0-9_-]*\):$/\1/p' "$OUT/build-gates.yml" | grep -vxF default | paste -sd' ')"
+  [[ "$child" == "gates security-demo" ]] || fail "an ordinary build's child jobs (report $r): '$child'"
+  read -ra all <<<"$parent $child"
+  (( ${#all[@]} <= 4 )) || fail "an ordinary build is ${#all[@]} jobs: ${all[*]}"
+done
+pass
+
+# With BUILD_CHILD_VERDICT the plan job marks the commit pending itself (no pending job), allowed to fail, and a
+# failed plan's verdict is its own (no report-fail but a release's); without, it plans alone, as it did: its script,
+# as GitLab runs it, with a looper-build that records its calls.
+NAME="ci/build.gitlab-ci.yml: with BUILD_CHILD_VERDICT plan sets the pending status, then plans; a failed plan sets the failure (looper#237)"
+mkdir -p "$TMP/planbin"
+cat > "$TMP/planbin/looper-build" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/plan-calls"
+[[ "\$*" == "status pending" && -n "\${PENDING_FAILS:-}" ]] && exit 1
+[[ "\$1" == plan && -n "\${PLAN_FAILS:-}" ]] && exit 1
+exit 0
+EOF
+chmod +x "$TMP/planbin/looper-build"
+sed -n '/^plan:$/,/^[^ ]/p' "$c" | sed -n '/^  script:$/,/^  [a-z]/p' | sed -n 's/^    - //p' > "$TMP/plan-script.sh"
+[[ -s "$TMP/plan-script.sh" ]] || fail "no plan script: $(sed -n '/^plan:$/,/^[^ ]/p' "$c")"
+plan_job() { : > "$TMP/plan-calls"; env -u BUILD_CHILD_VERDICT PATH="$TMP/planbin:$PATH" "$@" bash -e "$TMP/plan-script.sh" >/dev/null 2>&1; }
+plan_job || fail "a plan that passed failed its job: $(cat "$TMP/plan-calls")"
+[[ "$(paste -sd'|' "$TMP/plan-calls")" == "plan" ]] || fail "calls with no BUILD_CHILD_VERDICT: $(cat "$TMP/plan-calls")"
+if plan_job PLAN_FAILS=1; then fail "a failed plan passed its job"; fi
+[[ "$(paste -sd'|' "$TMP/plan-calls")" == "plan" ]] || fail "calls with no BUILD_CHILD_VERDICT: $(cat "$TMP/plan-calls")"
+plan_job() { : > "$TMP/plan-calls"; env PATH="$TMP/planbin:$PATH" BUILD_CHILD_VERDICT=true "$@" bash -e "$TMP/plan-script.sh" >/dev/null 2>&1; }
+plan_job || fail "a plan that passed failed its job: $(cat "$TMP/plan-calls")"
+[[ "$(paste -sd'|' "$TMP/plan-calls")" == "status pending|plan" ]] || fail "calls: $(cat "$TMP/plan-calls")"
+plan_job PENDING_FAILS=1 || fail "a pending status GitHub refused failed the plan: $(cat "$TMP/plan-calls")"
+[[ "$(paste -sd'|' "$TMP/plan-calls")" == "status pending|plan" ]] || fail "calls: $(cat "$TMP/plan-calls")"
+if plan_job PLAN_FAILS=1; then fail "a failed plan passed its job"; fi
+[[ "$(paste -sd'|' "$TMP/plan-calls")" == "status pending|plan|status failure" ]] || fail "calls: $(cat "$TMP/plan-calls")"
 pass
 
 NAME="plan: the gates job has a build's wait; a nightly's and a release's never"
@@ -1232,23 +1313,7 @@ env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TA
    "failure|the build failed" ]] || fail "$(cat "$TMP/api.log")"
 pass
 
-NAME="status: the gates-failed job reports the gates' own verdict, or that their runner was lost, on the build's pipeline"
-OUT="$TMP/out-status-gates"; mkdir -p "$OUT"; : > "$TMP/api.log"
-GF=(env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION"
-    TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT"
-    CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/2 BUILD_STATUS_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1
-    BUILD_NO_VERDICT="no gates verdict: the gates job's runner was lost")
-echo "fail: the gates docs (gates.yaml) exited 1 (gates.log)" > "$OUT/build-verdict"   # the gates job's artifact
-"${GF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
-[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description + "|" + .target_url')" == \
-   "failure|the gates docs (gates.yaml) exited 1 (gates.log)|https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] || fail "$(cat "$TMP/api.log")"
-rm "$OUT/build-verdict"; : > "$TMP/api.log"   # a runner lost, its retries too: no artifact
-"${GF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
-[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == \
-   "failure|no gates verdict: the gates job's runner was lost" ]] || fail "$(cat "$TMP/api.log")"
-pass
-
-NAME="status: the build's own failure does not overwrite the reason its gates-failed job set"
+NAME="status: report-fail's own failure (a release's, or an old parent's) does not overwrite the reason the security job set"
 OUT="$TMP/out-status-set"; mkdir -p "$OUT"; : > "$TMP/api.log"
 jq -n '[{state: "failure", context: "tacplus-dev/build", description: "the gates exited 1", target_url: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"}]' > "$TMP/statuses"
 env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" \
@@ -1261,36 +1326,114 @@ grep -q "already" "$TMP/err" || fail "$(cat "$TMP/err")"
 rm "$TMP/statuses"
 pass
 
-NAME="plan: a nightly's security findings set no commit status (looper#144)"
-build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
-grep -q '^security-demo:' "$OUT/build-gates.yml" || fail "no security job: $(cat "$OUT/build-gates.yml")"
-! grep -q '^security-failed:' "$OUT/build-gates.yml" || fail "a nightly's security checks set a commit status"
+# The plan sets pending on every run (looper#237), a nightly's fan-out with no repository too: no commit's
+# verdict but a build's, and nothing asked of GitHub.
+NAME="status: a nightly, a verify run, a smoke or a runner image run sets no commit status (looper#237)"
+for v in "BUILD_NIGHTLY=true BUILD_REPO=" "BUILD_NIGHTLY=true" "BUILD_VERIFY=true" "BUILD_SMOKE=true BUILD_REPO=" "BUILD_RUNNER_IMAGE=true BUILD_REPO="; do
+  for st in pending failure; do
+    # shellcheck disable=SC2086
+    build BUILD_SHA= $v -- status "$st" 2>"$TMP/err" || fail "status $st with $v failed: $(cat "$TMP/err")"
+    [[ ! -s "$TMP/api.log" ]] || fail "status $st with $v asked GitHub: $(cat "$TMP/api.log")"
+    grep -q "sets no commit status: $st not set" "$TMP/err" || fail "$(cat "$TMP/err")"
+  done
+done
 pass
 
-NAME="status: the security-failed job reports the security checks' verdict when the gates passed, and only then (looper#144)"
-OUT="$TMP/out-status-security"; mkdir -p "$OUT/security"; : > "$TMP/api.log"
-SF=(env -i PATH="$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION"
-    TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" BUILD_STATUS_OF=security
-    CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/2 BUILD_STATUS_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1
-    BUILD_NO_VERDICT="no security verdict: the security job's runner was lost")
-echo pass > "$OUT/build-verdict"
-echo "fail: govulncheck: loading packages: file requires newer Go version go1.27" > "$OUT/security/verdict"
-"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
-[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description + "|" + .target_url')" == \
-   "failure|security: govulncheck: loading packages: file requires newer Go version go1.27|https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] ||
-  fail "$(cat "$TMP/api.log")"
-rm "$OUT/security/verdict"; : > "$TMP/api.log"   # its runner lost, its retries too: no artifact
-"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
-[[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description')" == \
-   "failure|no security verdict: the security job's runner was lost" ]] || fail "$(cat "$TMP/api.log")"
-# Red gates: their reason is gates-failed's, which this job leaves be.
-echo "fail: just gates exited 127: sh: 1: trivy: not found" > "$OUT/build-verdict"
-echo "fail: no gates artifacts" > "$OUT/security/verdict"; : > "$TMP/api.log"
-"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
-! grep -q '^status ' "$TMP/api.log" || fail "overwrote the gates' reason: $(cat "$TMP/api.log")"
-rm -f "$OUT/build-verdict"; : > "$TMP/api.log"   # the gates' runner lost: gates-failed's too
-"${SF[@]}" "$ROOT/looper-build" status failure 2>"$TMP/err" || fail "status failed: $(cat "$TMP/err")"
-! grep -q '^status ' "$TMP/api.log" || fail "overwrote the gates' reason: $(cat "$TMP/api.log")"
+NAME="plan: a nightly's security job sets no commit status (looper#144)"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true -- plan 2>"$TMP/err" || fail "nightly plan failed: $(cat "$TMP/err")"
+sed -n '/^security-demo:$/,/^[^ ]/p' "$OUT/build-gates.yml" > "$TMP/security-job.yml"
+grep -qxF '    BUILD_NIGHTLY: "true"' "$TMP/security-job.yml" && grep -qxF '    - looper-build scan' "$TMP/security-job.yml" ||
+  fail "the nightly's security job: $(cat "$TMP/security-job.yml")"
+! grep -qE '^(gates-failed|security-failed):' "$OUT/build-gates.yml" || fail "a nightly's checks set a commit status: $(grep -n '^[a-z]' "$OUT/build-gates.yml")"
+pass
+
+# The security job (looper-build scan, looper#237): looper-scan run and report (a stub here: the scanners'
+# tests are below), then the build's verdict, one job where gates-failed, security-report, security-failed
+# and report-pass were: the gates' reason (looper#148), the security checks' (looper#144), or pass.
+mkdir -p "$TMP/scanstub"
+cat > "$TMP/scanstub/looper-scan" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/scan-calls"
+case "\$1" in
+  run) [[ -z "\${SCAN_VERDICT:-}" ]] || { mkdir -p "\$BUILD_OUT/security"; echo "\$SCAN_VERDICT" > "\$BUILD_OUT/security/verdict"; }
+       exit "\${SCAN_RC:-0}" ;;
+  report) exit "\${REPORT_RC:-0}" ;;
+esac
+exit 2
+EOF
+chmod +x "$TMP/scanstub/looper-scan"
+# The security job as the child pipeline runs it, its gates' artifact build-verdict (none: none), the parent's pipeline 1.
+scan_job() { # gates-verdict [VAR=value...]
+  OUT="$TMP/out-scan"; rm -rf "$OUT"; mkdir -p "$OUT"; : > "$TMP/api.log"; : > "$TMP/scan-calls"
+  [[ "$1" == none ]] || echo "$1" > "$OUT/build-verdict"
+  scan_rc=0
+  env -i PATH="$TMP/scanstub:$TMP/bin:$PATH" HOME="$TMP/home" TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" \
+    TACPLUS_READER_APP_KEY="$TMP/app.pem" BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_OUT="$OUT" BUILD_SCAN_KIND=build \
+    CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/2 BUILD_STATUS_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1 \
+    "${@:2}" "$ROOT/looper-build" scan 2>"$TMP/err" || scan_rc=$?
+}
+status_is() { # state|description (the one status set, linking the parent's pipeline)
+  [[ "$(grep -c '^status ' "$TMP/api.log")" == 1 ]] || fail "not one status: $(cat "$TMP/api.log")"
+  [[ "$(grep '^status ' "$TMP/api.log" | sed 's/^status [^{]*//' | jq -r '.state + "|" + .description + "|" + .target_url')" == \
+     "$1|https://gitlab.com/tacplus-dev/build/-/pipelines/1" ]] || fail "status: $(cat "$TMP/api.log")"
+}
+NAME="scan: the security checks, their report, then the build's verdict: pass (looper#237)"
+scan_job pass BUILD_GATES=docs
+(( scan_rc == 0 )) || fail "a green build's scan exited $scan_rc: $(cat "$TMP/err")"
+[[ "$(paste -sd'|' "$TMP/scan-calls")" == "run|report" ]] || fail "looper-scan: $(cat "$TMP/scan-calls")"
+status_is "success|pass: gates docs"
+# The report's failure fails no build (security-report was allowed to fail).
+scan_job pass REPORT_RC=1
+(( scan_rc == 0 )) || fail "a failed report failed the build: $(cat "$TMP/err")"
+status_is "success|pass"
+pass
+
+NAME="scan: red gates' own reason, or that their job left no verdict, on the parent's pipeline (looper#148)"
+scan_job "fail: the gates docs (gates.yaml) exited 1 (gates.log)" SCAN_RC=1 SCAN_VERDICT="fail: no gates artifacts"
+(( scan_rc == 1 )) || fail "exited $scan_rc, not the scan's 1"
+[[ "$(paste -sd'|' "$TMP/scan-calls")" == "run|report" ]] || fail "looper-scan: $(cat "$TMP/scan-calls")"
+status_is "failure|the gates docs (gates.yaml) exited 1 (gates.log)"
+scan_job none SCAN_RC=1 SCAN_VERDICT="fail: no gates artifacts"   # the gates' runner lost, its retries too
+(( scan_rc == 1 )) || fail "exited $scan_rc, not the scan's 1"
+status_is "failure|no gates verdict: the gates job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
+# Red gates, a green scan: still red, the scan's 0 its exit.
+scan_job "fail: just gates exited 127: sh: 1: trivy: not found"
+(( scan_rc == 0 )) || fail "exited $scan_rc, not the scan's 0"
+status_is "failure|just gates exited 127: sh: 1: trivy: not found"
+pass
+
+NAME="scan: the gates green, the security checks' verdict, or that they left none (looper#144)"
+scan_job pass SCAN_RC=1 SCAN_VERDICT="fail: govulncheck: loading packages: file requires newer Go version go1.27"
+(( scan_rc == 1 )) || fail "exited $scan_rc, not the scan's 1"
+status_is "failure|security: govulncheck: loading packages: file requires newer Go version go1.27"
+scan_job pass SCAN_RC=3
+(( scan_rc == 3 )) || fail "exited $scan_rc, not the scan's 3"
+status_is "failure|no security verdict: the security checks exited 3 and left no verdict"
+pass
+
+NAME="scan: a release's pass is report-pass's, after publish; its failure the security job's"
+scan_job pass BUILD_TAG=v1.2.3
+(( scan_rc == 0 )) || fail "exited $scan_rc: $(cat "$TMP/err")"
+[[ ! -s "$TMP/api.log" ]] || fail "a release's pass set before its publish: $(cat "$TMP/api.log")"
+grep -q "a release: its pass is report-pass's" "$TMP/err" || fail "$(cat "$TMP/err")"
+scan_job pass BUILD_TAG=v1.2.3 SCAN_RC=1 SCAN_VERDICT="fail: trivy: CVE-2026-1 in libfoo"
+(( scan_rc == 1 )) || fail "exited $scan_rc"
+status_is "failure|security: trivy: CVE-2026-1 in libfoo"
+pass
+
+NAME="scan: a nightly's sets no commit status, red or green"
+scan_job "fail: a gate fails" BUILD_NIGHTLY=true SCAN_RC=1 SCAN_VERDICT="fail: gitleaks: a secret"
+(( scan_rc == 1 )) || fail "exited $scan_rc, not the scan's 1"
+[[ "$(paste -sd'|' "$TMP/scan-calls")" == "run|report" ]] || fail "looper-scan: $(cat "$TMP/scan-calls")"
+[[ ! -s "$TMP/api.log" ]] || fail "a nightly set a status: $(cat "$TMP/api.log")"
+scan_job pass BUILD_NIGHTLY=true
+(( scan_rc == 0 )) && [[ ! -s "$TMP/api.log" ]] || fail "a green nightly: $scan_rc $(cat "$TMP/api.log")"
+pass
+
+NAME="scan: a status that could not be set fails the job"
+scan_job pass TACPLUS_READER_APP_KEY="$TMP/no-such-key.pem"
+(( scan_rc == 1 )) || fail "exited $scan_rc with no status set: $(cat "$TMP/err")"
+grep -q "the commit status was not set" "$TMP/err" || fail "$(cat "$TMP/err")"
 pass
 
 # --- publish --------------------------------------------------------------------
@@ -1659,15 +1802,14 @@ pass
 NAME="plan: the child pipeline runs the security checks in the looper image, after the gates, of the run's kind"
 build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed"
 y="$OUT/build-gates.yml"
-sed -n '/^security-demo:$/,/^security-report:$/p' "$y" > "$TMP/sec.yml"
+sed -n '/^security-demo:$/,/^[^ ]/p' "$y" > "$TMP/sec.yml"
 grep -qxF '  image: "ghcr.io/tacplus-dev/looper:main"' "$TMP/sec.yml" || fail "not in the looper image: $(cat "$TMP/sec.yml")"
 grep -qxF '  needs: [{job: gates, artifacts: true}]' "$TMP/sec.yml" || fail "not after the gates, with their generated code"
 grep -qxF '  when: always' "$TMP/sec.yml" || fail "not run when the gates fail"
 grep -qxF '    BUILD_SCAN_KIND: "build"' "$TMP/sec.yml" || fail "not a build's checks"
 grep -qxF '    BUILD_BASE: ""' "$TMP/sec.yml" || fail "the security job is not given the base: $(cat "$TMP/sec.yml")"
-grep -qxF '    - looper-scan run' "$TMP/sec.yml" || fail "does not run looper-scan"
+grep -qxF '    - looper-build scan' "$TMP/sec.yml" || fail "does not run the security checks (looper-build scan): $(cat "$TMP/sec.yml")"
 grep -qxF '    paths: [gates.log, build-verdict, built/, generated/]' "$y" || fail "the gates keep no generated code"
-sed -n '/^security-report:$/,$p' "$y" | grep -qxF '    - looper-scan report' || fail "no report job"
 grep -qxF '    KUBERNETES_CPU_REQUEST: "2"' "$TMP/sec.yml" || fail "a build's security job is not sized (BUILD_SCAN_REQUESTS, looper#207): $(cat "$TMP/sec.yml")"
 build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 -- plan 2>"$TMP/err" || fail "release plan failed"
 grep -qxF '    BUILD_SCAN_KIND: "release"' "$OUT/build-gates.yml" || fail "not a release's checks"

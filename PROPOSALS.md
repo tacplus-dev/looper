@@ -25,6 +25,32 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Maven's local repository shared** (2026-11-24, #238): it does not lock across processes by default, so each local
   build has its own (the decision's per-child directory). Maven 3.9's named locks (`aether.syncContext.named.factory`)
   would make one shared `~/.m2/repository` safe.
+- **A killed security job's "no report" summary** (2026-11-24, #237): `security-report` is folded into the security
+  job (`looper-build scan`), so a security job killed, OOM-killed or past its 3h timeout no longer publishes the "no
+  report" summary looper#210 added (a scanner that crashes inside the job still does). An `after_script` running
+  `looper-scan report` would bring it back for a kill and a timeout, at no extra job.
+- **A release's verdict from its child pipeline** (2026-11-24, #237): with `BUILD_CHILD_VERDICT` an ordinary build is
+  4 jobs, but a release keeps `report-pass` and `report-fail` in the parent (its pass waits for publish and the SBOM).
+  The SBOM job setting the release's pass, and its failure the publish's, would drop both; releases are rare, so
+  it was left.
+- **The kicker's view of GitLab's job activity limit** (2026-11-24, #237): repo-looper starts no build within 50 jobs
+  of the limit (`LOOPER_BUILD_JOB_ROOM`), but the limit counts every job of the alive pipelines, bridges and finished
+  jobs too, which the active-jobs scopes miss; the margin covers them today. A count of the alive pipelines' jobs (per
+  pipeline, or GraphQL's `jobs { count }`) would be exact; and the nightly fan-out and the kicker's own pipelines in
+  other projects do not count here.
+- **A model's leftover processes stopped before the looper reads its files** (2026-11-24, #227): after a scan's
+  model, the looper copies the files it takes out of the model's clone (`scan_take`, no symlink followed). A process
+  the model left running as `looper-scan` could still change the clone while that copy runs. Stopping every process
+  of the model's user once its run ends (it is the scan's alone) would close that window. The model-owned run
+  directory's files are #232.
+- **A held pre-land gate's build, cancelled or given its own branch** (2026-11-24, #231): the manager now holds a land
+  whose pre-land gate is still queued (its `gates` job `waiting_for_resource` behind the report slots) for the next
+  batch, at most once. Two loose ends. (1) When the next batch builds that gate again on a new main, the old build
+  still holds its place in the report queue and runs to no purpose. Cancelling it (`GITLAB_TOKEN`, `POST
+  /pipelines/:id/cancel`) would give its slot back. (2) The held record sits on `looper/pre-land-<repo>-<issue>`,
+  the branch the report's own `--land` pre-land gate pushes to and deletes. A report landing again while its land is
+  held drops the record, and the next batch builds the gate again. A branch of the manager's own
+  (`looper/pre-land-held-…`) would keep the two apart.
 - **The nightly maintenance after tacplus's Images, by schedule** (2026-11-23, #226): the scan follows whichever build
   of a line the registry has when it runs. The GitLab schedule that starts the nightly scan is not in this repository,
   and neither is tacplus-dev/tacplus#966's cron for the Images run. Check that the scan's schedule starts after the

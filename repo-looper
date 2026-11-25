@@ -1330,6 +1330,16 @@ WORKFLOWS_RC=78   # a land sent back: origin refused its change under .github/wo
 # Origin's refusal of a push that changes .github/workflows/ without the workflows permission (GitHub's words).
 WORKFLOWS_REFUSED='refusing to allow .* to create or update workflow'
 BUILD_MAX="${LOOPER_BUILD_MAX:-30}"   # a report run's builds, at most
+# GitLab's job activity limit (looper#237): on the free plan GitLab refuses to
+# create a pipeline, a build's child pipeline among them, once the build
+# project's alive pipelines hold LOOPER_BUILD_JOB_CAP (500) jobs. No build is
+# started while its active jobs are within LOOPER_BUILD_JOB_ROOM (50) of it:
+# it waits for room, LOOPER_BUILD_ROOM_WAIT (900) at most. A land's build
+# refused all the same is built again after LOOPER_BUILD_BACKOFF (300).
+BUILD_JOB_CAP="${LOOPER_BUILD_JOB_CAP:-500}"
+BUILD_JOB_ROOM="${LOOPER_BUILD_JOB_ROOM:-50}"
+BUILD_ROOM_WAIT="${LOOPER_BUILD_ROOM_WAIT:-900}"
+BUILD_BACKOFF="${LOOPER_BUILD_BACKOFF:-300}"
 PIN_FILES=(tacplus.lock build.lock)
 
 # The wait for the verdict of a build of a gate set (looper#158), in seconds:
@@ -1374,8 +1384,10 @@ build_jobs() { # rev [dir]
 # slots, their jobs its report runner's, and the rest of the pool is the lands'
 # (looper#195); a refusal of it (a project whose CI file does not declare report
 # yet) starts the build again without it. A refusal keeps GitLab's response, redacted: it says why.
+# None is started within BUILD_JOB_ROOM of GitLab's job activity limit (build_room, looper#237).
 start_build() { # sha gates base wait
   local r id url base=() report=()
+  build_room "$1" || return 1
   [[ -z "$3" ]] || base=(--data-urlencode "inputs%5Bbase%5D=$3")
   [[ -n "${BUILD_LAND:-}" ]] || report=(--data-urlencode "inputs%5Breport%5D=true")
   while :; do
@@ -1545,14 +1557,16 @@ epoch() { [[ -z "$1" ]] || date -d "$1" +%s 2>/dev/null || true; } # ISO time
 # ...", says so: it sets one on green gates alone. report-fail's "the build
 # failed", no job's reason, is read in the pipeline's jobs and its child
 # pipeline's, with GITLAB_TOKEN (read_api): its gates job passed, and every job
-# that failed, allowed to or not, failed but in its script. Prints why; fails
-# when it is a red build, or cannot be told.
+# that failed, allowed to or not, failed but in its script. So is no verdict
+# at all, its pipeline ended: the build file of looper#237 has no
+# security-failed nor report-fail, a security job lost on every try sets none.
+# Prints why; fails when it is a red build, or cannot be told.
 build_infra() { # sha pipeline-id
   local v j f
   v="$(build_said "$(build_statuses "$1" "$2")")" || return 1
   case "$v" in
     "failure: no security verdict: "*) echo "${v#failure: }"; return 0 ;;
-    "failure: the build failed") ;;
+    "failure: the build failed"|"") ;;
     *) return 1 ;;
   esac
   j="$(build_jobs_all "$2")" || return 1
@@ -1593,6 +1607,65 @@ build_no_room() { # sha pipeline-id
          | if ($g | length) > 0 and all($g[]; .status == "failed" and (.failure_reason as $f | $r | index($f)))
            then $g | map(.failure_reason) | unique | join(", ") else empty end' <<<"$j" 2>/dev/null)" || return 1
   echo "its gates job failed $r, no gate verdict: the build pool had no room"
+}
+# A build whose child pipeline GitLab refused (looper#237): past the free
+# plan's job activity limit GitLab creates it failed, with no job ("The
+# pipeline job activity limit was exceeded."), and no gate runs; on 2026-11-24
+# 46 of 82 failed child pipelines were such, none a gate's failure, and the
+# manager sent lands back red on them. Its gates trigger job failed, and its
+# child pipeline has no job, or GitLab's failureReason names the activity
+# limit; read with GITLAB_TOKEN. Prints why; fails when it is no such build,
+# or cannot be told.
+build_refused() { # pipeline-id
+  local c j r
+  [[ -n "${GITLAB_TOKEN:-}" ]] || return 1
+  for c in $(build_pipeline "$1/bridges" | jq -r '.[] | select(.name == "gates" and .status == "failed") | .downstream_pipeline.id // empty' 2>/dev/null); do
+    [[ "$c" =~ ^[0-9]+$ ]] || continue
+    r="$(build_failure_reason "$c")" || r=""
+    if [[ "$r" == *"activity limit"* ]] ||
+       { j="$(build_pipeline "$c/jobs")" && [[ "$(jq -r length <<<"$j" 2>/dev/null)" == 0 ]] &&
+         j="$(build_pipeline "$c/bridges")" && [[ "$(jq -r length <<<"$j" 2>/dev/null)" == 0 ]]; }; then
+      echo "the child pipeline $c failed with no job${r:+: $r}"; return 0
+    fi
+  done
+  return 1
+}
+# A pipeline's failureReason, GitLab's words, read by GraphQL with GITLAB_TOKEN; fails with none.
+build_failure_reason() { # pipeline-id
+  jq -cn --arg p "${BUILD_PROJECT//%2F//}" --arg id "gid://gitlab/Ci::Pipeline/$1" \
+     '{query: "query($p: ID!, $id: CiPipelineID!) { project(fullPath: $p) { pipeline(id: $id) { failureReason } } }", variables: {p: $p, id: $id}}' |
+    curl -fsS --retry 2 -X POST -H 'Content-Type: application/json' -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") \
+      --data @- "${BUILD_API%/v4}/graphql" 2>/dev/null | jq -re '.data.project.pipeline.failureReason // empty' 2>/dev/null
+}
+# The build project's active jobs (looper#237), GitLab's job activity limit's
+# measure: created, pending, running and waiting for a resource, read with
+# GITLAB_TOKEN, a page at a time until they are within BUILD_JOB_ROOM of
+# BUILD_JOB_CAP; fails when they cannot be read.
+build_active() {
+  local n=0 k p
+  [[ -n "${GITLAB_TOKEN:-}" ]] || return 1
+  for (( p = 1; ; p++ )); do
+    k="$(curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") \
+           "$BUILD_API/projects/$BUILD_PROJECT/jobs?scope%5B%5D=created&scope%5B%5D=pending&scope%5B%5D=running&scope%5B%5D=waiting_for_resource&per_page=100&page=$p" 2>/dev/null |
+         jq -r length 2>/dev/null)" && [[ "$k" =~ ^[0-9]+$ ]] || return 1
+    n=$(( n + k ))
+    (( k == 100 && n < BUILD_JOB_CAP - BUILD_JOB_ROOM )) || break
+  done
+  echo "$n"
+}
+# Room for a build under GitLab's job activity limit (looper#237): while the
+# build project's active jobs are within BUILD_JOB_ROOM of BUILD_JOB_CAP, it
+# waits, BUILD_ROOM_WAIT at most, then fails, saying why. Jobs that cannot be
+# read are room: no build waits on GitLab's API.
+build_room() { # sha
+  local n t0 said=""; t0="$(date +%s)"
+  while n="$(build_active)" && (( n >= BUILD_JOB_CAP - BUILD_JOB_ROOM )); do
+    if (( $(date +%s) - t0 >= BUILD_ROOM_WAIT )); then
+      echo "no room: the build project still had $n jobs active after $(hours "$BUILD_ROOM_WAIT"), within $BUILD_JOB_ROOM of GitLab's job activity limit of $BUILD_JOB_CAP (looper#237)"; return 1
+    fi
+    [[ -n "$said" ]] || log "the build project has $n jobs active, within $BUILD_JOB_ROOM of GitLab's job activity limit of $BUILD_JOB_CAP: the build of $REPO ${1:0:7} waits for room, at most $(hours "$BUILD_ROOM_WAIT") (looper#237)" >&2
+    said=1; sleep "$BUILD_POLL"
+  done
 }
 # A build pipeline's jobs or trigger jobs (<id>/jobs, <id>/bridges), read with GITLAB_TOKEN.
 build_pipeline() { # id/what
@@ -1749,7 +1822,8 @@ build_gates() { # base [queued commit]
 # (build_infra, looper#173), cancelled before a verdict (build_cancelled,
 # looper#209), or with no gates verdict for want of room in the build pool
 # (build_no_room, looper#214: a batch is built again as one, never fanned
-# out per land), built again, once: a new build of its key (a red or cancelled
+# out per land), or whose child pipeline GitLab refused (build_refused,
+# looper#237: after BUILD_BACKOFF), built again, once: a new build of its key (a red or cancelled
 # one is reused by nothing), the commit still on the branch it was built from.
 # Its verdict is the land's: build_verdict's exit. AGAIN_P is the new build
 # ("<pipeline id> <URL>") and AGAIN_T0 its trigger's time; both are empty, and
@@ -1762,6 +1836,10 @@ build_again() { # sha gates base wait "<pipeline id> <URL>"
   elif why="$(build_no_room "$1" "${5%% *}")"; then
     echo "the build job ${5#* } had no verdict, the build pool having had no room: $why; no red, it is built again as it was, once (looper#214)"
     log "the build job ${5#* } of $REPO ${1:0:7} had no verdict, the build pool had no room: it is built again as it was, once (looper#214)" >&2
+  elif why="$(build_refused "${5%% *}")"; then
+    echo "the build job ${5#* } had no verdict, GitLab having refused its child pipeline ($why): no red; it is built again as it was after $(hours "$BUILD_BACKOFF"), once (looper#237)"
+    log "the build job ${5#* } of $REPO ${1:0:7} had no verdict, GitLab refused its child pipeline: it is built again as it was after a back-off, once (looper#237)" >&2
+    sleep "$BUILD_BACKOFF"
   else
     why="$(build_infra "$1" "${5%% *}")" || return 1
     echo "the build job ${5#* } failed, its gates green: $why; it is built again, once (looper#173)"
@@ -1775,7 +1853,7 @@ build_again() { # sha gates base wait "<pipeline id> <URL>"
 }
 
 # A land's build cancelled before a verdict again once built again (looper#209),
-# or given no room again (looper#214): no red, nothing built (BUILD_UNBUILT),
+# given no room again (looper#214), or refused again (looper#237): no red, nothing built (BUILD_UNBUILT),
 # its lands left queued, as one batch, for the next manager.
 again_cancelled() { # sha
   local why
@@ -1784,6 +1862,8 @@ again_cancelled() { # sha
     echo "nothing built: its build job ${AGAIN_P#* } was cancelled before a verdict, as the one before it: no red (looper#209)"
   elif why="$(build_no_room "$1" "${AGAIN_P%% *}")"; then
     echo "nothing built: its build job ${AGAIN_P#* } had no verdict, the build pool had no room (${why%%: the build pool had no room}), as the one before it: no red (looper#214)"
+  elif why="$(build_refused "${AGAIN_P%% *}")"; then
+    echo "nothing built: its build job ${AGAIN_P#* } had no verdict, GitLab refused its child pipeline ($why), as the one before it: no red (looper#237)"
   else return 1; fi
 }
 
@@ -1956,20 +2036,37 @@ build_request() {
 }
 
 # A build the report's model asks its looper for (build_server): the request
-# in the run's builds/ directory, the build started (or why not), and its
-# verdict, build_verdict's lines and exit. Fails 5, BUILD_P saying why, when
-# the looper started none.
+# in the run's builds/ directory, the build started (or why not: a request it
+# took waits for room under GitLab's job activity limit, BUILD_ROOM_WAIT, too),
+# and its verdict, build_verdict's lines and exit. A failure with no gate's
+# words whose child pipeline GitLab refused, as its looper reads it
+# (<id>.refused-child, looper#237), is no verdict: 2, said. Fails 5, BUILD_P
+# saying why, when the looper started none.
 model_build() { # builds-dir sha gates base
-  local d="$1" sha="$2" gates="$3" base="$4" id i
+  local d="$1" sha="$2" gates="$3" base="$4" id i out rc=0
   BUILD_P=""
   id="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
   printf 'sha=%s\ngates=%s\nbase=%s\n' "$sha" "$gates" "$base" > "$d/$id.new" && mv "$d/$id.new" "$d/$id.request"
-  for (( i = 0; i < 300; i++ )); do [[ -s "$d/$id.started" || -s "$d/$id.refused" ]] && break; sleep 1; done
+  for (( i = 0; i < 300 + BUILD_ROOM_WAIT; i++ )); do
+    [[ -s "$d/$id.started" || -s "$d/$id.refused" ]] && break
+    (( i < 300 )) || [[ -e "$d/$id.taken" ]] || break
+    sleep 1
+  done
   [[ ! -s "$d/$id.refused" ]] || { BUILD_P="the looper did not start the build: $(cat "$d/$id.refused")"; return 5; }
   [[ -s "$d/$id.started" ]] || { BUILD_P="the looper did not start the build within 5 minutes"; return 5; }
   if [[ "$(cut -d' ' -f1 "$d/$id.started")" == local ]]; then local_verdict "$d" "$id" "$sha" "$gates" "$base"; return; fi
   echo "the build job $(cut -d' ' -f2- "$d/$id.started") of $REPO ${sha:0:7}, the gates ${gates:-full} on base ${base:0:7}$([[ ! -s "$d/$id.reused" ]] || echo " (reused: $(reused_what "$(cat "$d/$id.reused")"): this key's build, looper#134)")"
-  BUILD_ENDED_FILE="$d/$id.cancelled" build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")" "" "$(cat "$d/$id.wait" 2>/dev/null)"
+  out="$(BUILD_ENDED_FILE="$d/$id.cancelled" build_verdict "$sha" "$(cut -d' ' -f1 "$d/$id.started")" "$(cut -d' ' -f2- "$d/$id.started")" "" "$(cat "$d/$id.wait" 2>/dev/null)")" || rc=$?
+  printf '%s\n' "$out"
+  if (( rc == 1 )) && grep -qE '^verdict: failure: (the build failed$|the build .* before a verdict)' <<<"$out"; then
+    # Its looper reads the pipeline every BUILD_POLL: its answer awaited.
+    for (( i = 0; i < 2 * BUILD_POLL + 5; i++ )); do [[ -e "$d/$id.cancelled" || -e "$d/$id.over" ]] && break; sleep 1; done
+    if [[ -s "$d/$id.refused-child" ]]; then
+      echo "no verdict: GitLab refused the build's child pipeline ($(cat "$d/$id.refused-child")): no red, its infrastructure's (looper#237); --build again later"
+      return 2
+    fi
+  fi
+  return "$rc"
 }
 
 # The gate map of the commit sha in the checkout, read (GM_*): none when it has
@@ -2022,10 +2119,11 @@ local_verdict() { # builds-dir id sha gates base
 # its wait (<id>.wait: build_wait, from the commit's own gates.yaml, looper#158).
 # Every LOOPER_BUILD_POLL it reads each started build's pipeline status with
 # GITLAB_TOKEN, which its model lacks (looper#198): one cancelled, failed or
-# skipped is written to <id>.cancelled, for the model's wait (build_verdict);
-# one passed, or past its wait, is read no more (<id>.over).
+# skipped is written to <id>.cancelled, for the model's wait (build_verdict),
+# and one whose child pipeline GitLab refused (build_refused, looper#237) to
+# <id>.refused-child first, why; one passed, or past its wait, is read no more (<id>.over).
 build_server() { # run-dir
-  local d="$1/builds" r id sha gates base p k=0 z="" polled=0 st w
+  local d="$1/builds" r id sha gates base p k=0 z="" polled=0 st w why
   trap 'kill "$z" 2>/dev/null; exit 0' TERM
   while :; do
     for r in "$d"/*.request; do
@@ -2058,7 +2156,9 @@ build_server() { # run-dir
         if (( $(date +%s) - $(stat -c %Y "$r") > w + BUILD_START )); then : > "$id.over"; continue; fi
         st="$(build_status "$(cut -d' ' -f1 "$r")")" || continue
         case "$st" in
-          canceled|failed|skipped) echo "$st" > "$id.cancelled"; log "the build $(cut -d' ' -f2- "$r") for its model: its pipeline is $st" ;;
+          canceled|failed|skipped)
+            why=""; [[ "$st" != failed ]] || ! why="$(build_refused "$(cut -d' ' -f1 "$r")")" || echo "$why" > "$id.refused-child"
+            echo "$st" > "$id.cancelled"; log "the build $(cut -d' ' -f2- "$r") for its model: its pipeline is $st${why:+: GitLab refused its child pipeline ($why)}" ;;
           success) : > "$id.over" ;;
         esac
       done
@@ -2124,19 +2224,19 @@ pre_land_due() { # main
 }
 
 # A build's red that is its infrastructure's alone, its gates green (looper#173),
-# its gates given no room in the build pool (looper#214), or its pipeline
-# cancelled before a verdict (a held gate's, taken up: looper#231): no verdict
-# on the land, said.
+# its gates given no room in the build pool (looper#214), its pipeline
+# cancelled before a verdict (a held gate's, taken up: looper#231), or its
+# child pipeline refused (looper#237): no verdict on the land, said.
 pre_land_infra() { # sha pipeline-id log
   local why
   if grep -q '^verdict: failure: no security verdict: ' "$3"; then why="$(sed -n 's/^verdict: failure: //p' "$3" | tail -n 1)"
   elif build_cancelled "$1" "$2"; then why="the build was cancelled before a verdict"
-  else why="$(build_infra "$1" "$2")" || why="$(build_no_room "$1" "$2")" || return 1; fi
+  else why="$(build_infra "$1" "$2")" || why="$(build_no_room "$1" "$2")" || why="$(build_refused "$2")" || return 1; fi
   echo "$why" >> "$3"
 }
 
 # Why a pre-land gate has no verdict, from its log.
-pre_land_why() { grep -E '^(no verdict|no runner|verdict: |its gates job (passed|failed)|the looper did not)' "$1" | tail -n 1 | grep . || tail -n 1 "$1"; } # log
+pre_land_why() { grep -E '^(no verdict|no runner|verdict: |its gates job (passed|failed)|the child pipeline|the looper did not)' "$1" | tail -n 1 | grep . || tail -n 1 "$1"; } # log
 
 # A manager's pre-land gate's state (looper#231), "<state>: <why>": ready, its
 # verdict to be read at once (build_verdict: one said, its pipeline ended, or
@@ -2425,6 +2525,8 @@ verdict_comment() { # issue id rc record-dir sha
     again="$(sed -n 's/^the build job \([^ ]*\) failed, its gates green: .*/\1 failed in its infrastructure alone, its gates green/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     # Or after its gates had no room in the build pool (looper#214).
     [[ -n "$again" ]] || again="$(sed -n 's/^the build job \([^ ]*\) had no verdict, the build pool having had no room: .*/\1 had no verdict, the build pool having had no room/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
+    # Or after GitLab refused its child pipeline (looper#237).
+    [[ -n "$again" ]] || again="$(sed -n 's/^the build job \([^ ]*\) had no verdict, GitLab having refused its child pipeline .*/\1 had no verdict, GitLab having refused its child pipeline/p' "$rec/gates.log" 2>/dev/null | tail -n 1)"
     [[ -z "$again" ]] || reused=""
     [[ -z "$build" ]] || build=", a build job's verdict ($build)${reused:+, reused: $reused}${again:+, built again after $again}"
     # A verdict job's green on this tree, taken up (looper#191): its gates not run again.

@@ -608,6 +608,18 @@ pin issue (filed by the hub) commits one.
   waiting for the verdict, prints. The kicker's next manager takes that pipeline up, triggering none: still not
   started, it stops again and says nothing new; run since, it merges on its verdict. A build that started is waited
   for from its start, as above.
+- **GitLab's job activity limit** (looper#237): on GitLab.com's free plan the build project's alive pipelines hold at
+  most about 500 jobs, and past it GitLab refuses to create a pipeline: a build's child pipeline fails at once, with
+  no job (`The pipeline job activity limit was exceeded.`), and no gate runs (on 2026-11-24, 46 of 82 failed child
+  pipelines, none a gate's failure, and the manager sent lands back red on them). A build whose child pipeline failed
+  with no job, or whose GitLab `failureReason` (GraphQL) names the activity limit, read with `GITLAB_TOKEN`, is no red:
+  a land's is built again as it was after `LOOPER_BUILD_BACKOFF` (5 minutes), once, and refused again it is nothing
+  built, its lands left queued; a land's own in a pre-land gate or a red round is no verdict on its own; a report's
+  `--build` (its looper reads the pipeline for its model) exits 2, `no verdict: GitLab refused the build's child
+  pipeline`. And no build is started while the build project's active jobs (created, pending, running and waiting for
+  a resource) are within `LOOPER_BUILD_JOB_ROOM` (50) of `LOOPER_BUILD_JOB_CAP` (500): it waits for room, at most
+  `LOOPER_BUILD_ROOM_WAIT` (15 minutes), then starts none (nothing built: the land stays queued; `--build` says why).
+  A build takes 4 jobs ([Build pipeline](#build-pipeline)), so that is room for about 110 waiting builds.
 - **A build runs once per repository, commit, gate set and base** (looper#134): a request for a key that has a green
   build reuses its verdict, and one for a key whose build is queued or running waits on that build, whoever asked for it
   (the report's model twice, its retried run, the manager after the report): both see its one verdict. A pending or
@@ -645,7 +657,7 @@ pin issue (filed by the hub) commits one.
   once every repository is pinned (tacplus, tacplus#340).
 
 ```sh
-tests/repo-looper.test.sh       # build-job-scan: a pinned repository's scan, its model with no docker, reads the nightly build's gates record into its prompt's item 3, none read runs no gates; scan-unpinned-gates: an unpinned one's keeps its gates; build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); its build asked for with `report: true`, a land's never; build-job-report-undeclared: a build project that refuses `report` gets the build again without it (looper#195); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-infra-once, build-job-infra-pull, build-job-infra-red, build-job-infra-no-token: a land's build red in its infrastructure alone, its gates green (security-failed's no security verdict, or report-fail's the build failed with the pipeline's and its child's jobs read with GITLAB_TOKEN: gates passed, the rest failed but in their script), is built again once and merges on that build's green, its comment saying so; a job failed in its script, or no GITLAB_TOKEN to tell, is red, built once (looper#173); build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-queued-pool-full: a batch's build not started within it while the build project runs other builds, read with GITLAB_TOKEN, is waited on and merged on its verdict; with none running, no runner (looper#209); build-cancelled-built-again, build-cancelled-twice: a land's build cancelled before a verdict is built again, once, and merged on that build's green; cancelled again, nothing built, the land left queued and its issue told once; train-red-round-cancelled: a land's own build in a red batch's round cancelled is no red on its own (looper#209); train-no-room-built-again, train-no-room-twice, train-no-room-script-red, train-red-round-no-room: a batch's build whose gates job failed runner_system_failure with no gates verdict, read with GITLAB_TOKEN, is built again as one batch, once, and merged on its green, no land built on its own; no room again, nothing built, the lands queued; a gates job failed in its script is red; a land's own such build in a red round is no verdict on its own (looper#214); build-job-slow: a started build is waited for from its start; build-job-cancelled, build-job-cancelled-no-token: a build whose pipeline was cancelled, or failed, with no verdict is red at once, read with GITLAB_TOKEN, and no request reuses it; without GITLAB_TOKEN it is waited for (looper#198); build-job-no-trigger: without the trigger the gates run in the manager's job, as before
+tests/repo-looper.test.sh       # build-job-scan: a pinned repository's scan, its model with no docker, reads the nightly build's gates record into its prompt's item 3, none read runs no gates; scan-unpinned-gates: an unpinned one's keeps its gates; build-job-report: a report's model has no docker, requests a build of its commit (the gate set its diff calls for) and gets its verdict, the trigger never its own nor on a command line, and the manager merges on the report's green build of the same tree, gate set and base, building nothing again (looper#134); its build asked for with `report: true`, a land's never; build-job-report-undeclared: a build project that refuses `report` gets the build again without it (looper#195); build-job-once: two requests for the same key while its build runs start one build and both see its verdict, a third reuses it green, and a land whose rebase linearized a merge into the same tree merges on it, its comment linking it; build-job-red: a failed build says why and merges nothing, and a status another creator set is no verdict; build-job-infra-once, build-job-infra-pull, build-job-infra-no-verdict, build-job-infra-red, build-job-infra-no-token: a land's build red in its infrastructure alone, its gates green (the security job's no security verdict, or report-fail's the build failed, or no verdict at all its pipeline failed (looper#237), with the pipeline's and its child's jobs read with GITLAB_TOKEN: gates passed, the rest failed but in their script), is built again once and merges on that build's green, its comment saying so; a job failed in its script, or no GITLAB_TOKEN to tell, is red, built once (looper#173); build-job-no-runner: a build that sets no status within LOOPER_BUILD_START is no runner, not red: --build exits 4, the land stays queued with no verdict and its pipeline recorded, its issue told once, and the next managers take that pipeline up, triggering none (looper#113); build-queued-pool-full: a batch's build not started within it while the build project runs other builds, read with GITLAB_TOKEN, is waited on and merged on its verdict; with none running, no runner (looper#209); build-cancelled-built-again, build-cancelled-twice: a land's build cancelled before a verdict is built again, once, and merged on that build's green; cancelled again, nothing built, the land left queued and its issue told once; train-red-round-cancelled: a land's own build in a red batch's round cancelled is no red on its own (looper#209); train-no-room-built-again, train-no-room-twice, train-no-room-script-red, train-red-round-no-room: a batch's build whose gates job failed runner_system_failure with no gates verdict, read with GITLAB_TOKEN, is built again as one batch, once, and merged on its green, no land built on its own; no room again, nothing built, the lands queued; a gates job failed in its script is red; a land's own such build in a red round is no verdict on its own (looper#214); train-refused-built-again, train-refused-twice, train-refused-jobs-red, train-red-round-refused, build-job-refused: a build whose child pipeline GitLab refused (failed with no job, its failureReason the job activity limit), read with GITLAB_TOKEN, under the build file before looper#237 (report-fail's the build failed) or after it (no verdict, the pipeline failed), is built again as one batch after LOOPER_BUILD_BACKOFF, once, and merged on its green, no land built on its own; refused again, nothing built, the lands queued; a child pipeline that ran a job is red; a land's own such build in a red round is no verdict on its own; a report's --build of one exits 2, no verdict (looper#237); build-job-room, train-no-job-room: no build starts while the build project's active jobs, every page read with GITLAB_TOKEN, are within LOOPER_BUILD_JOB_ROOM of LOOPER_BUILD_JOB_CAP: it waits for room and starts, or with none in LOOPER_BUILD_ROOM_WAIT starts none, the lands left queued (looper#237); build-job-slow: a started build is waited for from its start; build-job-cancelled, build-job-cancelled-no-token: a build whose pipeline was cancelled, or failed, with no verdict is red at once, read with GITLAB_TOKEN, and no request reuses it; without GITLAB_TOKEN it is waited for (looper#198); build-job-no-trigger: without the trigger the gates run in the manager's job, as before
 tests/looper-build.test.sh      # the gate set asked for, from the commit's gates.yaml, on its base; build.lock; the looper repository's own pin; the nightly fan-out: a pinned repository is built, an unpinned, archived or another owner's is not, each child is its repository's nightly and needs its own plan alone, a listing or pin it cannot read fails (looper#164); a few at a time, each repository's plan and child in its slot's resource group, BUILD_NIGHTLY_SLOTS checked, and a nightly's jobs on BUILD_NIGHTLY_TAGS, a build's never (looper#185); a report's gates job in one of BUILD_REPORT_SLOTS resource groups, a land's in none, BUILD_REPORT and the slots checked, and the CI file's report input (looper#195); the light jobs (pending, plan, report-pass, report-fail) alone on arm64, build-light (looper#224); its slots below BUILD_POOL_NODES, at least one, and its jobs on BUILD_REPORT_TAGS, a land's on the build runner's, BUILD_POOL_NODES checked, a nightly's gates in a report slot, the fan-out passing each plan the slots (looper#209); gates silent for BUILD_GATES_IDLE stopped, their process group too, red, and gates that keep printing not (looper#195); gates still running BUILD_WAIT seconds after they started stopped, red, a nightly's (no wait) never (looper#198); the gates job sized by BUILD_GATES_REQUESTS_<repo>, else the runner's defaults, a value not four quantities, a request over its limit or a limit past BUILD_RUNNER_CEILINGS refused (looper#202); a build's security job sized by BUILD_SCAN_REQUESTS_<repo>, else BUILD_SCAN_REQUESTS, held to the same; its scanners side by side, BUILD_SCAN_JOBS at a time, one after another with 1, each one's duration in the summary and durations.json, a tool that stops before it finishes failing the run, and a build's gitleaks not on the generated code, a nightly's on it, a land's Semgrep on the generated files its base's read differently alone, the base's findings for the rest, what it read published, another Semgrep's read or a nightly reading all (looper#207)
 ```
 
@@ -1128,7 +1140,8 @@ jobs run `looper-build`, from this image.
 - **`plan`** fetches exactly that commit and reads its `tacplus.lock` (as tacplus validates it: an exact release,
   the build image by digest, of the same line), or for a repository that is no tacplus project its `build.lock`
   (`build_image:` by digest alone; the looper's, looper#71). No pin, or a bad one, is a **fail** verdict, never a guess. It
-  writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' jobs. A
+  marks the commit pending first, and sets a failed plan's verdict itself, with `BUILD_CHILD_VERDICT` (looper#237, below). It
+  writes the child pipeline: one `gates` job whose `image:` is the pinned digest, and the security checks' job. A
   nightly with no `repo` plans every pinned repository's nightly instead ([Security checks](#security-checks), looper#164).
 - **`gates`**, in the pinned build image, first compares the pipeline's creation (`CI_PIPELINE_CREATED_AT`) with
   now: past its `wait`, nobody waits for its verdict any more, and it writes the verdict `abandoned: no verdict wanted
@@ -1139,8 +1152,9 @@ jobs run `looper-build`, from this image.
   if a gate fails, or if the build changed a tracked file (`git status --porcelain --untracked-files=no`) or moved
   HEAD. Its log is the artifact `gates.log`, and the job's log; a red gate's verdict ends with the log's last two
   lines (`just gates exited 127: sh: 1: trivy: not found; error: ...`, looper#144).
-- **`security-<repo>`** and **`security-report`**, in the looper image: the security checks of the commit and of the
-  code its gates generated, which fail the build as a gate does ([Security checks](#security-checks), looper#49).
+- **`security-<repo>`** (`looper-build scan`), in the looper image: the security checks of the commit and of the
+  code its gates generated, which fail the build as a gate does ([Security checks](#security-checks), looper#49), and
+  their report; then the build's verdict, the commit status (below).
 - **`gates-report`**, a nightly's alone, in the looper image after `gates` (also when they fail; allowed to fail):
   the gates' verdict on main as the repository's latest (looper#73), the generic package `gates-<repo>`, version
   `latest`: `record` (`repo`, `kind nightly`, `checked` the commit, `result` pass, fail or none, `why` a red one's
@@ -1155,7 +1169,7 @@ jobs run `looper-build`, from this image.
   looper#173) or that GitLab's API failed (`api_failure`).
 - **A build red in its infrastructure alone is built again** (looper#173): when a land's build is red and its gates
   passed, the manager builds it again, once, rather than send the land back. It knows from the verdict: the
-  `security-failed` job's `no security verdict: ...`, which it sets on green gates alone, or `report-fail`'s `the
+  security job's `no security verdict: ...`, which it sets on green gates alone, or a release's `report-fail`'s `the
   build failed`, no job's reason, once the pipeline's jobs and its child's, read with `GITLAB_TOKEN` (`read_api`),
   show its `gates` job passed and every job that failed failed but in its script. Its verdict comment says so. Its
   token cannot retry the failed jobs alone (a trigger token, and `read_api`): the gates run again too.
@@ -1169,20 +1183,35 @@ jobs run `looper-build`, from this image.
 - **A land's build whose gates the build pool had no room for is built again** (looper#214: tacplus's batch of 18,
   its `gates` pod `Unschedulable` for 15 min on each of GitLab's three tries, `runner_system_failure`, no gate run,
   was judged red and fanned out into 18 builds on a 2-node pool). A land's build (a batch's, a bisection's) whose
-  verdict is `gates-failed`'s `no gates verdict` (or `report-fail`'s `the build failed`) and whose `gates` job, read
+  verdict is the security job's `no gates verdict` (or a release's `report-fail`'s `the build failed`) and whose `gates` job, read
   with `GITLAB_TOKEN`, failed `runner_system_failure` or `scheduler_failure` is no red: it is built again as it was,
   once, a batch as one batch, never judged land by land, and waits for room as any land's build does (looper#209).
   No room again, nothing is built: the lands stay queued as one batch, each issue told once, for the next manager.
   In a red batch's round, and a pre-land gate, such a build is no verdict on the land. A `gates` job failed in its
   script or past its own timeout is red as before.
-- **`pending`, `report-pass`, `report-fail`** set the GitHub commit status, context `tacplus-dev/build`, linking
-  the pipeline, with the failure's reason as its description. A failed `gates` job's reason is set by the child's
-  **`gates-failed`** job (looper#148), which reads its artifact `build-verdict`: the gates' own reason, or, with
-  none, that its runner was lost on every try (or it timed out); `report-fail`, which cannot read the child's
-  artifacts, then leaves that status be. The manager's "not merged" line quotes it, so it says which failed. A
-  failed `security-<repo>` job's, the gates green, is set likewise by **`security-failed`** (looper#144): `security:
-  <why>` from its artifact `security/verdict`, or that its runner was lost; never a nightly's. This is the only
-  thing a build writes to GitHub.
+- **A build whose child pipeline GitLab refused is no red** (looper#237): past the free plan's job activity limit
+  GitLab creates the child pipeline failed, with no job; the land's build is built again after a back-off, once, and
+  no build starts within 50 jobs of the limit ([GitLab's job activity limit](#build-jobs)). With the folded parent,
+  a build whose pipeline ended with no verdict at all, its `gates` job green and the rest failed but in their script (a
+  security job lost on every try), is built again once as `no security verdict` was (looper#173).
+- **The commit status**, context `tacplus-dev/build`, linking the (parent) pipeline, with the failure's reason as
+  its description: `pending` sets it pending (with `BUILD_CHILD_VERDICT`, `plan`, and a failed plan's reason); the
+  child's `security-<repo>` job, after the scan, sets the verdict (looper#237). It reads the gates' artifact `build-verdict`: red gates' own reason, or, with
+  none, `no gates verdict: ...`, that the `gates` job's runner was lost on every try (or it timed out, looper#148);
+  the gates green, a failed scan's `security: <why>` from its `security/verdict`, or `no security verdict: ...`
+  when it left none (looper#144); else pass. The manager's "not merged" line quotes it, so it says which failed. A
+  release's pass is its parent's **`report-pass`**, once its publish and SBOM passed, and **`report-fail`** says
+  `the build failed` when no job set a reason (it leaves one set by this pipeline be); with `BUILD_CHILD_VERDICT`
+  no other build has either (without, every build's `report-pass` sets the security job's pass again).
+  A nightly and a verify run set none. This is the only thing a build writes to GitHub.
+- **Four jobs a build** (looper#237): GitLab.com's free plan counts every job of the project's alive pipelines,
+  bridges and child pipelines' included, against ~500, so an ordinary build (no release, nightly or verify run) is
+  `plan` and the `gates` trigger, and the child's `gates` and `security-<repo>`: no `gates-failed`,
+  `security-report` or `security-failed`, and, with the CI file's `BUILD_CHILD_VERDICT` `"true"`, no `pending`,
+  `report-pass` or `report-fail`; their work is `plan`'s and the security job's. `BUILD_CHILD_VERDICT` is empty
+  until the CI file pins a looper image whose `looper-build` has `scan`, and is set in that same commit: an older
+  image's child sets no pass, so its parent keeps `pending`, `report-pass` and `report-fail`; the new child works
+  under that parent too. A security job whose runner is lost on every try (or that times out) sets no verdict.
 - **`publish-<repo>`**, on a release (below), a job of the child pipeline once the gates, the security checks and
   the formal verification passed: the repository's `Dockerfile` built for `linux/amd64` and `linux/arm64`, pushed as
   `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z` (tacplus-dev/tacplus#223), its digest recorded in the
@@ -1246,8 +1275,8 @@ are per repository) and starts the pipeline on that tag with `"tag": "vX.Y.Z"`. 
 tag names `sha`, runs the gates, and publishes; the looper then creates the GitHub release.
 
 ```sh
-looper-build plan | gates | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
-tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status; the retries of the build file's jobs, the child's and the fan-out's, on an image not pulled too (runner_external_dependency_failure, api_failure, looper#173); a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
+looper-build plan | gates | scan | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status (none on a nightly, a verify run, a smoke or a runner image run), plan's pending and its own failure, and the security job's verdict (looper-build scan with a stub looper-scan: red gates' reason or no gates verdict, the security checks' or no security verdict, pass, a release's left to report-pass, a nightly's none, a status not set failing the job, looper#237); an ordinary build at most 4 jobs with BUILD_CHILD_VERDICT, the CI file's rules read for it and the child's plan counted, and without it the parent as it was (looper#237); the retries of the build file's jobs, the child's and the fan-out's, on an image not pulled too (runner_external_dependency_failure, api_failure, looper#173); a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
 ```
 
 **The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A
@@ -1347,20 +1376,20 @@ since a nightly red every night would only repeat those bugs.
 
 Deterministic security checks run in the build pipeline (looper#49; Jody, 2026-11-01): a guaranteed floor under the
 nightly agent scan, which stays for judgment and drift. They are `looper-scan`, in the looper image (the scanners),
-run by two jobs of the child pipeline `plan` writes, beside `gates`:
+run by one job of the child pipeline `plan` writes, beside `gates` (looper#237: it was two, `security-report` the second):
 
-- **`security-<repo>`** (`looper-scan run`, after `gates`, also when the gates fail) fetches the commit as `gates` does
+- **`security-<repo>`** (`looper-build scan`: `looper-scan run`, after `gates`, also when the gates fail) fetches the commit as `gates` does
   (the reader app's read-only token, the key deleted and GitLab's job token dropped before any tool runs) and scans
   it, and the code its gates generated (below). Its verdict fails the pipeline, so the commit status, like a gate.
-- **`security-report`** (`looper-scan report`) prints the run's summary and publishes its findings as the
+- **Its report** (`looper-scan report`, after the run in the same job; its failure fails no build) prints the run's summary and publishes its findings as the
   repository's latest: the generic package `security-<repo>`, version `latest`, of tacplus-dev/build (its package
   registry, with the job's token), which the nightly agent scan reads. It publishes them as its commit's too, version
   `<sha>`: what a land built on that commit compares with (below, looper#180). A nightly's it publishes as the last
   nightly's too, version `nightly`: what every run's `new` is measured against (looper#211). Not the latest, which a
   land's build and a `--build` publish too: a finding one of them saw first was never new to the nightly, never on its
-  summary, and never filed (gateway#43's picomatch ReDoS, gateway#31's and mailbox#22's chrono). When the security job
-  left no findings (killed, OOM-killed, timed out, its pod never scheduled or its runner lost), it publishes as the
-  latest a summary saying so, `no report` in its header: its pipeline and job, why (the job's verdict, or that it left
+  summary, and never filed (gateway#43's picomatch ReDoS, gateway#31's and mailbox#22's chrono). When the run
+  left no findings (a scanner killed or OOM-killed; the job itself killed, timed out, its pod never scheduled or its
+  runner lost runs no report since looper#237, and publishes nothing), it publishes as the latest a summary saying so, `no report` in its header: its pipeline and job, why (the job's verdict, or that it left
   no artifact), and the last report, whose findings the latest still holds; and it fails. The findings are left as they
   were: the latest's, the commit's and the last nightly's (looper#210: the nightlies of 2026-11-21 and 22 published
   nothing for ten repositories, and their scans read the last run's report as that night's). The nightly scan's prompt,
@@ -1459,7 +1488,7 @@ scans the generated code in a build. **A land's Semgrep reads only the generated
 differently**: Semgrep CE reads each file on its own, so a file at the same path with the same bytes, read by the
 same Semgrep with the same rules (`p/default`, the registry's of the base's day), has the same findings. Every run
 that reads the generated code writes what it read, `security/semgrep-generated.sha256` (a first line `# <semgrep
-version> <config>`, then each file as `sha256sum` prints it, from the tree's root), and `security-report` publishes
+version> <config>`, then each file as `sha256sum` prints it, from the tree's root), and the report publishes
 it with the findings, as the latest and as its commit's. A land's build (`BUILD_BASE`) whose base has both, read by
 the same Semgrep and with the same `.semgrepignore`, gives Semgrep only the files that differ (copied at their
 paths) and takes the base's Semgrep findings in the others; the summary says how many of each. A nightly and a

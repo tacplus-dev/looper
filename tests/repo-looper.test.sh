@@ -348,6 +348,21 @@ case "$url" in
     elif [[ "$k" == bridges ]]; then reply 200 '[]'
     else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
+  # A pipeline's failureReason by GraphQL (looper#237): $FIX/failure-reason/<id>, else null; GITLAB_TOKEN's alone, else HTTP 401.
+  https://gitlab.com/api/graphql)
+    id="$(jq -r '.variables.id // empty' <<<"${body[*]}" 2>/dev/null)"; id="${id##*/}"
+    if [[ "$auth" != PRIVATE-TOKEN ]]; then reply 401 '{"message":"401 Unauthorized"}'
+    else reply 200 "$(jq -cn --arg r "$(cat "$FIX/failure-reason/$id" 2>/dev/null)" '{data: {project: {pipeline: {failureReason: (if $r == "" then null else $r end)}}}}')"; fi
+    exit 0 ;;
+  # The build project's active jobs (looper#237): $FIX/build-active of them (a number, else 0), a page
+  # of at most 100 each; GITLAB_TOKEN's alone, else HTTP 404. Each read is a line of $FIX/build-active-reads.
+  */projects/tacplus-dev%2Fbuild/jobs\?*)
+    if [[ "$auth" != PRIVATE-TOKEN ]]; then reply 404 '{"message":"404 Project Not Found"}'; exit 0; fi
+    echo "$url" >> "$FIX/build-active-reads"
+    n="$(cat "$FIX/build-active" 2>/dev/null || echo 0)"; pg="$(sed -n 's/.*[?&]page=\([0-9]*\).*/\1/p' <<<"$url")"
+    n=$(( n - (${pg:-1} - 1) * 100 )); (( n < 100 )) || n=100; (( n > 0 )) || n=0
+    reply 200 "$(jq -cn --argjson n "$n" '[range($n) | {id: ., status: "created"}]')"
+    exit 0 ;;
   # A build pipeline's own status (looper#198): $FIX/pipeline-status/<id>, else running; GITLAB_TOKEN's alone, else HTTP 404.
   */projects/tacplus-dev%2Fbuild/pipelines/[0-9]*\?*)
     id="${url%%\?*}"; id="${id##*/}"
@@ -4296,6 +4311,24 @@ has "$(find "$FIX" -name gates.log -exec cat {} +)" "the build job https://gitla
 grep -qxF "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/9902/jobs?per_page=100" "$FIX/gitlab" ||
   fail "the child pipeline's jobs not read with GITLAB_TOKEN: $(grep pipelines "$FIX/gitlab")"
 pass
+# The build file of looper#237 has no security-failed nor report-fail: a
+# security job lost on every try leaves no verdict, its pipeline failed. Its
+# gates passed: built again, green, merged.
+scenario build-job-infra-no-verdict
+pin_seed; build_model notes.md "the docs"
+mkdir -p "$FIX/pipeline-jobs" "$FIX/pipeline-bridges" "$FIX/pipeline-status"
+for id in 901 902; do   # the report's --build and the land's
+  echo failed > "$FIX/pipeline-status/$id"; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold-$id"
+  echo '[{"name": "plan", "status": "success"}]' > "$FIX/pipeline-jobs/$id.json"
+  echo "[{\"name\": \"gates\", \"status\": \"failed\", \"downstream_pipeline\": {\"id\": 9$id}}]" > "$FIX/pipeline-bridges/$id.json"
+  echo '[{"name": "gates", "status": "success"}, {"name": "security-alpha", "status": "failed", "failure_reason": "runner_system_failure"}]' > "$FIX/pipeline-jobs/9$id.json"
+done
+run "${BUILDS[@]}" GITLAB_TOKEN=glpat-t
+l="$(cat "$FIX/land-4")"
+has "$l" "The manager merged"; has "$l" "rc 0"
+has "$(find "$FIX" -name gates.log -exec cat {} +)" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 failed, its gates green: its gates job passed, and security-alpha failed in their infrastructure (runner_system_failure); it is built again, once (looper#173)"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+pass
 
 # A job that failed in its script is a red build: a security check's findings,
 # its gates green, are no infrastructure failure, and nothing is built again.
@@ -4911,6 +4944,128 @@ has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (l
 has "$OUT" "#5: no verdict on its own (its gates job failed runner_system_failure, no gate verdict: the build pool had no room)"
 lacks "$OUT" "#5: red on its own"
 lacks "$(grep '^alpha#5 ' "$FIX/comments" || true)" "The manager did not merge"
+pass
+
+# A build whose child pipeline GitLab refused is no red (looper#237: on the
+# free plan's job activity limit, 46 of 82 failed child pipelines on
+# 2026-11-24, none a gate's failure, and the manager sent lands back on them).
+# Its child pipeline failed with no job, no gate ran: the batch is built again
+# as one after a back-off, once, and merged on that build's green, no land
+# built on its own. Refused again, nothing built: the lands stay queued as one batch.
+refused() { # pipeline-id...: its child pipeline failed with no job, GitLab's reason the activity limit
+  local id; mkdir -p "$FIX/pipeline-jobs" "$FIX/pipeline-bridges" "$FIX/failure-reason"
+  for id in "$@"; do
+    echo '[{"name": "plan", "status": "success"}, {"name": "report-fail", "status": "success"}]' > "$FIX/pipeline-jobs/$id.json"
+    echo "[{\"name\": \"gates\", \"status\": \"failed\", \"downstream_pipeline\": {\"id\": 9$id, \"status\": \"failed\"}}]" > "$FIX/pipeline-bridges/$id.json"
+    echo '[]' > "$FIX/pipeline-jobs/9$id.json"; echo '[]' > "$FIX/pipeline-bridges/9$id.json"
+    echo "The pipeline job activity limit was exceeded." > "$FIX/failure-reason/9$id"
+  done
+}
+limit="the child pipeline 99XX failed with no job: The pipeline job activity limit was exceeded."
+scenario train-refused-built-again
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+# report-fail's "the build failed" (the build file before looper#237).
+printf '%s\n' "the build failed" > "$FIX/build-infra"; refused 901
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_BACKOFF=1
+has "$OUT" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 of alpha"
+has "$OUT" "had no verdict, GitLab refused its child pipeline: it is built again as it was after a back-off, once (looper#237)"
+lacks "$OUT" "is red"; lacks "$OUT" "judging each of its"
+[[ "$(builds_of)" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+[[ -z "$(cut -d' ' -f7 "$FIX/builds" | grep .)" ]] || fail "a land built on its own: $(cat "$FIX/builds")"
+grep -qF "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/pipelines/9901/jobs?per_page=100" "$FIX/gitlab" ||
+  fail "the child pipeline's jobs not read: $(grep pipelines "$FIX/gitlab")"
+for n in 4 5 6; do
+  [[ "$(landed "f$n.txt")" == "$n" ]] || fail "main lacks f$n.txt: $(origin log --oneline main)"
+  c="$(grep "^alpha#$n " "$FIX/comments")"
+  has "$c" "The manager merged [\`looper/alpha-$n\`]"
+  has "$c" "built again after https://gitlab.com/tacplus-dev/build/-/pipelines/901 had no verdict, GitLab having refused its child pipeline"
+done
+has "$(find "$FIX" -name gates.log -exec cat {} +)" "the build job https://gitlab.com/tacplus-dev/build/-/pipelines/901 had no verdict, GitLab having refused its child pipeline (${limit//99XX/9901}): no red; it is built again as it was after 1m, once (looper#237)"
+main_green
+pass
+# The build file of looper#237: no report job, so a refused child leaves no
+# verdict, only plan's pending, and the pipeline failed. Refused twice: nothing
+# built, the lands stay queued, none sent back.
+scenario train-refused-twice
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+refused 901 902; mkdir -p "$FIX/pipeline-status"
+for id in 901 902; do echo failed > "$FIX/pipeline-status/$id"; echo "running $(date -u +%FT%TZ)" > "$FIX/build-hold-$id"; echo '[{"name": "plan", "status": "success"}]' > "$FIX/pipeline-jobs/$id.json"; done
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_BACKOFF=1
+has "$OUT" "nothing built: its build job https://gitlab.com/tacplus-dev/build/-/pipelines/902 had no verdict, GitLab refused its child pipeline (${limit//99XX/9902}), as the one before it: no red (looper#237)"
+lacks "$OUT" "is red"; lacks "$OUT" "judging each of its"
+[[ "$(builds_of)" == 2 ]] || fail "builds: $(cat "$FIX/builds")"
+for n in 4 5 6; do
+  [[ -z "$(landed "f$n.txt")" ]] || fail "merged without a verdict"
+  grep -qx state=queued <<<"$(origin show "looper/alpha-$n:.looper/land")" || fail "#$n is not queued"
+  c="$(grep "^alpha#$n " "$FIX/comments")"
+  has "$c" "Nothing could be built of the batch holding"; lacks "$c" "The manager did not merge"
+done
+pass
+# A child pipeline that ran a job and failed is red as before: only one with no job was refused.
+scenario train-refused-jobs-red
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+printf '%s\n' "the build failed" > "$FIX/build-infra"; refused 901; rm -f "$FIX/failure-reason/9901"
+echo '[{"name": "gates", "status": "failed", "failure_reason": "script_failure"}]' > "$FIX/pipeline-jobs/9901.json"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_BACKOFF=1
+has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (looper#205)"
+lacks "$OUT" "GitLab refused its child pipeline"
+pass
+# A land's own build in a red batch's round, refused (looper#237), is no
+# verdict on its own: the land stays in the batch, never sent back on it.
+scenario train-red-round-refused
+train_seed; train_issues 5 6
+for n in 4 5 6; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+printf '%s\n' "the build failed" "" "the build failed" > "$FIX/build-infra"; refused 903
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_BACKOFF=1
+has "$OUT" "the batch is red: judging each of its 3 lands on its own, at once (looper#205)"
+has "$OUT" "#5: no verdict on its own (${limit//99XX/9903})"
+lacks "$OUT" "#5: red on its own"
+lacks "$(grep '^alpha#5 ' "$FIX/comments" || true)" "The manager did not merge"
+pass
+# A report's --build refused (looper#237) is no verdict, exit 2, never red:
+# its looper reads the child pipeline with GITLAB_TOKEN, which its model lacks.
+scenario build-child-refused
+pin_seed; build_model notes.md "the docs"
+printf '%s\n' "the build failed" > "$FIX/build-infra"; refused 901; mkdir -p "$FIX/pipeline-status"; echo failed > "$FIX/pipeline-status/901"
+run "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_BACKOFF=1
+b="$(cat "$FIX/build-4")"
+has "$b" "no verdict: GitLab refused the build's child pipeline (${limit//99XX/9901}): no red, its infrastructure's (looper#237); --build again later"
+has "$b" "rc 2"; lacks "$b" "rc 1"
+has "$(cat "$FIX/land-4")" "The manager merged"
+[[ "$(landed notes.md)" == "the docs" ]] || fail "main: $(origin log --oneline main)"
+pass
+
+# No build is started while the build project is within LOOPER_BUILD_JOB_ROOM
+# (50) jobs of GitLab's job activity limit, LOOPER_BUILD_JOB_CAP (500)
+# (looper#237): it waits for room, at most LOOPER_BUILD_ROOM_WAIT, then
+# starts it; with no room by then, none: nothing built, the land stays queued.
+scenario build-job-room
+pin_seed; build_model notes.md "the docs"
+echo 451 > "$FIX/build-active"
+( sleep 4; echo 449 > "$FIX/build-active" ) & waiter=$!
+run "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_ROOM_WAIT=120
+wait "$waiter"
+# Its looper's build server says so in the run's builds.log.
+has "$(cat "$FIX"/project/looper-runs/*/builds.log)" "the build project has 451 jobs active, within 50 of GitLab's job activity limit of 500: the build of alpha"
+has "$(cat "$FIX/land-4")" "The manager merged"
+grep -q 'scope%5B%5D=created&scope%5B%5D=pending&scope%5B%5D=running&scope%5B%5D=waiting_for_resource' "$FIX/build-active-reads" ||
+  fail "active jobs not read: $(cat "$FIX/build-active-reads")"
+grep -q 'page=5' "$FIX/build-active-reads" || fail "not every page read: $(cat "$FIX/build-active-reads")"
+pass
+scenario train-no-job-room
+train_seed; train_issues 5
+for n in 4 5; do queue "$n" "2026-11-03T1$n:00:00Z" "f$n.txt" "$n"; done
+echo 480 > "$FIX/build-active"
+manage "${BUILDS[@]}" GITLAB_TOKEN=glpat-t LOOPER_BUILD_ROOM_WAIT=3
+has "$OUT" "nothing built: no room: the build project still had 480 jobs active after 1m, within 50 of GitLab's job activity limit of 500 (looper#237)"
+[[ "$(builds_of)" == 0 ]] || fail "builds: $(cat "$FIX/builds")"
+for n in 4 5; do
+  grep -qx state=queued <<<"$(origin show "looper/alpha-$n:.looper/land")" || fail "#$n is not queued"
+  lacks "$(grep "^alpha#$n " "$FIX/comments" || true)" "The manager did not merge"
+done
 pass
 
 # A red batch whose lands are each green on their own (two changes that break

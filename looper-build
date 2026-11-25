@@ -17,8 +17,11 @@
 #            gate set asked for from its gates.yaml (looper#71); a change to a
 #            tracked file fails it; then the code it generates (a `generated`
 #            recipe), for the security checks
-#   (the security checks, looper#49, are looper-scan's: the child pipeline's
-#            security-<repo> and security-report jobs, in the looper image)
+#   scan     the child pipeline's security-<repo> job, in the looper image:
+#            the security checks (looper-scan's, looper#49), then the
+#            build's verdict, the commit status: the gates' reason, the
+#            security checks', or pass (a release's is report-pass's, after
+#            publish), the one status job of an ordinary build (looper#237)
 #   verify   in that image too, on a release tag and on a verify run (the
 #            nightly's, looper#74): `just verify`, the formal verification,
 #            which no land runs (tacplus-dev/tacplus#275); a verify run skips
@@ -30,7 +33,11 @@
 #   gates-report  a nightly's gates verdict on main, as the repository's
 #            latest, which the nightly scan reads instead of running the
 #            gates (looper#73)
-#   status   the GitHub commit status (context tacplus-dev/build)
+#   status   the GitHub commit status (context tacplus-dev/build): pending
+#            (with the CI file's BUILD_CHILD_VERDICT, plan's, and its own
+#            failure); scan's verdict; report-pass and report-fail (with
+#            BUILD_CHILD_VERDICT, a release's alone). None on a nightly or
+#            verify run
 #   publish  on a release tag, a job of the child pipeline once every check
 #            passed: the image, built with rootless BuildKit in a build image
 #            that has it (BUILD_BUILDER_IMAGE: tacplus-image-build,
@@ -126,6 +133,7 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build gates                 just gates on the commit, in this directory's checkout
        looper-build gates-local           the gates of the checkout BUILD_SRC at BUILD_SHA (a looper VM's local build)
        looper-build status STATE [TEXT]   the commit status: pending, success or failure
+       looper-build scan                  the security checks (looper-scan run, report), then the build's commit status
        looper-build publish [--dry-run]   the release image, its digest and archive (--dry-run: build only)
        looper-build sbom                  the release image's SBOM, of publish's archive (image.tar)
        looper-build verify                just verify on the commit (a verify run: when verify-changed says run)
@@ -641,27 +649,13 @@ EOF
     expire_in: 30 days
     paths: [gates.log, build-verdict, built/, generated/]
 EOF
-  # A failed gates job's verdict, on the commit as this build's (the parent's
-  # pipeline): the gates' own reason from its artifact, or none when its runner
-  # was lost on every try (looper#148). The parent's report-fail, which cannot
-  # read it, then leaves it be.
-  cat <<EOF
-gates-failed:
-  image: "$BUILD_SCAN_IMAGE"
-  tags: [$BUILD_RUNNER_TAGS]
-  needs: [{job: gates, artifacts: true}]
-  when: on_failure
-  variables:
-    GIT_STRATEGY: none
-    BUILD_REPO: "$BUILD_REPO"
-    BUILD_SHA: "$BUILD_SHA"
-    BUILD_TAG: "${BUILD_TAG:-}"
-    BUILD_ORG: "$BUILD_ORG"
-    BUILD_STATUS_URL: "${CI_PIPELINE_URL:-}"
-    BUILD_NO_VERDICT: "no gates verdict: the gates job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
-  script:
-    - looper-build status failure
-EOF
+  # The security checks, then the build's verdict on the commit as this
+  # build's (the parent's pipeline: BUILD_STATUS_URL): cmd_scan, one job where
+  # gates-failed, security-report, security-failed and report-pass were
+  # (looper#237: GitLab's free plan counts every job of the alive pipelines).
+  # A nightly's sets none: its findings are filed, the commit is main's.
+  local nightly=""; [[ "${BUILD_NIGHTLY:-}" != true ]] || nightly='
+    BUILD_NIGHTLY: "true"'
   cat <<EOF
 security-$BUILD_REPO:
   image: "$BUILD_SCAN_IMAGE"
@@ -676,29 +670,18 @@ security-$BUILD_REPO:
     BUILD_TAG: "${BUILD_TAG:-}"
     BUILD_ORG: "$BUILD_ORG"
     BUILD_SCAN_KIND: "$(scan_kind)"
+    BUILD_GATES: "${BUILD_GATES:-}"
     BUILD_BASE: "${BUILD_BASE:-}"
+    BUILD_STATUS_URL: "${CI_PIPELINE_URL:-}"$nightly
 EOF
   scan_requests
   cat <<EOF
   script:
-    - looper-scan run
+    - looper-build scan
   artifacts:
     when: always
     expire_in: 90 days
     paths: [security/]
-security-report:
-  image: "$BUILD_SCAN_IMAGE"
-  tags: [$BUILD_RUNNER_TAGS]
-  needs: [{job: "security-$BUILD_REPO", artifacts: true}]
-  when: always
-  allow_failure: true
-  variables:
-    GIT_STRATEGY: none
-    BUILD_REPO: "$BUILD_REPO"
-    BUILD_SHA: "$BUILD_SHA"
-    BUILD_SCAN_KIND: "$(scan_kind)"
-  script:
-    - looper-scan report
 EOF
   # A nightly's gates verdict, main's as it is, published for the nightly scan
   # (looper#73): the scan reads it rather than run the gates with Docker.
@@ -716,27 +699,6 @@ gates-report:
     BUILD_NIGHTLY: "true"
   script:
     - looper-build gates-report
-EOF
-  # A failed security job's verdict, the gates green, as gates-failed sets
-  # theirs (looper#144): report-fail cannot read it either. Not a nightly's:
-  # its findings are filed, the commit is main's.
-  [[ "${BUILD_NIGHTLY:-}" == true ]] || cat <<EOF
-security-failed:
-  image: "$BUILD_SCAN_IMAGE"
-  tags: [$BUILD_RUNNER_TAGS]
-  needs: [{job: gates, artifacts: true}, {job: "security-$BUILD_REPO", artifacts: true}]
-  when: on_failure
-  variables:
-    GIT_STRATEGY: none
-    BUILD_REPO: "$BUILD_REPO"
-    BUILD_SHA: "$BUILD_SHA"
-    BUILD_TAG: "${BUILD_TAG:-}"
-    BUILD_ORG: "$BUILD_ORG"
-    BUILD_STATUS_URL: "${CI_PIPELINE_URL:-}"
-    BUILD_STATUS_OF: security
-    BUILD_NO_VERDICT: "no security verdict: the security job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out"
-  script:
-    - looper-build status failure
 EOF
 }
 
@@ -1274,6 +1236,11 @@ cmd_status() { # state [description]
   local state="${1:-}" text="${2:-}"
   case "$state" in pending|success|failure|error) ;; *) usage >&2; exit 2 ;; esac
   refuse_write_credentials
+  # No commit's verdict (the plan sets its status on every run, looper#237):
+  # before the inputs, which a nightly's fan-out leaves empty.
+  if [[ "${BUILD_NIGHTLY:-}" == true || "${BUILD_VERIFY:-}" == true || "${BUILD_SMOKE:-}" == true || "${BUILD_RUNNER_IMAGE:-}" == true ]]; then
+    log "status: a nightly, a verify run, a smoke or a runner image run sets no commit status: $state not set"; return 0
+  fi
   check_inputs
   # A pending or green status names the build's key, its gate set and base
   # (looper#134): a request for the same key reuses this build (repo-looper).
@@ -1281,11 +1248,11 @@ cmd_status() { # state [description]
     pending) text="building${BUILD_GATES:+: gates $BUILD_GATES}${BUILD_BASE:+ on base $BUILD_BASE}" ;;
     success) text="pass${BUILD_GATES:+: gates $BUILD_GATES}${BUILD_BASE:+ on base $BUILD_BASE}" ;;
     # No build-verdict here when the gates' child pipeline failed (the plan passed): sed exits 2 on the missing file.
-    # A gates-failed job's (BUILD_NO_VERDICT) when the gates job left none (looper#148).
-    # The security-failed job's (BUILD_STATUS_OF=security) only when the gates passed: red gates are gates-failed's (looper#144).
+    # The security job's (cmd_scan) BUILD_NO_VERDICT when the gates job left none (looper#148).
+    # Its BUILD_STATUS_OF=security only when the gates passed: red gates' reason is theirs (looper#144).
     *) if [[ "${BUILD_STATUS_OF:-}" == security ]]; then
          [[ "$(head -n 1 "$BUILD_OUT/build-verdict" 2>/dev/null)" == pass ]] ||
-           { log "status: the gates failed: their reason is gates-failed's, not the security checks'"; return 0; }
+           { log "status: the gates failed: their reason is the gates', not the security checks'"; return 0; }
          text="$(sed -n '1s/^fail: /security: /p' "$BUILD_OUT/security/verdict" 2>/dev/null || true)"
        else
          text="$(sed -n '1s/^fail: //p' "$BUILD_OUT/build-verdict" 2>/dev/null || true)"
@@ -1294,7 +1261,7 @@ cmd_status() { # state [description]
   esac
   local token body url="${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" set
   token="$(reader_token '"statuses":"write","metadata":"read"' "$BUILD_REPO")" || { log "no token for the commit status"; exit 1; }
-  # The build's own "the build failed" leaves the reason its gates-failed job set on this pipeline.
+  # A release's own "the build failed" (report-fail) leaves the reason its security job set on this pipeline.
   if [[ "$state" == failure && "$text" == "the build failed" && -n "$url" ]] &&
      set="$(curl -fsS -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
               "$BUILD_GITHUB_API/repos/$BUILD_ORG/$BUILD_REPO/commits/$BUILD_SHA/statuses?per_page=100" 2>/dev/null |
@@ -1309,6 +1276,34 @@ cmd_status() { # state [description]
     -d "$body" "$BUILD_GITHUB_API/repos/$BUILD_ORG/$BUILD_REPO/statuses/$BUILD_SHA" ||
     { log "GitHub refused the commit status"; exit 1; }
   log "status: $BUILD_ORG/$BUILD_REPO@$BUILD_SHA $BUILD_STATUS_CONTEXT $state: $text"
+}
+
+# --- scan -------------------------------------------------------------------
+
+# The security job (looper#49), and the build's verdict (looper#237: one job
+# where gates-failed, security-report, security-failed and report-pass were):
+# looper-scan run, its report (whose failure fails nothing), then the commit
+# status, by cmd_status: the gates' reason when they failed, or that their job
+# left no verdict (its runner lost or timed out, looper#148); else the
+# security checks' (looper#144); else pass, but a release's, which the
+# parent's report-pass sets once publish passed. A nightly's sets none.
+# Exits as the scan did, or 1 when the status could not be set.
+cmd_scan() {
+  local rc=0 st=()
+  looper-scan run || rc=$?
+  looper-scan report || log "scan: the security report failed (it fails no build)"
+  if [[ "${BUILD_NIGHTLY:-}" == true ]]; then log "scan: a nightly: no commit status"; return "$rc"; fi
+  if [[ "$(head -n 1 "$BUILD_OUT/build-verdict" 2>/dev/null)" != pass ]]; then
+    st=(BUILD_NO_VERDICT="no gates verdict: the gates job's runner was lost (runner_system_failure, after GitLab's retries) or it timed out" "$SELF" status failure)
+  elif (( rc )); then
+    st=(BUILD_STATUS_OF=security BUILD_NO_VERDICT="no security verdict: the security checks exited $rc and left no verdict" "$SELF" status failure)
+  elif [[ -n "${BUILD_TAG:-}" ]]; then
+    log "scan: a release: its pass is report-pass's, once publish passed"; return 0
+  else
+    st=("$SELF" status success)
+  fi
+  BUILD_OUT="$BUILD_OUT" env "${st[@]}" || { log "scan: the commit status was not set"; return 1; }
+  return "$rc"
 }
 
 # --- publish ----------------------------------------------------------------
@@ -1524,6 +1519,7 @@ case "${1:-}" in
   gates) cmd_gates ;;
   gates-local) cmd_gates_local ;;
   status) shift; cmd_status "$@" ;;
+  scan) cmd_scan ;;
   publish) shift; cmd_publish "$@" ;;
   sbom) cmd_sbom ;;
   verify) cmd_verify ;;
