@@ -4026,6 +4026,9 @@ checkpoint() { # issue why [run-dir]
   # The run's nonce, for redact: the model's --checkpoint is another process.
   local NONCE="${NONCE:-}"; [[ -n "$run" && -s "$run/.nonce" ]] && NONCE="$(cat "$run/.nonce")"
   mkdir -p "$WORK"
+  # A lock per checkout, not per WORK (looper#238): a looper VM works many
+  # issues at once, each in its own clone, and on its SIGTERM every one
+  # checkpoints within the same seconds; one lock for them all queued them.
   ( flock 9
     cd "$CHECKOUT"
     idx="$(mktemp)"; trap 'rm -f "$idx"' EXIT
@@ -4060,7 +4063,7 @@ checkpoint() { # issue why [run-dir]
     fi
     git update-ref "refs/looper/$b" "$c"
     log "checkpoint of #$n ($why) pushed to $b: $(git diff --shortstat origin/main "$c")"
-  ) 9>"$WORK/.checkpoint.lock" || { rc=1; log "checkpoint of #$n ($why) failed: nothing pushed to $b, which keeps its last checkpoint" >&2; }
+  ) 9>"$WORK/.checkpoint.$(printf '%s' "$CHECKOUT" | cksum | cut -d' ' -f1).lock" || { rc=1; log "checkpoint of #$n ($why) failed: nothing pushed to $b, which keeps its last checkpoint" >&2; }
   [[ "$CHECKOUT" != "$(report_dir "$n")" ]] || report_reown "$n"
   return "$rc"
 }

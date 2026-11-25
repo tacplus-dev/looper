@@ -5679,7 +5679,8 @@ has "$OUT" "#4: the looper VM is stopping (SIGTERM): checkpointing the run's wor
 [[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt " ]] \
   || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 has "$(origin log -1 --format=%B looper/alpha-4)" "(the VM is stopping)"
-has "$(others)" "The looper VM of alpha stopped this run: the VM is stopping (SIGTERM: a spot reclaim, or its shutdown). Its work in progress is checkpointed on [\`looper/alpha-4\`]"
+grep -qF "The looper VM of alpha stopped this run: the VM is stopping (SIGTERM: a spot reclaim, or its shutdown). Its work in progress is checkpointed on [\`looper/alpha-4\`]" <<<"$(others)" ||
+  { echo "$OUT"; fail "the stop's comment: $(others)"; }
 [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
 main_unchanged
 # Resume from the forge, never the disk: a new VM, its cache gone, lists the

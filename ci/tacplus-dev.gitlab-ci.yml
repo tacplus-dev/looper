@@ -202,6 +202,38 @@ looper-ruleset-probe:
     - 'test -z "${GH_TOKEN:-}" || { echo "this project still has GH_TOKEN, Jody''s token: delete it first (README)"; exit 1; }'
     - GH_TOKEN="$(looper-token mint report)" looper-ruleset probe looper
 
+# The looper VMs' model token (looper#238; tacplus-dev/roadmap
+# decisions/looper-build-vms-2026-11-24.md, point 11: a static secret for now):
+# copies this project's masked CLAUDE_CODE_OAUTH_TOKEN into Secret Manager
+# tacplus-ci/looper-model-token as a new version, so no person handles it (Jody,
+# 2026-11-24: "Yes pipeline"). Its id_token in environment looper-vm-secret is
+# the secret's only adder (tacplus-dev/cloud#108). Played by hand from a web or
+# API pipeline on main, again after the variable is rotated. The value goes
+# from the variable to gcloud's stdin, never to the log or a file.
+looper-vm-secret:
+  stage: plan
+  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  needs: []
+  rules:
+    - if: ($CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: true
+  extends: [.looper-identity, .control]
+  environment: {name: looper-vm-secret, action: prepare}
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - |
+      set -euo pipefail
+      [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || { echo "this job has no CLAUDE_CODE_OAUTH_TOKEN (a masked, protected project variable)"; exit 1; }
+      export CLOUDSDK_CONFIG="$(mktemp -d)" CLOUDSDK_CORE_DISABLE_PROMPTS=1
+      ( umask 077; printf '%s' "$GCP_ID_TOKEN" > "$CLOUDSDK_CONFIG/oidc" )
+      gcloud iam workload-identity-pools create-cred-config "$GCP_WIF_PROVIDER" --credential-source-file="$CLOUDSDK_CONFIG/oidc" --output-file="$CLOUDSDK_CONFIG/fed.json" >/dev/null
+      gcloud auth login --cred-file="$CLOUDSDK_CONFIG/fed.json" --quiet >/dev/null
+      printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | gcloud secrets versions add looper-model-token --project=tacplus-ci --data-file=- --format='value(name)'
+      rm -rf "$CLOUDSDK_CONFIG"
+
+
 # The diagnosis of the apps' signing (looper#95): what GCP sees of a job in each
 # environment that signs (its id_token's claims, the attribute.role the
 # provider gitlab-looper computes from them) and each key's answer to a

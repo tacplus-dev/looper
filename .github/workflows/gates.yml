@@ -11,6 +11,9 @@ on:
       set:
         description: the gates.yaml set to run
         default: full
+      cmd:
+        description: instead of a set, one command (a single test file, while the hub iterates)
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -24,13 +27,14 @@ jobs:
       - name: run the set in the pinned build image
         env:
           SET: ${{ inputs.set || 'full' }}
+          CMD: ${{ inputs.cmd }}
         run: |
           set -euo pipefail
           image="$(sed -n 's/^build_image: *//p' build.lock)"
           [ -n "$image" ] || { echo "build.lock names no build_image" >&2; exit 1; }
-          cmd="$(awk -v s="$SET:" '$0==s{f=1;next} f&&/^  run:/{sub(/^  run: */,"");print;exit} f&&/^[^ #]/{exit}' gates.yaml)"
+          if [ -n "$CMD" ]; then cmd="$CMD"; else cmd="$(awk -v s="$SET:" '$0==s{f=1;next} f&&/^  run:/{sub(/^  run: */,"");print;exit} f&&/^[^ #]/{exit}' gates.yaml)"
           [ -n "$cmd" ] || { echo "gates.yaml has no set $SET" >&2; exit 1; }
-          cmd="${cmd#\'}"; cmd="${cmd%\'}"
+          cmd="${cmd#\'}"; cmd="${cmd%\'}"; fi
           echo "set $SET in $image: $cmd"
           git fetch -q origin main
           docker run --rm -v "$PWD:/w" -w /w -e LOOPER_GATES_BASE="$(git rev-parse origin/main)" \
