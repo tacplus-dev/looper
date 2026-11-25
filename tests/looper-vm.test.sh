@@ -122,6 +122,7 @@ kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
 pass
 fixture org-search-fails
 touch "$FIX/gh-fails"; printf 'beta\n' > "$FIX/org"; echo 3 > "$FIX/ready-beta"
+ARGS=(--org tacplus-dev)
 vm PATH="$TMP/bin:$PATH" LOOPER_VM_IDLE_MINUTES=0
 rc=0; wait "$VM" || rc=$?; VM=""
 (( rc == 0 )) || fail "exited $rc"
