@@ -1208,10 +1208,10 @@ jobs run `looper-build`, from this image.
   bridges and child pipelines' included, against ~500, so an ordinary build (no release, nightly or verify run) is
   `plan` and the `gates` trigger, and the child's `gates` and `security-<repo>`: no `gates-failed`,
   `security-report` or `security-failed`, and, with the CI file's `BUILD_CHILD_VERDICT` `"true"`, no `pending`,
-  `report-pass` or `report-fail`; their work is `plan`'s and the security job's. `BUILD_CHILD_VERDICT` is empty
-  until the CI file pins a looper image whose `looper-build` has `scan`, and is set in that same commit: an older
-  image's child sets no pass, so its parent keeps `pending`, `report-pass` and `report-fail`; the new child works
-  under that parent too. A security job whose runner is lost on every try (or that times out) sets no verdict.
+  `report-pass` or `report-fail`; their work is `plan`'s and the security job's. `BUILD_CHILD_VERDICT` is `"true"`
+  with the CI file's pin of a looper image whose `looper-build` has `scan` (main-e0ab92d on); emptied, the parent
+  keeps `pending`, `report-pass` and `report-fail`, which an older image's child needs (it sets no pass), and the
+  new child works under that parent too. A security job whose runner is lost on every try (or that times out) sets no verdict.
 - **`publish-<repo>`**, on a release (below), a job of the child pipeline once the gates, the security checks and
   the formal verification passed: the repository's `Dockerfile` built for `linux/amd64` and `linux/arm64`, pushed as
   `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z` (tacplus-dev/tacplus#223), its digest recorded in the

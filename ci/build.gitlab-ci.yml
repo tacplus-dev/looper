@@ -240,14 +240,13 @@ variables:
   BUILD_NIGHTLY_TAGS: "arm64, build"
   # The child pipeline's security job sets the build's verdict (looper#237):
   # "true" drops the pending job and an ordinary build's report-pass and
-  # report-fail, plan setting pending and its own failure. Set it in the same
-  # commit that pins default.image to a looper image whose looper-build has
-  # scan: until then the old image's child sets no success, and report-pass
-  # must.
-  BUILD_CHILD_VERDICT: ""
+  # report-fail, plan setting pending and its own failure. It needs
+  # default.image a looper image whose looper-build has scan (main-e0ab92d
+  # on): an older image's child sets no success, and report-pass must.
+  BUILD_CHILD_VERDICT: "true"
 
 default:
-  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  image: ghcr.io/tacplus-dev/looper@sha256:d53cb7c1ca89816424f3681bf16cde38684ec05f87d8977f71591dad9b30494b
   tags: [arm64, build]
   retry:
     max: 2

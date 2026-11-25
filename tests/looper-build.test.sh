@@ -1137,7 +1137,7 @@ done
 pass
 
 # Fewer jobs a build (looper#237): GitLab's free plan counts every job of the alive pipelines, bridges and the
-# child's too, against ~500. With BUILD_CHILD_VERDICT "true" (set with the image pin that has looper-build scan) an
+# child's too, against ~500. With BUILD_CHILD_VERDICT "true" (the CI file's, with its image pin that has scan) an
 # ordinary build (no release, nightly or verify run) is at most 4: plan and the gates trigger here, gates and
 # security-<repo> in the child; a release's report-pass and report-fail are its alone. Unset, the parent is as it
 # was (the old image's child sets no success), and the new child works under it.
@@ -1167,8 +1167,8 @@ parent_jobs() { # inputs(VAR=value...)
 }
 NAME="an ordinary build is at most 4 jobs, parent and child, with BUILD_CHILD_VERDICT; a release's verdict waits for its publish (looper#237)"
 c="$ROOT/ci/build.gitlab-ci.yml"
-grep -qxF '  BUILD_CHILD_VERDICT: ""' "$c" ||
-  fail "BUILD_CHILD_VERDICT is not declared empty: $(grep -n BUILD_CHILD_VERDICT "$c")"
+grep -qxF '  BUILD_CHILD_VERDICT: "true"' "$c" ||
+  fail "BUILD_CHILD_VERDICT is not declared \"true\": $(grep -n BUILD_CHILD_VERDICT "$c")"
 BUILD_IN=(BUILD_REPO=demo BUILD_SHA="${SHA[pass]}" BUILD_TAG= BUILD_SMOKE=false BUILD_RUNNER_IMAGE=false BUILD_NIGHTLY=false BUILD_VERIFY=false)
 for cv in "" false; do
   [[ "$(parent_jobs "${BUILD_IN[@]}" BUILD_CHILD_VERDICT="$cv" | paste -sd' ')" == "pending plan gates report-pass report-fail" ]] ||
