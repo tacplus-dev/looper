@@ -758,6 +758,18 @@ has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "--checkpoint"
 main_unchanged
 pass
 
+# The checkpoint's lock is the checkout's (looper#238), in its git directory,
+# taken read-only: a lock file this user cannot write (another user's, as the
+# looper's is to a report's model user, looper#242) does not stop a checkpoint.
+scenario checkpoint-lock-readonly
+echo ': > "$(git rev-parse --absolute-git-dir)/looper-checkpoint.lock"; chmod 0444 "$(git rev-parse --absolute-git-dir)/looper-checkpoint.lock"; echo one > a.txt' >> "$FIX/claude.sh"
+step "a.txt written under a read-only lock"
+echo 'git -C "$FIX/origin.git" log -1 --format=%B looper/alpha-4 > "$FIX/seen"' >> "$FIX/claude.sh"
+run
+has "$(cat "$FIX/seen")" "a.txt written under a read-only lock"
+main_unchanged
+pass
+
 scenario checkpoint-hourly
 echo 'echo x > b.txt; sleep 3; git -C "$FIX/origin.git" log -1 --format=%B looper/alpha-4 > "$FIX/seen" 2>&1' >> "$FIX/claude.sh"
 run LOOPER_CHECKPOINT_INTERVAL=1
