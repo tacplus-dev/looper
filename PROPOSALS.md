@@ -1156,6 +1156,11 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The full gates as a model's user** (2026-11-03, #69): moot since #73 (2026-11-26): no model has a docker, so none runs the full gates; they are its builds' (build jobs, a looper VM's local builds).
 - **The broker's path checks are check, then use** (2026-11-03, #68): moot since #73 (2026-11-26): the broker is gone.
 - **Size a child by its issue, not its repository** (2026-10-31, #41; narrowed 2026-11-05, #74): moot since #73 (2026-11-26): a report's containers, the only thing its size limited, are gone.
+- **The build pipeline's looper image re-pinned to one with release builds** (2026-11-26, #261): promoted for
+  tacplus-dev/cloud#112 (the hub, for Jody, 2026-11-26) and done in #261 (2026-11-26): `ci/build.gitlab-ci.yml` pins
+  main-7c1dc4d (`sha256:c3a8b379…`, verified with `gh attestation verify`), whose `looper-build` has #252's release
+  builds, as the hub's correction asked. Its first suggestion, main-02e684b, predates #252. The relock moving this pin
+  stays unproposed.
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
   image builds** (2026-11-06, #101): done in #167 (2026-11-16): the `Dockerfile`'s last step, `looper-scan image`,
   runs `govulncheck -mode=binary` on every Go binary under `/usr/local/bin` under the tree's policy and

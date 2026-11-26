@@ -277,8 +277,12 @@ variables:
   # child sets no success, and report-pass must.
   BUILD_CHILD_VERDICT: "true"
 
+# The looper image every job runs in: main's attested build of a reviewed
+# commit, by digest (looper#115), main-7c1dc4d (looper#261). The release input
+# needs one whose looper-build has the branch releases (main-0ef5aa2 on,
+# looper#252): an older plan ignores BUILD_RELEASE.
 default:
-  image: ghcr.io/tacplus-dev/looper@sha256:bd0b9fa432dc3981db909e6e44e0bdfb345379bd85ee8c654bd6ab9ad1a85649
+  image: ghcr.io/tacplus-dev/looper@sha256:c3a8b379342d988683c777b549e57e9b57f8e81eaf1ab557158806589fc89f5b
   tags: [arm64, build]
   retry:
     max: 2
