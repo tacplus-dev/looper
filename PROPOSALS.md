@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **Every gate map miss recorded when main's full check is red** (2026-11-26, #253): a scoped gate map (tacplus#976)
+  is safe only if something notices the change it let through; the agentic flow's decision (item 11) makes main's
+  full check that net, but today a full red is fixed like any other and nobody learns the map was wrong. A durable
+  per-land record of its sets and why (a git note on the land's commit), a `last-green` full-check record (or #249's
+  `main-green`), and, when the culprit of a red is a land on a partial set (#249's bisect, or the only land since the
+  last green; a flake or a re-pin files none), a `bug` issue "gate map miss: <paths> ran <sets>, <gate> broke" filed
+  by the looper's code, quoting the repository's `gate-audit` output where it has one; the map itself is never
+  edited. Waits on Jody: whether to wait for #249, where the record lives, and the audit hook's contract.
 - **looper-vm's end-to-end run on tacplus** (2026-11-24, #238): the parent, its SIGTERM stop, the resume from the
   forge, the shared cache and the local build are tested here with stubs (no container runtime in a report or a
   build job). The issue's last criterion, a local run with a container runtime building a tacplus issue end to end,
