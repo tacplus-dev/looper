@@ -36,8 +36,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   runs the new image (#153: a stale manager kept a fixed fault turning lands red for up to 11 h); with nothing queued, the manager lingers only for report jobs
   running, never for ones created or pending, which on a one-VM pool wait for its VM (#82); the parent and its in-job children (#32), its area plan and
   conflict holds (#39), its time-left holds and re-plans (#33, #59) and its in-job lander (#34, #38, #44) are
-  retired; each report's model's containers limited to its memory (4 GB, or the `memory:` its land's gate set asks in `gates.yaml`, #74)
-  without swap by `looper-docker`, which refuses a larger `--memory`, so one over it is OOM-killed alone (#41); a
+  retired; no model has a container runtime (#73: `looper-docker` and its broker, #41 and #68, are retired; its
+  `docker` says why), and a report or land in a repository that pins no build image stops at once and says to pin it
+  first (the report holds its issue `looper:stuck`, the land is sent back red); a
   report's limit capped at its job's deadline (its job sized for its issue's limit and an hour, #35); each run's model
   chosen per run (#136, #162): `claude-fable-5-1` (`LOOPER_MODEL_HIGH`) for the report of an issue carrying `model:high`
   (set by someone with write access; a bot's or a reader's ignored) and the roadmap's suggestion pass and recap,
@@ -48,9 +49,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   naming its model), its record's `model` file and the job's log with its tokens per model; every model's
   `pkill` is `looper-pkill`, which signals only its run's own processes (tacplus#222, #61); each report's model runs
   as its own unprivileged user (`looper-<issue>`; uid and gid from a reserved range, never the Docker socket's gid,
-  #69), owning its clone, home and run directory, so it cannot signal or read another run's processes or files,
-  and its `docker` goes through `looper-docker-broker`, which serves it only its own containers, unprivileged,
-  mounting only its clone and home (#68), and builds with `docker build` (the broker's HOME its own, #89); `repo-looper` works each repository's
+  #69, kept since #73: a looper VM's looper holds the VM's socket for its local builds), owning its clone, home and
+  run directory, so it cannot signal or read another run's processes or files (#68); `repo-looper` works each repository's
   `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, done only once the run reported on its closed issue and a stopped one reported by the looper, #54, Blocked-by outcomes, one or more,
   also from a run that pushed nothing because the issue waits on another, #22, a blocker closed by now dropped and one
   naming only closed ones resumed, #46; a run that ends with its land
@@ -301,8 +301,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   pods of the in-cluster `kick` runner (59685138, `arm64, kick`, tacplus-dev/cluster#39, #222: never behind the
   reports and managers they start), the pinned repositories' reports and managers and the hub's probes as pods of
   the in-cluster `control` runner (58541761, `arm64, control`, tacplus-dev/cluster#13, #84) once the hub copies `ci/tacplus-dev.gitlab-ci.yml` there
-  and unpauses it (the hub's step after #84 lands; until then everything runs on the VM runners as before), the jobs
-  that still need Docker (tacplus's until its pin, tacplus#340, its nightly scan among them) on the VM runners' tags (`arm64, autoscale`:
+  and unpauses it (the hub's step after #84 lands; until then everything runs on the VM runners as before), no looper job
+  needing Docker since #73 (every repository pinned), and a repository without build jobs still planned on the VM runners' tags (`arm64, autoscale`:
   jody1-328023's *tacplus-dev arm64 autoscaler* and cloud's `ci` stack's `shared` pool, runner 58534919, which took #43's job of 2026-11-16), image `ghcr.io/tacplus-dev/looper:main`; README (Infrastructure) gives the jody1 runner a fresh worker per job
   (`capacity_per_instance = 1`, `max_use_count = 1`, #42), which the hub applies on `gitlab-runner-mgr` after the
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
@@ -317,10 +317,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   release is filed at the next nightly scan, not at once (PROPOSALS.md); the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
   `is_error` result) and the `modelUsage` names are the CLI's as of 2026-11-13, unexercised against a spent quota; a
   high model refused mid-run (its quota spent during the run) is not retried on the default: that run ends, and the
-  next run probes and falls back; the model's own user (#68) takes effect with the image built after its land (the broker,
-  `looper-docker-broker`, is in it); the verdict job's gates (#90) still run a report's commits as its job's user,
-  which writes the verdict the manager job trusts, and the
-  broker's mount check is check-then-use (PROPOSALS.md); the recap has not run against the live APIs yet (its first night does); it reads tacplus-dev/build's
+  next run probes and falls back; the verdict job's gates (#90) still run a report's commits as its job's user,
+  which writes the verdict the manager job trusts; the recap has not run against the live APIs yet (its first night does); it reads tacplus-dev/build's
   jobs with `GITLAB_TOKEN` (#85), its bot a Reporter there once tacplus-dev/cloud#12's `apply:gitlab` has run on
   main (until then `sources` names the 404), and the image's revision only where it has `docker buildx`:
   otherwise its `sources` says so; Cloud Build is not read (#85); one more VM's cost is the t2a-standard-8 on-demand list price (`LOOPER_RECAP_VM_USD_HOUR`,
@@ -339,7 +337,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   build`/`template` stay until the redesign retires them, never run against GCP); until the jobs move onto those
   pools a fresh worker installs and restarts Docker at boot under its first job, which fails in preparation and is
   retried; the VMs get no fix (Jody, 2026-11-06): #84 (closed 2026-11-16) moved the agents' jobs onto the in-cluster
-  control runner, what still needs Docker (tacplus's jobs until tacplus#340, the scans: PROPOSALS.md) follows, and
+  control runner, and no looper job needs Docker since #73, and
   tacplus-dev/cloud#11 (*No VMs outside GKE*, in progress) then removes cloud's `ci` pools and manager and lists
   jody1-328023's interim VMs for Jody to delete; #43 is blocked by cloud#11 and closes when the VMs are gone, with no
   `runner-image measure` tables (no looper job has a GitLab `read_api` token to take them); until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
@@ -364,9 +362,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   job log as they come, and a build waited for is said so every `LOOPER_BUILD_SAY` (10 minutes); they take effect for
   a repository once its commit is pinned (only this one is: `build.lock`; the hub files the others' pin issues) and
   the report and manager jobs hold `BUILD_TRIGGER_TOKEN` (not yet set in tacplus-dev/looper), and need the hub's copy
-  of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); until then every manager runs the gates in its own
-  job (with the apps, its verdict job: #90) and every report keeps `looper-docker`; `looper-docker`, its broker and the host socket's path stay until every
-  repository is pinned (#73's step 3); a pinned repository's scan has no gates record to read until the first nightly fan-out
+  of `ci/build.gitlab-ci.yml` (the `gates` and `base` inputs); without the trigger a pinned repository's manager runs
+  the gates in its own job (with the apps, its verdict job: #90) and its report's model has no container runtime and no
+  build (#73); since #73 an unpinned repository's report and land stop at once, saying to pin it first (every
+  tacplus-dev repository with code is pinned, fleetbox last, fleetbox#9; a SeaBeam instance, `LOOPER_FORGE=gitlab`,
+  parked, has no build path at all: PROPOSALS.md); a pinned repository's scan has no gates record to read until the first nightly fan-out
   after the next looper image (`gates-report` is in that image's plan): until then its prompt says none was read and
   asks for no gates run; a release's publish with
   rootless BuildKit has not run yet: no published build image has `tacplus-image-build` (tacplus#315 is open; the
