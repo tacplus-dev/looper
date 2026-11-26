@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by looper (#237).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#251).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -272,7 +272,13 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-24 by lo
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, an issue's URL read as its reference and an unreadable
   `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each where it runs (#84: the reports and manager of a repository whose gates are build jobs on the in-cluster control runner, `LOOPER_CONTROL_TAGS`, default `arm64, control`, with their kind's requests and limits as `KUBERNETES_*` variables, a report 150m/512Mi, a manager 250m/256Mi (#229, cluster#53: each kind's p90 of 2026-11-23, the cluster's slot count), the kicker and the plan 50m (#165: from the pods' use, limits unchanged; each pod logs its use at its end, the recap's requests against use per kind, an item once a p90 is over its request by more than LOOPER_RECAP_REQUEST_MARGIN, 10%), `LOOPER_REQUESTS_<kind>`; a job that still needs Docker, an unpinned repository's or any scan's, on the VM runners' tags: a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
-  both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end
+  both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end;
+  `looper-merger pass --repo NAME` (#251, the agentic flow's step 5), a fixed program that reads and writes the forge
+  alone: a merge request with a trusted login's green `looper/gates` status on its head merged at once, unbuilt, at
+  that head, a conflicting one sent back to its issue once per head, nothing merged while main has no `main-green`
+  on its first-parent line, 4 merges unchecked after it or the oldest one gate's age old, or the
+  `looper/rolling-check` verdict red; an optional shadow compile measured, never required; tested against a gh stub,
+  and run by no job yet: it goes live with the rolling check (#249; PROPOSALS.md)
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its kicker and plan as
   pods of the in-cluster `kick` runner (59685138, `arm64, kick`, tacplus-dev/cluster#39, #222: never behind the
   reports and managers they start), the pinned repositories' reports and managers and the hub's probes as pods of
