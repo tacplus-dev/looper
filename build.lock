@@ -2,4 +2,4 @@
 # repository's gates (gates.yaml). It is no tacplus project, so it has no tacplus.lock; the build pipeline
 # (looper-build plan) reads this pin the way it reads one. A new digest is a change like any other: it
 # lands on the full gates.
-build_image: ghcr.io/tacplus-dev/looper:main@sha256:50114ec14303609e79e925459f51417b950bc1596f8340b303278825d018be0e
+build_image: ghcr.io/tacplus-dev/looper:main@sha256:a72fc24f2c3dacecbaf800ae961cb1d632a76092f915cf21e293851797d573e4
