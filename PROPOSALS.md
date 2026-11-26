@@ -23,6 +23,21 @@ the looper then marks it `promoted` or `declined` here with the date.
   CPUs (2 on tacplus's c4a-standard-8), a guess; the decision (point 2) sizes capacity from measurement. The
   parent's per-pass line (`builds: R running, W waiting (the longest for Ns), of S slots`) is that measurement: a
   week of it on tacplus's VM, beside each build's time, says whether 2 or 3 slots finish more builds an hour.
+- **The merger's job, live with the rolling check** (2026-11-26, #251): `looper-merger pass` is built and tested,
+  and merges nothing while a repository has no `main-green`; nothing runs it yet. It goes live with looper#249's
+  rolling check (the decision's migration, steps 3 and 4 together): a job of its own per project on a machine that
+  runs no project code (the in-cluster runner's normal pool, never a looper VM), every few minutes, one at a time
+  per repository (`resource_group`), as the manager app (`looper-token mint manager`), with `LOOPER_MERGER_TRUSTED`
+  the identity that sets looper#250's `looper/gates` and #249's `looper/rolling-check` statuses (never
+  tacplus-looper, a report's), and the merge train's manager retired for that repository the same day.
+- **The shadow compile's verdict** (2026-11-26, #251; decision D1): `LOOPER_MERGER_SHADOW`'s measurements
+  (`shadow.tsv`: exit and seconds per merge commit) are to be read beside the rolling check's verdict on the same
+  commits: how often a red compile foretold a red check, and what it cost. Requiring it is Jody's decision on those
+  numbers; the command that asks a project's VM for the compile of a commit is still to write (looper-vm build on a
+  `compile` gate set of the map, say).
+- **A merge request's hold label** (2026-11-26, #251): the merger takes `looper:landing` off an issue it merged or
+  sent back, the label that today means "queued with the manager". looper#250 decides what a report sets while its
+  merge request is open; the merger's label follows it.
 - **looper-vm's end-to-end run on tacplus** (2026-11-24, #238): the parent, its SIGTERM stop, the resume from the
   forge, the shared cache and the local build are tested here with stubs (no container runtime in a report or a
   build job). The issue's last criterion, a local run with a container runtime building a tacplus issue end to end,

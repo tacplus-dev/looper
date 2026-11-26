@@ -4,7 +4,7 @@
 # full. Each set's run is a shell command at the root of the checkout, with
 # LOOPER_GATES_BASE the main the land is rebased on.
 full:
-  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh && tests/looper-token.test.sh && tests/looper-ruleset.test.sh && tests/looper-ci-lint.test.sh && tests/looper-verify.test.sh && tests/looper-secrets.test.sh && tests/go-fetch.test.sh && tests/looper-vm.test.sh
+  run: tests/looper-docker.test.sh && tests/looper-pkill.test.sh && tests/forge.test.sh && tests/repo-looper.test.sh && tests/looper-dispatch.test.sh && tests/tacplus.test.sh && tests/planning-files.test.sh && tests/looper-build.test.sh && tests/runner-image.test.sh && tests/looper-suggest.test.sh && tests/looper-trace.test.sh && tests/image-failed.test.sh && tests/looper-recap.test.sh && tests/looper-token.test.sh && tests/looper-ruleset.test.sh && tests/looper-ci-lint.test.sh && tests/looper-verify.test.sh && tests/looper-secrets.test.sh && tests/go-fetch.test.sh && tests/looper-vm.test.sh && tests/looper-merger.test.sh
   minutes: 30
   paths: [/repo-looper, /looper-lib.sh, /go-fetch, tests/go-fetch.test.sh, /looper-dispatch, /looper-docker, /looper-docker-broker, /looper-pkill, tests/looper-pkill.test.sh, /Dockerfile, tests/git-server.py, tests/forge.test.sh, tests/repo-looper.test.sh, tests/looper-dispatch.test.sh]
 # The looper VM's parent and its local builds (looper#238); the reports it runs are repo-looper's, in full.
@@ -12,6 +12,11 @@ vm:
   run: tests/looper-vm.test.sh
   minutes: 2
   paths: [/looper-vm, tests/looper-vm.test.sh]
+# A project's merger (looper#251): it reads and writes the forge alone.
+merger:
+  run: tests/looper-merger.test.sh
+  minutes: 1
+  paths: [/looper-merger, tests/looper-merger.test.sh]
 # The planning files and the docs: what CI checks of them.
 docs:
   run: './planning-files-check "$LOOPER_GATES_BASE"'

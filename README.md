@@ -1806,6 +1806,38 @@ tests/looper-vm.test.sh        # the parent: two reports that never end and a th
 tests/repo-looper.test.sh      # vm-list: a VM's list names the runs a stopped VM left; vm-sigterm: a report's SIGTERM is its checkpoint and comment within 25 s, then, the disk gone, the next VM lists and resumes it from the forge; vm-store: two reports' clones borrow one store, made once; vm-build: --build is a local build, its log's path in the verdict; vm-build-slot: a build waiting for a slot says so, and how long; vm-build-cap: the run past LOOPER_VM_BUILDS_PER_ISSUE is stopped, checkpointed, its issue told
 ```
 
+## The merger
+
+**`looper-merger`: a project's merger** (looper#251; `tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`,
+step 5 and the panel's items 4, 5 and 7, D1 and D2). A small fixed program, not an agent: it reads and writes the
+forge alone (no checkout, no build), so it runs on a machine that runs no project code, as the identity that may
+write main. `looper-merger pass --repo NAME` takes NAME's open merge requests into main one at a time, by priority
+label, then oldest:
+
+- **Green** is the commit status `LOOPER_MERGER_CONTEXT` (`looper/gates`) success on the head, set by one of
+  `LOOPER_MERGER_TRUSTED` (required: the identity a report cannot mint, item 5; anyone else's status is not read).
+  Not green, it waits. A fork's merge request is never merged.
+- **Clean** (green, and GitHub finds it mergeable): merged at once, **with no build**, a merge commit at exactly its
+  green head; its issue gets `The merger merged`, and loses `looper:landing`, for its next run to report and close.
+- **Conflicting** (green, not mergeable): **sent back** to its issue (the branch `looper/NAME-N`, else a `Closes #N`),
+  once per head, whose next report resolves it: the merger resolves nothing (item 4). The issue loses
+  `looper:landing` and is ready again.
+- **The bound** (item 7, D2): no clean merge while main has no `main-green` or it is off main's first-parent line
+  (the rolling check, looper#249, down or never run: so the merger is live only with the check), while
+  `LOOPER_MERGER_UNCHECKED` (4) merges or more are on main after `main-green`, or the oldest of them is
+  `LOOPER_MERGER_MAX_AGE` minutes old (one gate's age: full's minutes in main's `gates.yaml`), or while the check's
+  newest verdict on main (`LOOPER_ROLLING_CONTEXT`, `looper/rolling-check`, by a trusted login) is red: it stays red
+  while the check runs again, bisects and reverts, and merging reopens with its next green (D3). Conflicts go back
+  whatever the bound.
+- **The shadow compile** (D1): with `LOOPER_MERGER_SHADOW` (a command, run as `CMD NAME SHA` on each merge commit,
+  which asks another machine for the compile), measured into `LOOPER_MERGER_DIR/shadow.tsv` (exit and seconds),
+  never required.
+
+```sh
+looper-merger pass --repo NAME [--dry-run]   # one pass; --dry-run writes nothing
+tests/looper-merger.test.sh                  # a clean green merge request merged unbuilt at its head; only a trusted green; a conflict sent back once per head; held with no main-green, 4 unchecked, one gate's age, a red check or main-green off main's line; a running check holds nothing; priority order, forks, a refused merge, the dry run; the shadow compile measured, a red one merging all the same
+```
+
 ## Running it
 
 ```sh
