@@ -90,6 +90,7 @@
 #
 # Environment: GH_TOKEN and the model's credentials, as repo-looper's;
 # LOOPER_CACHE, LOOPER_CACHE_HOST, LOOPER_VM_POLL (seconds, default 60),
+# LOOPER_VM_LIST_EVERY (seconds between lists, default 300),
 # LOOPER_VM_IDLE_MINUTES, LOOPER_VM_STOP_GRACE, LOOPER_VM_LIST_TIMEOUT (seconds,
 # default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER, LOOPER_VM_BUILDS,
 # LOOPER_VM_REPO_LOOPER (default the repo-looper beside this script),
@@ -106,6 +107,11 @@ POLL="${LOOPER_VM_POLL:-60}"
 IDLE=$(( ${LOOPER_VM_IDLE_MINUTES:-15} * 60 ))
 STOP_GRACE="${LOOPER_VM_STOP_GRACE:-25}"
 LIST_TIMEOUT="${LOOPER_VM_LIST_TIMEOUT:-300}"
+# Seconds from one list's start to the next (looper#256): a list is dozens of
+# forge calls a repository, and one a pass, a minute, on two VMs spent the
+# GitHub App installation's hourly API limit (2026-11-26: every list refused,
+# no issue taken up until the hour turned).
+LIST_EVERY="${LOOPER_VM_LIST_EVERY:-300}"
 COOLDOWN="${LOOPER_VM_COOLDOWN:-300}"
 DOCKER="${LOOPER_VM_DOCKER:-docker}"
 # The cache's layout: a cache with another stamp is discarded.
@@ -186,7 +192,7 @@ tree_of() { # pid...
 }
 
 declare -A CHILD=() ENDED=()   # REPO#N -> pid; REPO#N -> when its report ended
-LISTER="" LISTED=0 IDLE_SINCE="" STOPPING="" STATE="" SLOTS=1
+LISTER="" LISTED=0 LISTED_AT=0 IDLE_SINCE="" STOPPING="" STATE="" SLOTS=1
 
 record() { # the running children, for a person or a test to read
   local n
@@ -254,9 +260,9 @@ reap() {
 pass() {
   local r n k now; now=$(date +%s)
   reap
-  if [[ -z "$LISTER" ]]; then
+  if [[ -z "$LISTER" ]] && (( now - LISTED_AT >= LIST_EVERY )); then
     list_all > "$STATE/list.new" 2>> "$STATE/vm.log" < /dev/null &
-    LISTER=$!
+    LISTER=$!; LISTED_AT=$now
   fi
   local ready=0
   if [[ -s "$STATE/list" ]]; then
@@ -357,7 +363,7 @@ parent() {
     for r in "${REPOS[@]}"; do [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--repo '$r' is not a repository's name"; done
     WHAT="${REPOS[*]}"; WHAT="${WHAT// /, }"
   fi
-  for v in POLL STOP_GRACE LIST_TIMEOUT COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
+  for v in POLL STOP_GRACE LIST_TIMEOUT LIST_EVERY COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
   SLOTS="$(build_slots)" || exit 2
   (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is under 5 seconds"
   trap stop TERM INT

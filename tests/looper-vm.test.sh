@@ -59,7 +59,7 @@ fixture() { # name
 # arguments ARGS (default --repo alpha).
 ARGS=(--repo alpha)
 vm() { # [VAR=value...]
-  env FIX="$FIX" CLAUDE_CODE_OAUTH_TOKEN=test-token LOOPER_TOKEN="$TMP/bin/looper-token" LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 \
+  env FIX="$FIX" CLAUDE_CODE_OAUTH_TOKEN=test-token LOOPER_TOKEN="$TMP/bin/looper-token" LOOPER_VM_REPO_LOOPER="$TMP/bin/repo-looper" LOOPER_CACHE="$FIX/cache" LOOPER_VM_POLL=1 LOOPER_VM_LIST_EVERY=0 \
     LOOPER_VM_COOLDOWN=1000 "$@" "$ROOT/looper-vm" "${ARGS[@]}" > "$FIX/vm.out" 2>&1 & VM=$!
 }
 # Waits, at most 20 seconds, for a command to succeed.
@@ -137,6 +137,21 @@ for a in "--org tacplus-dev --repo alpha" "--repo alpha --except beta" "--org ba
   (( rc == 2 )) || fail "$a: exited $rc"
 done
 ARGS=(--repo alpha)
+pass
+
+# --- a list every LOOPER_VM_LIST_EVERY, not every pass (looper#256) -------------
+# The passes go on each second; the forge is listed once in the interval, so
+# an issue ready later waits for the next list, and the installation's API
+# limit is not spent on lists.
+fixture list-every
+echo 1 > "$FIX/ready"
+vm LOOPER_VM_LIST_EVERY=1000
+until_true "1 started" started 1
+echo 2 >> "$FIX/ready"; sleep 4
+started 2 && fail "2 started before the next list was due"
+(( $(grep -c '^list ' "$FIX/calls") == 1 )) || fail "listed more than once in the interval: $(grep -c '^list ' "$FIX/calls")"
+kill -0 "$VM" 2>/dev/null || fail "the parent stopped"
+kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
 pass
 
 # --- SIGTERM: the tree stopped within 25 seconds --------------------------------
