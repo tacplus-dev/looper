@@ -162,7 +162,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   `nightly: true`, main's head, no commit status; with no `repo`, one pipeline fanning out to every repository whose
   main pins its build image, each its own child pipeline, #164; `BUILD_NIGHTLY_SLOTS`, 1, at a time, each repository's plan and child in the resource group
   `nightly-slot-<n>`, every nightly job on `BUILD_NIGHTLY_TAGS`, a build's never, so the lands' builds never wait behind it, #185:
-  still the build runner's tags until the cluster serves a nightly runner entry, and the schedule's hour the recap's quietest build hours, PROPOSALS.md) and a release add
+  still the build runner's tags until the cluster's nightly entry (tacplus-dev/cluster#46, landed) is registered, tacplus-dev/cloud#116 (#220), and the schedule's hour the recap's quietest build hours, PROPOSALS.md) and a release add
   CodeQL (public repositories only; its `--ram` and `--threads` sized to the job's cgroup, a 2048 MB or quarter reserve
   left, its job `BUILD_SCAN_CODEQL_REQUESTS`, `2 12Gi 3500m 12Gi`, each analysis's peak in the summary's `### Memory`, #189:
   CodeQL's own default heap ran the Java and Rust nightlies out of memory; the gates job `BUILD_GATES_REQUESTS_<repo>`, unset the runner's defaults, both within `BUILD_RUNNER_CEILINGS`, `3500m 12Gi`, #202: tacplus's gates were OOM-killed at 8Gi) and Trivy; the scanners run side by side, `BUILD_SCAN_JOBS` (the
@@ -222,7 +222,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   pass, the hours ready issues waited at it, how often all reports were busy (and running) and the merge backlog, with advice to
   raise or lower it after two nights running, a raise only for waits while all its reports ran, else the pool's item
   `capacity/<pool>` (#92); a scan holds a queued report only in its resource group (#92); the capacity: queue p90, issues waiting for a VM and one more VM's cost
-  a day, for Jody's manual scale-up, #72; the runs and tokens per model and the refused models, #136) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
+  a day, for Jody's manual scale-up, #72; the runs and tokens per model and the refused models, #136; every repository whose nightly published no report, and why, an item `nightly/no_report` always over, #220) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
   would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
   suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the
   looper commits `suggestions/recap/<night>.md` and `.json` with them, for Jody's daily report. Trace propagation
