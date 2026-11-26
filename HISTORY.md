@@ -192,3 +192,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-26 looper issue looper-vm: a limit on local builds running at once, the wait shown, and a cap on builds per issue (#248)
 - 2026-11-26 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#259)
 - 2026-11-26 looper issue Release builds by branch: main nightly and on a build-now trigger, release branches when they have something new, publishing exactly the checked commit (#252)
+- 2026-11-26 looper issue The looper image's Dockerfile builds FROM tacplus/build:2.6 by a floating tag, built of ARGs the relock cannot read or pin (#258)
