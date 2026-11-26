@@ -151,9 +151,22 @@ newer_kick() {
 # takes up the issues looper:in-progress that a stopped VM left.
 release_orphans() { # active jobs
   local repo n
+  local -A off=()
   forge_search_issues "$LABEL_IN_PROGRESS" 200 repository,number '.[] | "\(.repository.name) \(.number)"' \
   | while read -r repo n; do
-      vm_repo "$repo" && continue
+      if vm_repo "$repo"; then
+        # Its VM holds it while the VM is up. A VM that is off holds nothing
+        # (it went idle on refused lists, 2026-11-26, and tacplus#976 sat in
+        # progress with nothing to start the VM for it): released, so it is
+        # ready and the kicker starts the VM. A group that cannot be read
+        # releases nothing.
+        [[ -n "${off[$repo]:-}" ]] || { if vm_off "$repo"; then off[$repo]=yes; else off[$repo]=no; fi; }
+        [[ "${off[$repo]}" == yes ]] || continue
+        forge_issue_edit "$repo" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
+        forge_issue_comment "$repo" "$n" "This issue was \`$LABEL_IN_PROGRESS\`, but its looper VM (looper-vm-$(vm_group "$repo")) is off: no run holds it. The label is removed, so the VM is started for it and its next run takes it, resuming from its branch if it left one." >/dev/null || true
+        log "$repo#$n: $LABEL_IN_PROGRESS with its looper VM off; label removed"
+        continue
+      fi
       busy "$repo" "$1" "$n" >/dev/null && continue
       forge_issue_edit "$repo" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || continue
       forge_issue_comment "$repo" "$n" "This issue was \`$LABEL_IN_PROGRESS\`, but it has no looper job created, pending, waiting or running in $PIPELINE: the run that held it is gone (killed with its runner, say). The label is removed, so the next run takes it, resuming from its branch if it left one (looper#20)." >/dev/null || true
@@ -245,6 +258,13 @@ vm_api() { # method group path-suffix (VM_TOKEN set: vm_start's)
     { WHY="Compute refused ${1} looper-vm-$2$3"; return 1; }
 }
 vm_size() { vm_api GET "$1" "" | jq -er '.targetSize' 2>/dev/null; } # group: its target size
+# The repository's VM group is read, and at 0: its VM is off.
+vm_off() { # repo
+  local g s
+  g="$(vm_group "$1")" || return 1
+  VM_TOKEN="$("$TOKEN_CMD" gcp-token 2>/dev/null)" && [[ -n "$VM_TOKEN" ]] || return 1
+  s="$(vm_size "$g")" && [[ "$s" == 0 ]]
+}
 # The repository's VM, up or started: 0 when it is (or now will be), else 1, WHY set.
 vm_start() { # repo
   local s g
