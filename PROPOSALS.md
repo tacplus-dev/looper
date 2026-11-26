@@ -76,9 +76,34 @@ the looper then marks it `promoted` or `declined` here with the date.
   commits: how often a red compile foretold a red check, and what it cost. Requiring it is Jody's decision on those
   numbers; the command that asks a project's VM for the compile of a commit is still to write (looper-vm build on a
   `compile` gate set of the map, say).
-- **A merge request's hold label** (2026-11-26, #251): the merger takes `looper:landing` off an issue it merged or
-  sent back, the label that today means "queued with the manager". looper#250 decides what a report sets while its
-  merge request is open; the merger's label follows it.
+- **The merge request's status build off the build project** (2026-11-26, #250): the status a merge trusts is
+  today a build of tacplus-dev/build, which the kicker starts for each open merge request. The design retires the
+  GitLab land builds (step 6) and gives the rolling check its own reserved machine (#249): that machine, or another
+  that runs no report, could build the merge requests' heads too and set the status with its own identity, so the
+  build project is no longer in the merge path.
+- **A merge request's status left pending** (2026-11-26, #250): the kicker starts no build while a head has a
+  status of its key, and one whose pipeline ended with no verdict (a runner lost, GitLab's refusal of its child)
+  stays `pending` on GitHub. It could build again when that pipeline has ended (repo-looper's `build_ended`,
+  looper#198), as a report's reuse of a build does.
+- **A merge request's red status back to its issue** (2026-11-26, #250): a red `tacplus-dev/build` on an open merge
+  request is sent back by nothing: the merger (#251) sends back conflicts alone and waits on any head not green, so
+  the issue stays `looper:merge-request`. The kicker, which reads the status each pass, could close the merge
+  request with the failure (the send-back the issue's next run reads), or the merger send a red back as a conflict.
+- **A claim for every report** (2026-11-26, #250): one run per issue is a forge claim on a looper VM and for a VM
+  project's fallback report here (`LOOPER_CLAIM=1`); the in-cluster reports keep their GitLab job checks
+  (`busy`, `orphaned`). Claims everywhere would make "One project, one place" below moot and let a report on any
+  host take a lapsed run's issue at once.
+- **A closed merge-request issue's HISTORY.md line** (2026-11-26, #250): it is still queued on the issue's branch for
+  the manager (`queue_history`), which adds it. When the managers are retired (the design's step 6) the merger, or
+  the issue's closing run through its own merge request, needs to add it.
+- **One status context for a merge request's build** (2026-11-26, #250, #251): the kicker's build of an open merge
+  request sets `tacplus-dev/build` (looper-build's `BUILD_STATUS_CONTEXT`, by the tacplus-reader app), and the
+  merger trusts `looper/gates` (`LOOPER_MERGER_CONTEXT`). Setting the merger to `tacplus-dev/build` would not do:
+  the same context, by the same app, is on any commit a report's own `--build` built in the build project, on the
+  gate set and base the report chose. The merge request's build wants its own context: a `context` input of
+  `ci/build.gitlab-ci.yml` the kicker passes as `looper/gates` and no report's trigger may ask for (the hub's copy
+  into tacplus-dev/build takes it), or the reserved machine of "The merge request's status build off the build
+  project" above setting it. Before the merger goes live (#249).
 - **looper-vm's end-to-end run on tacplus** (2026-11-24, #238): the parent, its SIGTERM stop, the resume from the
   forge, the shared cache and the local build are tested here with stubs (no container runtime in a report or a
   build job). The issue's last criterion, a local run with a container runtime building a tacplus issue end to end,

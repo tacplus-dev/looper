@@ -825,6 +825,7 @@ A watchdog beside the model (every `LOOPER_WATCH_INTERVAL`, 60s) stops it:
 | waits until a date on something outside: it ran `--wait-until <date>` (looper#181) | the same, until that date |
 | reached its time limit | a comment with what is done and what is left (its last checkpoint) and a link to its branch; it stays `approved`, neither stuck nor done, and the next run resumes from the branch |
 | ended with its land queued and no verdict yet (looper#70): every report that lands, since `--land` queues and returns (the merge train, looper#86), or one its limit stopped | `land-pending`: the same, and `looper:landing` until the manager merges it (or sends it back) and gives its verdict on the issue; then it is ready again, `approved`, and its next report finishes it (comments and closes, or fixes what came back) |
+| ended with its merge request open (looper#250: on a looper VM, `--land` opens one and returns) | `mr-open`: a comment linking it, with its last checkpoint; it stays `approved`, and `looper:merge-request` while it is open; once it is merged or closed (the VM's list or the kicker reads it) the label goes, the issue is told, and its next report finishes it or fixes what came back, its prompt saying which |
 | ended early with progress: it landed a fix, or checkpointed a step other than the one it resumed from (looper#34) | as a time limit: a comment with its last checkpoint; it stays `approved` and the next run resumes |
 | went idle after its fix landed: waiting on a land that was done (looper#37) | as an early end with progress: a comment with main's range and its last checkpoint; it stays `approved` and the next run comments and closes |
 | went idle after its build had no verdict within `LOOPER_BUILD_WAIT` of its start (looper#133) | a retry: a comment saying so with its last checkpoint; it stays `approved`, never `looper:stuck`, and the next run resumes |
@@ -1787,7 +1788,8 @@ package registry left on (the default). `ci/build.gitlab-ci.yml` is copied there
 **`looper-vm`: the looper that runs on a project's own spot VM** (looper#238; `tacplus-dev/roadmap:decisions/looper-build-vms-2026-11-24.md`,
 points 2, 3, 5, 9 and 10; the pilot is tacplus). It changes where and how a report runs, not what a report does:
 each issue is today's report, `repo-looper --repo NAME --issue N`, a child of the VM's parent, with `LOOPER_VM` set.
-Merges stay with the repository's manager (point 6). Its image is looper#239's, its VM cloud#108's, its spec
+Merges stay with the repository's manager (point 6), but for a pinned GitHub repository's reports, which open merge
+requests instead ([below](#the-merge-request), looper#250). Its image is looper#239's, its VM cloud#108's, its spec
 `looper.yaml` looper#240's, and the kicker that starts it looper#241's.
 
 - **A parent that never blocks.** `looper-vm --repo NAME` only schedules and records. Every `LOOPER_VM_POLL` seconds
@@ -1820,7 +1822,8 @@ Merges stay with the repository's manager (point 6). Its image is looper#239's, 
   the checks of a tracked file changed or HEAD moved, the verdict, as a build job's gates) in the build image the
   commit pins, a container started through the VM's container socket, the cache mounted at its own path, with the
   commit checked out on its own borrowing the report's objects. The model gets the verdict and the path of the
-  **full log**, which it reads. Feedback only: the manager's build is the merge's verdict. The model itself still
+  **full log**, which it reads. Feedback only: the manager's build is the merge's verdict (a merge request's, its status
+  build off the VM). The model itself still
   has no container runtime.
 - **Builds bounded** (looper#248; decisions/agentic-dev-flow-2026-11-25.md, point 2). At most `LOOPER_VM_BUILDS` local
   builds run at once on a VM (default a quarter of its CPUs, at least 1: several full gate runs sharing 8 CPUs all
@@ -1834,12 +1837,57 @@ Merges stay with the repository's manager (point 6). Its image is looper#239's, 
 - **Idle exit.** With no report running and no ready issue for `LOOPER_VM_IDLE_MINUTES` (15), it exits 0 and the VM
   shuts down (scale to zero); a list that fails counts as none.
 
+### The merge request
+
+**On a looper VM a report's `--land` opens a merge request instead of queueing a land** (looper#250;
+`tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`, step 4 of the flow, the panel's items 3, 5, 6 and 13).
+A pinned repository on GitHub; anywhere else, or with `LOOPER_VM_MR=0` in the VM's environment (the hub's switch, say
+until the merger takes merge requests, looper#251), `--land` queues with the manager, as before.
+
+- **On `main-green`, never main's tip.** Its own commits (those since its branch left main) are rebased onto
+  `main-green` (`LOOPER_MAIN_GREEN`), the last main the rolling check found green (looper#249), with `git rebase
+  --onto`: main's commits since are not carried, and no rebase onto main's head is asked for. Until origin has that
+  ref (on main), main's head, said so. A conflict opens nothing: exit 3, the files named.
+- **Its own build, then the merge request.** The gate set the diff since that base calls for is a local build
+  (`looper-vm build`, as `--build`), unless this run's `--build` already built the same tree green on the same
+  gate set: that build is the evidence, not built again (looper#260). Green: exactly that commit is pushed to `looper/mr-NAME-N` and its pull request
+  to main opened (or the open one given its new evidence). Red opens nothing (exit 4, the failure and the log's
+  end); a build with no verdict opens nothing either (exit 2): `--land` again builds again, nothing waits on it.
+- **Its evidence**, in the pull request's body: the commit (the branch's head, exactly what was built), its base
+  (`main-green` or main, which), the gate set and why, the verdict, and the build's log: its end inline, all of it as
+  `.looper/mr-gates.log` on the run's checkpoint, linked by commit. A last line, `<!-- looper-mr issue=N sha=...
+  base=... gates=... -->`, is the machine's. Merging it does not close the issue: the issue's next run does.
+- **Its build status is not the report's.** That build is feedback, not proof (the panel's item 6). The status a
+  merge trusts is the commit status `tacplus-dev/build` on the head, set by a build off the VM: each kicker pass
+  (`looper-dispatch`, while `LOOPER_VM_REPOS` names a VM) starts one for each open merge request whose head has no
+  status of its key, with the build trigger no VM holds, on its merge base with main and the gate set that diff calls
+  for by main's gate map (`repo-looper --gate-set`), never the set or base its evidence names (the report's, which
+  may not choose what the status checks), and none again while it is pending, green or red. The report cannot set it: its token (the tacplus-looper App's) has no statuses permission, and
+  nothing on its VM holds one (item 5).
+- **The issue waits on it.** `looper:merge-request` holds the issue (no report takes it, a stopped VM's included)
+  while the merge request is open. Merged or closed (a send-back: the merger's, looper#251), the VM's list and the
+  kicker each free it: the label goes, the issue is told, the VM is started for it as for any ready issue, and its
+  next run's prompt says which: merged, it reports and closes; closed, it reads why, fixes it and `--land`s again.
+  The merger (`looper-merger`, looper#251) reads the issue from the branch `looper/mr-NAME-N` (its body has no `Closes
+  #N`: merging does not close the issue), and on a merge or a send-back takes `looper:merge-request` off with
+  `looper:landing`. Its send-back leaves the merge request open: the issue's next run is told so (open, and the issue
+  not held), resolves it and `--land`s again, which updates it. The two status contexts are not yet one: the
+  kicker's builds set `tacplus-dev/build`, the merger reads `looper/gates` (PROPOSALS.md).
+- **One run per issue** (item 13). A report claims its issue on the forge before it changes anything: the branch
+  `looper/claim-NAME-N`, a commit naming the run and until when it holds, moved only by compare-and-swap (`git push
+  --force-with-lease` against the value read), renewed every `LOOPER_CLAIM_REFRESH` seconds (300) to
+  `LOOPER_CLAIM_TTL` (900) ahead, and given up at the run's end and on the VM's SIGTERM. Another run's live claim, or
+  one that cannot be read or set, starts nothing (`claimed`); one past its until (a VM gone with no SIGTERM) is
+  taken. On a looper VM, and for a VM project's report the plan puts here when its VM does not start
+  (`LOOPER_CLAIM=1`): the VM may yet start.
+
 ```sh
 looper-vm --repo NAME          # the parent: until idle (exit 0) or SIGTERM (exit 0 within 25 s, each report checkpointed)
 looper-vm build --repo NAME [--issue N] --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE   # a local build, once a slot is free (exit 0 pass, 1 fail)
 looper-vm --self-test          # its tools, the container socket and the cache (looper#239's image)
 tests/looper-vm.test.sh        # the parent: two reports that never end and a third started beside them, a list that hangs holding up nothing; SIGTERM: a report's checkpoint, a tree with setsid and timeout children and a report that ignores it, all gone and the parent out within 25 s; idle exit, never while a report runs; a cache with no stamp, an unreadable git store and an unwritable cache; two local builds at once, one green and one red, sharing the cache's dependency caches, each its own checkout; the host's path of the cache (stub docker); build slots: three builds on two, the third waiting and saying so, the parent counting builds running and waiting and the longest wait, the third taking a freed slot with its wait said, a killed build's marker dropped
-tests/repo-looper.test.sh      # vm-list: a VM's list names the runs a stopped VM left; vm-sigterm: a report's SIGTERM is its checkpoint and comment within 25 s, then, the disk gone, the next VM lists and resumes it from the forge; vm-store: two reports' clones borrow one store, made once; vm-build: --build is a local build, its log's path in the verdict; vm-build-slot: a build waiting for a slot says so, and how long; vm-build-cap: the run past LOOPER_VM_BUILDS_PER_ISSUE is stopped, checkpointed, its issue told
+tests/repo-looper.test.sh      # vm-list: a VM's list names the runs a stopped VM left; vm-sigterm: a report's SIGTERM is its checkpoint and comment within 25 s, then, the disk gone, the next VM lists and resumes it from the forge; vm-store: two reports' clones borrow one store, made once; vm-build: --build is a local build, its log's path in the verdict; vm-build-slot: a build waiting for a slot says so, and how long; vm-build-cap: the run past LOOPER_VM_BUILDS_PER_ISSUE is stopped, checkpointed, its issue told; vm-mr-red, vm-mr-green, vm-mr-main-green (#250): red opens nothing; green opens the merge request with its evidence, the issue held until it is merged, then freed and its next run told; built on main-green, behind main, its own commits alone; vm-mr-sent-back, vm-mr-open-sent-back: closed unmerged, or left open by the merger with the issue freed, its next run told to read why and land again; vm-claim-held, vm-claim-lapsed: another run's live claim starts nothing, a lapsed one is taken and given up
+tests/looper-dispatch.test.sh  # vm-mr-status (#250): an open merge request's build status started once, off the VM, on its merge base and the set main's map gives its diff (full for a path it does not name), never its evidence's, none while pending or red, none without the trigger; merged and closed ones free their issues; no-vm-no-mr; vm-fallback-claims
 ```
 
 ## The merger
@@ -1854,10 +1902,11 @@ label, then oldest:
   `LOOPER_MERGER_TRUSTED` (required: the identity a report cannot mint, item 5; anyone else's status is not read).
   Not green, it waits. A fork's merge request is never merged.
 - **Clean** (green, and GitHub finds it mergeable): merged at once, **with no build**, a merge commit at exactly its
-  green head; its issue gets `The merger merged`, and loses `looper:landing`, for its next run to report and close.
-- **Conflicting** (green, not mergeable): **sent back** to its issue (the branch `looper/NAME-N`, else a `Closes #N`),
-  once per head, whose next report resolves it: the merger resolves nothing (item 4). The issue loses
-  `looper:landing` and is ready again.
+  green head; its issue gets `The merger merged`, and loses `looper:landing` and `looper:merge-request` (a VM report's
+  hold, looper#250), for its next run to report and close.
+- **Conflicting** (green, not mergeable): **sent back** to its issue (the branch `looper/NAME-N` or a VM report's
+  `looper/mr-NAME-N`, else a `Closes #N`), once per head, whose next report resolves it: the merger resolves nothing
+  (item 4). The issue loses `looper:landing` and `looper:merge-request` and is ready again.
 - **The bound** (item 7, D2): no clean merge while main has no `main-green` or it is off main's first-parent line
   (the rolling check, looper#249, down or never run: so the merger is live only with the check), while
   `LOOPER_MERGER_UNCHECKED` (4) merges or more are on main after `main-green`, or the oldest of them is
@@ -1871,7 +1920,7 @@ label, then oldest:
 
 ```sh
 looper-merger pass --repo NAME [--dry-run]   # one pass; --dry-run writes nothing
-tests/looper-merger.test.sh                  # a clean green merge request merged unbuilt at its head; only a trusted green; a conflict sent back once per head; held with no main-green, 4 unchecked, one gate's age, a red check or main-green off main's line; a running check holds nothing; priority order, forks, a refused merge, the dry run; the shadow compile measured, a red one merging all the same
+tests/looper-merger.test.sh                  # a clean green merge request merged unbuilt at its head; only a trusted green; a conflict sent back once per head; held with no main-green, 4 unchecked, one gate's age, a red check or main-green off main's line; a running check holds nothing; priority order, forks, a refused merge, the dry run; the shadow compile measured, a red one merging all the same; a VM report's looper/mr-NAME-N read as its issue, both hold labels taken off (#250)
 ```
 
 ## Running it

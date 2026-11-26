@@ -32,6 +32,11 @@ LABEL_DECISION="needs-decision"      # the looper needs a decision it may not ma
 # A report's commits queued with its repository's manager (looper#70): not
 # ready, so no other report takes the issue, until the manager's verdict.
 LABEL_LANDING="looper:landing"
+# A report on a looper VM opened its merge request (looper#250): not ready, so
+# no other report takes the issue, while that pull request is open; once it is
+# merged or closed (the merger's send-back, looper#251) the label goes
+# (forge_mr_release) and the issue's next run finishes it or fixes it.
+LABEL_MR="looper:merge-request"
 # A report whose token may push a change under .github/workflows/ (looper#115):
 # only someone with write access sets it, and looper-token reads who did.
 LABEL_WORKFLOWS="looper:workflows"
@@ -66,6 +71,7 @@ LOOPER_LABELS=(
   "$LABEL_APPROVED|0e8a16|Someone with write access approved it: the looper works it"
   "$LABEL_IN_PROGRESS|fbca04|A looper holds it"
   "$LABEL_LANDING|fbca04|Its commits are queued with the manager, which merges them and gives its verdict here"
+  "$LABEL_MR|fbca04|Its report opened a merge request with its evidence; the issue is worked again once that is merged or closed"
   "$LABEL_WORKFLOWS|5319e7|Its report's token may push a change under .github/workflows/ (set by someone with write access)"
   "$LABEL_MODEL_HIGH|5319e7|Its report runs on the high model, LOOPER_MODEL_HIGH (set by someone with write access)"
   "$LABEL_STUCK|d93f0b|A run ended without finishing, for no known reason; a person looks"
@@ -439,6 +445,61 @@ forge_pr_texts() { # repo n
   esac
 }
 
+# --- merge requests (looper#250) ---------------------------------------------------
+#
+# On a looper VM a report's finished work is a merge request (tacplus-dev/roadmap
+# decisions/agentic-dev-flow-2026-11-25.md, step 4): a pull request to main from
+# its branch looper/mr-NAME-N, which carries its evidence. GitHub's alone: on
+# GitLab a VM's report queues its land with the manager, as before.
+forge_mr_branch() { echo "looper/mr-$1-$2"; } # repo n
+
+# The newest merge request from head: "<state> <number> <url> [<merge
+# commit>]", its state open, merged or closed; "none" when there is none.
+# Fails when GitHub cannot say.
+forge_mr_state() { # repo head
+  local p
+  [[ "$LOOPER_FORGE" == github ]] || return 1
+  p="$(gh api "repos/$LOOPER_ORG/$1/pulls?head=$LOOPER_ORG:$2&state=all&per_page=10")" || return 1
+  jq -r 'sort_by(.number) | last
+         | if . == null then "none"
+           else "\(if .state == "open" then "open" elif .merged_at then "merged" else "closed" end) \(.number) \(.html_url)\(if .merged_at and .merge_commit_sha then " " + .merge_commit_sha else "" end)" end' <<<"$p"
+}
+
+# Opens the merge request from head to main, or gives the one open already
+# this title and body; prints "<number> <url>".
+forge_mr_open() { # repo head title body
+  local s n
+  s="$(forge_mr_state "$1" "$2")" || return 1
+  if [[ "$s" == open\ * ]]; then
+    read -r _ n _ <<<"$s"
+    gh api "repos/$LOOPER_ORG/$1/pulls/$n" -X PATCH -f title="$3" -f body="$4" --jq '"\(.number) \(.html_url)"'
+  else
+    gh api "repos/$LOOPER_ORG/$1/pulls" -X POST -f head="$2" -f base=main -f title="$3" -f body="$4" --jq '"\(.number) \(.html_url)"'
+  fi
+}
+
+# The repository's issues looper:merge-request whose merge request is open no
+# more (merged; closed, the merger's send-back, looper#251; or gone): each
+# told and its label removed, so it is ready again and its next run finishes
+# it or fixes what came back. One GitHub cannot say about keeps its label.
+# Prints "<n> <state>" for each released.
+forge_mr_release() { # repo
+  local r="$1" n s st k url c
+  for n in $(forge_issue_list "$r" open 100 number '.[].number' "$LABEL_MR"); do
+    s="$(forge_mr_state "$r" "$(forge_mr_branch "$r" "$n")")" || continue
+    read -r st k url c <<<"$s"
+    case "$st" in
+      open) continue ;;
+      merged) c="Its merge request [#$k]($url) was merged${c:+ (${c:0:7})}: the issue is \`$LABEL_MR\` no more, and its next run finishes it (looper#250)." ;;
+      closed) c="Its merge request [#$k]($url) was closed without merging (sent back: its comments say why): the issue is \`$LABEL_MR\` no more, and its next run fixes what came back and opens it again (looper#250)." ;;
+      *) c="It has no merge request from \`$(forge_mr_branch "$r" "$n")\`: the issue is \`$LABEL_MR\` no more, and its next run opens one (looper#250)." ;;
+    esac
+    forge_issue_edit "$r" "$n" --remove-label "$LABEL_MR" >/dev/null || continue
+    forge_issue_comment "$r" "$n" "$c" >/dev/null || true
+    echo "$n $st"
+  done
+}
+
 # A GitLab issue's or merge request's texts, each author's role in the project.
 gl_texts() { # repo issues|merge_requests n
   local p u roles='{}' l m item notes; p="$(gl_project "$1")"
@@ -550,14 +611,14 @@ forge_clone() { # repo dir [git clone option...]
 }
 
 # A page of a repository on the forge: the repository, an issue, a branch's
-# tree or a release.
-forge_web() { # repo [issue N | tree BRANCH | release TAG]
+# tree, a file at a commit or a release.
+forge_web() { # repo [issue N | tree BRANCH | blob REF PATH | release TAG]
   local base
   case "$LOOPER_FORGE" in
     github) base="https://github.com/$LOOPER_ORG/$1"
-            case "${2:-}" in issue) echo "$base/issues/$3" ;; tree) echo "$base/tree/$3" ;; release) echo "$base/releases/tag/$3" ;; *) echo "$base" ;; esac ;;
+            case "${2:-}" in issue) echo "$base/issues/$3" ;; tree) echo "$base/tree/$3" ;; blob) echo "$base/blob/$3/$4" ;; release) echo "$base/releases/tag/$3" ;; *) echo "$base" ;; esac ;;
     gitlab) base="$LOOPER_FORGE_URL/$LOOPER_ORG/$1"
-            case "${2:-}" in issue) echo "$base/-/issues/$3" ;; tree) echo "$base/-/tree/$3" ;; release) echo "$base/-/releases/$3" ;; *) echo "$base" ;; esac ;;
+            case "${2:-}" in issue) echo "$base/-/issues/$3" ;; tree) echo "$base/-/tree/$3" ;; blob) echo "$base/-/blob/$3/$4" ;; release) echo "$base/-/releases/$3" ;; *) echo "$base" ;; esac ;;
   esac
 }
 
@@ -587,7 +648,7 @@ forge_cmd() { # view|close|label|list repo [n] [label] | file repo path | repos
 # ISSUE_ORDER (by priority, then oldest first), as "number" lines.
 approved_issues() { # repo
   forge_issue_list "$1" open 200 number,labels,createdAt "
-      [.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
+      [.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\" and . != \"$LABEL_MR\"))]
       | sort_by($ISSUE_ORDER) | .[].number" "$LABEL_APPROVED"
 }
 
@@ -666,8 +727,8 @@ ready_body() { # repo body issue
 ready_itself() { # repo issue
   local i
   i="$(forge_issue_view "$1" "$2" state,labels,body '.')" || return 1
-  jq -e --arg a "$LABEL_APPROVED" --arg p "$LABEL_IN_PROGRESS" --arg s "$LABEL_STUCK" --arg d "$LABEL_DECISION" --arg l "$LABEL_LANDING" \
-    '(.state | ascii_upcase) == "OPEN" and any(.labels[]; .name == $a) and all(.labels[].name; IN($p, $s, $d, $l) | not)' <<<"$i" >/dev/null || return 1
+  jq -e --arg a "$LABEL_APPROVED" --arg p "$LABEL_IN_PROGRESS" --arg s "$LABEL_STUCK" --arg d "$LABEL_DECISION" --arg l "$LABEL_LANDING" --arg m "$LABEL_MR" \
+    '(.state | ascii_upcase) == "OPEN" and any(.labels[]; .name == $a) and all(.labels[].name; IN($p, $s, $d, $l, $m) | not)' <<<"$i" >/dev/null || return 1
   ready_body "$1" "$(jq -r '.body // ""' <<<"$i")" "$2"
 }
 
@@ -925,7 +986,7 @@ ready_all_by_repo() {
   [[ "${LOOPER_PRIVATE_REPORTS:-}" != 1 ]] || vis=""
   all="$(forge_search_issues "$LABEL_APPROVED" 1000 repository,number,labels,createdAt,body "" "$vis")" || return 1
   # Not held, in ISSUE_ORDER: "<repo> <number> <body, base64>".
-  issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
+  issues="$(jq -r "[.[] | select(all(.labels[].name; . != \"$LABEL_IN_PROGRESS\" and . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\" and . != \"$LABEL_MR\"))]
                    | sort_by($ISSUE_ORDER) | .[] | \"\\(.repository.name) \\(.number) \\(.body // \"\" | @base64)\"" <<<"$all")" || return 1
   # Each issue's blockers: "<repo> <number> <blocker repo> <blocker number>".
   refs="$(while read -r r n b64; do

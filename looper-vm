@@ -81,7 +81,8 @@
 # set): `looper-build gates-local` in the commit's pinned build image, a
 # container started through the container socket (LOOPER_VM_DOCKER, default
 # docker), the cache mounted at its own path. Feedback only: the merge path
-# stays the manager's build (point 6). At most LOOPER_VM_BUILDS run at once
+# stays the manager's build (point 6), or, where a report's --land opens a
+# merge request (looper#250), its build status, set off the VM. At most LOOPER_VM_BUILDS run at once
 # (looper#248; default a quarter of the VM's CPUs): one that waits for a slot
 # says so in its log, and for how long once it has one; the parent logs, each
 # pass, the builds running and waiting and the longest wait, and names each

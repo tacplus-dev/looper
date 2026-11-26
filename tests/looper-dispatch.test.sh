@@ -33,6 +33,20 @@ if [[ -f "$e" ]] && read -r c s < "$e" && (( c > 0 )); then
   [[ "$cmd" != api\ * ]] || echo '{"message":"Server Error"}'   # gh api prints the body too
   echo "HTTP ${s:-502}: Server Error (https://api.github.com/search/issues?q=label%3Aapproved)" >&2; exit 1
 fi
+# A VM report's merge request (looper#250): $FIX/pulls/<repo>-<k>.json ({number,
+# state, merged_at, merge_commit_sha, html_url, head: {ref, sha}, body}), listed
+# by its head's branch or read alone; a commit's statuses, $FIX/statuses/<sha>.json, else none.
+if [[ "$cmd" == api\ repos/*/pulls* || "$cmd" == api\ repos/*/commits/*/statuses* ]]; then
+  q="."; while [[ $# -gt 0 ]]; do [[ "$1" != --jq ]] || { q="$2"; shift; }; shift; done
+  p="${cmd#api repos/*/}"; r="${p%%/*}"
+  shopt -s nullglob; fs=("$FIX/pulls/$r"-*.json); shopt -u nullglob
+  case "$p" in
+    */commits/*) c="${p#*/commits/}"; cat "$FIX/statuses/${c%%/*}.json" 2>/dev/null || echo '[]' ;;
+    *"/pulls?"*) h="$(sed -E 's/.*head=[^:&]*:([^&]*).*/\1/' <<<"$p")"
+                 jq -s --arg h "$h" '[.[] | select(.head.ref == $h)]' "${fs[@]+"${fs[@]}"}" < /dev/null ;;
+    */pulls/*) f="$FIX/pulls/$r-${p##*/}.json"; [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$f" ;;
+  esac | jq -r "$q"; exit 0
+fi
 if [[ "$cmd" == "api graphql" ]]; then
   [[ ! -e "$FIX/rate-limited" ]] || { echo '{"errors":[{"type":"RATE_LIMIT","message":"API rate limit already exceeded"}]}'; exit 1; }
   q="${2#query=}"; data='{}'; rc=0
@@ -79,8 +93,9 @@ if [[ "$cmd" == api\ repos/*/compare/* ]]; then
   echo "$cmd" >> "$FIX/compares"
   [[ -f "$FIX/changed" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
   q="."; while [[ $# -gt 0 ]]; do [[ "$1" != --jq ]] || { q="$2"; shift; }; shift; done
+  # $FIX/merge-base: the compare's merge base (looper#250), else c...c.
   jq -R 'split(" ") | {filename: .[0]} + (if .[1] then {status: "renamed", previous_filename: .[1]} else {} end)' "$FIX/changed" \
-    | jq -s '{files: .}' | jq -r "$q"; exit 0
+    | jq -s --arg m "$(cat "$FIX/merge-base" 2>/dev/null || printf 'c%.0s' {1..40})" '{files: ., merge_base_commit: {sha: $m}}' | jq -r "$q"; exit 0
 fi
 if [[ "$cmd" == "attestation verify" ]]; then
   echo "$*" >> "$FIX/attest"
@@ -113,9 +128,10 @@ if [[ "$cmd $label" == "search issues approved" && -e "$FIX/slow" ]]; then
 fi
 case "$cmd" in
   # A file of a repository's main (looper#90): $FIX/contents/<repo>-<path>, else HTTP 404.
+  # Its content at any ref (looper#250: a merge request's gate map at its merge base), when not empty.
   api\ repos/*/contents/*)
-    p="${cmd#api repos/*/}"; f="$FIX/contents/${p%%/*}-${p#*/contents/}"
-    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; echo '{"type":"file"}'; exit 0 ;;
+    p="${cmd#api repos/*/}"; p="${p%%\?*}"; f="$FIX/contents/${p%%/*}-${p#*/contents/}"
+    [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; if [[ -s "$f" ]]; then cat "$f"; else echo '{"type":"file"}'; fi; exit 0 ;;
   # $FIX/private: the org's private repositories, one a line (--visibility public leaves them out).
   # GitHub's search index lags (looper#175): $FIX/search/<repo>-<n>.json is the
   # issue as the search still has it, where the issue itself has changed.
@@ -163,6 +179,12 @@ case "$m $url" in
     r="${url##*/looper-vm-}"; if [[ -f "$FIX/vm-$r" ]]; then reply 200 "{\"targetSize\": $(cat "$FIX/vm-$r")}"; else reply 404 '{"error":{"code":404}}'; fi; exit 0 ;;
   "POST https://compute.googleapis.com/"*/instanceGroupManagers/looper-vm-*/resize\?size=1)
     r="${url##*/looper-vm-}"; r="${r%%/*}"; echo "resize $r 1" >> "$FIX/vm-calls"; echo 1 > "$FIX/vm-$r"; reply 200 '{"status":"DONE"}'; exit 0 ;;
+esac
+# The build project's trigger (looper#250: a merge request's build status): each call's inputs to $FIX/mr-builds.
+case "$m $url" in
+  "POST https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/trigger/pipeline")
+    grep -oE 'inputs%5B[a-z]+%5D=[^ ]+' "$FIX/argv" | tail -n 4 | paste -sd' ' >> "$FIX/mr-builds"
+    reply 201 '{"id": 9, "web_url": "https://gitlab.com/tacplus-dev/build/-/pipelines/9"}'; exit 0 ;;
 esac
 [[ -f "$FIX/jobs.json" ]] || { reply 500 '{"message":"500 Internal Server Error"}'; exit 0; }
 case "$m $url" in
@@ -1375,6 +1397,71 @@ grep -qF "alpha's looper VM did not start" "$FIX/err" || fail "the fallback is n
 touch "$FIX/no-gcp"; echo 0 > "$FIX/vm-alpha"
 PLAN="$(vm_plan)" || fail "plan failed: $(cat "$FIX/err")"
 grep -q '^looper-alpha-4:' <<<"$PLAN" && grep -qF 'no Google access token' "$FIX/err" || fail "no token, and no fallback: $PLAN $(cat "$FIX/err")"
+pass
+
+# A VM report's merge request (looper#250): each pass, one open gets its build
+# status started off the VM (the build project's trigger, which no VM holds),
+# on its merge base with main and the gate set that diff calls for by main's
+# gate map (never what its evidence names: the report's), and none while its
+# head has a status of that key or a red one; one merged or closed frees its
+# issue, told so.
+pull() { # k head-branch state sha body
+  mkdir -p "$FIX/pulls"
+  jq -n --argjson k "$1" --arg h "$2" --arg st "$3" --arg s "$4" --arg b "$5" \
+    '{number: $k, head: {ref: $h, sha: $s}, body: $b, html_url: "https://github.com/tacplus-dev/alpha/pull/\($k)",
+      state: (if $st == "open" then "open" else "closed" end), merged_at: (if $st == "merged" then "2026-11-26T00:00:00Z" else null end),
+      merge_commit_sha: (if $st == "merged" then $s else null end)}' > "$FIX/pulls/alpha-$1.json"
+}
+vm_kick() { OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" "$@" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"; }
+S="$(printf 'a%.0s' {1..40})"; B="$(printf 'b%.0s' {1..40})"; C="$(printf 'c%.0s' {1..40})"
+scenario vm-mr-status
+echo 1 > "$FIX/vm-alpha"
+issue alpha 4 OPEN "Fix it." approved looper:merge-request
+issue alpha 5 OPEN "Fix it too." approved looper:merge-request
+issue alpha 6 OPEN "And this." approved looper:merge-request
+mkdir -p "$FIX/contents"; printf 'full:\n  run: just gates\ndocs:\n  run: just docs\n  paths: ["*.md"]\n' > "$FIX/contents/alpha-gates.yaml"
+echo notes.md > "$FIX/changed"; echo "$B" > "$FIX/merge-base"
+pull 101 looper/mr-alpha-4 open "$S" "Evidence. <!-- looper-mr issue=4 sha=$S base=$C gates=nothing -->"
+pull 102 looper/mr-alpha-5 merged "$C" ""
+pull 103 looper/mr-alpha-6 closed "$C" ""
+vm_kick BUILD_TRIGGER_TOKEN=glptt-b
+[[ "$(cat "$FIX/mr-builds" 2>/dev/null)" == "inputs%5Brepo%5D=alpha inputs%5Bsha%5D=$S inputs%5Bgates%5D=docs inputs%5Bbase%5D=$B" ]] ||
+  fail "the merge request's build: $(cat "$FIX/mr-builds" 2>/dev/null) $OUT"
+grep -qF "alpha#4: started the build status of its merge request https://github.com/tacplus-dev/alpha/pull/101: aaaaaaa, the gates docs on base bbbbbbb" <<<"$OUT" || fail "the log: $OUT"
+! grep -q 'glptt-b' "$FIX/argv" || fail "the trigger token on a command line"
+[[ "$(labels alpha 4)" == approved,looper:merge-request ]] || fail "#4 open, its label: $(labels alpha 4)"
+[[ "$(labels alpha 5) $(labels alpha 6)" == "approved approved" ]] || fail "merged or closed, still held: $(labels alpha 5) $(labels alpha 6)"
+grep -qF 'alpha#5 Its merge request [#102](https://github.com/tacplus-dev/alpha/pull/102) was merged (ccccccc)' "$FIX/comments" || fail "comments: $(cat "$FIX/comments")"
+grep -qF 'alpha#6 Its merge request [#103](https://github.com/tacplus-dev/alpha/pull/103) was closed without merging (sent back' "$FIX/comments" || fail "comments: $(cat "$FIX/comments")"
+# Its status set (by the build): none started again; nor once it is red.
+mkdir -p "$FIX/statuses"; : > "$FIX/mr-builds"
+echo '[{"context": "tacplus-dev/build", "state": "pending", "description": "building: gates docs on base '"$B"'"}]' > "$FIX/statuses/$S.json"
+vm_kick BUILD_TRIGGER_TOKEN=glptt-b
+[[ ! -s "$FIX/mr-builds" ]] || fail "built again: $(cat "$FIX/mr-builds")"
+echo '[{"context": "tacplus-dev/build", "state": "failure", "description": "the gates docs exited 1"}]' > "$FIX/statuses/$S.json"
+vm_kick BUILD_TRIGGER_TOKEN=glptt-b
+[[ ! -s "$FIX/mr-builds" ]] || fail "a red one built again: $(cat "$FIX/mr-builds")"
+# A path main's map does not name (or a change to the map): full, whatever the evidence says.
+rm -f "$FIX/statuses/$S.json"; printf 'notes.md\nmain.go\n' > "$FIX/changed"
+vm_kick BUILD_TRIGGER_TOKEN=glptt-b
+[[ "$(cat "$FIX/mr-builds")" == "inputs%5Brepo%5D=alpha inputs%5Bsha%5D=$S inputs%5Bgates%5D=full inputs%5Bbase%5D=$B" ]] || fail "not full: $(cat "$FIX/mr-builds")"
+# No trigger in the kick: said, nothing started.
+: > "$FIX/mr-builds"
+vm_kick
+[[ ! -s "$FIX/mr-builds" ]] || fail "built with no trigger: $(cat "$FIX/mr-builds")"
+grep -qF "holds no BUILD_TRIGGER_TOKEN to start its build" <<<"$OUT" || fail "the log: $OUT"
+pass
+# Without a VM no pass reads merge requests.
+scenario no-vm-no-mr
+issue alpha 5 OPEN "Fix it too." approved looper:merge-request
+dispatch run
+! grep -q 'looper:merge-request\|pulls' "$FIX/gh" || fail "read merge requests with no VM: $(cat "$FIX/gh")"
+pass
+# A VM project's report planned here (its VM did not start) claims its issue (looper#250).
+scenario vm-fallback-claims
+PLAN="$(vm_plan)" || fail "plan failed: $(cat "$FIX/err")"
+grep -A40 '^looper-alpha-4:' <<<"$PLAN" | grep -q '    LOOPER_CLAIM: "1"' || fail "the fallback report does not claim: $PLAN"
 pass
 
 echo "looper-dispatch: all scenarios pass"

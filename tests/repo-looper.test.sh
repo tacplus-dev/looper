@@ -38,11 +38,38 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # `gh api graphql` answers forge_issue_states' aliased query from the issues'
 # files (null, and exit 1, for one there is none of), each query appended to
 # $FIX/graphql; $FIX/graphql-fail refuses it as GitHub does when it is down.
+# A report's merge request (looper#250) is a pull request there too, with
+# head: {ref, sha}, state, merged_at, merge_commit_sha and html_url: `gh api
+# repos/<o>/<r>/pulls?head=<o>:<branch>` lists those from that branch, `-X POST
+# .../pulls` opens one (numbered from 101, its head's sha origin's), `-X PATCH
+# .../pulls/<k>` gives it a title and body (and its head's sha again); each
+# call's method and path are appended to $FIX/pr-calls.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 cmd="$1 $2"; shift 2
+if [[ "$cmd" == "api repos/"*/pulls* ]] && [[ "$cmd" == *"/pulls?"* || " $* " == *" -X "* ]]; then
+  p="${cmd#api repos/*/}"; r="${p%%/*}"; X=GET; j="."; declare -A F=()
+  while (( $# )); do case "$1" in -X) X="$2"; shift 2 ;; -f) F[${2%%=*}]="${2#*=}"; shift 2 ;; --jq) j="$2"; shift 2 ;; *) shift ;; esac; done
+  mkdir -p "$FIX/pulls"; echo "$X ${p%%\?*}" >> "$FIX/pr-calls"
+  shopt -s nullglob; fs=("$FIX/pulls/$r"-*.json); shopt -u nullglob
+  if [[ "$p" == *"/pulls?"* ]]; then
+    h="$(sed -E 's/.*head=[^:&]*:([^&]*).*/\1/' <<<"$p")"
+    jq -s --arg h "$h" '[.[] | select(.head.ref == $h)]' "${fs[@]+"${fs[@]}"}" < /dev/null | jq -r "$j"
+  elif [[ "$X" == POST ]]; then
+    k=$(( $(jq -s 'map(.number) | max // 100' "${fs[@]+"${fs[@]}"}" < /dev/null) + 1 ))
+    jq -n --argjson k "$k" --arg r "$r" --arg t "${F[title]}" --arg b "${F[body]}" --arg h "${F[head]}" --arg s "$(git -C "$FIX/origin.git" rev-parse "refs/heads/${F[head]}")" \
+      '{number: $k, title: $t, body: $b, head: {ref: $h, sha: $s}, base: {ref: "main"}, state: "open", merged_at: null, merge_commit_sha: null,
+        html_url: "https://github.com/tacplus-dev/\($r)/pull/\($k)", author: "tacplus-looper[bot]", association: "NONE", reviews: [], review_comments: []}' > "$FIX/pulls/$r-$k.json"
+    jq -r "$j" "$FIX/pulls/$r-$k.json"
+  elif [[ "$X" == PATCH ]]; then
+    f="$FIX/pulls/$r-${p##*/}.json"; [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
+    t="$(jq --arg t "${F[title]}" --arg b "${F[body]}" --arg s "$(git -C "$FIX/origin.git" rev-parse "refs/heads/$(jq -r .head.ref "$f")")" '.title = $t | .body = $b | .head.sha = $s' "$f")"
+    printf '%s\n' "$t" > "$f"; jq -r "$j" "$f"
+  else echo "stub gh: unexpected $X $p" >&2; exit 3; fi
+  exit 0
+fi
 case "$cmd" in
   "auth setup-git") git config --global --add safe.directory '*'; exit 0 ;;   # the local origin, a model user's too (looper#68)
   "repo clone") git clone -q "${@:5}" "$FIX/origin.git" "$2"; echo "$2 ${*:5}" >> "$FIX/clones"; exit 0 ;;   # gh repo clone R DIR -- --quiet [git clone options]
@@ -5957,55 +5984,231 @@ has "$b" "the local build of alpha $(cut -c1-7 "$FIX/head"), the gates docs on b
 has "$b" "verdict: success: the gates docs passed"; has "$b" "rc 0"
 has "$(cat "$FIX/vm-builds")" "build --repo alpha --issue 4 --dir $FIX/work/alpha/issues/4 --sha $(cat "$FIX/head") --gates docs --base $main0 --log $FIX/project/looper-runs/"
 [[ ! -e "$FIX/builds" ]] || fail "a build job was triggered: $(cat "$FIX/builds")"
-has "$(cat "$FIX/land-4")" "The manager merged"
+has "$(cat "$FIX/land-4")" "opened: the merge request #101"
 has "$(cat "$FIX/probe")" "docker: alpha builds locally on this looper VM, through --build (looper#238): a report has no container runtime. Build with: "
 pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
 has "$pr" "Verify with a local build: "; has "$pr" "as a container this
    looper VM starts (looper#238)"; has "$pr" "\`tacplus\` runs in your local builds only (rule 4)."
 pass
 
-# On a VM a land's own gates run locally before it is queued: the set its
-# diff maps to, on its commits rebased onto main. Red queues nothing and says
-# why; green queues, and the manager merges. (--build above ran them at HEAD;
-# the land's are the rebased commit's.)
-scenario vm-land-gates-red
-pin_seed; build_model notes.md "red docs"
+# On a VM --land opens a merge request instead of queueing a land (looper#250):
+# the report's own commits rebased onto main-green (main's head while there is
+# none), the gate set their diff maps to built locally, and only on green the
+# branch looper/mr-alpha-4 pushed at exactly that commit and its pull request
+# opened, with its evidence (the commit, its base, the gate set, the verdict,
+# the log, and the line a merger reads). Red opens nothing and says why; the
+# issue is looper:merge-request while it is open, never the manager's.
+vm_stub() { # [exit code]: looper-vm build, writing its verdict
+  cat > "$FIX/vm-stub" <<EOS
+#!/usr/bin/env bash
+[[ "\$1" == build ]] || exit 9
+echo "\$*" >> "\$FIX/vm-builds"
+while (( \$# )); do [[ "\$1" == --log ]] && log="\$2"; shift; done
+if [[ "${1:-0}" == 0 ]]; then echo "verdict: success: the gates docs passed" >> "\$log"
+else { echo "notes.md holds red"; echo "verdict: failure: fail: the gates docs (gates.yaml) exited 1"; } >> "\$log"; exit 1; fi
+EOS
+  chmod +x "$FIX/vm-stub"
+}
+pr_of() { cat "$FIX/pulls/alpha-$1.json"; } # k
+
+scenario vm-mr-red
+pin_seed; build_model notes.md "red docs"; vm_stub 1
+m="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+l="$(cat "$FIX/land-4")"
+has "$l" "nothing opened: the gates docs failed on your commits rebased onto main ${m:0:7}, its head: alpha has no main-green on main yet (looper#249)"
+has "$l" "verdict: failure: fail: the gates docs (gates.yaml) exited 1"; has "$l" "rc 4"
+lacks "$l" "opened: the merge request"; lacks "$l" "queued: the manager"
+! compgen -G "$FIX/pulls/*.json" >/dev/null || fail "a merge request opened: $(ls "$FIX/pulls")"
+! origin rev-parse -q --verify refs/heads/looper/mr-alpha-4 >/dev/null || fail "a red build's branch pushed"
+[[ "$(origin rev-parse main)" == "$m" ]] || fail "main moved"
+lacks "$(labels alpha 4)" "looper:merge-request"; lacks "$(labels alpha 4)" "looper:landing"
+pass
+
+scenario vm-mr-green
+pin_seed; build_model notes.md "the docs"; vm_stub
+m="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+l="$(cat "$FIX/land-4")"
+# The report's --build just built this very tree green: the merge request
+# takes that verdict, one local build in all (looper#260).
+has "$l" "the gates docs (its one changed path, notes.md, maps to docs) on your commits rebased onto main ${m:0:7}, its head: alpha has no main-green on main yet (looper#249): green already, in this run's local build of $(cut -c1-7 "$FIX/head") (the same tree, the same gates): not built again"
+has "$l" "opened: the merge request #101 of looper/alpha-4, https://github.com/tacplus-dev/alpha/pull/101"; has "$l" "rc 0"
+lacks "$l" "queued: the manager"
+sha="$(origin rev-parse refs/heads/looper/mr-alpha-4)"
+[[ "$(origin rev-parse "$sha^")" == "$m" && "$(origin show "$sha:notes.md")" == "the docs" ]] || fail "the branch: $(origin log --oneline "$sha")"
+[[ "$(grep -c -- "--gates docs --base $m " "$FIX/vm-builds")" == 1 ]] || fail "the same tree was built again: $(cat "$FIX/vm-builds")"
+pr="$(pr_of 101)"
+[[ "$(jq -r '.head.ref + " " + .head.sha + " " + .title' <<<"$pr")" == "looper/mr-alpha-4 $sha #4: Issue 4" ]] || fail "the merge request: $pr"
+b="$(jq -r .body <<<"$pr")"
+has "$b" "- Commit: \`$sha\`, this branch's head: exactly the commit built."
+has "$b" "- Base: \`$m\`, main ${m:0:7}, its head: alpha has no main-green on main yet (looper#249)."
+has "$b" "- Gate set: \`docs\` (its one changed path, notes.md, maps to docs)."
+has "$b" "- Verdict: success: the gates docs passed"
+ck="$(origin rev-parse looper/alpha-4)"
+has "$b" "on the run's checkpoint [${ck:0:7}](https://github.com/tacplus-dev/alpha/blob/$ck/.looper/mr-gates.log)"
+has "$(origin show "$ck:.looper/mr-gates.log")" "verdict: success: the gates docs passed"
+has "$b" "the commit status \`tacplus-dev/build\` on this commit, set by a build off this VM: the report cannot set it"
+has "$b" "<!-- looper-mr issue=4 sha=$sha base=$m gates=docs -->"
+lacks "$b" "Closes"
+[[ "$(labels alpha 4)" == "approved,bug,looper:merge-request" ]] || fail "labels $(labels alpha 4)"
+has "$(others)" "The run opened its merge request and ended (looper#250: a report never waits for its merge). Its merge request is open, with its evidence: https://github.com/tacplus-dev/alpha/pull/101"
+[[ "$(origin rev-parse main)" == "$m" ]] || fail "main moved: the manager merged it"
+[[ ! -e "$FIX/builds" ]] || fail "a build job was triggered: $(cat "$FIX/builds")"
+pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pr" "then open its merge request: \`$ROOT/repo-looper --repo alpha --issue 4 --land\`."
+has "$pr" "When your merge request is open, end your run"; lacks "$pr" "It queues your commits with the repository's manager"
+! origin rev-parse -q --verify refs/heads/looper/claim-alpha-4 >/dev/null || fail "the run's claim was not given up"
+# Held while it is open: no VM lists it.
+list "${VMS[@]}"
+[[ -z "$OUT" ]] || fail "listed with its merge request open: $OUT"
+# Merged: the VM's list frees it, and its next run is told so.
+jq '.state = "closed" | .merged_at = "2026-11-26T00:00:00Z" | .merge_commit_sha = "'"$sha"'"' "$FIX/pulls/alpha-101.json" > "$FIX/x" && mv "$FIX/x" "$FIX/pulls/alpha-101.json"
+list "${VMS[@]}"
+[[ "$OUT" == 4 ]] || fail "not listed once merged: $OUT"
+[[ "$(labels alpha 4)" == "approved,bug" ]] || fail "labels $(labels alpha 4)"
+has "$(others)" "Its merge request [#101](https://github.com/tacplus-dev/alpha/pull/101) was merged (${sha:0:7}): the issue is \`looper:merge-request\` no more"
+: > "$FIX/claude.sh"; close_all
+run_alone LOOPER_VM="$FIX/vm-stub"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md | tail -n +1)" "This issue's merge request, #101 (https://github.com/tacplus-dev/alpha/pull/101), was merged as ${sha:0:7}"
+pass
+
+# Closed unmerged (a send-back): freed, and its next run told to read why and land again.
+scenario vm-mr-sent-back
+pin_seed; issue alpha 4 OPEN approved,bug,looper:merge-request "Fix it."
+mkdir -p "$FIX/pulls"
+jq -n --arg s "$(origin rev-parse main)" '{number: 101, title: "#4: Issue 4", body: "x", head: {ref: "looper/mr-alpha-4", sha: $s}, state: "closed", merged_at: null,
+  merge_commit_sha: null, html_url: "https://github.com/tacplus-dev/alpha/pull/101", author: "tacplus-looper[bot]", association: "NONE", reviews: [], review_comments: []}' > "$FIX/pulls/alpha-101.json"
+list "${VMS[@]}"
+[[ "$OUT" == 4 ]] || fail "not listed once closed: $OUT"
+has "$(others)" "Its merge request [#101](https://github.com/tacplus-dev/alpha/pull/101) was closed without merging (sent back: its comments say why)"
+close_all
+run_alone LOOPER_VM="$FIX/vm-stub"
+pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pr" "This issue's merge request, #101 (https://github.com/tacplus-dev/alpha/pull/101), was closed without merging: it was sent back."
+has "$pr" "--pr-text 101"
+pass
+
+# Sent back by the merger (looper#251), which leaves it open and frees the issue:
+# its next run is told to read why, resolve it and land again, which updates it.
+scenario vm-mr-open-sent-back
+pin_seed; issue alpha 4 OPEN approved,bug "Fix it."
+mkdir -p "$FIX/pulls"
+jq -n --arg s "$(origin rev-parse main)" '{number: 101, title: "#4: Issue 4", body: "x", head: {ref: "looper/mr-alpha-4", sha: $s}, state: "open", merged_at: null,
+  merge_commit_sha: null, html_url: "https://github.com/tacplus-dev/alpha/pull/101", author: "tacplus-looper[bot]", association: "NONE", reviews: [], review_comments: []}' > "$FIX/pulls/alpha-101.json"
+run_alone LOOPER_VM="$FIX/vm-stub"
+pr="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pr" "This issue's merge request, #101 (https://github.com/tacplus-dev/alpha/pull/101), is open, and the issue is not \`looper:merge-request\`: the merger sent it back."
+has "$pr" "--pr-text 101"
+pass
+
+# LOOPER_VM_MR=0 (the hub's switch): the land is queued with the manager, as
+# before, its own gates built locally first (looper#247).
+scenario vm-mr-off
+pin_seed; build_model notes.md "the docs"; vm_stub
+m="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1 LOOPER_VM_MR=0
+l="$(cat "$FIX/land-4")"
+has "$l" "your land's own gates (gates.yaml's docs) on your commits rebased on main ${m:0:7}: green already, in this run's local build of $(cut -c1-7 "$FIX/head") (the same tree, the same gates): not built again"
+has "$l" "The manager merged"
+[[ "$(grep -c -- "--gates docs --base $m " "$FIX/vm-builds")" == 1 ]] || fail "the same tree was built again: $(cat "$FIX/vm-builds")"
+! compgen -G "$FIX/pulls/*.json" >/dev/null || fail "a merge request opened: $(ls "$FIX/pulls")"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "It queues your commits with the repository's manager"
+pass
+
+# Built on main-green, never main's tip: only the report's own commits, onto
+# main-green, behind main (no rebase onto main's head is asked for).
+scenario vm-mr-main-green
+pin_seed; build_model notes.md "the docs"; vm_stub
+g="$(origin rev-parse main)"; origin update-ref refs/heads/main-green "$g"
+echo later > "$FIX/seed/later.txt"; git -C "$FIX/seed" add -A && git -C "$FIX/seed" commit -qm later && git -C "$FIX/seed" push -q origin main
+m="$(origin rev-parse main)"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+l="$(cat "$FIX/land-4")"
+has "$l" "on your commits rebased onto main-green ${g:0:7}, the last main the rolling check found green"; has "$l" "opened: the merge request #101"
+sha="$(origin rev-parse refs/heads/looper/mr-alpha-4)"
+[[ "$(origin rev-parse "$sha^")" == "$g" ]] || fail "not on main-green: $(origin log --oneline "$sha")"
+! origin cat-file -e "$sha:later.txt" 2>/dev/null || fail "main's later commit came along"
+has "$(jq -r .body "$FIX/pulls/alpha-101.json")" "<!-- looper-mr issue=4 sha=$sha base=$g gates=docs -->"
+has "$(cat "$FIX/vm-builds")" "--sha $sha --gates docs --base $g "
+[[ "$(origin rev-parse main)" == "$m" ]] || fail "main moved"
+pass
+
+# One run per issue (looper#250): another run's live claim on the forge holds
+# the issue, whatever the VM; one past its until (a VM gone with no SIGTERM) is taken.
+claim_set() { # until
+  local c; c="$(git -C "$FIX/seed" commit-tree "$(git -C "$FIX/seed" hash-object -w -t tree /dev/null)" -m "looper-claim other/20261126T000000Z-issue-4 until $1")"
+  git -C "$FIX/seed" push -q -f origin "$c:refs/heads/looper/claim-alpha-4"
+}
+scenario vm-claim-held
+claim_set $(( $(date +%s) + 600 ))
+echo 'touch "$FIX/worked"' > "$FIX/claude.sh"
+run_alone "${VMS[@]}"
+has "$OUT" "#4 is not taken: the run other/20261126T000000Z-issue-4 holds it until"; has "$OUT" "(one run per issue, looper#250)"
+[[ ! -e "$FIX/worked" ]] || fail "worked under another run's claim"
+[[ "$(labels alpha 4)" == "approved,bug" ]] || fail "labels $(labels alpha 4)"
+[[ "$(origin log -1 --format=%s refs/heads/looper/claim-alpha-4)" == "looper-claim other/"* ]] || fail "the claim moved"
+pass
+scenario vm-claim-lapsed
+claim_set $(( $(date +%s) - 60 ))
+echo 'git fetch -q origin looper/claim-alpha-4 && git log -1 --format=%s FETCH_HEAD > "$FIX/claim"' > "$FIX/claude.sh"; close_all
+run_alone "${VMS[@]}"
+lacks "$OUT" "is not taken"
+has "$(cat "$FIX/claim")" "looper-claim $(hostname)/"; lacks "$(cat "$FIX/claim")" "other/"
+! origin rev-parse -q --verify refs/heads/looper/claim-alpha-4 >/dev/null || fail "its claim was not given up: $(origin log -1 --format=%s refs/heads/looper/claim-alpha-4)"
+pass
+
+# A cap on a run's local builds (LOOPER_VM_BUILDS_PER_ISSUE, looper#248): the
+# build past it is refused, and the looper stops the run, checkpointed, and
+# says so on its issue, which stays approved for its next run.
+scenario vm-build-cap
+pin_seed
 cat > "$FIX/vm-stub" <<'EOS'
 #!/usr/bin/env bash
 [[ "$1" == build ]] || exit 9
 echo "$*" >> "$FIX/vm-builds"
 while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
-{ echo "notes.md holds red"; echo "verdict: failure: fail: the gates docs (gates.yaml) exited 1"; } >> "$log"; exit 1
+echo "verdict: failure: fail: the gates docs (gates.yaml) exited 1" >> "$log"; exit 1
 EOS
 chmod +x "$FIX/vm-stub"
-m="$(origin rev-parse main)"
-run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
-l="$(cat "$FIX/land-4")"
-has "$l" "nothing queued: your land's own gates (gates.yaml's docs) on your commits rebased on main ${m:0:7} failed"
-has "$l" "verdict: failure: fail: the gates docs (gates.yaml) exited 1"; has "$l" "rc 4"
-lacks "$l" "queued: the manager"
-[[ "$(origin rev-parse main)" == "$m" ]] || fail "a red land reached main"
-lacks "$(labels alpha 4)" "looper:landing"
+cat > "$FIX/claude.sh" <<'EOS'
+for i in 1 2 3; do
+  echo "red $i" > notes.md && git add -A && git commit -qm "try $i"
+  "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-$i" 2>&1; echo "rc $?" >> "$FIX/build-$i"
+done
+sleep 300
+EOS
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1 LOOPER_VM_BUILDS_PER_ISSUE=2
+[[ "$(wc -l < "$FIX/vm-builds")" == 2 ]] || fail "built: $(cat "$FIX/vm-builds")"
+has "$(cat "$FIX/vm-builds")" "build --repo alpha --issue 4 --dir "
+has "$(cat "$FIX/build-2")" "verdict: failure: fail: the gates docs"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/builds/*.refused)" "this run has asked for 2 local builds, this looper VM's cap per issue per run (LOOPER_VM_BUILDS_PER_ISSUE): the looper stops the run"
+has "$OUT" "claude stopped on #4: it asked for more than 2 local builds (LOOPER_VM_BUILDS_PER_ISSUE)"
+grep -qF "The run asked for more than 2 local builds, this looper VM's cap per issue per run (LOOPER_VM_BUILDS_PER_ISSUE), so the looper stopped it." <<<"$(others)" ||
+  fail "the comment: $(others)"
+[[ "$(origin show looper/alpha-4:notes.md)" == "red 3" ]] || fail "the branch: $(origin log --oneline looper/alpha-4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+lacks "$(labels alpha 4)" "looper:stuck"
+main_unchanged
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "A run has at most 2 local builds (LOOPER_VM_BUILDS_PER_ISSUE"
 pass
 
-scenario vm-land-gates-green
+# A local build that waits for one of the VM's build slots (looper#248): the
+# model's --build says it waits, then how long it waited.
+scenario vm-build-slot
 pin_seed; build_model notes.md "the docs"
 cat > "$FIX/vm-stub" <<'EOS'
 #!/usr/bin/env bash
 [[ "$1" == build ]] || exit 9
-echo "$*" >> "$FIX/vm-builds"
 while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
-echo "verdict: success: the gates docs passed" >> "$log"
+echo "waiting for a build slot: all 1 of this looper VM's (LOOPER_VM_BUILDS) are taken: beta#9 abcdef0" >> "$log"; sleep 2
+{ echo "took build slot 1 of 1 after 2s waiting"; echo "verdict: success: the gates docs passed"; } >> "$log"
 EOS
 chmod +x "$FIX/vm-stub"
-m="$(origin rev-parse main)"
 run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
-l="$(cat "$FIX/land-4")"
-# The report's --build just built this very tree green: the land's gate takes
-# that verdict, one local build in all.
-has "$l" "your land's own gates (gates.yaml's docs) on your commits rebased on main ${m:0:7}: green already, in this run's local build of $(cut -c1-7 "$FIX/head") (the same tree, the same gates): not built again"
-has "$l" "The manager merged"
-[[ "$(grep -c -- "--gates docs --base $m " "$FIX/vm-builds")" == 1 ]] || fail "the same tree was built again: $(cat "$FIX/vm-builds")"
+b="$(cat "$FIX/build-4")"
+has "$b" "it is waiting for a build slot: all 1 of this looper VM's (LOOPER_VM_BUILDS) are taken: beta#9 abcdef0"
+has "$b" "it took build slot 1 of 1 after 2s waiting"; has "$b" "verdict: success: the gates docs passed"; has "$b" "rc 0"
 pass
 
 echo "repo-looper: all scenarios pass"

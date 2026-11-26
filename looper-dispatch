@@ -217,6 +217,60 @@ held() {
   echo "held: the account's usage limit is reached; the looper holds until $(hold_iso "$u") ($(forge_web "$LOOPER_HOLD_REPO" issue "$n")): no report and no manager starts before then"
 }
 
+# The merge requests of the reports on looper VMs (looper#250; tacplus-dev/roadmap
+# decisions/agentic-dev-flow-2026-11-25.md, step 4 and the panel's items 5, 6 and
+# 13), each pass while LOOPER_VM_REPOS names a VM: an issue looper:merge-request
+# whose merge request is merged or closed is freed (forge_mr_release: ready
+# again, and its VM started for it, as for any ready issue; a VM idle at zero
+# lists nothing), and each one open gets its build status. A report's own build
+# on its VM is feedback, not proof: the status a merge trusts is a commit status
+# the report cannot set, the build project's (tacplus-dev/build, whose
+# looper-build sets BUILD_CONTEXT on the commit), which the kicker starts with
+# the build trigger (BUILD_TRIGGER_TOKEN), held by no VM. The head is built on
+# its merge base with main and the gate set that diff calls for by main's gate
+# map (repo-looper --gate-set), never the set or base its evidence names: those
+# are the report's, which may not choose what the status it cannot set
+# checks. None is started while the head has a status of that key (pending,
+# green or red: a red one is the report's to fix, not to build again) or this
+# kick started one in the last BUILD_START seconds.
+BUILD_API="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}"
+BUILD_PROJECT="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}"
+BUILD_CONTEXT="${LOOPER_BUILD_CONTEXT:-tacplus-dev/build}"
+BUILD_START="${LOOPER_BUILD_START:-3600}"
+MR_STARTED="$(mktemp -d -t looper-mr-builds.XXXXXX)"
+merge_requests() {
+  local repo n st k url
+  [[ -n "$VM_REPOS" && "$LOOPER_FORGE" == github ]] || return 0
+  for repo in $(forge_search_issues "$LABEL_MR" 200 repository '.[] | .repository.name' | sort -u); do
+    forge_mr_release "$repo" | while read -r n st; do log "$repo#$n: its merge request is $st: $LABEL_MR removed, the issue ready again (looper#250)"; done || true
+    for n in $(forge_issue_list "$repo" open 100 number '.[].number' "$LABEL_MR"); do
+      read -r st k url _ <<<"$(forge_mr_state "$repo" "$(forge_mr_branch "$repo" "$n")" 2>/dev/null)" || continue
+      if [[ "$st" == open ]]; then mr_status "$repo" "$n" "$k" "$url"; fi
+    done
+  done
+}
+mr_status() { # repo issue pr url
+  local sha base gates key s f r
+  sha="$(gh api "repos/$LOOPER_ORG/$1/pulls/$3" --jq '.head.sha // empty')" && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  base="$(gh api "repos/$LOOPER_ORG/$1/compare/main...$sha" --jq '.merge_base_commit.sha // empty')" && [[ "$base" =~ ^[0-9a-f]{40}$ ]] || return 0
+  gates="$("$HERE/repo-looper" --repo "$1" --gate-set "$base" "$sha" 2>/dev/null)" && [[ "$gates" =~ ^[A-Za-z0-9_+-]+$ ]] || gates=full
+  key="$([[ "$gates" == full ]] || echo ": gates $gates") on base $base"
+  s="$(gh api "repos/$LOOPER_ORG/$1/commits/$sha/statuses?per_page=100")" || return 0
+  if jq -e --arg c "$BUILD_CONTEXT" --arg k "$key" 'any(.[]; .context == $c and (.state == "failure" or .state == "error" or ((.description // "") | endswith($k))))' <<<"$s" >/dev/null; then return 0; fi
+  f="$MR_STARTED/$1-$sha-$gates-$base"
+  [[ ! -f "$f" ]] || (( $(date +%s) - $(stat -c %Y "$f") >= BUILD_START )) || return 0
+  [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]] || { log "$1#$2: its merge request $4 has no build status, and this kick holds no BUILD_TRIGGER_TOKEN to start its build (looper#250)"; return 0; }
+  if r="$(printf '%s' "$BUILD_TRIGGER_TOKEN" |
+          curl -sS --fail-with-body --retry 2 -X POST "$BUILD_API/projects/$BUILD_PROJECT/trigger/pipeline" --data-urlencode token@- \
+            --data-urlencode ref=main --data-urlencode "inputs%5Brepo%5D=$1" --data-urlencode "inputs%5Bsha%5D=$sha" \
+            --data-urlencode "inputs%5Bgates%5D=$gates" --data-urlencode "inputs%5Bbase%5D=$base" 2>&1)"; then
+    : > "$f"
+    log "$1#$2: started the build status of its merge request $4: ${sha:0:7}, the gates $gates on base ${base:0:7}, $(jq -r '.web_url // .id // empty' <<<"$r" 2>/dev/null)"
+  else
+    log "$1#$2: GitLab refused the build of its merge request $4: $(tr -s '\n' ' ' <<<"$r" | head -c 300)"
+  fi
+}
+
 # One pass: release the orphans, then start the pipeline for the first
 # repository with a ready issue no report job holds, in the order of ready_all_by_repo (priority:high first,
 # looper#31), and ready read itself (ready_itself: the search lags, looper#175),
@@ -281,6 +335,7 @@ pass() {
   RULESET_SEEN=()
   statuses="$(active_job_statuses)"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
   release_orphans "$jobs"
+  merge_requests || log "the merge requests could not be read: their issues and build statuses wait for the next pass (looper#250)"
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
   if hold="$(held)"; then log "$hold"; return 0; fi
@@ -364,11 +419,11 @@ plan() {
       if unguarded "$repo"; then log "$repo#$n is not planned: $WHY" >&2; continue; fi
       if vm_repo "$repo"; then
         if vm_start "$repo"; then log "$repo#$n is not planned: $repo's looper VM works it (looper-vm-$(vm_group "$repo"))" >&2; continue; fi
-        log "$repo's looper VM did not start ($WHY): $repo#$n is planned here" >&2
+        log "$repo's looper VM did not start ($WHY): $repo#$n is planned here, its report claiming it (looper#250): the VM may yet start" >&2
       fi
       t="$("$HERE/repo-looper" --repo "$repo" --job-timeout "$n")" || t=5h
       [[ "$t" =~ ^[0-9]{1,2}h$ ]] || t=5h
-      reports+="$(plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n")"$'\n'; any=1
+      reports+="$(PLAN_CLAIM="$(! vm_repo "$repo" || echo 1)" plan_job "looper-$repo-$n" "$t" "looper-$repo-$n" --repo "$repo" --issue "$n")"$'\n'; any=1
       [[ "$managed" == *" $repo "* ]] || managed+="$repo "
     done <<<"$ready"
     landing="$(landing_repos)" || landing=""
@@ -568,6 +623,8 @@ YML
   variables:
     LOOPER_RUNS: \$CI_PROJECT_DIR/looper-runs
 YML
+  # A VM project's report here claims its issue (looper#250): its VM may yet start.
+  [[ -z "${PLAN_CLAIM:-}" ]] || printf '    LOOPER_CLAIM: "1"\n'
   [[ -z "$kind" ]] || requests "$kind"
   cat <<YML
   script:

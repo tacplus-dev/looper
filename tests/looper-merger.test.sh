@@ -108,9 +108,21 @@ mr 7 41
 [[ "$(merger)" == 0 ]] || fail "exit"
 has "$FIX/calls" "merge pulls_7_merge sha=h7 merge_method=merge"
 has "$FIX/calls" "comment 41 The merger merged #7 (h7, its looper/gates green) into main as merge-o, unbuilt"
-has "$FIX/calls" "edit 41 --remove-label looper:landing"
+has "$FIX/calls" "edit 41 --remove-label looper:landing --remove-label looper:merge-request"
 has "$FIX/out" "1 of at most 4 merges unchecked"
 has "$FIX/out" "#7: merged h7 as merge-o, unbuilt (2 of at most 4 unchecked)"
+pass
+
+# --- a VM report's merge request (looper#250): its issue is its branch's, looper/mr-NAME-N
+fixture mr-branch 1
+mr 8 0 && mr 9 0 false
+jq -c 'map(if .number == 8 then .head.ref = "looper/mr-alpha-81" else .head.ref = "looper/mr-alpha-91" end)' "$FIX/api/pulls" > "$FIX/p" && mv "$FIX/p" "$FIX/api/pulls"
+[[ "$(merger)" == 0 ]] || fail "exit"
+has "$FIX/calls" "merge pulls_8_merge sha=h8"
+has "$FIX/calls" "comment 81 The merger merged #8 (h8"
+has "$FIX/calls" "edit 81 --remove-label looper:landing --remove-label looper:merge-request"
+has "$FIX/calls" "comment 91 The merger sent back #9"
+has "$FIX/calls" "edit 91 --remove-label looper:landing --remove-label looper:merge-request"
 pass
 
 # --- only a green status of a trusted login merges -----------------------------
@@ -142,7 +154,7 @@ mr 6 61
 has "$FIX/calls" "comment 5 The merger sent this back: it conflicts with main at h5"
 has "$FIX/calls" "mark 5 <!-- looper-merger: sent back h5 -->"
 has "$FIX/calls" "comment 51 The merger sent back #5: it conflicts with main at h5."
-has "$FIX/calls" "edit 51 --remove-label looper:landing"
+has "$FIX/calls" "edit 51 --remove-label looper:landing --remove-label looper:merge-request"
 hasnt "$FIX/calls" "merge pulls_5"
 has "$FIX/calls" "merge pulls_6_merge sha=h6"
 echo '[]' > "$FIX/api/pulls"; mr 5 51 false; : > "$FIX/calls"

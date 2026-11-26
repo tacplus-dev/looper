@@ -28,13 +28,14 @@
 #              green: `sha`, so a push after the status merges nothing). A
 #              mergeability GitHub has not computed yet waits for the next pass.
 #   conflicting  green, and not mergeable: sent back to its issue (the branch
-#              `looper/NAME-N`, else a `Closes #N` in its body), whose next
+#              `looper/NAME-N` or `looper/mr-NAME-N`, else a `Closes #N` in its body), whose next
 #              report resolves it, the agent with the change's context (panel
 #              item 4): a comment on the merge request and on the issue, and the
-#              issue's looper:landing removed so it is ready again. Once per
+#              issue's looper:landing and looper:merge-request (a VM report's
+#              hold, looper#250) removed so it is ready again. Once per
 #              head: the merge request's comment carries the head it sent back.
 # A merged one gets "The merger merged" on its issue, and its looper:landing
-# removed, so the issue's next run reports and closes it.
+# and looper:merge-request removed, so the issue's next run reports and closes it.
 #
 # The bound (panel item 7, D2): clean merges are unbuilt only while the
 # rolling check (looper#249) is behind them. Nothing merges, and the pass says
@@ -145,9 +146,10 @@ bound_hold() {
   fi
 }
 
-# The issue a merge request works: its branch's, looper/NAME-N, else its body's Closes #N.
+# The issue a merge request works: its branch's, looper/NAME-N or a VM report's
+# looper/mr-NAME-N (looper#250), else its body's Closes #N.
 issue_of() { # head-ref body
-  if [[ "$1" =~ ^looper/${REPO//./\\.}-([0-9]+)$ ]]; then echo "${BASH_REMATCH[1]}"; return; fi
+  if [[ "$1" =~ ^looper/(mr-)?${REPO//./\\.}-([0-9]+)$ ]]; then echo "${BASH_REMATCH[2]}"; return; fi
   grep -oiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' <<<"$2" | head -1 | grep -oE '[0-9]+$' || true
 }
 
@@ -163,7 +165,7 @@ send_back() { # pr head issue
 $mark"
   if [[ -n "$n" ]]; then
     forge_issue_comment "$REPO" "$n" "The merger sent back #$pr: it conflicts with main at ${head:0:7}. This issue's next report resolves the conflict (it has the change's context), builds its gates and pushes; the merger merges it once it is clean and green (looper#251)."
-    forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" || log "#$n: could not remove $LABEL_LANDING"
+    forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_LANDING" --remove-label "$LABEL_MR" || log "#$n: could not remove $LABEL_LANDING, $LABEL_MR"
   fi
   log "#$pr: sent back (conflicts with main)${n:+ to #$n}"
 }
@@ -205,7 +207,7 @@ pass() {
     [[ -n "$iss" ]] || continue
     forge_issue_comment "$REPO" "$iss" "The merger merged #$n (${head:0:7}, its $CONTEXT green) into main as ${sha:0:7}, unbuilt: a clean merge, with $UNCHECKED of at most $UNCHECKED_MAX merges on main unchecked by the rolling check, which builds it next (looper#251)." ||
       log "#$iss: could not comment"
-    forge_issue_edit "$REPO" "$iss" --remove-label "$LABEL_LANDING" || log "#$iss: could not remove $LABEL_LANDING"
+    forge_issue_edit "$REPO" "$iss" --remove-label "$LABEL_LANDING" --remove-label "$LABEL_MR" || log "#$iss: could not remove $LABEL_LANDING, $LABEL_MR"
   done <<<"$prs"
   [[ -z "$SHADOW" ]] || shadow "${merged[@]}"
 }

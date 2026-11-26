@@ -24,13 +24,16 @@
 #   repo-looper --repo NAME --list      print the ready issues; in a GitLab job, none while NAME
 #                                       has a report job queued, waiting or running there
 #   repo-looper --repo NAME --job-timeout N   the CI job timeout of issue N's report (its limit and an hour)
+#   repo-looper --repo NAME --gate-set BASE HEAD   the gate set of the diff BASE..HEAD by BASE's gate map, read
+#                                       from the forge (the kicker's, for a merge request's build status, looper#250)
 #   repo-looper --repo NAME --issue N --checkpoint MSG   push the checkout's work in progress (the model's step)
 #   repo-looper --repo NAME --issue-text [REPO#]N   an issue's text and comments as a run's model reads them
 #   repo-looper --repo NAME --pr-text [REPO#]N      (the model's read; and a pull request's): in its prompt's
 #                                       nonce blocks, each with its author's role (looper#219)
 #   repo-looper --repo NAME --issue N --land [--gates CMD] [--wait]   queue the report's commits with the
 #                                       manager (the model's step; the merge train lands them, looper#86) and,
-#                                       with --wait, wait for its verdict
+#                                       with --wait, wait for its verdict; on a looper VM, a pinned GitHub
+#                                       repository's: its merge request, built and opened (looper#250)
 #   repo-looper --repo NAME --issue N --build   a build job of the report's committed HEAD, in the build
 #                                       image it pins, and its verdict (the model's step, looper#71)
 #   repo-looper --repo NAME --issue N --wait-on URL [MSG]   the report waits on another run (a pipeline,
@@ -272,7 +275,7 @@ pod_use_mark
 # This script's own path, for the model's --checkpoint.
 : "${LOOPER_SELF:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")}"
 
-REPO=""; ISSUE=""; MODE=next; STEP=""; TEXT_REF=""; LAND_GATES=""; VERDICT_DIR=""; WAIT_URL=""; WAIT_UNTIL=""; WAIT_PATHS=()
+GS_BASE=""; GS_HEAD=""; REPO=""; ISSUE=""; MODE=next; STEP=""; TEXT_REF=""; LAND_GATES=""; VERDICT_DIR=""; WAIT_URL=""; WAIT_UNTIL=""; WAIT_PATHS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) REPO="$2"; shift 2 ;;
@@ -293,6 +296,7 @@ while [[ $# -gt 0 ]]; do
     --verdict) VERDICT_DIR="$2"; MODE=verdict; shift 2 ;;
     --merge) VERDICT_DIR="$2"; MODE=merge; shift 2 ;;
     --job-timeout) ISSUE="$2"; MODE=job-timeout; shift 2 ;;
+    --gate-set) GS_BASE="${2:-}"; GS_HEAD="${3:-}"; MODE=gate-set; shift 3 || die "--gate-set needs BASE HEAD" ;;
     --scan) MODE=scan; shift ;;
     --list) MODE=list; shift ;;
     *) die "unknown argument: $1 (see --help)" ;;
@@ -364,19 +368,20 @@ orphaned() { # issue
   ready "$REPO" "$1" || return 1
   # On a looper VM (looper#238) the project's reports are its own: the VM
   # starts this report only when none of its children works the issue.
-  # A run it stopped with its land queued waits for the manager's verdict.
-  [[ -z "${LOOPER_VM:-}" ]] || { ! grep -qx "$LABEL_LANDING" <<<"$l"; return; }
+  # A run it stopped with its land queued waits for the manager's verdict, and
+  # one with its merge request open for that to be merged or closed (looper#250).
+  [[ -z "${LOOPER_VM:-}" ]] || { ! grep -qxE "$LABEL_LANDING|$LABEL_MR" <<<"$l"; return; }
   jobs="$(project_jobs)" || return 1
   ! busy "$REPO" "$jobs" "$1" >/dev/null
 }
 
-# The approved issues looper:in-progress (and not stuck, needs-decision or
-# landing), in the order the ready are taken: on a looper VM, the runs a
+# The approved issues looper:in-progress (and not stuck, needs-decision,
+# landing or with a merge request open), in the order the ready are taken: on a looper VM, the runs a
 # stopped VM left (looper#238).
 vm_orphans() {
   forge_issue_list "$REPO" open 200 number,labels,createdAt "
       [.[] | select(any(.labels[].name; . == \"$LABEL_IN_PROGRESS\"))
-           | select(all(.labels[].name; . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\"))]
+           | select(all(.labels[].name; . != \"$LABEL_STUCK\" and . != \"$LABEL_DECISION\" and . != \"$LABEL_LANDING\" and . != \"$LABEL_MR\"))]
       | sort_by($ISSUE_ORDER) | .[].number" "$LABEL_APPROVED"
 }
 
@@ -391,6 +396,9 @@ if [[ "$MODE" == list ]]; then
   else
     log "could not read this project's jobs; planning $REPO anyway" >&2
   fi
+  # A merge request merged or closed since frees its issue first (looper#250).
+  [[ -z "${LOOPER_VM:-}" || "$LOOPER_FORGE" != github ]] || forge_mr_release "$REPO" | while read -r n st; do
+    log "#$n: its merge request is $st: $LABEL_MR removed, the issue ready again" >&2; done || true
   approved_issues "$REPO" | while read -r n; do if ready "$REPO" "$n"; then echo "$n"; fi; done
   # A looper VM's list (looper#238) names the issues a stopped VM left too: its
   # state is the forge's, never its disk's.
@@ -519,8 +527,7 @@ job_timeout() { # issue
   echo "${h}h"
 }
 [[ "$MODE" == job-timeout ]] && { job_timeout "$ISSUE"; exit 0; }
-need claude
-mkdir -p "$RUNS"
+if [[ "$MODE" != gate-set ]]; then need claude; mkdir -p "$RUNS"; fi
 
 # The job's GitHub identity (looper#83; README, Only the manager writes main).
 # Once the pipeline's project has the apps (looper-token configured), no job
@@ -572,7 +579,7 @@ job_identity() {
   export GH_NO_UPDATE_NOTIFIER=1
 }
 job_identity
-forge_setup_git
+[[ "$MODE" == gate-set ]] || forge_setup_git
 
 # git fetch from origin in a checkout or worktree, tried again a few times:
 # the manager's scratch worktrees share its checkout's refs, and two fetches at
@@ -890,7 +897,9 @@ LOG_ATTRS='/PROPOSALS.md merge=union
 # report's last commit, land_request) is dropped, main's STATE.md kept, and
 # the rebase goes on: DROPPED is its diff, for the verdict, and the report
 # lands it again on main's text. A branch with nothing left once it is
-# dropped (a land of STATE.md alone) is sent back all the same.
+# dropped (a land of STATE.md alone) is sent back all the same. With
+# REBASE_FROM set, only the commits since it are rebased onto ONTO (git rebase
+# --onto): a merge request's own commits onto main-green (looper#250).
 ONTO=origin/main
 rebase_on_main() {
   local map files f s p hit sets i orig done="" attrs
@@ -898,8 +907,10 @@ rebase_on_main() {
   no_repo_code "a rebase"
   orig="$(git rev-parse HEAD)"
   attrs="$(mktemp)"; printf '%s\n' "$LOG_ATTRS" > "$attrs"
-  local -a union=(-c "core.attributesFile=$attrs")
-  git "${union[@]}" rebase -q "$ONTO" >/dev/null 2>&1 && { rm -f "$attrs"; return 0; }
+  local -a union=(-c "core.attributesFile=$attrs") up=("$ONTO")
+  # REBASE_FROM: only the commits since it, onto ONTO (a merge request's onto main-green, looper#250).
+  [[ -z "${REBASE_FROM:-}" ]] || up=(--onto "$ONTO" "$REBASE_FROM")
+  git "${union[@]}" rebase -q "${up[@]}" >/dev/null 2>&1 && { rm -f "$attrs"; return 0; }
   map="$(mktemp)"
   git show "$ONTO:$GEN_MAP" > "$map" 2>/dev/null || : > "$map"
   if [[ -n "$MANAGER_TOKEN" && -s "$map" ]]; then
@@ -994,8 +1005,11 @@ choose_gates() { # dir base fallback [head]
   fi
   rm -f "$err"
   GATES_RUN="${GM_RUN[full]}"; GATES_MAPPED=1
-  local changed; changed="$(git -C "$dir" diff --name-only --no-renames "$base" "$head" 2>/dev/null)" ||
-    { GATES_WHY="the changed paths cannot be read (since $base)"; return 0; }
+  # GATES_CHANGED, when set: the changed paths, read from the forge (gate_set_of, looper#250).
+  local changed
+  if [[ -n "${GATES_CHANGED+x}" ]]; then changed="$GATES_CHANGED"
+  else changed="$(git -C "$dir" diff --name-only --no-renames "$base" "$head" 2>/dev/null)" ||
+    { GATES_WHY="the changed paths cannot be read (since $base)"; return 0; }; fi
   [[ -n "$changed" ]] || { GATES_WHY="no changed path"; return 0; }
   if grep -qxF "$GATE_MAP" <<<"$changed"; then GATES_WHY="$GATE_MAP changed"; return 0; fi
   while IFS= read -r f; do
@@ -1020,6 +1034,22 @@ choose_gates() { # dir base fallback [head]
   if (( k == 1 )); then GATES_WHY="its one changed path, $changed, maps to $GATES_SET"
   else GATES_WHY="all $k changed paths map to $(sed 's/+/, /g' <<<"$GATES_SET")"; fi
 }
+
+# --gate-set (looper#250): the gate set a merge request's build status runs,
+# chosen by the kicker, never by the report whose evidence names one: the diff
+# BASE..HEAD (BASE the merge base with main) by BASE's gate map, main's (a
+# change to the map, as any path it does not name, is full), both read from
+# the forge, with no clone. Full when either cannot be read.
+gate_set_of() { # base head
+  local d changed; d="$(mktemp -d)"
+  if [[ "$1" =~ ^[0-9a-f]{40}$ && "$2" =~ ^[0-9a-f]{40}$ ]] &&
+     gh api "repos/$LOOPER_ORG/$REPO/contents/$GATE_MAP?ref=$1" -H "Accept: application/vnd.github.raw" > "$d/$GATE_MAP" 2>/dev/null &&
+     changed="$(forge_changed_files "$REPO" "$1" "$2")" && GATES_CHANGED="$changed" choose_gates "$d" "$1" "" 2>/dev/null && [[ -n "$GATES_MAPPED" ]]; then
+    echo "$GATES_SET"
+  else echo full; fi
+  rm -rf "$d"
+}
+[[ "$MODE" != gate-set ]] || { gate_set_of "$GS_BASE" "$GS_HEAD"; exit 0; }
 
 # The commits of before..after that change ROADMAP.md, for the push guard's
 # LOOPER_ROADMAP_OK, when judge_land found them at Jody's request (ROADMAP_OK).
@@ -1244,6 +1274,153 @@ land_request() {
   [[ -z "${LOOPER_RUN:-}" ]] || comments_mark "$n" "$run"
   [[ -z "${LOOPER_RUN:-}" ]] || checkpoint "$n" "land done" "$run" || true
   return "$rc"
+}
+
+# --- the merge request (looper#250) ---------------------------------------------
+#
+# On a looper VM a report's --land opens a merge request instead of queueing a
+# land with the manager (tacplus-dev/roadmap decisions/agentic-dev-flow-2026-11-25.md,
+# step 4 of the flow; the panel's items 3, 5, 6 and 13). Its own commits (those
+# since its branch left main) are rebased onto main-green, the last commit of
+# main the rolling check found green (LOOPER_MAIN_GREEN, default main-green,
+# looper#249; main's head, said, until that ref exists), never onto main's tip;
+# the gate set their diff since that base calls for is a local build
+# (model_build); and on green its branch looper/mr-NAME-N is pushed at exactly
+# the commit built and the pull request to main opened, or the open one given
+# this evidence: the commit, its base, the gate set and why, the verdict and
+# the build's log (its end in the body; all of it on the run's checkpoint,
+# .looper/mr-gates.log, linked). Red opens nothing (exit 4, the failure said),
+# nor does a build with no verdict (exit 2: --land again builds again, it is
+# never waited on), nor a conflict onto main-green (exit 3, the files named).
+# The issue is looper:merge-request while its merge request is open (no report
+# takes it, a stopped VM's included); once it is merged or closed
+# (forge_mr_release: the VM's list and the kicker) it is ready again, and its
+# next run, told which (mr_context), finishes it or fixes what came back.
+# Trust: that build is the report's own, feedback and not proof. The status a
+# merge trusts is a commit status set off this VM (BUILD_CONTEXT, a build of
+# the build project), which the report cannot set: its token, the
+# tacplus-looper App's, has no statuses permission, and nothing on its VM
+# holds one (README, The merge request).
+MAIN_GREEN="${LOOPER_MAIN_GREEN:-main-green}"
+# LOOPER_VM_MR=0 keeps a VM's reports queueing with the manager, as before (until a merger takes the merge
+# requests, looper#251, say): the hub's switch, never the model's.
+mr_mode() { [[ -n "${LOOPER_VM:-}" && "${LOOPER_VM_MR:-1}" != 0 && "$LOOPER_FORGE" == github && -n "${BUILD_JOBS:-}" ]]; }
+mr_wanted() { [[ -n "${LOOPER_VM:-}" && "${LOOPER_VM_MR:-1}" != 0 && "$LOOPER_FORGE" == github && -n "${LOOPER_RUN:-}" && -d "$LOOPER_RUN/builds" ]]; }
+
+# The base a merge request builds on (looper#250): MR_BASE, main-green when
+# origin has it and it is on main, else main's head; MR_BASE_WHAT says which.
+mr_base() {
+  if [[ -n "$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$MAIN_GREEN" 2>/dev/null)" ]] &&
+     fetch "$CHECKOUT" "+refs/heads/$MAIN_GREEN:refs/remotes/origin/$MAIN_GREEN" &&
+     git -C "$CHECKOUT" merge-base --is-ancestor "origin/$MAIN_GREEN" origin/main 2>/dev/null; then
+    MR_BASE="$(git -C "$CHECKOUT" rev-parse "origin/$MAIN_GREEN")"
+    MR_BASE_WHAT="$MAIN_GREEN ${MR_BASE:0:7}, the last main the rolling check found green"
+  else
+    MR_BASE="$(git -C "$CHECKOUT" rev-parse origin/main)"
+    MR_BASE_WHAT="main ${MR_BASE:0:7}, its head: $REPO has no $MAIN_GREEN on main yet (looper#249)"
+  fi
+}
+
+mr_request() {
+  local n="$ISSUE" run="$LOOPER_RUN" fork wt sha gates out rc=0 b ck log verdict title body r k url green
+  # The run's nonce, for redact: the build's log goes on the forge.
+  local NONCE="${NONCE:-}"; [[ -s "$run/.nonce" ]] && NONCE="$(cat "$run/.nonce")"
+  cd "$CHECKOUT"
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "uncommitted changes: commit your change on $BRANCH first; --land opens a merge request of its commits"
+  fetch . main || die "could not fetch main; nothing opened"
+  [[ "$(git rev-list --count origin/main..HEAD)" != 0 ]] || { log "nothing to land: $BRANCH has no commit that main lacks"; return 0; }
+  state_last "$n"
+  mr_base; fork="$(git merge-base origin/main HEAD)"
+  wt="$(mktemp -d)"; rm -rf "$wt"
+  git worktree add -q -f --detach "$wt" HEAD >/dev/null 2>&1 || die "could not make a worktree of $BRANCH; nothing opened"
+  pushd "$wt" >/dev/null
+  if ! ONTO="$MR_BASE" REBASE_FROM="$fork" rebase_on_main; then
+    popd >/dev/null; drop_worktree "$wt"
+    printf '%s\n' "$CONFLICTS" > "$run/conflicts"
+    log "nothing opened: your commits rebased onto $MR_BASE_WHAT conflict in: $CONFLICTS. Rebase them yourself (git fetch origin && git rebase --onto ${MR_BASE:0:7} ${fork:0:7}), resolve them, verify, and --land again." >&2
+    exit 3
+  fi
+  if [[ "$(git rev-list --count "$MR_BASE..HEAD")" == 0 ]]; then
+    popd >/dev/null; drop_worktree "$wt"
+    log "nothing to land: rebased onto $MR_BASE_WHAT, $BRANCH has no commit left"; return 0
+  fi
+  if ! choose_gates . "$MR_BASE" ""; then popd >/dev/null; drop_worktree "$wt"; log "nothing opened: $GATES_WHY. Fix it, commit, and --land again." >&2; exit 4; fi
+  gates=""; [[ -z "$GATES_MAPPED" ]] || gates="$GATES_SET"
+  sha="$(git rev-parse HEAD)"; out="$run/mr-gates.log"
+  if green="$(green_local_build "$run/builds" "$sha" "$gates")"; then
+    # Its evidence is that build's: its log, the verdict it read.
+    log "the gates ${gates:-full} ($GATES_WHY) on your commits rebased onto $MR_BASE_WHAT: green already, in this run's local build of ${green:0:7} (the same tree, the same gates): not built again"
+    { echo "the local build of $REPO ${green:0:7}, the gates ${gates:-full}, on this looper VM: the same tree as ${sha:0:7}"; cat "$run/builds/${green#* }.log"; } > "$out" 2>&1
+  else
+    log "the gates ${gates:-full} ($GATES_WHY) on your commits rebased onto $MR_BASE_WHAT: a local build on this looper VM before the merge request opens (looper#250)"
+    model_build "$run/builds" "$sha" "$gates" "$MR_BASE" > "$out" 2>&1 || rc=$?
+  fi
+  (( rc != 5 )) || echo "$BUILD_P" >> "$out"
+  b="$(forge_mr_branch "$REPO" "$n")"
+  if (( rc == 0 )) && ! git push -q -f origin "$sha:refs/heads/$b" >> "$out" 2>&1; then rc=6; fi
+  popd >/dev/null; drop_worktree "$wt"
+  case "$rc" in
+    0) ;;
+    1) { log "nothing opened: the gates ${gates:-full} failed on your commits rebased onto $MR_BASE_WHAT: a merge request carries a green build (looper#250). Fix it, commit, verify with --build and --land again. Its end ($out has it all):"
+         tail -n 40 "$out"; } >&2
+       exit 4 ;;
+    6) die "nothing opened: the push of $b was refused: $(tail -n 3 "$out" | redact | tr '\n' ' ')" ;;
+    *) log "nothing opened: the build has no verdict ($(pre_land_why "$out")): a merge request carries a verdict, and a build with none is built again, never waited on. --land again (looper#250)." >&2
+       exit 2 ;;
+  esac
+  verdict="$(grep '^verdict: ' "$out" | tail -n 1)" || verdict="verdict: success"
+  printf 'sha=%s\nbase=%s\ngates=%s\n' "$sha" "$MR_BASE" "${gates:-full}" > "$run/mr"
+  checkpoint "$n" "merge request" "$run" || true
+  ck="$(git rev-parse -q --verify "refs/looper/$(wip_branch "$n")" 2>/dev/null)" || ck=""
+  log="the build's log, \`.looper/mr-gates.log\`"
+  [[ -z "$ck" ]] || log+=" on the run's checkpoint [${ck:0:7}]($(forge_web "$REPO" blob "$ck" .looper/mr-gates.log))"
+  title="$(forge_issue_view "$REPO" "$n" title .title 2>/dev/null)" || title=""
+  title="#$n: ${title:-the merge request of issue $n}"
+  body="The merge request of #$n, opened by its report on the looper VM of $REPO (looper#250; tacplus-dev/roadmap decisions/agentic-dev-flow-2026-11-25.md). Merging it does not close the issue: the issue's next run does.
+
+**Evidence**: the report's own build, on this VM. Feedback, not proof.
+
+- Commit: \`$sha\`, this branch's head: exactly the commit built.
+- Base: \`$MR_BASE\`, $MR_BASE_WHAT.
+- Gate set: \`${gates:-full}\` ($GATES_WHY).
+- Verdict: ${verdict#verdict: }
+- Log: $log. Its end:
+
+\`\`\`\`
+$(tail -n 30 "$out" | redact)
+\`\`\`\`
+
+The build status a merge trusts is the commit status \`$BUILD_CONTEXT\` on this commit, set by a build off this VM: the report cannot set it (its token has no statuses permission; the panel's items 5 and 6).
+
+<!-- looper-mr issue=$n sha=$sha base=$MR_BASE gates=${gates:-full} -->"
+  r="$(forge_mr_open "$REPO" "$b" "$title" "$body")" || die "$b is pushed (${sha:0:7}), but GitHub did not open its merge request: --land again"
+  read -r k url <<<"$r"
+  printf 'number=%s\nurl=%s\n' "$k" "$url" >> "$run/mr"
+  forge_issue_edit "$REPO" "$n" --add-label "$LABEL_MR" >/dev/null || true
+  checkpoint "$n" "merge request opened" "$run" || true
+  log "opened: the merge request #$k of $BRANCH, $url: ${sha:0:7} on $MR_BASE_WHAT, the gates ${gates:-full} green (looper#250)."
+  log "Your run ends here: do not wait, comment or close; the issue is $LABEL_MR while the merge request is open, and its next run, once it is merged, closes it, or, once it is closed unmerged (sent back), fixes it."
+}
+
+# What the prompt says of the issue's merge request (looper#250), when it has
+# one merged, closed, or open with the issue freed (the merger's send-back): the
+# run finishes it, or fixes what came back.
+mr_context() { # issue
+  local s st k url c
+  mr_mode || return 0
+  s="$(forge_mr_state "$REPO" "$(forge_mr_branch "$REPO" "$1")" 2>/dev/null)" || return 0
+  read -r st k url c <<<"$s"
+  case "$st" in
+    merged) printf '\n%s\n%s\n' "This issue's merge request, #$k ($url), was merged${c:+ as ${c:0:7}}: its work is on main." \
+              "Finish the issue as rule 8 says: what changed, the gates its build ran, then close it." ;;
+    closed) printf '\n%s\n%s\n' "This issue's merge request, #$k ($url), was closed without merging: it was sent back. Read why first" \
+              "(\`$(text_cmd pr "$k")\`), fix it on your branch, verify, and --land again: that opens it again (rule 5)." ;;
+    # The merger's send-back (looper#251) leaves it open and frees the issue.
+    open) c="$(forge_issue_view "$REPO" "$1" labels '.labels[].name' 2>/dev/null)" || return 0
+          ! grep -qxF "$LABEL_MR" <<<"$c" || return 0
+          printf '\n%s\n%s\n' "This issue's merge request, #$k ($url), is open, and the issue is not \`$LABEL_MR\`: the merger sent it back. Read why first" \
+            "(\`$(text_cmd pr "$k")\`), resolve it on your branch, verify, and --land again: that updates it (rule 5)." ;;
+  esac
 }
 
 # A land's STATE.md change is its last commit, touching STATE.md alone
@@ -2344,7 +2521,8 @@ pre_land_report() { # run-dir
 # verdict, each said; 1 red, the failure said: nothing is queued. Never on a
 # build job: the batch's build is the manager's there (looper#204).
 # A local build of this run that passed the same gate set on the same tree
-# (its commit, printed): the land's gate need not build it again. A report
+# (its commit and its build's id, printed): the land's gate, and a merge
+# request's (looper#250), need not build it again. A report
 # builds its change with --build and lands it at once; the land's rebased
 # commit is then the very tree it just built, and a second full build of it
 # waited behind other builds for the VM's slot past the run's time, so
@@ -2360,7 +2538,7 @@ green_local_build() { # builds-dir sha gates
     s="$(sed -n 's/^sha=//p' "$r" | head -n 1)"; g="$(sed -n 's/^gates=//p' "$r" | head -n 1)"
     [[ "$g" == "$3" && "$s" =~ ^[0-9a-f]{40}$ ]] || continue
     [[ "$(git -C "$CHECKOUT" rev-parse -q --verify "$s^{tree}" 2>/dev/null)" == "$t" ]] || continue
-    echo "$s"; return 0
+    echo "$s ${id##*/}"; return 0
   done
   return 1
 }
@@ -4241,6 +4419,10 @@ checkpoint() { # issue why [run-dir]
     else
       GIT_INDEX_FILE="$idx" git update-index --force-remove .looper/land
     fi
+    # A merge request's build log, its evidence's (looper#250).
+    if [[ -n "$run" && -f "$run/mr-gates.log" ]]; then
+      GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "100644,$(redact < "$run/mr-gates.log" | git hash-object -w --stdin),.looper/mr-gates.log"
+    fi
     if [[ -n "$run" && -f "$run/prompt.md" ]]; then
       p="$(redact < "$run/prompt.md" | git hash-object -w --stdin)"
       l="$(tail -n "$RECORD_LINES" "$run/claude.log" 2>/dev/null | redact | git hash-object -w --stdin)"
@@ -4632,6 +4814,78 @@ land_command() { # issue
   fi
 }
 
+# Rule 5: how the report lands its commits: queued with the manager (looper#86),
+# or on a looper VM a merge request with its evidence (looper#250).
+land_rule() { # issue
+  local n="$1"
+  if mr_mode; then
+    cat <<EOF
+5. Commit on $BRANCH with a message that says why and ends with
+   \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then open its merge request: $(land_command "$n").
+   On this looper VM it queues no land (looper#250): it rebases your own commits onto \`$MAIN_GREEN\`, the last
+   main the rolling check found green (main's head until that exists, looper#249), never onto main's tip; builds
+   the gate set their diff calls for, locally, as --build does; and only on green pushes exactly that commit to
+   \`$(forge_mr_branch "$REPO" "$n")\` and opens its pull request to main (or updates the open one), with its evidence: the
+   commit, its base, the gate set, the verdict and the build's log. Red opens nothing: it exits 4 with the
+   failure; fix it and --land again. A build with no verdict opens nothing (exit 2): --land again, never wait.
+   A conflict with \`$MAIN_GREEN\` opens nothing (exit 3, the files named): rebase your commits onto it yourself,
+   resolve, verify and --land again. It takes a build's length: run it detached and poll, as a long build.
+   Its build is feedback, not proof: the status a merge trusts is a commit status set off this VM, which you
+   cannot set. Once it is open your run is done: end it (rule 8). Never push to main or to that branch
+   yourself, and never open, merge or close a pull request yourself: --land does. Never force-push. Never
+   commit secrets.
+EOF
+    return 0
+  fi
+  cat <<EOF
+5. Commit on $BRANCH with a message that says why and ends with
+   \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
+   It queues your commits with the repository's manager, which alone merges to main, and returns at once:
+   reports never wait for, or run, a build (the merge train, looper#86). The manager lands the queue in
+   batches: it rebases every queued branch, in order, onto a candidate from the current main, builds the
+   candidate once (with a $GATE_MAP, the gate set the batch's combined diff calls for, full for any path the
+   map does not name or a change to the map itself), fast-forwards main on green and deletes the branches;
+   on red it builds each change on its own, at once, and sends those red on their own back, with the failure. Its verdict on
+   your land is a comment on this issue, and names the batch and the gate set.$(pre_land_rule)
+   Once your land is queued, your run is done: end it (rule 8). If something you must still do waits on the
+   verdict, say so in your last checkpoint (rule 10): the next run of this issue, after the verdict, does it.
+   A push to main any other way is refused. When it merges nothing it says why: the rebase conflicts in files
+   it does not regenerate (it regenerates only the generated and lock files the repository's $GEN_MAP maps;
+   the next run rebases onto origin/main, resolves, verifies and lands again), or the build is red (the next
+   run fixes it and lands again). When STATE.md is its only conflict, it lands the rest and drops your
+   STATE.md commit (looper#131): its verdict quotes it; the next run redoes it on main's STATE.md in a commit
+   of its own and lands again. Never force-push. Never commit secrets.
+EOF
+}
+
+# Rule 8: how the report ends its run and finishes its issue, by rule 5's way.
+finish_rule() { # issue
+  local n="$1"
+  if mr_mode; then
+    cat <<EOF
+8. When your merge request is open, end your run with a checkpoint (rule 10) that says what is done and what
+   is left: do not close the issue, which is $LABEL_MR while it is open and is worked again once it
+   is merged or closed. When you start a run whose merge request was merged (this prompt says so above),
+   comment on the issue with what changed (the merge request, its commit hashes), the gate set its build ran
+   and its last lines, its base, and anything you could not verify; then, as your last step (any patch
+   tagged and any backport pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it
+   ends your run. A merge request sent back (closed without merging, or left open by the merger, looper#251:
+   a conflict, a red status) you fix and --land again.
+EOF
+    return 0
+  fi
+  cat <<EOF
+8. When your land is queued, end your run with a checkpoint (rule 10) that says what is done and what is
+   left: do not close the issue, which is $LABEL_LANDING until the manager's verdict and is worked again
+   after it. When you start a run whose land the manager has merged (its verdict is on the issue: \`The
+   manager merged\`), comment on the issue with what changed (commit hashes), the gates you ran and their
+   last lines, the gate set and batch the land ran in (the verdict names them), and anything you could not
+   verify; then, as your last step (any patch tagged and any backport
+   pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it ends your run. A
+   land the manager sent back (a conflict, or red: its verdict says) you fix and land again.
+EOF
+}
+
 # Rule 5's line on the pre-land gate (looper#196), when main's gate map names one.
 pre_land_rule() {
   commit_map origin/main
@@ -4860,7 +5114,7 @@ verify_rule() { # issue
       "Verify with a local build: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds your committed" \
       "HEAD in the build image this repository pins, on the gate set your diff since main calls for, as a container this" \
       "looper VM starts (looper#238), and prints its verdict and the path of its full log, which is yours to read (exit 0 on" \
-      "a pass, 1 on a failure, 2 with none within its wait). It is feedback only: the manager's merge builds again. You have" \
+      "a pass, 1 on a failure, 2 with none within its wait). It is feedback only: $(if mr_mode; then echo "--land builds its merge request's own (rule 5)."; else echo "the manager's merge builds again."; fi) You have" \
       "no container runtime yourself (no \`docker\`, so no \`tacplus\` here either): your builds are --build's. What needs" \
       "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
     printf '\n   %s\n   %s' \
@@ -4890,9 +5144,9 @@ tacplus_rule() {
 }
 
 # A report's outcome, for its job's log: closed, blocked,
-# needs-decision, proposed, timeout, land-pending, land-deferred, landed or ended (resumes), waiting (on another run, looper#171,
+# needs-decision, proposed, timeout, land-pending, mr-open (its merge request open, looper#250), land-deferred, landed or ended (resumes), waiting (on another run, looper#171,
 # or until a date, looper#181), backed-off (nothing changed since its previous run, looper#181), stuck,
-# held, job-gone or vm-stopped (a looper VM stopping, looper#238).
+# held, job-gone, vm-stopped (a looper VM stopping, looper#238) or claimed (another run's, looper#250).
 report() { # issue outcome
   log "#$1: $2"
 }
@@ -4937,6 +5191,73 @@ bounded() { # seconds function [args...]
   return "$rc"
 }
 
+# --- one run per issue (looper#250) ---------------------------------------------
+#
+# A report's claim on its issue (the panel's item 13: a preempted VM's report
+# and the next VM's, or a VM's and the kicker's fallback here, can start two
+# runs of one issue). The claim is on the forge, never a disk, so it survives a
+# preemption: the branch looper/claim-NAME-N, a commit whose subject names the
+# run and until when it holds (`looper-claim <host>/<run> until <epoch>`), only
+# ever moved by compare-and-swap (git push --force-with-lease against the value
+# read), so of two runs taking it at once one wins. A run takes it when there is
+# none, when its until has passed (its run was killed outright, a VM gone with
+# no SIGTERM), or when it is its own; it keeps it fresh every
+# LOOPER_CLAIM_REFRESH seconds (default 300), LOOPER_CLAIM_TTL (default 900)
+# ahead each time, and gives it up at its end and on the VM's SIGTERM (so the
+# next VM resumes at once). A report that finds another run's live claim, or
+# cannot read or set it, does not start: the issue is left as it is. On a
+# looper VM, or wherever LOOPER_CLAIM=1 (the kicker's plan of a VM project's
+# reports here, when its VM cannot start).
+CLAIM_TTL="${LOOPER_CLAIM_TTL:-900}"
+CLAIM_REFRESH="${LOOPER_CLAIM_REFRESH:-300}"
+CLAIM_RUN=""
+claims_on() { [[ -n "${LOOPER_VM:-}" || "${LOOPER_CLAIM:-}" == 1 ]]; }
+claim_branch() { echo "looper/claim-$REPO-$1"; } # issue
+
+# This run's claim, set (CLAIM_RUN, until now and CLAIM_TTL); fails, CLAIM_WHY
+# saying why, when another run's live claim holds it or it cannot be set.
+claim_take() { # issue
+  local b old who until c
+  b="$(claim_branch "$1")"; CLAIM_WHY=""
+  old="$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$b")" || { CLAIM_WHY="its claim ($b) could not be read"; return 1; }
+  old="$(cut -f1 <<<"$old")"
+  if [[ -n "$old" ]]; then
+    fetch "$CHECKOUT" "+refs/heads/$b:refs/looper/claims/$1" || { CLAIM_WHY="its claim ($b) could not be read"; return 1; }
+    read -r _ who _ until <<<"$(git -C "$CHECKOUT" log -1 --format=%s "refs/looper/claims/$1")"
+    if [[ "$who" != "$CLAIM_RUN" && "$until" =~ ^[0-9]+$ ]] && (( until > $(date +%s) )); then
+      CLAIM_WHY="the run $who holds it until $(hold_iso "$until") ($b)"; return 1
+    fi
+  fi
+  c="$(git -C "$CHECKOUT" commit-tree "$(git -C "$CHECKOUT" hash-object -w -t tree /dev/null)" \
+        -m "looper-claim $CLAIM_RUN until $(( $(date +%s) + CLAIM_TTL ))" -m "The run that works $REPO#$1 (looper#250): no other starts while this holds.")" ||
+    { CLAIM_WHY="its claim could not be made"; return 1; }
+  git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$b:$old" origin "$c:refs/heads/$b" 2>/dev/null ||
+    { CLAIM_WHY="another run took its claim first ($b)"; return 1; }
+}
+
+# Keeps this run's claim fresh every CLAIM_REFRESH until killed.
+claim_ticker() { # issue
+  local s=""
+  trap 'kill "$s" 2>/dev/null; exit 0' TERM
+  while :; do
+    sleep "$CLAIM_REFRESH" & s=$!; wait "$s"
+    claim_take "$1" || log "#$1: its claim was not renewed: $CLAIM_WHY" >&2
+  done
+}
+
+# Gives this run's claim up: deleted, by compare-and-swap, when it is still its own.
+claim_release() { # issue
+  local b old who
+  [[ -n "$CLAIM_RUN" ]] || return 0
+  b="$(claim_branch "$1")"
+  old="$(git -C "$CHECKOUT" ls-remote origin "refs/heads/$b" | cut -f1)" || return 1
+  [[ -n "$old" ]] || return 0
+  fetch "$CHECKOUT" "+refs/heads/$b:refs/looper/claims/$1" || return 1
+  read -r _ who _ <<<"$(git -C "$CHECKOUT" log -1 --format=%s "refs/looper/claims/$1")"
+  [[ "$who" == "$CLAIM_RUN" ]] || return 0
+  git -C "$CHECKOUT" push -q --force-with-lease="refs/heads/$b:$old" origin ":refs/heads/$b" 2>/dev/null
+}
+
 # The looper VM stops (looper#238): its parent's SIGTERM reached the run's
 # whole tree, the model and its watchers too, and the VM has about 25 seconds
 # left. The run's work is checkpointed to its branch (within
@@ -4954,6 +5275,8 @@ vm_stop() {
   else
     c="Its checkpoint did not push in time: [\`$(wip_branch "$n")\`]($(wip_url "$n")) keeps its last one"
   fi
+  # Its claim given up (looper#250): the next VM resumes it at once.
+  [[ -z "$CLAIM_RUN" ]] || bounded 3 claim_release "$n" || true
   bounded 5 forge_issue_comment "$REPO" "$n" "The looper VM of $REPO stopped this run: the VM is stopping (SIGTERM: a spot reclaim, or its shutdown). $c, and the issue stays \`$LABEL_IN_PROGRESS\`: the next looper VM of $REPO resumes it from there (looper#238). Run record: $(run_record "$VM_RUN")." >/dev/null || true
   report "$n" vm-stopped
   exit 0
@@ -4963,6 +5286,14 @@ vm_stop() {
 work_issue() { # issue
   local n="$1" run limit resumed
   run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-issue-$n"; mkdir -p "$run"
+  # One run per issue (looper#250): its claim first, before anything of the issue changes.
+  if claims_on; then
+    CLAIM_RUN="$(hostname 2>/dev/null || echo host)/$(basename "$run")"
+    if ! claim_take "$n"; then
+      CLAIM_RUN=""; rmdir "$run" 2>/dev/null || true
+      log "#$n is not taken: $CLAIM_WHY (one run per issue, looper#250)"; report "$n" claimed; return 0
+    fi
+  fi
   log "taking $LOOPER_ORG/$REPO#$n ($run, in $CHECKOUT on $BRANCH)"
   # The looper's labels, before it sets one (looper#80).
   ensure_labels "$REPO"
@@ -5033,6 +5364,8 @@ what changed since: $backed. Read that first. If there is still nothing to do, c
 your run: it backs off again (rule 9 says how to wait until a date).
 "
   fi
+  # Its merge request merged or closed since (looper#250): the prompt says which.
+  local merged; merged="$(mr_context "$n")"
   new_nonce "$run"
   local security; security="$(security_report "$run")"
   cat > "$run/prompt.md" <<PR
@@ -5042,7 +5375,7 @@ same time, each in its own job. Read the issue first: its text, as the looper re
 is at the end of this prompt (rule 12 says whose text directs you); \`$(text_cmd issue "$n")\`
 shows any comment since, in the same blocks. It was approved by someone with write access; issues it links to and the documents it
 cites (decision records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.$(security_context "$security")
-$resumed$waited$backed
+$resumed$waited$backed$merged
 Rules:
 1. Do what the issue asks, completely: its acceptance criteria are the definition of done.
    A change it needs in another repository of $LOOPER_ORG (its other half) is part of it, approved with it (looper#218):
@@ -5063,23 +5396,7 @@ Rules:
    reply ends the run. Stop a process you started by its PID (\`kill <pid>\`, the \`\$!\` you noted when you
    started it), never by a pattern (\`pkill -f\`, \`kill \$(pgrep ...)\`): other issues' runs and the looper's lands
    run on this machine too, and a pattern stops theirs (looper#61); \`pkill\` here signals only your run's own.$(memory_rule)
-5. Commit on $BRANCH with a message that says why and ends with
-   \`Co-Authored-By: Claude <noreply@anthropic.com>\`, then land it on main: $(land_command "$n").
-   It queues your commits with the repository's manager, which alone merges to main, and returns at once:
-   reports never wait for, or run, a build (the merge train, looper#86). The manager lands the queue in
-   batches: it rebases every queued branch, in order, onto a candidate from the current main, builds the
-   candidate once (with a $GATE_MAP, the gate set the batch's combined diff calls for, full for any path the
-   map does not name or a change to the map itself), fast-forwards main on green and deletes the branches;
-   on red it builds each change on its own, at once, and sends those red on their own back, with the failure. Its verdict on
-   your land is a comment on this issue, and names the batch and the gate set.$(pre_land_rule)
-   Once your land is queued, your run is done: end it (rule 8). If something you must still do waits on the
-   verdict, say so in your last checkpoint (rule 10): the next run of this issue, after the verdict, does it.
-   A push to main any other way is refused. When it merges nothing it says why: the rebase conflicts in files
-   it does not regenerate (it regenerates only the generated and lock files the repository's $GEN_MAP maps;
-   the next run rebases onto origin/main, resolves, verifies and lands again), or the build is red (the next
-   run fixes it and lands again). When STATE.md is its only conflict, it lands the rest and drops your
-   STATE.md commit (looper#131): its verdict quotes it; the next run redoes it on main's STATE.md in a commit
-   of its own and lands again. Never force-push. Never commit secrets.
+$(land_rule "$n")
 6. The planning files: update STATE.md when your change changes what it states (version, what works,
    gaps, blockers), in your last commit, of its own, touching STATE.md alone (\`--land\` makes it so: looper#131).
    Put the follow-ups, debt and ideas you find in PROPOSALS.md (what, why, links), not
@@ -5088,14 +5405,7 @@ Rules:
    member's, says it is at Jody's request (then only do what it asks of ROADMAP.md). HISTORY.md is append-only and not yours: the looper adds
    the line for this issue and for any release.
 $(kind_rule "$kind")
-8. When your land is queued, end your run with a checkpoint (rule 10) that says what is done and what is
-   left: do not close the issue, which is $LABEL_LANDING until the manager's verdict and is worked again
-   after it. When you start a run whose land the manager has merged (its verdict is on the issue: \`The
-   manager merged\`), comment on the issue with what changed (commit hashes), the gates you ran and their
-   last lines, the gate set and batch the land ran in (the verdict names them), and anything you could not
-   verify; then, as your last step (any patch tagged and any backport
-   pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it ends your run. A
-   land the manager sent back (a conflict, or red: its verdict says) you fix and land again.
+$(finish_rule "$n")
 9. If the fix is landed but the gates cannot run until another open issue is done (a compiler floor that
    does not exist yet, say), or there is rightly nothing to change here until another open issue is done,
    do not close this issue: comment what you pushed (if anything) and why it waits, and write the line
@@ -5129,8 +5439,9 @@ The issue, #$n (its title and body, then each comment, oldest first):
 
 $(issue_texts "$n")
 PR
-  local rc=0 ticker refusal="" also="" t0 budget
+  local rc=0 ticker refusal="" also="" t0 budget claimer=""
   checkpoint_ticker "$n" "$run" & ticker=$!
+  [[ -z "$CLAIM_RUN" ]] || { claim_ticker "$n" & claimer=$!; }
   comments_mark "$n" "$run"
   t0=$(date +%s); budget=$(( limit > STOP_EARLY ? limit - STOP_EARLY : limit ))
   run_claude "$run/prompt.md" "$run/claude.log" "$budget" "$run" "$n" || rc=$?
@@ -5146,6 +5457,7 @@ PR
     refusal="$(limit_refusal "$run/claude.log")" || refusal=""
   fi
   kill "$ticker" 2>/dev/null; wait "$ticker" 2>/dev/null || true
+  [[ -z "$claimer" ]] || { kill "$claimer" 2>/dev/null; wait "$claimer" 2>/dev/null || true; }
   local stopped=""; [[ -s "$run/stopped" ]] && stopped="$(cat "$run/stopped")"
   case "$stopped:$rc" in
     done:*) log "claude stopped on #$n: its run was done and it had not exited ${DONE_GRACE}s later" ;;
@@ -5171,6 +5483,9 @@ PR
   # it merges it after the run and gives its verdict on the issue, which stays
   # looper:landing until then.
   local pending=""; land_pending "$run" && pending=1
+  # A merge request it opened on a looper VM (looper#250), open after the run:
+  # the issue is looper:merge-request until it is merged or closed.
+  local mr=""; [[ -s "$run/mr" ]] && mr="$(sed -n 's/^url=//p' "$run/mr" | tail -n 1)"
   # What the run landed on main (--land records it): its first base and last commit.
   local head_before="" head_after="" sets="" on=""
   if [[ -s "$run/landed" ]]; then
@@ -5211,7 +5526,8 @@ Run record: $(run_record "$run")." >/dev/null || true
   # Only a land still queued keeps the issue looper:landing (looper#93): one
   # left without (a land that never queued, say) would hold the manager.
   if [[ -n "$pending" ]]; then forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" >/dev/null || true
-  else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_LANDING" >/dev/null || true; fi
+  elif [[ -n "$mr" ]]; then forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_LANDING" >/dev/null || true
+  else forge_issue_edit "$REPO" "$n" --remove-label "$LABEL_IN_PROGRESS" --remove-label "$LABEL_LANDING" --remove-label "$LABEL_MR" >/dev/null || true; fi
   # The runs it waits on (--wait-on, looper#171) go in its body first: a run
   # also blocked, or with its land queued, waits on them too.
   local waiting wrc=0 until_t="" backed_line=""
@@ -5316,7 +5632,18 @@ $(sed 's/^/> /' "$run/step")"
     ended="The run went idle after its fix landed: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ "$stopped" == idle ]]; then ended="The run went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ -n "$pending" && "$rc" == 0 ]]; then ended="The run queued its land and ended, as the merge train asks (looper#86: reports never wait for a build)."
+  elif [[ -n "$mr" && "$rc" == 0 ]]; then ended="The run opened its merge request and ended (looper#250: a report never waits for its merge)."
   else ended="The run ended before finishing (exit $rc)."; fi
+  if [[ -n "$mr" && -z "$pending" ]]; then
+    report "$n" mr-open
+    forge_issue_comment "$REPO" "$n" "$ended Its merge request is open, with its evidence: $mr (looper#250). $where
+
+$done_left
+
+This issue stays $LABEL_APPROVED, and $LABEL_MR while that is open: once it is merged, the next run finishes it; once it is closed unmerged (sent back), the next run fixes what came back. Run record: $(run_record "$run")." >/dev/null || true
+    log "#$n ended with its merge request open ($mr); the issue resumes once it is merged or closed"
+    return 0
+  fi
   if [[ -n "$pending" ]]; then
     report "$n" land-pending
     (( wrc != 0 )) || where+=" It also waits on $(cut -d' ' -f2 <<<"$waiting" | sed 's/.*/<&>/' | paste -sd, - | sed 's/,/, /g'): its next run starts once the verdict is in and that run has finished."
@@ -6590,6 +6917,8 @@ report_job() { # issue
   elif build_jobs origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: this report builds in build jobs, its model with no container runtime"
   elif [[ "$LOOPER_FORGE" == github ]] && pinned origin/main; then log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: its model keeps looper-docker (looper#71)"; fi
   work_issue "$n"
+  # Its claim given up at the run's end, whatever the outcome (looper#250).
+  claim_release "$n" || log "#$n: its claim could not be given up: it lapses $(hours "$CLAIM_TTL") after its last renewal"
 }
 
 # The disk a job leaves, for the nightly recap's runner pools (looper#57), and
@@ -6602,7 +6931,7 @@ disk_log() {
 
 case "$MODE" in
   # The model's step in a report: the manager merges it (looper#70).
-  land) land_request ;;
+  land) if mr_wanted; then mr_request; else land_request; fi ;;
   # The model's build request in a pinned repository's report (looper#71).
   build) build_request ;;
   # The model's step when what is left waits on another run (looper#171).
