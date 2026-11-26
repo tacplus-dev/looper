@@ -387,7 +387,8 @@ parent() {
 # quarter of its CPUs, at least 1): several full gate runs sharing 8 CPUs all
 # crawl. Each running build holds the lock of one slot (slots/slot-N) for its
 # life, its lock going with it however it ends; one that finds none free
-# waits, first come first served. Each says what it is in a marker the parent
+# waits, first come first served, one waiting build an issue (a newer request
+# of the issue takes the older one's place). Each says what it is in a marker the parent
 # reads (slots/wait-PID while it waits, slots/run-PID while it runs: when it
 # started waiting, then how long it waited, and REPO#N SHA7).
 
@@ -414,10 +415,23 @@ slot_markers() { # kind
 # waited for: the wait said in its log when it starts, every minute, and when
 # it ends, with how long.
 take_slot() { # what (REPO#N SHA7)
-  local d="$CACHE/vm/slots" n i t0 said="" now first
+  local d="$CACHE/vm/slots" n i t0 q0 said="" now first p t what
   n="$(build_slots)"; mkdir -p "$d"
-  t0=$(date +%s)
-  echo "$t0 $1" > "$d/.new-$$" && mv -f "$d/.new-$$" "$d/wait-$$"
+  t0=$(date +%s); q0="$t0"
+  # One waiting build an issue: a run that asks again (a newer commit, or the
+  # same one after its checkpoint) takes the place of its issue's build that
+  # still waits, and keeps that place in the queue. Without it the queue filled
+  # with builds nobody read any more (2026-11-26: 13 and 28 waiting, for 12 and
+  # 22 issues), each taking a slot for a superseded commit when its turn came.
+  if [[ "${1% *}" == *"#"* ]]; then
+    while read -r p t what; do
+      [[ -n "$p" && "$p" != "$$" && "${what% *}" == "${1% *}" ]] || continue
+      (( t >= q0 )) || q0="$t"
+      kill -TERM "$p" 2>/dev/null || true; rm -f "$d/wait-$p"
+      echo "took the place of ${1% *}'s waiting build of ${what##* } (waiting for $(( t0 - t ))s): one waiting build an issue"
+    done < <(slot_markers wait)
+  fi
+  echo "$q0 $1" > "$d/.new-$$" && mv -f "$d/.new-$$" "$d/wait-$$"
   while :; do
     first="$(slot_markers wait | sort -k2,2n -k1,1n | head -n 1 | cut -d' ' -f1)"
     if [[ "$first" == "$$" ]]; then
@@ -499,7 +513,7 @@ build() {
   b="$(mktemp -d "$CACHE/builds/$REPO-XXXXXX")"; chmod 0755 "$b"
   # shellcheck disable=SC2064
   trap "rm -rf '$b' '$CACHE/vm/slots/wait-$$' '$CACHE/vm/slots/run-$$'" EXIT
-  trap 'exit 143' TERM
+  trap 'echo "verdict: failure: ended before its gates ran: the VM is stopping, or a newer local build of this issue took its place in the queue"; exit 143' TERM
   # Its own checkout of the commit, borrowing the report's objects (and through
   # them the shared store's): the report's own work tree is the model's.
   objects="$(cd "$dir" && cd "$(git rev-parse --git-common-dir)/objects" && pwd)" || { echo "verdict: failure: $dir is no git checkout"; exit 1; }

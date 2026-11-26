@@ -380,6 +380,32 @@ kill_tree "$b1"; wait "$b1" 2>/dev/null || true
 vm PATH="$TMP/bin:$PATH" "${SLOTS[@]}"
 until_true "the dead build's marker dropped" eval '[[ -z "$(ls "$FIX/cache/vm/slots" | grep -v "^slot-")" ]]'
 kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+# One waiting build an issue: issue 2's newer request takes the place of its
+# build that still waits (which ends, saying why) and keeps its place in the
+# queue, ahead of issue 3's that came later.
+rm -f "$FIX"/release-* "$FIX"/ran-*
+SLOTS=(LOOPER_VM_BUILDS=1)
+slot_build 1 & b1=$!
+until_true "build 1 runs alone" test -e "$FIX/ran-1"
+slot_build 2 & b2=$!
+until_true "issue 2's build waits" grep -qs "waiting for a build slot" "$FIX/b2.log"
+sleep 1.1
+slot_build 3 & b3=$!
+until_true "issue 3's build waits" grep -qs "waiting for a build slot" "$FIX/b3.log"
+sleep 1.1
+env FIX="$FIX" PATH="$TMP/bin:$PATH" LOOPER_CACHE="$FIX/cache" "${SLOTS[@]}" "$ROOT/looper-vm" build --repo alpha --issue 2 \
+  --dir "$FIX/clone" --sha "${sha[3]}" --log "$FIX/b4.log" & b4=$!
+rc=0; wait "$b2" || rc=$?
+(( rc == 143 )) || fail "issue 2's older build exited $rc: $(cat "$FIX/b2.log")"
+has "$(cat "$FIX/b2.log")" "verdict: failure: ended before its gates ran"
+until_true "the newer one says whose place it took" grep -qs "took the place of alpha#2's waiting build of ${sha[2]:0:7}" "$FIX/b4.log"
+[[ "$(ls "$FIX/cache/vm/slots" | grep -c '^wait-')" == 2 ]] || fail "waiting: $(ls "$FIX/cache/vm/slots")"
+touch "$FIX/release-1"; wait "$b1" || fail "build 1 exited $?"
+until_true "issue 2's newer build has the slot" grep -qs "^took build slot 1 of 1 after" "$FIX/b4.log"
+sleep 1.5
+! grep -qs "^took build slot" "$FIX/b3.log" || fail "issue 3's build ran ahead of issue 2's place: $(cat "$FIX/b3.log")"
+touch "$FIX/release-3"; wait "$b4" || fail "issue 2's newer build exited $?"; wait "$b3" || fail "build 3 exited $?"
+[[ -z "$(ls "$FIX/cache/vm/slots" | grep -v '^slot-')" ]] || fail "markers left: $(ls "$FIX/cache/vm/slots")"
 # A limit that is not a number stops the parent at once.
 vm LOOPER_VM_BUILDS=x
 rc=0; wait "$VM" || rc=$?; VM=""
