@@ -385,6 +385,11 @@ case "$url" in
   */packages/generic/verify-*/latest/*)
     if [[ -f "$FIX/verify/${url##*/}" ]]; then reply 200 "$(cat "$FIX/verify/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
     exit 0 ;;
+  # A branch release's records (looper#252): $FIX/release/<branch>/<file>.
+  */packages/generic/release-*/*/*)
+    f="$FIX/release/${url#*/generic/release-*/}"
+    if [[ -f "$f" ]]; then reply 200 "$(cat "$f")"; else reply 404 '{"message":"404 Not found"}'; fi
+    exit 0 ;;
   # The nightly's gates on main (looper#73): $FIX/gates/<file>.
   */packages/generic/gates-*/latest/*)
     if [[ -f "$FIX/gates/${url##*/}" ]]; then reply 200 "$(cat "$FIX/gates/${url##*/}")"; else reply 404 '{"message":"404 Not found"}'; fi
@@ -1905,6 +1910,42 @@ OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT
 [[ "$(jq '.comments | length' <<<"$(jq -s '.[] | select(.title == "Formal verification fails: verify_x")' "$FIX"/issues/alpha-*.json)")" == 0 ]] ||
   fail "the same record commented"
 rm -rf "$FIX/verify"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == "$n" ]] || fail "filed without a record"
+pass
+
+# The nightly scan files a red branch release (looper#252): the build's red
+# record of main or a release branch, read with GITLAB_TOKEN, an approved bug
+# before the model runs, naming its run; the same red read again files
+# nothing; a release green since it, nothing; no record, nothing.
+scenario scan-release-red
+templates
+: > "$FIX/scan.sh"
+git -C "$FIX/seed" push -q origin main:release/1.2
+mkdir -p "$FIX/release/main" "$FIX/release/release-1.2"
+C="$(printf 'c%.0s' {1..40})"
+printf 'repo alpha\nbranch main\ncommit %s\nwhy just gates exited 3: a gate fails\nrun https://gitlab.com/tacplus-dev/build/-/pipelines/31\nat 2026-11-26T03:00:00Z\n' "$C" > "$FIX/release/main/red"
+printf 'repo alpha\nbranch main\ncommit %s\nimage x@sha256:1\nat 2026-11-25T03:00:00Z\n' "$(printf 'b%.0s' {1..40})" > "$FIX/release/main/record"
+printf 'repo alpha\nbranch release/1.2\ncommit %s\nwhy no pin\nrun https://gitlab.com/tacplus-dev/build/-/pipelines/32\nat 2026-11-24T03:00:00Z\n' "$C" > "$FIX/release/release-1.2/red"
+printf 'commit %s\nat 2026-11-25T03:00:00Z\n' "$C" > "$FIX/release/release-1.2/record"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/release-alpha/main/red" "$FIX/gitlab" ||
+  fail "$(cat "$FIX/gitlab")"
+grep -qx "PRIVATE-TOKEN https://gitlab.com/api/v4/projects/tacplus-dev%2Fbuild/packages/generic/release-alpha/release-1.2/red" "$FIX/gitlab" ||
+  fail "the release branch was not read: $(cat "$FIX/gitlab")"
+v="$(jq -s '[.[] | select(.title | startswith("The release build of "))]' "$FIX"/issues/alpha-*.json)"
+[[ "$(jq length <<<"$v")" == 1 ]] || fail "not one bug: $(jq -s 'map(.title)' "$FIX"/issues/alpha-*.json) $OUT"
+[[ "$(jq -r '.[0].title' <<<"$v")" == "The release build of main is red at ccccccc" ]] || fail "$(jq -r '.[0].title' <<<"$v")"
+has "$(jq -r '.[0].body' <<<"$v")" "is red at $C: just gates exited 3: a gate fails."
+has "$(jq -r '.[0].body' <<<"$v")" "https://gitlab.com/tacplus-dev/build/-/pipelines/31"
+has "$(jq -r '.[0].body' <<<"$v")" "release-alpha/main/record"
+[[ "$(jq -r '.[0].labels | map(.name) | sort | join(",")' <<<"$v")" == "approved,bug" ]] || fail "labels: $(jq -c '.[0].labels' <<<"$v")"
+has "$OUT" "alpha release/1.2 was red at ccccccc (2026-11-24T03:00:00Z), released since (2026-11-25T03:00:00Z): not filed"
+n="$(ls "$FIX"/issues/alpha-*.json | wc -l)"
+OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+[[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == "$n" ]] || fail "the same red release filed again"
+has "$OUT" "the red release of alpha main (https://gitlab.com/tacplus-dev/build/-/pipelines/31) is filed already"
+rm -rf "$FIX/release"
 OUT="$(looper GITLAB_TOKEN=glpat-t -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 [[ "$(ls "$FIX"/issues/alpha-*.json | wc -l)" == "$n" ]] || fail "filed without a record"
 pass

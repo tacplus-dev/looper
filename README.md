@@ -1274,9 +1274,44 @@ creates the protected tag `<repo>/vX.Y.Z` in tacplus-dev/build (one project buil
 are per repository) and starts the pipeline on that tag with `"tag": "vX.Y.Z"`. The build checks that the GitHub
 tag names `sha`, runs the gates, and publishes; the looper then creates the GitHub release.
 
+**Release builds by branch** (looper#252; tacplus-dev/roadmap `decisions/agentic-dev-flow-2026-11-25.md`, steps 7
+and 8, the panel's item 12): a release publishes exactly the commit that was checked, never `main` resolved when it
+starts. The pipeline on this project's protected `main` with `"release"`:
+
+- **`main`**: the commit `main-green` names (`refs/heads/main-green`, the last commit of main the rolling check
+  found green, looper#249), never main's head; none yet, no release (`<repo> has no main-green: nothing to release`).
+  With no `repo`, every pinned repository's main, one pipeline (the nightly's fan-out, its slots and tags): the
+  **nightly** schedule; one whose `main-green` is its release already is skipped. With a `repo`, at once: the
+  **build-now trigger**, `{"ref": "main", "inputs": {"repo": "kernel", "release": "main"}}`.
+- **`release/X.Y`**: that branch's head; **`branches`**: each `release/X.Y` branch (of `repo`, or of every pinned
+  repository) **with something new**, its head not its release's commit, so a schedule builds a branch only when it moved.
+
+Its plan resolves the commit once (`build-sha`) and every job builds that commit; `sha`, `tag`, `gates`, `base`,
+`wait`, `report`, `nightly` and `verify` are refused beside it. It runs the full gates, the security checks
+(CodeQL and Trivy, a release's), the formal verification, publish (`<registry>/<repo>:<branch>-<commit, 12 hex>`,
+`main-0123456789ab`, by digest, reproducible, never pushed over another digest; its GCP identity this project's
+protected main's) and the SBOM; then **`release-report`** (`.post`, whatever the rest did; one at a time per branch,
+resource group `release-<repo>-<branch>`):
+
+- **green** (the SBOM job left the image by digest): the release's **record**, the build project's generic package
+  `release-<repo>`, version `main` or `release-X.Y`, file `record` (`repo`, `branch`, `commit`, `image` by digest,
+  `run`, `at`), moves to this commit when the commit it names is this one or an ancestor of it; **an older build
+  never moves it back**, whichever finishes last (one whose ancestry cannot be read leaves it). A deployment rolls to
+  the record's image, by digest: dev (fleet-seatrials) to each green `main` release, production from its protected
+  release branch's; a consumer of tacplus is checked against the release's digest before it deploys, not in tacplus's
+  merge path (the decision's D4). The release's own commit status, context `tacplus-dev/release/<branch>`, is green
+  (`released: <repo>:<version>@sha256:...`, or `green, not released: the release of main is <newer>, newer`): a release
+  branch has a green status of its own, apart from a land's `tacplus-dev/build`.
+- **red** (a job failed, or the plan did: its verdict's reason): nothing is published, the record stays, a **red
+  record** (`red`: `repo`, `branch`, `commit`, `why`, `run`, `at`) and the status red. The build holds no credential
+  that writes an issue, so the **nightly scan** files it (`repo-looper --scan`, before its model): the red record of
+  main and of each `release/X.Y` branch, read with `GITLAB_TOKEN`, newer than the branch's release, an `approved` `bug`
+  (its owner a looper) naming its run, once (an open issue naming the run is it).
+
 ```sh
-looper-build plan | gates | scan | status STATE [TEXT] | publish [--dry-run] | sbom   # what the jobs run; --dry-run builds the release image and pushes nothing
-tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status (none on a nightly, a verify run, a smoke or a runner image run), plan's pending and its own failure, and the security job's verdict (looper-build scan with a stub looper-scan: red gates' reason or no gates verdict, the security checks' or no security verdict, pass, a release's left to report-pass, a nightly's none, a status not set failing the job, looper#237); an ordinary build at most 4 jobs with BUILD_CHILD_VERDICT, the CI file's rules read for it and the child's plan counted, and without it the parent as it was (looper#237); the retries of the build file's jobs, the child's and the fan-out's, on an image not pulled too (runner_external_dependency_failure, api_failure, looper#173); a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker
+looper-build plan | gates | scan | status STATE [TEXT] | publish [--dry-run] | sbom | release-report   # what the jobs run; --dry-run builds the release image and pushes nothing
+tests/looper-build.test.sh   # against a local origin and a stub GitHub (the app's JWT verified): same commit, same verdict; a tracked-file change, a push, a write credential, a credential that can push, no pin or a bad one all fail; the commit status (none on a nightly, a verify run, a smoke or a runner image run), plan's pending and its own failure, and the security job's verdict (looper-build scan with a stub looper-scan: red gates' reason or no gates verdict, the security checks' or no security verdict, pass, a release's left to report-pass, a nightly's none, a status not set failing the job, looper#237); an ordinary build at most 4 jobs with BUILD_CHILD_VERDICT, the CI file's rules read for it and the child's plan counted, and without it the parent as it was (looper#237); the retries of the build file's jobs, the child's and the fan-out's, on an image not pulled too (runner_external_dependency_failure, api_failure, looper#173); a nightly's gates-report (its verdict, commit, run and log tail as gates-<repo>/latest; red, none, and no nightly's publishing nothing, looper#73); publish (stub rootless BuildKit, stub buildx, stub registry and WIF: the plan's publish and sbom jobs, in the builder image or on the Docker tags, and `ci/build.gitlab-ci.yml`'s own values: publish alone on `arm64, build-docker`, the builder image by digest or none, looper#172; no Docker with BuildKit, no fallback when its daemon cannot start; a registry that cannot answer publishes nothing), with a real buildx the same digest twice, and with a real rootless BuildKit (a builder image's pod) the same digest twice with no Docker; a branch release (looper#252): main's builds main-green's commit, never main's head, a release branch its head, no main-green or no branch no release, a commit asked for, a tag, a nightly, a verify run, a report's build, a gate set, a base or a wait refused; its fan-out, every pinned repository's main or each release/X.Y with something new, nothing new a pipeline that says so; a failed plan's red release; publish as <branch>-<commit> from the protected main alone; release-report's record moved forward only (an older build, or an ancestry it cannot read, leaves it), its red record, and the release's own status
+tests/repo-looper.test.sh     # scan-release-red: a red branch release filed as one approved bug naming its run; filed already, or released since, nothing (looper#252)
 ```
 
 **The build runner** (Jody, 2026-10-29: jobs that hold credentials never share a runner VM with an agent's job). A

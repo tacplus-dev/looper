@@ -5472,6 +5472,47 @@ verify_bugs() { # run-dir
   "$VERIFY" file "$out" "$LOOPER_ORG/$REPO" 2>&1 | tee "$1/verify.log" || log "scan: looper-verify failed ($1/verify.log)"
 }
 
+# The build pipeline's branch releases (looper#252): a red one, the record
+# looper-build release-report publishes (the build project's generic package
+# release-<repo>, version main or release-X.Y, its file red), is filed as an
+# approved bug, its owner a looper, unless the branch's release (its record)
+# is newer or an open bug names its run already. The build holds no
+# credential that writes an issue (README: Build pipeline), so the nightly
+# scan files it, before the model: a red release of the night before, or of a
+# build-now trigger since.
+release_bugs() { # run-dir
+  local api="${LOOPER_BUILD_API:-https://gitlab.com/api/v4}" project="${LOOPER_BUILD_PROJECT:-tacplus-dev%2Fbuild}" out="$1/release"
+  local b slug f commit why run at rat n i
+  [[ "$LOOPER_FORGE" == github ]] || return 0
+  [[ -n "${GITLAB_TOKEN:-}" ]] || { log "scan: no GITLAB_TOKEN: the build's red releases are not read"; return 0; }
+  mkdir -p "$out"
+  for b in main $(git -C "$CHECKOUT" ls-remote origin 'refs/heads/release/*' 2>/dev/null | sed -n 's:^[0-9a-f]*\trefs/heads/::p' | grep -E '^release/[0-9]+\.[0-9]+$' || true); do
+    slug="${b//\//-}"; f="$out/$slug"
+    curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") -o "$f.red" \
+      "$api/projects/$project/packages/generic/release-$REPO/$slug/red" 2>/dev/null || { rm -f "$f.red"; continue; }
+    commit="$(sed -n 's/^commit //p' "$f.red" | tail -n 1)"; why="$(sed -n 's/^why //p' "$f.red" | tail -n 1)"
+    run="$(sed -n 's/^run //p' "$f.red" | tail -n 1)"; at="$(sed -n 's/^at //p' "$f.red" | tail -n 1)"
+    if ! [[ "$commit" =~ ^[0-9a-f]{40}$ && "$run" =~ ^https://[A-Za-z0-9./_~%-]+$ && "$at" =~ ^[0-9T:Z-]+$ ]]; then
+      log "scan: the red release record of $REPO $b is not one: not filed"; continue
+    fi
+    rat="$(curl -fsS --retry 2 -H @<(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_TOKEN") \
+             "$api/projects/$project/packages/generic/release-$REPO/$slug/record" 2>/dev/null | sed -n 's/^at //p' | tail -n 1)" || rat=""
+    if [[ -n "$rat" && "$rat" > "$at" ]]; then log "scan: $REPO $b was red at ${commit:0:7} ($at), released since ($rat): not filed"; continue; fi
+    n="$(forge_issue_list "$REPO" open 200 number,body "[.[] | select((.body // \"\") | contains(\"$run\"))] | length")" ||
+      { log "scan: the open issues could not be read: the red release of $REPO $b is the next scan's to file"; continue; }
+    if (( n > 0 )); then log "scan: the red release of $REPO $b ($run) is filed already"; continue; fi
+    if i="$(forge_issue_create "$REPO" "The release build of $b is red at ${commit:0:7}" "The release build of \`$b\` of \`$REPO\` (tacplus-dev/build, looper#252) is red at $commit: ${why:-the record names no reason}.
+
+Nothing was published, and nothing deploys it: \`$b\`'s release stays the last green one (the build project's package \`release-$REPO/$slug/record\`). The build: $run.
+
+Fix what made it red on \`$b\`. The next release build of \`$b\` (main's nightly, or its build-now trigger; a release branch's once it has a new commit) publishes it, and this issue is done once that release is green." "$LABEL_BUG" "$LABEL_APPROVED")"; then
+      log "scan: the release of $REPO $b is red at ${commit:0:7}: filed as #$i"
+    else
+      log "scan: the release of $REPO $b is red at ${commit:0:7}, and the issue could not be filed: the next scan files it"
+    fi
+  done
+}
+
 # The nightly build's gates on main (looper#73), in a pinned repository the
 # scan's item 3: the record looper-build gates-report publishes from each
 # nightly (the build project's generic package gates-<repo>), read with
@@ -6424,6 +6465,7 @@ scan() {
     jq '[.[] | select(.excepted == null and (.blocking or (.severity | IN("HIGH", "CRITICAL"))))]' "$report/findings.json" > "$report/unfiled.json"
   fi
   verify_bugs "$run"
+  release_bugs "$run"
   maint_prepare "$run"
   before="$(forge_issue_list "$REPO" all 1 number '.[0].number // 0')" || before=""
   cat > "$run/prompt.md" <<PR

@@ -4,6 +4,22 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A red release filed at once, not at the next scan** (2026-11-26, #252): a branch release's red record is filed
+  as a bug by the nightly scan, as the build holds no credential that writes an issue; a red build-now trigger or
+  release-branch build waits up to a day for its issue. The kicker (`looper-dispatch`, every 3 minutes, with the
+  app's token) could read the build project's `release-*` red records and file them as the scan does.
+- **The release's ancestry read through GitHub's compare** (2026-11-26, #252): `release-report` fetches both
+  commits' histories (`--filter=tree:0`, commits alone) to tell whether the recorded release is older. On tacplus
+  that is its whole commit graph each release. `GET /repos/{r}/compare/{old}...{new}`'s `status` (`ahead`,
+  `identical`) answers it in one call with the same read-only token.
+- **tacplus's build images from main-green** (2026-11-26, #252): tacplus's `images.yml` builds main's base and build
+  images (`:latest`) from main as it is when it runs, weekly and on a push. Those are CI images, not a deployment,
+  but "publish exactly the checked commit" would build them from `main-green` too once looper#249 makes it.
+- **`dependencies:` on a skipped job, read on GitLab** (2026-11-26, #252): `release-report` runs in `.post`
+  (`when: always`) with `dependencies: ["sbom-<repo>"]`, so it gets the image only when the SBOM job ran. The tests
+  read the pipeline as written; the first red release on tacplus-dev/build shows GitLab running it with that job
+  skipped (GitLab refuses a dependency only for expired or erased artifacts; if it refuses this too, the image could
+  come from the SBOM job's package instead).
 - **Every gate map miss recorded when main's full check is red** (2026-11-26, #253): a scoped gate map (tacplus#976)
   is safe only if something notices the change it let through; the agentic flow's decision (item 11) makes main's
   full check that net, but today a full red is fixed like any other and nobody learns the map was wrong. A durable
