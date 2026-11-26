@@ -150,7 +150,9 @@ usage: looper-build plan                  write build-gates.yml (the gates job, 
        looper-build release-report        a branch release's verdict: its record moved forward, or its red one
 Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_RELEASE (a branch release: main, whose
 commit is main-green's, or release/X.Y, its head, which the plan reads, BUILD_SHA empty; branches: each release/X.Y
-branch with something new since its record; with BUILD_REPO empty, every pinned repository's), BUILD_NIGHTLY (true: the
+branch with something new since its record; with BUILD_REPO empty, every pinned repository's), BUILD_RELEASE_REGISTRY,
+GCP_RELEASE_WIF_PROVIDER and GCP_RELEASE_PUBLISH_SA (where a branch release publishes and as whom: its plan writes
+them into its publish job; a tag's, BUILD_REGISTRY, GCP_WIF_PROVIDER and GCP_PUBLISH_SA), BUILD_NIGHTLY (true: the
 nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty; with BUILD_REPO
 empty too, the plan's child pipeline is every pinned repository's nightly, BUILD_NIGHTLY_SLOTS of them at a
 time; a nightly's jobs on BUILD_NIGHTLY_TAGS, default the build runner's), BUILD_VERIFY
@@ -245,6 +247,25 @@ check_release_inputs() { # [plan]
     verdict fail "a release of $BUILD_RELEASE is not a tag's release, a nightly, a verify run or a report's build"
   [[ -z "${BUILD_GATES:-}${BUILD_BASE:-}${BUILD_WAIT:-}" ]] ||
     verdict fail "a release of $BUILD_RELEASE runs its full gates with no base and no wait"
+}
+
+# A branch release's publish (looper#265): the release registry in tacplus-ci
+# (tacplus-dev/cloud#115), as its one writer, through the provider that admits
+# the build project's protected main alone; the plan writes them into its job,
+# so it has them all, well formed, or plans nothing (red: its commit resolved,
+# release-report records it): never the tags' registry.
+check_release_registry() {
+  local v
+  for v in BUILD_RELEASE_REGISTRY GCP_RELEASE_WIF_PROVIDER GCP_RELEASE_PUBLISH_SA; do
+    [[ -n "${!v:-}" ]] ||
+      verdict fail "a release of $BUILD_RELEASE publishes to the release registry (tacplus-dev/cloud#115), and this pipeline does not set $v"
+  done
+  [[ "$BUILD_RELEASE_REGISTRY" =~ ^[a-z0-9.-]+(/[a-z0-9._-]+)+$ ]] ||
+    verdict fail "BUILD_RELEASE_REGISTRY '$BUILD_RELEASE_REGISTRY' is not a registry's repository (<host>/<project>/<repository>)"
+  [[ "$GCP_RELEASE_WIF_PROVIDER" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$ ]] ||
+    verdict fail "GCP_RELEASE_WIF_PROVIDER '$GCP_RELEASE_WIF_PROVIDER' is not a Workload Identity provider (projects/N/locations/global/workloadIdentityPools/P/providers/R)"
+  [[ "$GCP_RELEASE_PUBLISH_SA" =~ ^[a-z][a-z0-9-]*@[a-z][a-z0-9-]*\.iam\.gserviceaccount\.com$ ]] ||
+    verdict fail "GCP_RELEASE_PUBLISH_SA '$GCP_RELEASE_PUBLISH_SA' is not a service account"
 }
 
 # A release: a tag's (vX.Y.Z) or a branch's (looper#252).
@@ -471,6 +492,7 @@ cmd_plan() {
       verdict fail "$BUILD_ORG/$BUILD_REPO has no $(release_ref "$BUILD_RELEASE" | sed 's:^refs/heads/::')$([[ "$BUILD_RELEASE" != main ]] || echo " (the commit of main the rolling check found green, looper#249)"): nothing to release"
     echo "$BUILD_SHA" > "$BUILD_OUT/build-sha"
     log "release: $BUILD_REPO $BUILD_RELEASE is $BUILD_SHA ($(release_ref "$BUILD_RELEASE"))"
+    check_release_registry
   elif [[ -z "${BUILD_SHA:-}" ]]; then   # a nightly or a verify run: the main branch as it is now
     # From a repository of its own: the one it runs in (an Actions checkout's
     # extraheader, looper#58) has no say in what GitHub is sent.
@@ -656,6 +678,7 @@ plan_release_fanout() {
     verdict fail "BUILD_RELEASE '$BUILD_RELEASE' is not a release branch (main, release/X.Y) or branches"
   [[ -z "${BUILD_SHA:-}${BUILD_TAG:-}" && "${BUILD_NIGHTLY:-}" != true && "${BUILD_VERIFY:-}" != true ]] ||
     verdict fail "a release's fan-out resolves each commit itself: no sha, tag, nightly or verify run"
+  check_release_registry
   [[ -z "${BUILD_REPO:-}" || ( "$BUILD_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$BUILD_REPO" != *..* ) ]] ||
     verdict fail "BUILD_REPO '$BUILD_REPO' is not a repository name"
   [[ "$BUILD_NIGHTLY_SLOTS" =~ ^[1-9][0-9]*$ ]] && ((BUILD_NIGHTLY_SLOTS <= 100)) ||
@@ -726,6 +749,9 @@ release-plan-$j:
     BUILD_SHA: ""
     BUILD_ORG: "$BUILD_ORG"
     BUILD_RELEASE: "$b"
+    BUILD_RELEASE_REGISTRY: "$BUILD_RELEASE_REGISTRY"
+    GCP_RELEASE_WIF_PROVIDER: "$GCP_RELEASE_WIF_PROVIDER"
+    GCP_RELEASE_PUBLISH_SA: "$GCP_RELEASE_PUBLISH_SA"
     BUILD_NIGHTLY_TAGS: "$BUILD_NIGHTLY_TAGS"
   script:
     - looper-build plan || { looper-build release-report || true; exit 1; }
@@ -940,9 +966,18 @@ EOF
 # no host Docker), else in the looper image on the Docker tags; its identity
 # the job's id_token, which GCP trusts on this project's protected tags alone.
 # The SBOM is the looper image's (its scanners), of the archive publish keeps.
+#
+# A branch release's (looper#265) publishes to the release registry as the
+# release account: its provider is the id_token's literal audience, and its
+# pair goes by names of its own, since a project variable takes precedence
+# over a job's GCP_WIF_PROVIDER.
 publish_jobs() {
-  local image="$BUILD_BUILDER_IMAGE" tags="$BUILD_RUNNER_TAGS"
+  local image="$BUILD_BUILDER_IMAGE" tags="$BUILD_RUNNER_TAGS" aud='$GCP_WIF_PROVIDER' registry="$BUILD_REGISTRY" release=""
   [[ -n "$image" ]] || { image="$BUILD_SCAN_IMAGE"; tags="$BUILD_DOCKER_TAGS"; }
+  if [[ -n "${BUILD_RELEASE:-}" ]]; then
+    aud="$GCP_RELEASE_WIF_PROVIDER"; registry="$BUILD_RELEASE_REGISTRY"
+    release="$(printf '    GCP_RELEASE_WIF_PROVIDER: "%s"\n    GCP_RELEASE_PUBLISH_SA: "%s"' "$GCP_RELEASE_WIF_PROVIDER" "$GCP_RELEASE_PUBLISH_SA")"
+  fi
   cat <<EOF
 publish-$BUILD_REPO:
   image: "$image"
@@ -952,7 +987,7 @@ publish-$BUILD_REPO:
     name: registry
   id_tokens:
     GCP_ID_TOKEN:
-      aud: https://iam.googleapis.com/\$GCP_WIF_PROVIDER
+      aud: https://iam.googleapis.com/$aud
   timeout: 2h
   variables:
     GIT_STRATEGY: none
@@ -961,9 +996,10 @@ publish-$BUILD_REPO:
     BUILD_TAG: "${BUILD_TAG:-}"
     BUILD_RELEASE: "${BUILD_RELEASE:-}"
     BUILD_ORG: "$BUILD_ORG"
-    BUILD_REGISTRY: "$BUILD_REGISTRY"
+    BUILD_REGISTRY: "$registry"
     BUILD_PLATFORMS: "$BUILD_PLATFORMS"
 EOF
+  [[ -z "$release" ]] || echo "$release"
   embedded_script publish
   cat <<EOF
   artifacts:
@@ -1554,23 +1590,33 @@ cmd_scan() {
 
 # The registry's short-lived GCP token, from the job's GitLab id_token
 # (GCP_ID_TOKEN), through Workload Identity Federation (GCP_WIF_PROVIDER,
-# tacplus#223); GCP_PUBLISH_SA, when set, is impersonated. No key file, no
+# tacplus#223); GCP_PUBLISH_SA, when set, is impersonated. A branch
+# release's (looper#265) is the release account's, GCP_RELEASE_PUBLISH_SA,
+# through GCP_RELEASE_WIF_PROVIDER, both its job's: never the tags'. No key file, no
 # stored token: gcloud's config and the registry client's (DOCKER_CONFIG's
 # config.json, which buildctl and docker both read) live in a temporary
 # directory. The token is REGISTRY_TOKEN, for the registry's API.
 registry_login() { # tmp
   : "${GCP_ID_TOKEN:?the publish job has no id_tokens GCP_ID_TOKEN}"
-  : "${GCP_WIF_PROVIDER:?the build project variable GCP_WIF_PROVIDER is not set (tacplus-dev/tacplus#223)}"
-  local sa=()
-  [[ -n "${GCP_PUBLISH_SA:-}" ]] && sa=(--service-account="$GCP_PUBLISH_SA")
+  local provider sa=() v
+  if [[ -n "${BUILD_RELEASE:-}" ]]; then
+    for v in GCP_RELEASE_WIF_PROVIDER GCP_RELEASE_PUBLISH_SA; do
+      [[ -n "${!v:-}" ]] || verdict fail "a release of $BUILD_RELEASE publishes as the release account (tacplus-dev/cloud#115): its job has no $v"
+    done
+    provider="$GCP_RELEASE_WIF_PROVIDER"; sa=(--service-account="$GCP_RELEASE_PUBLISH_SA")
+  else
+    : "${GCP_WIF_PROVIDER:?the build project variable GCP_WIF_PROVIDER is not set (tacplus-dev/tacplus#223)}"
+    provider="$GCP_WIF_PROVIDER"
+    [[ -n "${GCP_PUBLISH_SA:-}" ]] && sa=(--service-account="$GCP_PUBLISH_SA")
+  fi
   export CLOUDSDK_CONFIG="$1/gcloud" CLOUDSDK_CORE_DISABLE_PROMPTS=1 DOCKER_CONFIG="$1/docker"
   mkdir -p "$DOCKER_CONFIG"
   ( umask 077
     printf '%s' "$GCP_ID_TOKEN" > "$1/oidc-token"
-    gcloud iam workload-identity-pools create-cred-config "$GCP_WIF_PROVIDER" "${sa[@]}" \
+    gcloud iam workload-identity-pools create-cred-config "$provider" "${sa[@]}" \
       --credential-source-file="$1/oidc-token" --output-file="$1/federation.json" >/dev/null )
   gcloud auth login --cred-file="$1/federation.json" --quiet >/dev/null 2>&1 ||
-    verdict fail "Workload Identity Federation refused this job ($GCP_WIF_PROVIDER)"
+    verdict fail "Workload Identity Federation refused this job ($provider)"
   REGISTRY_TOKEN="$(gcloud auth print-access-token)" && [[ -n "$REGISTRY_TOKEN" ]] ||
     verdict fail "Workload Identity Federation gave no token for the registry"
   ( umask 077

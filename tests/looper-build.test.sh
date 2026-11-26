@@ -521,8 +521,8 @@ case "\$method \$url" in
     cp "$TMP/verify-record" "\$out" ;;
   # Artifact Registry's manifest of the release (publish's check for an image already there): \$TMP/existing, else 404;
   # \$TMP/registry-code another answer.
-  "GET https://us-docker.pkg.dev/v2/jody1-328023/tacplus/demo/manifests/"*)
-    echo "manifest \$auth" >> "$TMP/api.log"
+  "GET https://us-docker.pkg.dev/v2/jody1-328023/tacplus/demo/manifests/"*|"GET https://us-docker.pkg.dev/v2/tacplus-ci/releases/demo/manifests/"*)
+    echo "manifest \$auth\$([[ "\$url" != */tacplus-ci/releases/* ]] || echo " releases")" >> "$TMP/api.log"
     code=404; [[ -f "$TMP/existing" ]] && code=200; [[ -f "$TMP/registry-code" ]] && code="\$(cat "$TMP/registry-code")"
     [[ "\$code" != 200 ]] || cp "$TMP/existing" "\$out"
     printf '%s' "\$code" ;;
@@ -3086,8 +3086,13 @@ pass
 # a release/X.Y branch's its head; publish names it <branch>-<commit>, by
 # digest; release-report moves the release's record forward only, or records
 # a red one, and sets the release's own commit status.
+# Its publish is the release registry's, as the release account (looper#265,
+# tacplus-dev/cloud#115): the values ci/build.gitlab-ci.yml gives the plan.
+RPROV=projects/79638967213/locations/global/workloadIdentityPools/gitlab-com/providers/tacplus-dev-build-release
+RSA=release-publish@tacplus-ci.iam.gserviceaccount.com
+RR=(BUILD_RELEASE_REGISTRY=us-docker.pkg.dev/tacplus-ci/releases GCP_RELEASE_WIF_PROVIDER="$RPROV" GCP_RELEASE_PUBLISH_SA="$RSA")
 RB=(BUILD_RELEASE=main CI_COMMIT_BRANCH=main CI_COMMIT_REF_NAME=main CI_COMMIT_REF_PROTECTED=true
-    CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42)
+    CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42 "${RR[@]}")
 main_head="$(git -C "$work" rev-parse main)"
 
 NAME="plan: a release of main builds main-green's commit, never main's head: its full gates, checks, verification, publish and release-report (looper#252)"
@@ -3111,6 +3116,41 @@ for l in '  stage: .post' '  when: always' '  resource_group: release-demo-main'
 done
 grep -q "a release of main, as main-${SHA[release]:0:12}" "$TMP/err" || fail "the plan does not say what it releases: $(cat "$TMP/err")"
 "$ROOT/looper-ci-lint" "$y" > "$TMP/lint" 2>&1 || fail "not valid GitLab CI: $(cat "$TMP/lint")"
+pass
+
+NAME="plan: a branch release publishes to the release registry as the release account; a tag's is unchanged (looper#265)"
+build "${RB[@]}" GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g BUILD_SHA= -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+sed -n '/^publish-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" > "$TMP/publish.yml"
+for l in '  environment:' '    name: registry' "      aud: https://iam.googleapis.com/$RPROV" \
+         '    BUILD_REGISTRY: "us-docker.pkg.dev/tacplus-ci/releases"' "    GCP_RELEASE_WIF_PROVIDER: \"$RPROV\"" "    GCP_RELEASE_PUBLISH_SA: \"$RSA\""; do
+  grep -qxF -- "$l" "$TMP/publish.yml" || fail "the publish job lacks '$l': $(cat "$TMP/publish.yml")"
+done
+! grep -q 'GCP_WIF_PROVIDER\|jody1-328023\|GCP_PUBLISH_SA' "$TMP/publish.yml" || fail "a branch release's publish names the tags' registry or provider: $(cat "$TMP/publish.yml")"
+"$ROOT/looper-ci-lint" "$OUT/build-gates.yml" > "$TMP/lint" 2>&1 || fail "not valid GitLab CI: $(cat "$TMP/lint")"
+build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 "${RR[@]}" -- plan 2>"$TMP/err" ||
+  fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+sed -n '/^publish-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" > "$TMP/publish.yml"
+for l in '      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER' '    BUILD_REGISTRY: "us-docker.pkg.dev/jody1-328023/tacplus"'; do
+  grep -qxF -- "$l" "$TMP/publish.yml" || fail "a tag's publish lacks '$l': $(cat "$TMP/publish.yml")"
+done
+! grep -q 'GCP_RELEASE_\|tacplus-ci' "$TMP/publish.yml" || fail "a tag's publish is the release registry's: $(cat "$TMP/publish.yml")"
+pass
+
+NAME="plan: a branch release with no release registry, or a malformed one, is refused, never published to the tags' (looper#265)"
+for v in BUILD_RELEASE_REGISTRY GCP_RELEASE_WIF_PROVIDER GCP_RELEASE_PUBLISH_SA; do
+  if build "${RB[@]}" "$v=" BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned a release with no $v"; fi
+  verdict_is "fail: a release of main publishes to the release registry (tacplus-dev/cloud#115), and this pipeline does not set $v"
+  [[ ! -e "$OUT/build-gates.yml" ]] || fail "wrote a release with no $v"
+  [[ "$(cat "$OUT/build-sha")" == "${SHA[release]}" ]] || fail "no commit for release-report's red record"
+  if build "${RB[@]}" "$v=" BUILD_REPO= BUILD_SHA= -- plan 2>"$TMP/err"; then fail "fanned out a release with no $v"; fi
+  verdict_is "fail: a release of main publishes to the release registry (tacplus-dev/cloud#115), and this pipeline does not set $v"
+done
+for e in 'BUILD_RELEASE_REGISTRY=us-docker.pkg.dev/tacplus-ci/releases"x' GCP_RELEASE_WIF_PROVIDER=tacplus-dev-build-release \
+         'GCP_RELEASE_PUBLISH_SA=release-publish@tacplus-ci'; do
+  if build "${RB[@]}" "$e" BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned a release with $e"; fi
+  verdict_is "fail: ${e%%=*} '${e#*=}' is not"
+done
 pass
 
 NAME="plan: a release branch builds its head; a branch it does not have, or a main with no main-green yet, is no release"
@@ -3142,7 +3182,7 @@ pass
 
 NAME="plan: main's nightly release fans out to every pinned repository's main with something new; no main-green, or one released already, is none"
 fanout_fixture; rm -rf "$TMP/pkg"
-RF=(BUILD_REPO= BUILD_SHA= BUILD_RELEASE=main CI_JOB_IMAGE="ghcr.io/tacplus-dev/looper@$DIGEST_A" CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42)
+RF=(BUILD_REPO= BUILD_SHA= BUILD_RELEASE=main CI_JOB_IMAGE="ghcr.io/tacplus-dev/looper@$DIGEST_A" CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42 "${RR[@]}")
 build "${RF[@]}" -- plan 2>"$TMP/err" || fail "fan-out plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
 y="$OUT/build-gates.yml"
 jobs="$(grep -oE '^[A-Za-z][^:]*:' "$y" | paste -sd' ' -)"
@@ -3150,6 +3190,7 @@ jobs="$(grep -oE '^[A-Za-z][^:]*:' "$y" | paste -sd' ' -)"
 sed -n '/^release-plan-demo-main:$/,/^[^ ]/p' "$y" | sed '$d' > "$TMP/rplan.yml"
 for l in '  stage: plan' "  image: \"ghcr.io/tacplus-dev/looper@$DIGEST_A\"" '  tags: [arm64, build]' '  resource_group: nightly-slot-0' \
          '    BUILD_REPO: "demo"' '    BUILD_SHA: ""' '    BUILD_RELEASE: "main"' \
+         '    BUILD_RELEASE_REGISTRY: "us-docker.pkg.dev/tacplus-ci/releases"' "    GCP_RELEASE_WIF_PROVIDER: \"$RPROV\"" "    GCP_RELEASE_PUBLISH_SA: \"$RSA\"" \
          '    - looper-build plan || { looper-build release-report || true; exit 1; }' '    paths: [build-gates.yml, build-verdict, build-sha]'; do
   grep -qxF -- "$l" "$TMP/rplan.yml" || fail "release-plan-demo-main lacks '$l': $(cat "$TMP/rplan.yml")"
 done
@@ -3160,8 +3201,8 @@ done
 grep -qF "skipped: late main (no main-green), other main (no main-green)" "$TMP/err" || fail "the skipped are not said: $(cat "$TMP/err")"
 "$ROOT/looper-ci-lint" "$y" > "$TMP/lint" 2>&1 || fail "not valid GitLab CI: $(cat "$TMP/lint")"
 # demo's plan job, as its child runs it, is the release of demo's main.
-v=(); while read -r l; do v+=("$l"); done < <(sed -n 's/^    \(BUILD_[A-Z]*\): "\(.*\)"$/\1=\2/p' "$TMP/rplan.yml")
-build "${RB[@]}" "${v[@]}" -- plan 2>"$TMP/err" || fail "demo's release plan failed: $(cat "$TMP/err")"
+v=(); while read -r l; do v+=("$l"); done < <(sed -n 's/^    \(BUILD_[A-Z_]*\|GCP_RELEASE_[A-Z_]*\): "\(.*\)"$/\1=\2/p' "$TMP/rplan.yml")
+build "${RB[@]}" BUILD_RELEASE_REGISTRY= GCP_RELEASE_WIF_PROVIDER= GCP_RELEASE_PUBLISH_SA= "${v[@]}" -- plan 2>"$TMP/err" || fail "demo's release plan failed: $(cat "$TMP/err")"
 [[ "$(cat "$OUT/build-sha")" == "${SHA[release]}" ]] || fail "demo's child does not release main-green"
 # Released already: nothing new, a pipeline of one job that says so.
 mkdir -p "$TMP/pkg/release-demo/main"; printf 'repo demo\nbranch main\ncommit %s\n' "${SHA[release]}" > "$TMP/pkg/release-demo/main/record"
@@ -3185,6 +3226,12 @@ grep -q '^nothing-new:$' "$OUT/build-gates.yml" || fail "a branch with nothing n
 rm -rf "$TMP/pkg"
 pass
 
+NAME="ci/build.gitlab-ci.yml: a branch release's registry, provider and account are tacplus-dev/cloud's releases (looper#265)"
+[[ "$(civar BUILD_RELEASE_REGISTRY)" == us-docker.pkg.dev/tacplus-ci/releases ]] || fail "BUILD_RELEASE_REGISTRY '$(civar BUILD_RELEASE_REGISTRY)'"
+[[ "$(civar GCP_RELEASE_WIF_PROVIDER)" == "$RPROV" ]] || fail "GCP_RELEASE_WIF_PROVIDER '$(civar GCP_RELEASE_WIF_PROVIDER)'"
+[[ "$(civar GCP_RELEASE_PUBLISH_SA)" == "$RSA" ]] || fail "GCP_RELEASE_PUBLISH_SA '$(civar GCP_RELEASE_PUBLISH_SA)'"
+pass
+
 NAME="ci/build.gitlab-ci.yml: a release's parent is plan and the trigger; a failed plan records the red release; no pending before its commit (looper#252)"
 c="$ROOT/ci/build.gitlab-ci.yml"
 for cv in true ""; do
@@ -3197,11 +3244,26 @@ build "${RB[@]}" BUILD_SHA= -- status pending 2>"$TMP/err" || fail "a release's 
 ! grep -q '^status \|^token ' "$TMP/api.log" || fail "a release with no commit yet set a status: $(cat "$TMP/api.log")"
 pass
 
-NAME="publish: a branch release is its image <branch>-<commit> by digest, from the build project's protected main alone"
-RBP=("${RB[@]}" BUILD_SHA="${SHA[release]}" GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g)
+NAME="publish: a branch release is its image <branch>-<commit> by digest in the release registry, as the release account, from the build project's protected main alone"
+# As the plan writes its job (looper#265), with the project's provider and account, the tags', in its environment too.
+RBP=(BUILD_RELEASE=main CI_COMMIT_BRANCH=main CI_COMMIT_REF_NAME=main CI_COMMIT_REF_PROTECTED=true CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42
+     BUILD_SHA="${SHA[release]}" BUILD_REGISTRY=us-docker.pkg.dev/tacplus-ci/releases GCP_RELEASE_WIF_PROVIDER="$RPROV" GCP_RELEASE_PUBLISH_SA="$RSA"
+     GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g GCP_PUBLISH_SA=tags@jody1-328023.iam.gserviceaccount.com)
 build "${RBP[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
-RIMG="us-docker.pkg.dev/jody1-328023/tacplus/demo:main-${SHA[release]:0:12}@$(cat "$TMP/digest")"
+RIMG="us-docker.pkg.dev/tacplus-ci/releases/demo:main-${SHA[release]:0:12}@$(cat "$TMP/digest")"
 [[ "$(cat "$OUT/image")" == "$RIMG" ]] || fail "image $(cat "$OUT/image")"
+grep -q "^gcloud iam workload-identity-pools create-cred-config $RPROV --service-account=$RSA " "$TMP/gcloud.log" ||
+  fail "not federated as the release account: $(cat "$TMP/gcloud.log")"
+! grep -q 'providers/g\|jody1-328023' "$TMP/gcloud.log" || fail "federated through the tags' provider: $(cat "$TMP/gcloud.log")"
+grep -qxF "manifest Bearer ya29.stub releases" "$TMP/api.log" || fail "the release registry was not asked: $(cat "$TMP/api.log")"
+grep -qxF "auth oauth2accesstoken:ya29.stub" "$TMP/buildctl.log" || fail "not pushed with the federated token"
+grep -q -- "--output type=image,name=us-docker.pkg.dev/tacplus-ci/releases/demo:main-${SHA[release]:0:12},push=true" "$TMP/buildctl.log" ||
+  fail "not pushed to the release registry: $(cat "$TMP/buildctl.log")"
+for v in GCP_RELEASE_WIF_PROVIDER GCP_RELEASE_PUBLISH_SA; do
+  if build "${RBP[@]}" "${BK[@]}" "$v=" -- publish 2>"$TMP/err"; then fail "published with no $v"; fi
+  verdict_is "fail: a release of main publishes as the release account (tacplus-dev/cloud#115): its job has no $v"
+  [[ ! -s "$TMP/gcloud.log" ]] || fail "federated with no $v: $(cat "$TMP/gcloud.log")"
+done
 grep -q -- " --opt build-arg:VERSION=main-${SHA[release]:0:12}" "$TMP/buildctl.log" || fail "VERSION: $(cat "$TMP/buildctl.log")"
 grep -q -- " --opt build-arg:REVISION=${SHA[release]}" "$TMP/buildctl.log" || fail "REVISION: $(cat "$TMP/buildctl.log")"
 for e in CI_COMMIT_REF_PROTECTED=false "CI_COMMIT_REF_NAME=demo/v1.2.3 CI_COMMIT_TAG=demo/v1.2.3" CI_COMMIT_REF_NAME=feature; do
@@ -3235,7 +3297,7 @@ build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>
 grep -qF "\"state\":\"success\",\"context\":\"tacplus-dev/release/main\",\"description\":\"green, not released: the release of main is ${SHA[relnext]:0:12}, newer\"" "$TMP/api.log" ||
   fail "the status does not say it is not released: $(grep '^status' "$TMP/api.log")"
 printf 'repo demo\nbranch main\ncommit %s\n' "${SHA[release]}" > "$TMP/pkg/release-demo/main/record"
-B="$TMP/rr-b"; mkdir -p "$B"; echo "us-docker.pkg.dev/jody1-328023/tacplus/demo:main-${SHA[relnext]:0:12}@$(cat "$TMP/digest")" > "$B/image"
+B="$TMP/rr-b"; mkdir -p "$B"; echo "us-docker.pkg.dev/tacplus-ci/releases/demo:main-${SHA[relnext]:0:12}@$(cat "$TMP/digest")" > "$B/image"
 build "${RB[@]}" BUILD_SHA="${SHA[relnext]}" BUILD_OUT="$B" -- release-report 2>"$TMP/err" || fail "a newer green build failed: $(cat "$TMP/err")"
 grep -qxF "commit ${SHA[relnext]}" "$TMP/put/release-demo/main/record" || fail "the record did not move forward: $(cat "$TMP/put/release-demo/main/record" 2>&1)"
 # One it cannot tell (the recorded commit is not there): the record stays.

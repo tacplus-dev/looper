@@ -1294,7 +1294,8 @@ change a repository:
 - **publish** has no registry secret: its GitLab `id_token` (`GCP_ID_TOKEN`) is exchanged through Workload Identity
   Federation (`GCP_WIF_PROVIDER`, a project variable, and `GCP_PUBLISH_SA` if the hub's binding goes through a
   service account) for a short-lived token holding `artifactregistry.writer` on that repository. GCP trusts only
-  this project's protected tags.
+  this project's protected tags; a branch release's publish, its protected main, as the release account, on the
+  release registry alone (Release builds by branch, below).
 
 **A release** (the release flow, looper#17): the looper tags the commit `vX.Y.Z` on GitHub after a green build, then
 creates the protected tag `<repo>/vX.Y.Z` in tacplus-dev/build (one project builds every repository, so its tags
@@ -1315,10 +1316,23 @@ starts. The pipeline on this project's protected `main` with `"release"`:
 
 Its plan resolves the commit once (`build-sha`) and every job builds that commit; `sha`, `tag`, `gates`, `base`,
 `wait`, `report`, `nightly` and `verify` are refused beside it. It runs the full gates, the security checks
-(CodeQL and Trivy, a release's), the formal verification, publish (`<registry>/<repo>:<branch>-<commit, 12 hex>`,
-`main-0123456789ab`, by digest, reproducible, never pushed over another digest; its GCP identity this project's
-protected main's) and the SBOM; then **`release-report`** (`.post`, whatever the rest did; one at a time per branch,
-resource group `release-<repo>-<branch>`):
+(CodeQL and Trivy, a release's), the formal verification, publish and the SBOM; then **`release-report`** (`.post`, whatever the rest did; one at a time per branch,
+resource group `release-<repo>-<branch>`).
+
+**Publish** is `us-docker.pkg.dev/tacplus-ci/releases/<repo>:<branch>-<commit, 12 hex>` (`main-0123456789ab`), by
+digest, reproducible, never pushed over another digest: the **release registry** (looper#265), which
+tacplus-dev/cloud#115 makes in tacplus-ci as code (no cleanup policy: a deployment pins a release by digest), and
+which deployments' accounts (fleet-seatrials' `seatrials-deploy@tacplus-dev`) read to copy a release by digest into
+their own. Its one writer is `release-publish@tacplus-ci.iam.gserviceaccount.com`, which only this project's protected
+`main`, in the environment `registry` (the publish job's), may become: the job's `id_token` goes through the provider
+`tacplus-dev-build-release` of tacplus-ci's pool `gitlab-com`, which admits nothing else (no tag's build, no other
+ref). `ci/build.gitlab-ci.yml` carries the three values from cloud's ci stack output `releases` (none is secret):
+`BUILD_RELEASE_REGISTRY`, `GCP_RELEASE_WIF_PROVIDER` and `GCP_RELEASE_PUBLISH_SA`. The plan writes them into the publish
+job, the provider as its `id_token`'s literal audience, by those names (a project variable takes precedence over a
+job's of the same name, so a job's `GCP_WIF_PROVIDER` would lose to the tags' provider); a release with any of them
+unset is refused in its plan (red, nothing built or published), never published to the tags' registry. A tag's
+release (`vX.Y.Z`) is unchanged: `us-docker.pkg.dev/jody1-328023/tacplus`, through `GCP_WIF_PROVIDER`, the path every
+`tacplus.lock`'s `build_image` pins.
 
 - **green** (the SBOM job left the image by digest): the release's **record**, the build project's generic package
   `release-<repo>`, version `main` or `release-X.Y`, file `record` (`repo`, `branch`, `commit`, `image` by digest,

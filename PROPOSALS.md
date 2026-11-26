@@ -1161,6 +1161,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   main-7c1dc4d (`sha256:c3a8b379…`, verified with `gh attestation verify`), whose `looper-build` has #252's release
   builds, as the hub's correction asked. Its first suggestion, main-02e684b, predates #252. The relock moving this pin
   stays unproposed.
+- **Branch releases published to tacplus-ci's release registry** (2026-11-26, #265; tacplus-dev/cloud#115, design B):
+  promoted 2026-11-26 (the hub, on Jody's standing word: values in the CI file, a branch release with none refused,
+  tags unchanged), built in #265: `ci/build.gitlab-ci.yml` carries `BUILD_RELEASE_REGISTRY`, `GCP_RELEASE_WIF_PROVIDER`
+  and `GCP_RELEASE_PUBLISH_SA`; the plan writes them into a branch release's publish job. It takes effect when the hub
+  copies a file pinning a looper image that has it, after cloud#115's `apply:ci` (with #261's re-pin, or after it).
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
   image builds** (2026-11-06, #101): done in #167 (2026-11-16): the `Dockerfile`'s last step, `looper-scan image`,
   runs `govulncheck -mode=binary` on every Go binary under `/usr/local/bin` under the tree's policy and
