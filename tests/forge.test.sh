@@ -242,6 +242,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=stub -keyout "$SRV/k
 seed="$TMP/seed"; git init -q -b main "$seed"; echo hello > "$seed/README.md"
 git -C "$seed" add -A; git -C "$seed" commit -qm init
 git clone -q --bare "$seed" "$SRV/repos/github.com/tacplus-dev/alpha.git"
+# The SeaBeam project pins its build image: an unpinned repository's report runs no model (looper#73).
+echo "build_image: ghcr.io/tacplus-dev/tacplus/build@sha256:$(printf 'f%.0s' {1..64})" > "$seed/build.lock"
+git -C "$seed" add build.lock; git -C "$seed" commit -qm pin
 git clone -q --bare "$seed" "$SRV/repos/gitlab.com/seabeam/tools/looper.git"
 python3 -I "$ROOT/tests/git-server.py" "$SRV/repos" "$SRV/cert.pem" "$SRV/key.pem" "$SRV/log" > "$SRV/port" &
 SRVPID=$!

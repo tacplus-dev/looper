@@ -13,6 +13,24 @@ the looper then marks it `promoted` or `declined` here with the date.
   none. The three values sit in `ci/build.gitlab-ci.yml` from cloud's `releases` output. Tag releases stay unchanged
   (every `tacplus.lock` pins that path). The record's `image` moves once, with no format change. Waits on Jody: file or
   project variables, refuse or fall back, the order with #261's re-pin, and whether tags move later.
+- **The VM tags and the split manager with no job left** (2026-11-26, #73): `looper-dispatch plan` still puts a
+  repository without build jobs on the VM runners' tags (`arm64, autoscale`) and splits its manager into a verdict and
+  a merge job (#90). Since #73 an unpinned repository's report and land stop at once, so only a pinned one without the
+  trigger (an instance with no `BUILD_TRIGGER_TOKEN`) still runs there, and tacplus-dev/cloud#113 removes the pools
+  those tags name. Planning every looper job on the control runner and dropping `where_it_runs`' VM branch (and the
+  split, once no land's gates run in a manager's job) would leave no job waiting for a runner that is gone.
+- **A forge with no build path** (2026-11-26, #73; the hub's decision (b)): build jobs are GitHub's only
+  (`build_jobs` needs `LOOPER_FORGE=github`), so a SeaBeam (`LOOPER_FORGE=gitlab`) report's model now has no
+  container runtime and no build, and its land's gates run in its manager's job, with no `tacplus` there either. A
+  GitLab-forge build trigger (tacplus-dev/build reading a GitLab project) is what SeaBeam needs before it unparks.
+- **A new repository's pin** (2026-11-26, #73): the hub's rule is that a repository gets its pin when it is made,
+  but fleetbox was made on 2026-11-22 with none (fleetbox#9 pins it; its looper held it `needs-decision` as a
+  feature no ROADMAP.md links, though it is #73's other half: #263). The nightly scan could file a pin issue, as it
+  files a failing ruleset (#233), for any repository with an approved issue and no `build.lock` or `tacplus.lock` on
+  main, so the report that would stop on it is never the first to say so.
+- **`gates.yaml`'s `memory:` sizes nothing** (2026-11-26, #73): it sized a report's containers through
+  `looper-docker` (#74); the map still reads it, and tacplus's and others' maps still set it. A build job could size
+  its gates job by it (today `BUILD_GATES_REQUESTS_<repo>`, #202), or the key could go.
 - **The build pipeline's looper image re-pinned to one with release builds** (2026-11-26, #261): `ci/build.gitlab-ci.yml`
   pins main-1fca965's image (#246). Its `looper-build` predates #252, so a `"release"` run executes an old `plan` that
   ignores `BUILD_RELEASE`. tacplus-dev/cloud#112's release schedules copy the file at the commit that re-pins it. The
@@ -647,14 +665,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   (the hub's) land and the hub sets the token in tacplus-dev/looper. Regenerating a conflict's generated files
   (`generated.yaml`'s commands) still runs in the manager's job: in a pinned repository it could be a build job too,
   one that hands back the files it wrote.
-- **Retire looper-docker, its broker and the host socket's path** (2026-11-03, #71; the hub's decision on #71): once
-  every repository is pinned no report needs a container runtime, so `looper-docker`, `looper-docker-broker`, the
-  `looper-docker` user and the model-user code that guards the socket's gid (#68, #69) can go, and tacplus-dev/cloud
-  can drop the socket's mount from the jobs' containers. With it, the test that an image builds in the build job
-  without host Docker (rootless BuildKit in the build image: tacplus-dev/tacplus#315, which it is Blocked-by). The
-  follow-up issue is #71's (linked from it): #73. Its step 1 (2026-11-16): a release's publish builds with rootless
-  BuildKit in `BUILD_BUILDER_IMAGE`; step 2 (2026-11-16): a pinned repository's nightly scan reads the nightly
-  build's `gates-report` and runs on the control runner; step 3 (the retirement, once tacplus#340 pins) remains.
 - **A forged build verdict** (2026-11-03, #71): the looper takes a build's verdict only from the commit status the
   `tacplus-reader` app set, by its creator's login (`tacplus-reader[bot]`), linking the pipeline it started. A
   status's creator is GitHub's to record, so the looper's `GH_TOKEN` cannot pass for it; reading the pipeline's own
@@ -808,12 +818,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   or any later return to reused workers, brings orphans back. `looper-docker` could label each container
   `looper.job=<CI_JOB_ID>`, and `repo-looper` remove its own on exit and, at a job's start, every one whose job
   GitLab no longer runs. That costs the job API reads, and the label holds only for the model's `docker`.
-- **A child's memory as one cgroup** (2026-10-31, #41): `looper-docker` limits each container a child's model
-  starts to the child's memory, so two at once can use twice its share, and `docker compose`, `docker build`'s
-  containers, the real docker by its path and a process the model runs in the job's own container (`cargo kani`
-  without docker) are not limited at all. A cgroup per child (the job's container with a writable cgroup v2
-  subtree, or the runner's `docker` config giving the job container a memory limit and each child a
-  `--cgroup-parent`) would bound the child's whole tree; `looper-docker` could then pass `--cgroup-parent` too.
 - **The lander's processes out of the models' reach** (2026-11-03, #61): every model runs as root in the job's
   one PID namespace, beside the parent, the lander and the other children, so any model can signal any of them.
   `looper-pkill` (the model's `pkill`) spares what its run did not start, and rule 4 asks for a PID, never a
@@ -832,17 +836,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   job's credentials; the user still owns them on disk. The gates
   could run as a gates user per land (its clone, no socket but a broker of its own, the credentials out of its
   environment), as the model does; the push and the comments after them stay the lander's.
-- **The full gates as a model's user** (2026-11-03, #69): a model runs the gates as its own user, its docker the
-  broker, and three fail there on main too, as they do not in the land's gates (the job's user): `looper-docker`
-  (its `docker run img` reaches the real daemon, `pull access denied for img`), `tacplus` (expects `build:2.4`'s run
-  in the log) and `looper-build` (its cleanup cannot remove the Go module cache a container wrote, read-only). The
-  model cannot tell its change's failure from these; each test could take the broker's docker as given.
-- **The broker's path checks are check, then use** (2026-11-03, #68): `looper-docker` resolves a mount's source
-  (symlinks too) and refuses one outside the child's worktree and home, but the daemon resolves it again on the
-  host when it mounts, and the model owns the directories on the way: one swapped for a symlink between the two
-  reaches the host. Passing the resolved path narrows it; closing it needs the daemon to mount what the broker
-  opened (a bind of an `O_PATH` descriptor through `/proc/<broker>/fd/N`), or the worktree on a filesystem the
-  model cannot add symlinks to.
 - **The model's users across jobs** (2026-11-03, #68): `repo-looper` makes `looper-<issue>` when the child starts
   (its uid and gid the first free id of the reserved range, #69) and chowns its worktree and home each time, so a worker reused by a later
   job, whose container numbers the users afresh, cannot hand one issue's files to another's model; nothing deletes
@@ -857,10 +850,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   the children go on; the child whose land it is waits meanwhile, so its share is mostly free, but a gate heavier
   than a child (Kani) can still press the VM. The capacity could keep one child's memory for the lander, or the
   lander run the gates through `looper-docker` with a land's own limit.
-- **Size a child by its issue, not its repository** (2026-10-31, #41; narrowed 2026-11-05, #74): a report is now
-  sized by the gate set its land runs (`gates.yaml`'s `memory:`), but a fresh report's set is not known until it has
-  a diff, so it gets full's. Re-sizing it once its branch has a diff (its containers' limit is set when its run
-  starts), or the plan naming the issue's areas, would size even a fresh docs-only report by docs.
 - **Verify-run follow-ups** (2026-11-05, #74): a red verification is filed by the nightly scan, so a bug can wait up
   to a day after a red nightly or a red release; a credential the build project may use to write issues (the
   tacplus-reader app with `issues: write`, which would break "a build holds no credential that can change a
@@ -1135,8 +1124,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   (GO-2026-5746, GO-2026-5617, GO-2026-5668, GO-2026-4883, two of them HIGH). They are moby daemon advisories, so
   govulncheck's symbol reading would probably find them not called by a client, but no scan says so. Adding
   `/usr/local/libexec` (or every ELF in the image the `Dockerfile` installs) to the binaries it reads would put them
-  under the same policy. Until #73 removes the CLI, looper-docker refuses `buildx` and `compose` (README), which
-  limits what they can reach.
+  under the same policy. Since #73 no model has a docker at all; the CLI stays in the image for the looper's own
+  use (the `tacplus` wrapper, a looper VM's local builds).
 - **The recap says when `build.lock` lags main's image** (2026-11-20, nightly scan, #203; like #163 and #200 for
   `ci/`): `build.lock` pinned the image of a691d64 (2026-11-03) for 17 days, with 134 HIGH/CRITICAL advisories that
   main's image had fixed, and no check noticed. The build's security checks scan the source and the Dockerfiles'
@@ -1147,6 +1136,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   chance discovery. The same holds for `ci/`'s pins.
 
 ## Promoted / declined
+- **Retire looper-docker, its broker and the host socket's path** (2026-11-03, #71): done in #73 (2026-11-26): `looper-docker`, `looper-docker-broker`, their
+  test and the `looper-docker` user are gone; no model has a container runtime; an unpinned repository's report
+  holds its issue stuck and its land is sent back, each saying to pin it first. The socket-gid guard (#68, #69)
+  stays: a looper VM's looper holds the VM's socket for its local builds (#238). tacplus-dev/cloud#113 retires the
+  runner pools whose job containers mounted the socket; the rootless image-build test moved to #172.
+- **A child's memory as one cgroup** (2026-10-31, #41): moot since #73 (2026-11-26): no model has a container runtime, so there is no child's container to limit; a build's are the build job's or the looper VM's (#248).
+- **The full gates as a model's user** (2026-11-03, #69): moot since #73 (2026-11-26): no model has a docker, so none runs the full gates; they are its builds' (build jobs, a looper VM's local builds).
+- **The broker's path checks are check, then use** (2026-11-03, #68): moot since #73 (2026-11-26): the broker is gone.
+- **Size a child by its issue, not its repository** (2026-10-31, #41; narrowed 2026-11-05, #74): moot since #73 (2026-11-26): a report's containers, the only thing its size limited, are gone.
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
   image builds** (2026-11-06, #101): done in #167 (2026-11-16): the `Dockerfile`'s last step, `looper-scan image`,
   runs `govulncheck -mode=binary` on every Go binary under `/usr/local/bin` under the tree's policy and

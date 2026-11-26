@@ -535,10 +535,10 @@ build_jobs_repo() { # repo
 # on the control runner, LOOPER_CONTROL_TAGS (default `arm64, control`,
 # tacplus-dev/cluster#13), with the requests of its kind (requests below); a
 # repository moves the day its pin lands, with no change here, and its
-# per-repository tag override is not read then. A job that would hold
-# looper-docker (an unpinned repository's reports, verdict, manager and scan:
-# its model runs the gates on main; a pinned one's scan reads the nightly
-# build's, looper#73) stays on the VM runners' tags until it needs no Docker: LOOPER_JOB_TAGS_<repo> (`-` as `_`) for a repository's
+# per-repository tag override is not read then. Any other job (a repository
+# without build jobs: an unpinned one, whose report and land stop at once and
+# say to pin it first, looper#73, or a project without the trigger) stays on
+# the VM runners' tags: LOOPER_JOB_TAGS_<repo> (`-` as `_`) for a repository's
 # reports (looper#55: tacplus's on the 16-CPU pool), LOOPER_MANAGER_TAGS_<repo>
 # for its manager and LOOPER_SCAN_TAGS_<repo> for its scan (looper#91), else
 # LOOPER_JOB_TAGS, else `arm64, autoscale`. Prints "<tags>" and, on the control

@@ -1205,9 +1205,9 @@ pass
 # repository whose gates are build jobs (its main pinned, the project holding the trigger and the apps: none of
 # its jobs runs Docker) has its reports and manager on the control runner, `arm64, control`, each pod with its
 # kind's requests and limits (GitLab's KUBERNETES_* variables, within that runner's ceilings); its per-repository
-# tag override is not read, so a repository moves the day its pin lands, with nothing changed here. A job that
-# would hold looper-docker stays on the VM runners' tags: an unpinned repository's reports, verdict, manager and
-# scan (its model runs the gates on main; a pinned one's reads the nightly build's, looper#73). A control job's retry: is as before: it resumes from its
+# tag override is not read, so a repository moves the day its pin lands, with nothing changed here. Any other
+# job stays on the VM runners' tags: a repository without build jobs (an unpinned one, whose report and land stop
+# at once and say to pin it first, looper#73; or a project without the trigger). A control job's retry: is as before: it resumes from its
 # checkpoint. The plan's one job with nothing to plan takes the control tags once the project has the trigger.
 scenario plan-control
 issue tacplus 5 OPEN "Go." approved
@@ -1244,11 +1244,11 @@ rm "$FIX/contents/tacplus-tacplus.lock"
 control_plan BUILD_TRIGGER_TOKEN=glptt-x LOOPER_CONTROL_TAGS="arm64, ctl" LOOPER_REQUESTS_report="1 2Gi 1500m 4Gi"
 [[ "$(tags_of alpha-4)" == "[arm64, ctl]" && "$(tags_of alpha-manager)" == "[arm64, ctl]" ]] || fail "LOOPER_CONTROL_TAGS: $(tags_of alpha-4)"
 [[ "$(vars_of looper-alpha-4)" == *'KUBERNETES_CPU_REQUEST: 1 KUBERNETES_MEMORY_REQUEST: 2Gi KUBERNETES_CPU_LIMIT: 1500m KUBERNETES_MEMORY_LIMIT: 4Gi' ]] || fail "LOOPER_REQUESTS_report: $(vars_of looper-alpha-4)"
-# Without the trigger a pinned repository's jobs hold looper-docker (looper#71): the VM tags, no requests.
+# Without the trigger a pinned repository's jobs have no build jobs (looper#71): the VM tags, no requests.
 control_plan
 [[ "$(tags_of alpha-4)" == "[arm64, autoscale]" && "$(tags_of alpha-manager)" == "[arm64, autoscale]" ]] || fail "without the trigger: $(tags_of alpha-4) $(tags_of alpha-manager)"
 ! grep -q KUBERNETES_ <<<"$PLAN" || fail "requests without the trigger: $PLAN"
-# A pinned repository's scan reads the nightly build's gates and holds no looper-docker (looper#73): on the
+# A pinned repository's scan reads the nightly build's gates (looper#73): on the
 # control runner, with a model's requests (a report's), its override unread; an unpinned one's stays on the VM tags.
 printf '%s\n' alpha tacplus > "$FIX/repos"
 control_plan BUILD_TRIGGER_TOKEN=glptt-x CI_PIPELINE_SOURCE=schedule LOOPER_SCAN_TAGS_alpha="arm64, lab"

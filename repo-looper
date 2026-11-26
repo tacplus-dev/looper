@@ -90,9 +90,8 @@
 # LOOPER_MANAGER_LINGER seconds (default 300), and while its job's image is
 # the one its tag names (looper#153: before each batch it reads the digest of
 # LOOPER_JOB_IMAGE, and ends, exit 0, when it is not the one it started on,
-# so the next manager runs the new image). Each container a report's model
-# starts (docker run, tacplus) is limited to the report's memory, without swap
-# (looper#41): the model's docker is looper-docker. The gates a land runs are
+# so the next manager runs the new image). No model has a container runtime
+# (looper#73: looper-docker and its broker are gone). The gates a land runs are
 # the set its diff calls for: the repository's gates.yaml maps paths to gate
 # sets, and anything in doubt (a path it does not map, a change to the map)
 # runs the full gates. With the apps, a manager whose gates would run in its
@@ -106,9 +105,11 @@
 # trigger (BUILD_TRIGGER_TOKEN), the gates the manager runs before a merge are
 # a build job's verdict on the rebased commit (gitlab.com/tacplus-dev/build,
 # looper-build, the gate set its diff calls for), and the report's model has
-# no container runtime (no docker, no broker): it asks for a build with
-# --build, which its looper starts. The cutover is per repository, keyed on its
-# pin; an unpinned one keeps the gates here and looper-docker.
+# no container runtime: it asks for a build with --build, which its looper
+# starts. The cutover was per repository, keyed on its pin; since every
+# repository is pinned (looper#73), a report or land in an unpinned one fails
+# at once and says to pin it first (pin_first): nothing falls back to a docker
+# of the model's own or to gates run beside an unpinned repository's manager.
 #
 # Ready: open, labeled `approved`, not held (looper:in-progress, looper:stuck,
 # needs-decision), and every `Blocked-by:` issue in its body closed.
@@ -249,7 +250,7 @@
 # LOOPER_JOB_IMAGE (the jobs' image, the plan's; default ghcr.io/tacplus-dev/looper:main;
 # a manager or verdict job in the looper image, LOOPER_IMAGE, ends between
 # lands once its tag names another digest, looper#153),
-# LOOPER_CHILD_MEMORY_GB (a report's, unless its gate set's memory: asks more), LOOPER_JOB_MAX_HOURS (the longest
+# LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
 # roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
 # job's user, not each as its own, looper#68) and LOOPER_USER_PREFIX (their
@@ -782,9 +783,9 @@ land_gates() {
 }
 
 # The gate map (looper#48): a repository's gates.yaml names its gate sets, each
-# the command it runs, its expected minutes, the memory in GB a report needs
-# to run it (looper#74; none: LOOPER_CHILD_MEMORY_GB) and the paths that call
-# for it:
+# the command it runs, its expected minutes, the memory in GB it needs
+# (looper#74; read, and sized a report's containers until looper#73 took the
+# model's container runtime away) and the paths that call for it:
 #
 #   full:                      # required: the full gates
 #     run: just gates
@@ -1065,8 +1066,8 @@ onto_name() { if [[ "$ONTO" == origin/main ]]; then echo main; else echo staging
 # the gates on the result and pushes; a rejected push is rebased and tried
 # again. Lands nothing, and says why, when the change is not committed, the
 # rebase conflicts in files it does not regenerate (exit 3, the files in the
-# record's `conflicts`: sent back), the gates fail or change a tracked file
-# (exit 4: red), or no runner took its build job within LOOPER_BUILD_START
+# record's `conflicts`: sent back), the gates fail or change a tracked file,
+# or the commit pins no build image (looper#73: pin_first) (exit 4: red), or no runner took its build job within LOOPER_BUILD_START
 # (LAND_NO_RUNNER: no verdict, it stays queued, looper#113). A STATE.md commit
 # the rebase dropped is the record's `dropped` (looper#131). The gates are the set the
 # commits' diff calls for (choose_gates, looper#48). Each landing is recorded
@@ -1100,6 +1101,11 @@ land_work() {
       fi
       if ! choose_gates . "$before" "$gates"; then
         log "nothing landed: $GATES_WHY. Fix it, commit, and land again." >&2
+        exit 4
+      fi
+      # No gates run for an unpinned repository (looper#73): no fallback.
+      if ! pinned HEAD .; then
+        log "nothing landed: $(pin_first)." >&2
         exit 4
       fi
       grc=0; t=$SECONDS; local_gates=""; GREEN_WHY=""
@@ -1541,6 +1547,11 @@ build_wait() { # [gate set]
 # The tree at rev pins its build image (looper-build reads the pin).
 pinned() { # rev [dir]
   local f; for f in "${PIN_FILES[@]}"; do git -C "${2:-$CHECKOUT}" cat-file -e "$1:$f" 2>/dev/null && return 0; done; return 1
+}
+# Why a report or land in a repository that pins no build image stops at once
+# (looper#73): its builds and gates run only in the image it pins.
+pin_first() {
+  echo "$REPO pins no build image: pin it first (build.lock, or tacplus.lock for a tacplus project; looper#73). Its builds and gates run only in the build image it pins (build jobs, a looper VM's local builds): no model has a container runtime, and no gates run in the manager's job for an unpinned repository"
 }
 # Builds of rev are build jobs: GitHub's (the build reads it), pinned, and
 # this job holds the trigger.
@@ -3300,6 +3311,11 @@ batch_gates() { # main count
     log "the candidate ${cand:0:7} of $count land$(plural "$count"), on the gates $GATES_SET, would outlast this job: it ends in $(hours "$(( $(job_end) - $(date +%s) ))"), and a land on those gates takes about $(hours "$(land_estimate "$GATES_SET")")$( (( count == 1 )) || echo "; the batch shrinks")"
     OVER_SET="$GATES_SET"; drop_worktree "$wt"; return "$BATCH_OVER"
   fi
+  # No gates run for a candidate that pins nothing (looper#73): red, no fallback.
+  if ! pinned HEAD "$wt"; then
+    log "nothing landed: $(pin_first)." | tee "$BATCH_OUT/out"; : > "$BATCH_OUT/gates.log"
+    drop_worktree "$wt"; log "the candidate ${cand:0:7} is red: it pins no build image"; return 4
+  fi
   # A batch of one whose rebase left its tree as queued reuses its report's build (looper#134).
   (( count != 1 )) || queued="$(git -C "$CHECKOUT" rev-parse "${TR_SHA[0]}^")"
   t=$SECONDS
@@ -3984,9 +4000,9 @@ model_forge_env() {
 # worktree, home or run record. It owns its worktree (a clone of its own, not
 # a worktree sharing the checkout's .git), its home (LOOPER_WORK/homes/<user>,
 # its git credentials, TMPDIR and tacplus cache) and its run directory. It has
-# no access to the Docker socket: its `docker` is looper-docker through
-# looper-docker-broker, run for it by the looper-docker user, which serves it
-# only its own containers and mounts only its worktree and home. On whenever the looper
+# no container runtime (looper#73) and no access to the container socket: a
+# looper VM's (looper#238) runs its local builds, as the job's user, never the
+# model's. On whenever the looper
 # runs as root with setpriv and useradd; LOOPER_MODEL_USERS=0 turns it off
 # (the model then runs as the job's user, as before); LOOPER_USER_PREFIX
 # (default looper-) names the users.
@@ -3996,8 +4012,10 @@ model_forge_env() {
 # ranges and below nobody's) and the 3000 after it, never the Docker socket's
 # gid. Never useradd -U's next free gid: in a job's container the host's
 # socket has a gid with no name (1002 on a runner worker), which the next free
-# gid can be, and with it the socket.
-model_user() { echo "${LOOPER_USER_PREFIX:-looper-}$1"; } # issue, plan or docker (the broker's)
+# gid can be, and with it the socket. It stays with looper-docker gone
+# (looper#73): a looper VM's looper holds the VM's container socket for its
+# local builds (looper#238), and its models run beside it.
+model_user() { echo "${LOOPER_USER_PREFIX:-looper-}$1"; } # issue, or plan
 docker_sock() { local s="${DOCKER_HOST:-unix:///var/run/docker.sock}"; echo "${s#unix://}"; }
 docker_sock_gid() { local s; s="$(docker_sock)"; [[ ! -S "$s" ]] || stat -c %g "$s"; } # none without a socket
 model_id() { # the first id of the range no user or group has, nor the socket
@@ -4034,8 +4052,7 @@ if model_users; then
 fi
 
 # The user and its home; it owns the run directory, and a report's clone.
-# MODEL_UID, MODEL_GID, MODEL_HOME and MODEL_ROOTS (what its containers may
-# mount) for run_claude.
+# MODEL_UID, MODEL_GID and MODEL_HOME for run_claude.
 model_user_up() { # user run-dir
   local u="$1" run="$2" home="$WORK/homes/$1"
   user_add "$u" /bin/bash "$home" || { log "could not make the user $u"; return 1; }
@@ -4049,10 +4066,9 @@ model_user_up() { # user run-dir
   # Its git's credentials for the forge, in its own global config.
   ( export HOME="$home"; forge_setup_git )
   chown -R "$u:$u" "$home" "$run"; chmod 0750 "$home"; chmod 0700 "$run"
-  MODEL_ROOTS="$home"
   # A report's clone, or a scan's (scan_clone, looper#227): never the job's checkout.
   if [[ "$CHECKOUT" != "$MAIN_CHECKOUT" ]]; then
-    chown -R "$u:$u" "$CHECKOUT"; chmod 0750 "$CHECKOUT"; MODEL_ROOTS="$CHECKOUT:$home"
+    chown -R "$u:$u" "$CHECKOUT"; chmod 0750 "$CHECKOUT"
   fi
 }
 
@@ -4062,27 +4078,6 @@ report_reown() { # issue
   local u wt; u="$(model_user "$1")"; wt="$(report_dir "$1")"
   model_users && [[ -d "$wt" ]] && id -u "$u" >/dev/null 2>&1 || return 0
   chown -R "$u:$u" "$wt" || true
-}
-
-# The broker of a model's run (looper#68): the looper-docker user, in the
-# group of the Docker socket and the model's own (to read a build's context in
-# its worktree), serving that model's uid alone on DIR/broker/sock. None
-# without a docker. BROKER_PID. Its HOME is DIR/broker/home, its own: the
-# docker CLI keeps its config there (~/.docker), and `docker build` needs it
-# (looper#89: with HOME=/, 'mkdir /.docker: permission denied').
-broker_start() { # dir
-  local real bu sock groups i; bu="$(model_user docker)"
-  real="$(command -v docker)" || return 1
-  user_add "$bu" /usr/sbin/nologin / || return 1
-  groups="$MODEL_GID"; sock="$(docker_sock_gid)"; groups+="${sock:+,$sock}"
-  mkdir -p "$1/broker/conf" "$1/broker/home"; chown "$bu:" "$1/broker" "$1/broker/home"; chmod 0700 "$1/broker/home"
-  printf 'owner=%s\nroots=%s\nmemory=%s\n' "$MODEL_USER" "$MODEL_ROOTS" "${LOOPER_CHILD_MEMORY:-}" > "$1/broker/conf/$MODEL_UID"
-  setpriv --reuid "$bu" --regid "$(id -g "$bu")" --groups "$groups" \
-    env -i PATH="$PATH" HOME="$1/broker/home" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
-    python3 -I "$(dirname "$LOOPER_SELF")/looper-docker-broker" serve "$1/broker/sock" "$1/broker/conf" "$real" &
-  BROKER_PID=$!
-  for i in $(seq 50); do [[ -S "$1/broker/sock" ]] && return 0; sleep 0.1; done
-  log "the docker broker did not start: this model has no docker"; kill "$BROKER_PID" 2>/dev/null; BROKER_PID=""; return 1
 }
 
 # The model of a run (looper#136; Jody, 2026-11-12: the weekly Fable quota
@@ -4199,10 +4194,6 @@ log_tokens() { # log-file
 # issue's run: the model gets LOOPER_RUN (for its --checkpoint) and the
 # watchdog also ends it once the issue is done.
 #
-# A report's model (LOOPER_CHILD_MEMORY set, by its job) finds
-# looper-docker first on its PATH as `docker` (looper#41): each container it
-# starts, itself or through tacplus, is limited to the report's memory.
-#
 # Every model finds looper-pkill first as `pkill` (looper#61): the job's
 # processes are one PID namespace, the gates among them, and a
 # model's `pkill -f 'just gates'` stopped another run's land under way
@@ -4210,33 +4201,31 @@ log_tokens() { # log-file
 # LOOPER_MODEL_RUN in their environment.
 #
 # With MODEL_USER (looper#68) the model runs as that user (setpriv), with its
-# own HOME, TMPDIR and tacplus cache, and its docker through the broker.
+# own HOME, TMPDIR and tacplus cache.
 #
-# A report of a pinned repository (BUILD_JOBS, looper#71) has no container
-# runtime: no looper-docker, no broker, no DOCKER_HOST; its `docker` says so.
-# It builds through --build, whose requests its looper serves (build_server).
-# A scan of one has none either (looper#73), and no build to ask for: its
-# gates are the nightly build's (gates_record).
+# No model has a container runtime (looper#71, looper#73): no DOCKER_HOST, and
+# its `docker` says so. A report of a pinned repository with builds
+# (BUILD_JOBS: build jobs, or a looper VM's local builds) builds through
+# --build, whose requests its looper serves (build_server). A scan of one has
+# no build to ask for: its gates are the nightly build's (gates_record).
 run_claude() { # prompt-file log-file seconds run-dir [issue]
-  local rc=0 dir pid fmt watcher k withheld limited=() as=() BROKER_PID="" builds="" server=""
+  local rc=0 dir pid fmt watcher k withheld limited=() as=() server="" why
   mapfile -t withheld < <(model_env)
   dir="$(mktemp -d)"; mkfifo "$dir/out"
   mkdir "$dir/bin"; ln -s "$(dirname "$LOOPER_SELF")/looper-pkill" "$dir/bin/pkill"
   limited=(PATH="$dir/bin:$PATH" LOOPER_MODEL_RUN="$4")
   if [[ -n "${BUILD_JOBS:-}" && -n "${5:-}" ]]; then
-    builds=1; mkdir -p "$4/builds"
-    local how="builds in build jobs (looper#71)"; [[ -z "${LOOPER_VM:-}" ]] || how="builds locally on this looper VM, through --build (looper#238)"
-    printf '#!/bin/sh\necho "docker: %s %s: a report has no container runtime. Build with: %s --repo %s --issue %s --build" >&2\nexit 125\n' \
-      "$REPO" "$how" "$LOOPER_SELF" "$REPO" "$5" > "$dir/bin/docker"
+    mkdir -p "$4/builds"
+    why="builds in build jobs (looper#71)"; [[ -z "${LOOPER_VM:-}" ]] || why="builds locally on this looper VM, through --build (looper#238)"
+    why="$REPO $why: a report has no container runtime. Build with: $LOOPER_SELF --repo $REPO --issue $5 --build"
   elif [[ -n "${BUILD_JOBS:-}" ]]; then   # a scan (looper#73): its gates are the nightly build's
-    builds=0
-    printf '#!/bin/sh\necho "docker: %s builds in build jobs (looper#71): a scan has no container runtime; the gates on main are the nightly build'"'"'s (looper#73)" >&2\nexit 125\n' \
-      "$REPO" > "$dir/bin/docker"
+    why="$REPO builds in build jobs (looper#71): a scan has no container runtime; the gates on main are the nightly build's (looper#73)"
+  else
+    why="no model has a container runtime (looper#73): $REPO's builds are build jobs or a looper VM's local builds, and this run has neither: the land's gates verify it"
   fi
-  if [[ -n "$builds" ]]; then
-    chmod 0755 "$dir/bin/docker"
-    withheld+=(-u DOCKER_HOST -u LOOPER_REAL_DOCKER -u LOOPER_DOCKER_BROKER)
-  fi
+  printf '#!/bin/sh\necho "docker: %s" >&2\nexit 125\n' "${why//\"/\\\"}" > "$dir/bin/docker"
+  chmod 0755 "$dir/bin/docker"
+  withheld+=(-u DOCKER_HOST)
   if [[ -n "${MODEL_USER:-}" ]] && model_users; then
     model_user_up "$MODEL_USER" "$4" || { rm -rf "$dir"; return 1; }
     chmod 0755 "$dir"
@@ -4244,14 +4233,7 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
     # Its own caches: cargo's registry (CARGO_HOME, else the image's, shared and root's), tacplus's.
     limited+=(HOME="$MODEL_HOME" USER="$MODEL_USER" LOGNAME="$MODEL_USER" TMPDIR="$MODEL_HOME/tmp"
               LOOPER_TACPLUS_HOME="$MODEL_HOME/.tacplus-home" CARGO_HOME="$MODEL_HOME/.cargo")
-    withheld+=(-u GIT_CONFIG_PARAMETERS -u LOOPER_REAL_DOCKER)
-    if [[ -z "$builds" && -n "${LOOPER_CHILD_MEMORY:-}" ]] && broker_start "$dir"; then
-      ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
-      limited+=(LOOPER_DOCKER_BROKER="$dir/broker/sock")
-    fi
-  elif [[ -z "$builds" && -n "${LOOPER_CHILD_MEMORY:-}" ]]; then
-    ln -s "$(dirname "$LOOPER_SELF")/looper-docker" "$dir/bin/docker"
-    limited+=(LOOPER_REAL_DOCKER="$(command -v docker || true)")
+    withheld+=(-u GIT_CONFIG_PARAMETERS)
   fi
   jq -R -r --unbuffered "$RENDER" < "$dir/out" > "$2" & fmt=$!
   ( cd "$CHECKOUT" && model_forge_env && LOOPER_RUN="${5:+$4}" exec env "${withheld[@]}" "${limited[@]+"${limited[@]}"}" "${as[@]+"${as[@]}"}" timeout -k 30 "$3" claude --print --verbose --output-format stream-json \
@@ -4259,11 +4241,10 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!
   watch_run "$pid" "$2" "$4" "${5:-}" & watcher=$!
-  [[ "$builds" != 1 ]] || { build_server "$4" "$pid" "${5:-}" >> "$4/builds.log" 2>&1 & server=$!; }
+  [[ -z "${BUILD_JOBS:-}" || -z "${5:-}" ]] || { build_server "$4" "$pid" "${5:-}" >> "$4/builds.log" 2>&1 & server=$!; }
   wait "$pid" || rc=$?
   kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null || true
   [[ -z "$server" ]] || { kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true; }
-  [[ -z "$BROKER_PID" ]] || { kill "$BROKER_PID" 2>/dev/null; wait "$BROKER_PID" 2>/dev/null || true; }
   # The log is complete when the model's output closes; a process the model
   # left holding that output does not hold the run. Nor does the fallback
   # killer, nor its sleep, hold repo-looper's own output (looper#125).
@@ -5083,32 +5064,25 @@ EOF
   fi
 }
 
-# Rule 4's word on the report's memory (looper#41), when its job set it.
-memory_rule() {
-  [[ -n "${LOOPER_CHILD_MEMORY:-}" ]] || return 0
-  if [[ -n "${BUILD_JOBS:-}" ]]; then   # no containers (looper#71)
-    if [[ -n "${MODEL_USER:-}" ]] && model_users; then
-      printf '\n   %s\n   %s' \
-        "You run as your own user, $MODEL_USER (looper#68): you own your worktree, your home and your run directory, and no" \
-        "other run's processes or files."
-    fi
-    return 0
-  fi
-  printf '\n   %s\n   %s\n   %s' \
-    "Containers you start (\`docker run\`, \`tacplus\`) are limited to $LOOPER_CHILD_MEMORY of memory, without swap: your" \
-    "share of the runner, beside the other reports. One over it is OOM-killed (exit 137), and a larger --memory is" \
-    "refused. Never run a step that needs more ad hoc (\`cargo kani\`, say): leave Kani to the land's gates."
-  if [[ -n "${MODEL_USER:-}" ]] && model_users; then
-    printf '\n   %s\n   %s' \
-      "You run as your own user, $MODEL_USER (looper#68): you own your worktree, your home and your run directory, and no" \
-      "other run's processes or files. \`docker\` is the looper's broker: your own containers only, unprivileged, mounting only those two."
-  fi
+# Rule 4's word on the model's own user (looper#68), when it has one.
+user_rule() {
+  [[ -n "${MODEL_USER:-}" ]] && model_users || return 0
+  printf '\n   %s\n   %s' \
+    "You run as your own user, $MODEL_USER (looper#68): you own your worktree, your home and your run directory, and no" \
+    "other run's processes or files."
 }
 
 # Rule 4's first sentence: how the report verifies. In a pinned repository
-# (looper#71), with a build job: the model has no container runtime.
+# (looper#71), with a build job or a looper VM's local build. The model has no
+# container runtime (looper#73): without either, only what needs none.
 verify_rule() { # issue
-  if [[ -z "${BUILD_JOBS:-}" ]]; then echo "Verify with $(gates_hint)."; return 0; fi
+  if [[ -z "${BUILD_JOBS:-}" ]]; then
+    printf '%s\n   %s\n   %s' \
+      "Verify what needs no container (a script's tests, a linter) yourself: you have no container runtime (no \`docker\`," \
+      "so no \`tacplus\` either, looper#73), and this run has no build jobs (no BUILD_TRIGGER_TOKEN) and no looper VM: the" \
+      "land's gates are the verdict. The full gates are $(gates_hint | sed 's/^the full gates, //')."
+    return 0
+  fi
   if [[ -n "${LOOPER_VM:-}" ]]; then
     printf '%s\n   %s\n   %s\n   %s\n   %s\n   %s' \
       "Verify with a local build: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds your committed" \
@@ -5140,7 +5114,7 @@ verify_rule() { # issue
 tacplus_rule() {
   if [[ -n "${BUILD_JOBS:-}" && -n "${LOOPER_VM:-}" ]]; then echo "\`tacplus\` runs in your local builds only (rule 4)."
   elif [[ -n "${BUILD_JOBS:-}" ]]; then echo "\`tacplus\` runs in the build job only (rule 4)."
-  else printf '%s\n   %s' "\`tacplus\` in this container runs the compiler image for this repository's" "MAJOR.MINOR floor (tacplus.yaml), always its latest patch."; fi
+  else echo "\`tacplus\` runs in the land's gates only (rule 4)."; fi
 }
 
 # A report's outcome, for its job's log: closed, blocked,
@@ -5395,7 +5369,7 @@ Rules:
    poll with short checks; never end your reply while one runs. You run non-interactively: ending your
    reply ends the run. Stop a process you started by its PID (\`kill <pid>\`, the \`\$!\` you noted when you
    started it), never by a pattern (\`pkill -f\`, \`kill \$(pgrep ...)\`): other issues' runs and the looper's lands
-   run on this machine too, and a pattern stops theirs (looper#61); \`pkill\` here signals only your run's own.$(memory_rule)
+   run on this machine too, and a pattern stops theirs (looper#61); \`pkill\` here signals only your run's own.$(user_rule)
 $(land_rule "$n")
 6. The planning files: update STATE.md when your change changes what it states (version, what works,
    gaps, blockers), in your last commit, of its own, touching STATE.md alone (\`--land\` makes it so: looper#131).
@@ -6774,9 +6748,8 @@ Main's ruleset (looper#83; README, Only the manager writes main) is what keeps a
 scan() {
   local run before report base taken gates=""; run="$RUNS/$(date -u +%Y%m%dT%H%M%SZ)-scan"; mkdir -p "$run"
   sync_checkout
-  # Its model runs as looper-scan (looper#83), its containers limited as a report's (looper#41).
+  # Its model runs as looper-scan (looper#83), with no container runtime (looper#73).
   model_job_private
-  LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
   choose_model "$run"
   ruleset_bug "$run"
   # A pinned repository's scan, as its reports, with no container runtime
@@ -6846,36 +6819,6 @@ PR
 
 # --- the report (looper#70) ----------------------------------------------------
 
-# A report's memory, in GB (looper#41): LOOPER_CHILD_MEMORY_GB, default 4, or
-# more when the gate set its land runs asks it (looper#74): the most `memory:`
-# of those sets in main's gates.yaml. The set is its branch's on origin (the
-# diff of a report that resumes), else full: a fresh report's land is not
-# known yet, and its verification runs full. Kani's proofs, which needed 12 GB
-# (tacplus#196), are no gate's (tacplus-dev/tacplus#275). Prints "<GB>[ (why)]".
-child_memory() {
-  local gb="${LOOPER_CHILD_MEMORY_GB:-4}" m="" s rev="origin/looper/$REPO-${ISSUE:-}"
-  if [[ -f "$CHECKOUT/$GATE_MAP" ]]; then
-    if [[ -n "${ISSUE:-}" ]] && git -C "$CHECKOUT" rev-parse -q --verify "$rev^{commit}" >/dev/null; then
-      choose_gates "$CHECKOUT" "$(git -C "$CHECKOUT" merge-base origin/main "$rev" 2>/dev/null || echo origin/main)" "" "$rev" ||
-        GATES_SET=full
-    elif read_gate_map "$CHECKOUT/$GATE_MAP" 2>/dev/null; then GATES_SET=full
-    else GATES_SET=""; fi
-    # A land on full runs the pre-land gate too, in the report when it has no build jobs (looper#196).
-    for s in ${GATES_SET//+/ } $([[ "$GATES_SET" != full ]] || echo "$PRE_LAND"); do
-      if [[ -n "${GM_MEM[$s]:-}" ]] && awk -v a="${m:-0}" -v b="${GM_MEM[$s]}" 'BEGIN { exit !(b > a) }'; then m="${GM_MEM[$s]}"; fi
-    done
-  fi
-  if [[ -n "$m" ]] && awk -v a="$gb" -v b="$m" 'BEGIN { exit !(b > a) }'; then
-    echo "$m (its land's gates, $GATES_SET, ask it in $GATE_MAP)"
-  else echo "$gb"; fi
-}
-
-# The limit of each container a report's model starts (looper#41), as a
-# docker size: its memory in MB, at least docker's 6. The report gives it to
-# its model as LOOPER_CHILD_MEMORY; run_claude puts looper-docker in front of
-# the model's docker.
-child_memory_size() { child_memory | awk '{ m = int($1 * 1024); if (m < 6) m = 6; printf "%dm\n", m }'; }
-
 # The report of an issue (looper#70): its job works it, if it is still ready
 # (or its run was killed outright, looper#20), in its own clone, and touches
 # no other issue and never main.
@@ -6908,14 +6851,18 @@ report_job() { # issue
     else log "#$n is no longer ready; nothing to do"; return 0; fi
   fi
   prepare_report
+  # An unpinned repository's report runs no model (looper#73).
+  if ! pinned origin/main; then
+    log "#$n: $(pin_first)"
+    hold "$n" "$LABEL_STUCK" "$(pin_first). Nothing was run. Marked \`$LABEL_STUCK\`: once main pins it, a person removes the label."
+    report "$n" stuck; return 0
+  fi
   model_job_private
-  # Its containers are limited to its share (looper#41).
-  LOOPER_CHILD_MEMORY="$(child_memory_size)"; export LOOPER_CHILD_MEMORY
   # A pinned repository's report builds in build jobs, with no container runtime (looper#71).
   BUILD_JOBS=""
-  if [[ -n "${LOOPER_VM:-}" ]] && pinned origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: on this looper VM, its model builds locally through --build, with no container runtime of its own (looper#238)"
+  if [[ -n "${LOOPER_VM:-}" ]]; then BUILD_JOBS=1; log "$REPO pins its build image: on this looper VM, its model builds locally through --build, with no container runtime of its own (looper#238)"
   elif build_jobs origin/main; then BUILD_JOBS=1; log "$REPO pins its build image: this report builds in build jobs, its model with no container runtime"
-  elif [[ "$LOOPER_FORGE" == github ]] && pinned origin/main; then log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN: its model keeps looper-docker (looper#71)"; fi
+  else log "$REPO pins its build image, but this job holds no BUILD_TRIGGER_TOKEN (or its forge is not GitHub's): its model has no container runtime and no build, and its land's gates run in the manager's job (looper#71, looper#73)"; fi
   work_issue "$n"
   # Its claim given up at the run's end, whatever the outcome (looper#250).
   claim_release "$n" || log "#$n: its claim could not be given up: it lapses $(hours "$CLAIM_TTL") after its last renewal"

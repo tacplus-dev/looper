@@ -449,11 +449,15 @@ issue() { # repo n state labels(csv) body
     [[ -z "$l" ]] || grep -qxF -- "$l" "$FIX/labels/$1" 2>/dev/null || echo "$l" >> "$FIX/labels/$1"
   done
 }
-scenario() { # name: a fresh origin with one commit and an approved issue alpha#4
+# Every repository pins its build image (looper#73): alpha's main does, by a
+# digest alone, which no relock moves.
+SEED_PIN="build_image: ghcr.io/tacplus-dev/tacplus/build@sha256:$(printf 'f%.0s' {1..64})"
+scenario() { # name: a fresh origin with one commit, pinning its build image, and an approved issue alpha#4
   NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/issues"; : > "$FIX/comments"; : > "$FIX/claude.sh"; : > "$FIX/prompts"
   git init -q --bare -b main "$FIX/origin.git"
   git clone -q "$FIX/origin.git" "$FIX/seed" 2>/dev/null
-  git -C "$FIX/seed" commit -q --allow-empty -m init && git -C "$FIX/seed" push -q origin main
+  echo "$SEED_PIN" > "$FIX/seed/build.lock"; git -C "$FIX/seed" add build.lock
+  git -C "$FIX/seed" commit -q -m init && git -C "$FIX/seed" push -q origin main
   issue alpha 4 OPEN approved,bug "Fix it."
 }
 LAND='"$ROOT/repo-looper" --repo alpha --issue "$ISSUE" --land --wait --gates true'   # a claude.sh command: land the commits (looper#32)
@@ -478,7 +482,7 @@ looper() { # [VAR=value...] -- repo-looper args
   timeout -k 10 "$BOUND" env -u LOOPER_RUNNING_COPY -u LOOPER_SELF -u LOOPER_RUN -u LOOPER_MODEL_RUN -u LOOPER_TIMEOUT -u LOOPER_STOP_EARLY -u LOOPER_CHECKPOINT_INTERVAL \
       -u LOOPER_IDLE_MINUTES -u LOOPER_DONE_GRACE -u LOOPER_WATCH_INTERVAL -u LOOPER_LAND_MINUTES -u LOOPER_LAND_MARGIN -u LOOPER_REPLAN_INTERVAL \
       -u CI_API_V4_URL -u CI_PROJECT_ID -u CI_JOB_TOKEN -u GITLAB_TOKEN -u CI_JOB_TIMEOUT -u CI_JOB_STARTED_AT \
-      -u LOOPER_DOCKER_BROKER -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY -u LOOPER_IMAGE -u LOOPER_JOB_IMAGE LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
+      -u GIT_CONFIG_PARAMETERS -u LOOPER_MANAGER_POLL -u LOOPER_MANAGER_LINGER -u LOOPER_MANAGER_SAY -u LOOPER_IMAGE -u LOOPER_JOB_IMAGE LOOPER_MODEL_USERS=0 LOOPER_LAND_POLL=1 \
       PATH="$TMP/bin:$PATH" FIX="$FIX" ROOT="$ROOT" LOOPER_LIB="$ROOT/looper-lib.sh" LOOPER_WORK="$FIX/work" LOOPER_RULESET="$TMP/bin/looper-ruleset-stub" \
       LOOPER_RUNS="$FIX/project/looper-runs" CI_PROJECT_DIR="$FIX/project" CI_JOB_URL=https://gl.test/jobs/77 \
       "${vars[@]+"${vars[@]}"}" "$ROOT/repo-looper" "$@"
@@ -813,7 +817,7 @@ pass
 scenario checkpoint-nothing
 push_fix
 run LOOPER_CHECKPOINT_INTERVAL=1
-[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md " ]] \
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md build.lock " ]] \
   || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 pass
 
@@ -869,7 +873,7 @@ has "$c" "c.txt written; left: the tests"
 has "$c" "https://github.com/tacplus-dev/alpha/tree/looper/alpha-4"
 has "$c" "https://gl.test/jobs/77"
 lacks "$c" "looper:stuck"
-[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md c.txt d.txt " ]] || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md build.lock c.txt d.txt " ]] || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 main_unchanged
 pass
 
@@ -1109,7 +1113,7 @@ has "$(origin show looper/alpha-4:.looper/prompt.md)" "working issue #4"
 : > "$FIX/claude.sh"; echo 'ls -A > "$FIX/checkout"' >> "$FIX/claude.sh"
 issue alpha 4 OPEN approved,bug "Fix it."
 run
-[[ "$(tr '\n' ' ' < "$FIX/checkout")" == ".git a.txt " ]] || fail "checkout: $(cat "$FIX/checkout")"
+[[ "$(tr '\n' ' ' < "$FIX/checkout")" == ".git a.txt build.lock " ]] || fail "checkout: $(cat "$FIX/checkout")"
 pass
 
 # A run killed outright (the job cancelled: no trap, no artifacts) still leaves
@@ -2386,7 +2390,7 @@ orphan_stopped() { # elapsed seconds
   main_unchanged
   [[ -z "$(others)" ]] || fail "commented"
   [[ "$(labels alpha 4)" == "approved,bug,looper:in-progress" ]] || fail "labels $(labels alpha 4)"
-  [[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt " ]] \
+  [[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt build.lock " ]] \
     || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 }
 POLL=(LOOPER_JOB_POLL=1 LOOPER_WATCH_INTERVAL=1)
@@ -3446,45 +3450,14 @@ has "$(cat "$FIX/comments")" "alpha#4 The manager could not merge"
 has "$(cat "$FIX/comments")" "runs no repository code"
 pass
 
-# A report's model sees its memory (looper#41): containers it starts are
-# limited to it, through looper-docker. It is sized by the gate set its land
-# runs (looper#74): the most any of the sets' `memory:` in gates.yaml asks,
-# else LOOPER_CHILD_MEMORY_GB; full for a fresh report, the set its branch's
-# diff calls for once it has one. A justfile that names Kani sizes nothing.
-scenario report-memory
-echo 'echo "$LOOPER_CHILD_MEMORY $(readlink -f "$(command -v docker)")" > "$FIX/mem"' > "$FIX/claude.sh"
-run LOOPER_CHILD_MEMORY_GB=2
-[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "the report's docker: $(cat "$FIX/mem")"
-p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
-has "$p" "Containers you start (\`docker run\`, \`tacplus\`) are limited to 2048m of memory"
-has "$p" "leave Kani to the land's gates"
-printf 'gates:\n    cargo kani --tests\n' > "$FIX/seed/justfile"
-git -C "$FIX/seed" add justfile && git -C "$FIX/seed" commit -qm kani && git -C "$FIX/seed" push -q origin main
-issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
-run LOOPER_CHILD_MEMORY_GB=2
-[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "a justfile naming Kani sized the report: $(cat "$FIX/mem")"
-printf 'full:\n  run: just gates\n  memory: 3\ndocs:\n  run: "true"\n  paths: ["*.md"]\n' > "$FIX/seed/gates.yaml"
-git -C "$FIX/seed" add gates.yaml && git -C "$FIX/seed" commit -qm "gate map" && git -C "$FIX/seed" push -q origin main
-issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
-run LOOPER_CHILD_MEMORY_GB=2
-[[ "$(cat "$FIX/mem")" == "3072m $ROOT/looper-docker" ]] || fail "a fresh report is not sized by full: $(cat "$FIX/mem")"
-has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "limited to 3072m of memory"
-git -C "$FIX/seed" checkout -q -b looper/alpha-4 && echo docs > "$FIX/seed/NOTES.md"
-git -C "$FIX/seed" add NOTES.md && git -C "$FIX/seed" commit -qm docs && git -C "$FIX/seed" push -q -f origin looper/alpha-4
-git -C "$FIX/seed" checkout -q main
-issue alpha 4 OPEN approved,bug "Fix it."; rm -rf "$FIX/project"
-run LOOPER_CHILD_MEMORY_GB=2
-[[ "$(cat "$FIX/mem")" == "2048m $ROOT/looper-docker" ]] || fail "a report whose land runs docs got full's memory: $(cat "$FIX/mem")"
-pass
-
 # Each model as its own user (looper#68): two reports at once, each model as
 # its own user (LOOPER_USER_PREFIX, this test's own). Neither can signal the
 # other's processes or the manager, kill or pkill them, read
 # /proc/<pid>/environ of the other or of the manager, find a withheld
 # credential (GITLAB_TOKEN) in any process it can read, read the other's
-# clone or run record, or reach the Docker socket. Its docker goes through the
-# broker, as the broker's user, for its clone and not /etc. Both checkpoint
-# and land as before. Root only. The scripts run from a copy anyone reads:
+# clone or run record, or reach the Docker socket. It has no container
+# runtime (looper#73): its docker says so and reaches no docker. Both
+# checkpoint and land as before. Root only. The scripts run from a copy anyone reads:
 # this checkout may be a model's own (0750).
 #
 # The socket's gid is the next free gid, with no name (looper#69): as on a
@@ -3499,10 +3472,8 @@ else
   trap 'for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do userdel "$u" 2>/dev/null; done
         getent group "${P}dockersock" >/dev/null && groupdel "${P}dockersock"; rm -rf "$TMP"' EXIT
   R="$TMP/root"; mkdir -p "$R" "$TMP/dk"
-  cp "$ROOT"/{repo-looper,looper-lib.sh,looper-docker,looper-docker-broker,looper-pkill} "$R/"
-  # The broker's docker has a config directory it may write (looper#89): ~/.docker.
-  printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n[[ "$(id -un)" != %q ]] || mkdir -p "$HOME/.docker" || echo "no config dir: HOME=$HOME" >> %q\n' \
-    "$TMP/dk/log" "${P}docker" "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
+  cp "$ROOT"/{repo-looper,looper-lib.sh,looper-pkill} "$R/"
+  printf '#!/usr/bin/env bash\necho "$(id -un) $*" >> %q\n' "$TMP/dk/log" > "$TMP/dk/docker"; : > "$TMP/dk/log"
   chmod 755 "$TMP" "$TMP/bin" "$TMP/dk/docker"; chmod 666 "$TMP/dk/log"; chmod -R a+rX "$R" "$TMP/bin" "$TMP/dk"
   useradd -M -U "${P}next" && SG="$(id -g "${P}next")" && userdel "${P}next" || fail "useradd -U"
   ! getent group "${P}next" >/dev/null || groupdel "${P}next"
@@ -3529,9 +3500,7 @@ for s in /var/run/docker.sock "${DOCKER_HOST#unix://}"; do
   if [[ -S "$s" ]]; then ! [[ -r "$s" || -w "$s" ]] || echo "reaches the docker socket $s" >> "$p"; fi
 done
 [[ " $(id -G) " != *" $(stat -c %g "${DOCKER_HOST#unix://}") "* ]] || echo "holds the docker socket's gid" >> "$p"
-docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker refused its clone" >> "$p"
-! docker run --rm -v /etc:/e img true 2>> "$p.docker" || echo "docker mounted /etc" >> "$p"
-docker build -t "img-$ISSUE" . 2>> "$p.docker" || echo "docker build failed" >> "$p"
+! docker run --rm -v "$PWD:/w" img true 2>> "$p.docker" || echo "docker ran" >> "$p"
 touch "$FIX/probed-$ISSUE"
 for i in $(seq 300); do [[ -e "$FIX/probed-$o" ]] && break; sleep 0.1; done
 kill "$(cat "$FIX/pid-$ISSUE")" || echo "could not stop its own process" >> "$p"
@@ -3543,28 +3512,24 @@ EOS
   git -C "$FIX/origin.git" config core.sharedRepository 0777; chmod -R a+rwX "$FIX"
   T="$ROOT"; ROOT="$R"
   # The withheld credential is built at run time: no literal for the secret scan (looper#117).
-  U=(LOOPER_CHILD_MEMORY_GB=0.01 LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN="s3cret-$(printf withheld)" PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock")
+  U=(LOOPER_MODEL_USERS=1 LOOPER_USER_PREFIX="$P" GITLAB_TOKEN="s3cret-$(printf withheld)" PATH="$TMP/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$TMP/docker.sock")
   manager_start "${U[@]}"; echo "$MANAGER" > "$FIX/manager-pid"; chmod 644 "$FIX/manager-pid"
   for n in 4 5; do looper "${U[@]}" -- --repo alpha --issue "$n" > "$FIX/report-$n.log" 2>&1 & eval "RP$n=\$!"; done
   at_work "$RP4" 4 "$RP5" 5
   rc=0; wait "$RP4" && wait "$RP5" || rc=$?
   (( rc == 0 )) || { cat "$FIX"/report-*.log; manager_stop; fail "a report exited $rc$(bound_hit "$rc")"; }
   manager_wait; OUT="$(cat "$FIX"/report-*.log "$FIX/manager.log")"
-  ROOT="$T"; LOOPER_MEM="$(sed -n 's/.*limited to \([0-9]*m\) of memory.*/\1/p' "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+  ROOT="$T"
   for n in 4 5; do
     [[ "$(cat "$FIX/probe-$n")" == "$P$n" ]] || fail "#$n's model: $(cat "$FIX/probe-$n" "$FIX/probe-$n.docker" 2>&1)"
-    grep -q "outside this child's own directories" "$FIX/probe-$n.docker" || fail "#$n's docker: $(cat "$FIX/probe-$n.docker")"
-    grep -qxF "${P}docker run --memory $LOOPER_MEM --memory-swap $LOOPER_MEM --label io.tacplus.looper.owner=$P$n --rm -v $FIX/work/alpha/issues/$n:/w img true" "$TMP/dk/log" ||
-      fail "#$n's docker ran: $(cat "$TMP/dk/log")"
-    grep -qxF "${P}docker build -t img-$n ." "$TMP/dk/log" || fail "#$n's docker build: $(cat "$TMP/dk/log")"
+    grep -q "no model has a container runtime (looper#73)" "$FIX/probe-$n.docker" || fail "#$n's docker: $(cat "$FIX/probe-$n.docker")"
     [[ "$(stat -c %U "$FIX/work/alpha/issues/$n")" == "$P$n" ]] || fail "#$n's clone is $(stat -c %U "$FIX/work/alpha/issues/$n")'s"
   done
   for u in $(getent passwd | cut -d: -f1 | grep "^$P"); do
     i="$(id -u "$u")"
     [[ "$(id -g "$u")" == "$i" && "$(id -G "$u")" == "$i" && "$i" != "$SG" ]] && (( i >= 61000 && i < 64000 )) || fail "$u: $(id "$u")"
   done
-  ! grep -q /etc "$TMP/dk/log" || fail "a container mounted /etc: $(cat "$TMP/dk/log")"
-  ! grep -q "no config dir" "$TMP/dk/log" || fail "the broker's docker has no config dir: $(cat "$TMP/dk/log")"
+  [[ ! -s "$TMP/dk/log" ]] || fail "a model reached docker: $(cat "$TMP/dk/log")"
   has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "You run as your own user, ${P}4 (looper#68)"
   [[ "$(landed f-4.txt)" == 4 && "$(landed f-5.txt)" == 5 ]] || fail "main: $(origin log --oneline main); $OUT"
   closed 4; closed 5
@@ -3965,7 +3930,7 @@ echo "$2" > $1 && git add -A && git commit -qm "change $1" && git rev-parse HEAD
 "\$ROOT/repo-looper" --repo alpha --issue 4 --land --wait > "\$FIX/land-4" 2>&1; echo "rc \$?" >> "\$FIX/land-4"
 EOS
 }
-BUILDS=(BUILD_TRIGGER_TOKEN=glptt-build LOOPER_BUILD_POLL=1 LOOPER_BUILD_WAIT=7200 LOOPER_CHILD_MEMORY_GB=2)
+BUILDS=(BUILD_TRIGGER_TOKEN=glptt-build LOOPER_BUILD_POLL=1 LOOPER_BUILD_WAIT=7200)
 
 scenario build-job-report
 pin_seed; build_model notes.md "the docs"
@@ -4054,6 +4019,7 @@ has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "3. The repository's ow
 pass
 scenario scan-unpinned-gates
 templates; : > "$FIX/scan.sh"
+git -C "$FIX/seed" rm -q build.lock && git -C "$FIX/seed" commit -qm unpin && git -C "$FIX/seed" push -q origin main
 OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 pp="$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)"
 has "$pp" "3. The repository's own gates failing on main ("; lacks "$pp" "nightly build's verdict"; lacks "$pp" "You have no container runtime"
@@ -4488,18 +4454,46 @@ has "$(cat "$FIX/manager.log")" "the manager stops: nothing could be built"; lac
 grep -qx state=queued <<<"$(origin show looper/alpha-4:.looper/land)" || fail "the land is not queued"
 pass
 
-# Without the trigger a pinned repository keeps today's path: the model's
-# docker is looper-docker, --build says there are no build jobs, and the gates
-# run in the manager's job, which says why.
+# Without the trigger a pinned repository's model has no container runtime
+# either (looper#73: no looper-docker): its docker says so, --build says there
+# are no build jobs, and the gates run in the manager's job, which says why.
 scenario build-job-no-trigger
 pin_seed; build_model notes.md "the docs"
-run LOOPER_CHILD_MEMORY_GB=2 PATH="$FIX/dk:$TMP/bin:$PATH"
-has "$(cat "$FIX/probe")" "$ROOT/looper-docker"
+run PATH="$FIX/dk:$TMP/bin:$PATH" DOCKER_HOST="unix://$FIX/docker.sock"
+p="$(cat "$FIX/probe")"
+has "$p" "no model has a container runtime (looper#73)"; has "$p" "docker rc 125"
+lacks "$p" "looper-docker"; lacks "$p" "DOCKER_HOST="
+[[ ! -e "$FIX/real-docker" ]] || fail "the model reached docker: $(cat "$FIX/real-docker")"
 has "$(cat "$FIX/build-4")" "no build jobs in this run"; has "$(cat "$FIX/build-4")" "rc 2"
 has "$(cat "$FIX/land-4")" "rc 0"; [[ ! -e "$FIX/builds" ]] || fail "built: $(cat "$FIX/builds")"
 [[ "$(cat "$FIX/gates-ran")" == "docs here $(origin rev-parse main~1)" ]] || fail "the gates ran: $(cat "$FIX/gates-ran")"
 has "$OUT$(cat "$FIX/manager.log")" "this job holds no BUILD_TRIGGER_TOKEN"
-has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "Verify with the full gates"
+p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$p" "Verify what needs no container"; has "$p" "\`tacplus\` runs in the land's gates only"; lacks "$p" "limited to"
+pass
+
+# An unpinned repository's report runs no model, and its land runs no gates
+# (looper#73: pin it first): no fallback to a docker of the model's own or to
+# gates in the manager's job. The report holds the issue looper:stuck and
+# says why; a land of a commit that pins nothing is sent back, red.
+scenario unpinned-pin-first
+git -C "$FIX/seed" rm -q build.lock && git -C "$FIX/seed" commit -qm unpin && git -C "$FIX/seed" push -q origin main
+echo 'touch "$FIX/model-ran"' > "$FIX/claude.sh"
+run
+[[ ! -e "$FIX/model-ran" ]] || fail "the model ran in an unpinned repository"
+has "$OUT" "alpha pins no build image: pin it first (build.lock"
+has "$(cat "$FIX/comments")" "alpha#4 alpha pins no build image: pin it first (build.lock"
+labels alpha 4 | tr , "\n" | grep -qx looper:stuck || fail "#4 is not stuck: $(labels alpha 4)"
+issue alpha 4 OPEN approved,bug "Fix it."
+echo "$SEED_PIN" > "$FIX/seed/build.lock"; git -C "$FIX/seed" add build.lock && git -C "$FIX/seed" commit -qm pin && git -C "$FIX/seed" push -q origin main
+cat > "$FIX/claude.sh" <<'EOS'
+git rm -q build.lock && git commit -qm "unpin" && echo f > f.txt && git add f.txt && git commit -qm fix
+"$ROOT/repo-looper" --repo alpha --issue 4 --land --wait --gates 'touch "$FIX/ran-gates"' > "$FIX/land-4" 2>&1; echo "rc $?" >> "$FIX/land-4"
+EOS
+run
+[[ ! -e "$FIX/ran-gates" ]] || fail "the gates ran for a commit that pins nothing"
+[[ -z "$(landed f.txt)" ]] || fail "landed unpinned: $(origin log --oneline main)"
+has "$(cat "$FIX/land-4")$(cat "$FIX/manager.log")" "pins no build image: pin it first"
 pass
 
 # A manager whose token request GitHub refuses with 422 (its app does not hold
@@ -5911,7 +5905,7 @@ OUT="$(cat "$FIX/report-4.log")"
 (( rc == 0 )) || { echo "$OUT"; fail "exited $rc$(bound_hit "$rc")"; }
 (( SECONDS - t0 < 25 )) || fail "took $(( SECONDS - t0 ))s after SIGTERM"
 has "$OUT" "#4: the looper VM is stopping (SIGTERM): checkpointing the run's work"; has "$OUT" "#4: vm-stopped"
-[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt " ]] \
+[[ "$(origin ls-tree -r --name-only looper/alpha-4 | tr '\n' ' ')" == ".looper/claude.log .looper/prompt.md a.txt b.txt build.lock " ]] \
   || fail "branch: $(origin ls-tree -r --name-only looper/alpha-4)"
 has "$(origin log -1 --format=%B looper/alpha-4)" "(the VM is stopping)"
 grep -qF "The looper VM of alpha stopped this run: the VM is stopping (SIGTERM: a spot reclaim, or its shutdown). Its work in progress is checkpointed on [\`looper/alpha-4\`]" <<<"$(others)" ||
