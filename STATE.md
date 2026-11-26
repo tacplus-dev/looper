@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#250).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#264).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -94,7 +94,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   opening an issue, and check STATE.md's Blocked on against the issues' states, a closed one an approved bug (#132); an
   issue's run files the change its issue needs in another repository of the org (its other half) there, `approved` with
   it, its body's first line `Parent: <org>/<repo>#N` naming it, and the looper approves one its outcome waits on that
-  was filed without (#218); the
+  was filed without (#218); such a follow-up, a feature no ROADMAP.md links, inherits its parent's approval when the
+  looper's app filed it, its parent is open or done, approved, on a roadmap and named it in a looper comment, and the
+  model finds it within the parent's scope (no production, standing cost, security or gate exception): built, its
+  inherited ROADMAP.md line committed on its branch and let through by the manager with its land, one level only
+  (#264); the
   relock (#212): the nightly scan, before its model, moves main's pins by digest (each pin file's `build_image:`, each Dockerfile
   FROM) to their tags' digests now, the tacplus build image at a patch tag and tacplus.lock's `tacplus:` to the line's newest
   released patch, files one approved `bug` a repository for the moves (`<!-- looper-relock -->`) and queues the relock on its
