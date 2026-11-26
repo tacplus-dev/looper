@@ -276,4 +276,26 @@ t="$(vm STUB_GCE_SA=looper-vm-alpha "$ROOT/looper-token" mint report 2>"$TMP/err
 ! vm STUB_GCE_SA=looper-vm-alpha LOOPER_VM= "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "minted with no id_token and no VM"
 pass
 
+# The merger's machine (looper#251, tacplus-dev/cloud#111): its role's key and
+# app are settings (tacplus-merger once Jody makes it; until then the
+# manager's, whose key cloud lets the merger's account sign with), its
+# installation looked up with the app's JWT when not set. A looper VM's account
+# signs for it no more than for the manager.
+NAME=merger
+echo 'tacplus-manager vm:merger' >> "$TMP/iam"
+t="$(vm STUB_GCE_SA=merger LOOPER_MERGER_KEY=tacplus-manager LOOPER_MERGER_APP_ID=401 "$ROOT/looper-token" mint merger 2>"$TMP/err")" ||
+  fail "the merger's account: no token"
+[[ "$t" == ghs_manager_* ]] && grep -qx 'signed tacplus-manager vm:merger' "$TMP/api.log" &&
+  grep -qx 'installation tacplus-manager 41' "$TMP/api.log" &&
+  grep -q '^token tacplus-manager .* {"contents":"write","issues":"write","metadata":"read"}$' "$TMP/api.log" || fail "$t $(cat "$TMP/api.log")"
+vm STUB_GCE_SA=merger LOOPER_MERGER_KEY=tacplus-manager LOOPER_MERGER_APP_ID=401 LOOPER_MERGER_INSTALLATION_ID=41 "$ROOT/looper-token" mint merger >/dev/null 2>"$TMP/err" &&
+  ! grep -q '^installation ' "$TMP/api.log" || fail "looked up an installation it was given: $(cat "$TMP/api.log")"
+! vm STUB_GCE_SA=looper-vm-alpha LOOPER_MERGER_KEY=tacplus-manager LOOPER_MERGER_APP_ID=401 "$ROOT/looper-token" mint merger >/dev/null 2>"$TMP/err" ||
+  fail "a looper VM minted the merger's token"
+! vm STUB_GCE_SA=merger LOOPER_MERGER_APP_ID=401 "$ROOT/looper-token" mint merger >/dev/null 2>"$TMP/err" &&
+  grep -q 'no signature with tacplus-merger' "$TMP/err" || fail "the default key: $(cat "$TMP/err")"
+! vm STUB_GCE_SA=merger "$ROOT/looper-token" mint merger >/dev/null 2>"$TMP/err" &&
+  grep -q 'LOOPER_MERGER_APP_ID is not set' "$TMP/err" || fail "no app: $(cat "$TMP/err")"
+pass
+
 echo "looper-token: all scenarios pass"

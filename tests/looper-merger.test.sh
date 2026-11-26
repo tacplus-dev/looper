@@ -4,9 +4,10 @@
 #
 # looper-merger (looper#251): a clean, green merge request merged at once,
 # unbuilt, at its green head; a conflicting one sent back to its issue, once
-# per head; nothing merged while the rolling check is down, red or behind (at
-# most 4 merges unchecked, or one gate's age); only a trusted login's status
-# read; the shadow compile measured, never required. A stub gh plays GitHub:
+# per head; a clean merge only while the rolling check's gate is open
+# (looper#249's `looper-check gate`, asked for each one, a stub here: its line
+# says why); only a trusted login's status read; the shadow compile measured,
+# never required. A stub gh plays GitHub:
 # `gh api PATH` answers $FIX/api/<PATH less repos/ORG/REPO/, / as _, no query>,
 # else HTTP 404; every write is a line of $FIX/calls.
 # Run: tests/looper-merger.test.sh
@@ -53,6 +54,24 @@ cat > "$TMP/bin/compile" <<'EOF'
 echo "shadow $*" >> "$FIX/calls"; [[ ! -e "$FIX/shadow-red" ]]
 EOF
 chmod +x "$TMP/bin/compile"
+# The rolling check's gate: records its arguments; answers with $FIX/gate-<branch,
+# / as _>, else $FIX/gate ("EXIT LINE", default open). $FIX/gate-opens N: open
+# the first N times it is asked, closed after (the merges a pass made count).
+cat > "$TMP/bin/check-gate" <<'EOF'
+#!/usr/bin/env bash
+echo "gate $*" >> "$FIX/calls"
+[[ "$1" == gate ]] || exit 3
+b=""; while (( $# )); do [[ "$1" != --branch ]] || b="$2"; shift; done
+if [[ -f "$FIX/gate-opens" ]]; then
+  n="$(cat "$FIX/gate-opens")"; echo $((n - 1)) > "$FIX/gate-opens"
+  if (( n > 0 )); then echo "open: $((4 - n)) merge(s) unchecked (at most 4)"; exit 0; fi
+  echo "closed: 4 merges on main are unchecked (at most 4)"; exit 1
+fi
+f="$FIX/gate-${b//\//_}"; [[ -f "$f" ]] || f="$FIX/gate"
+read -r rc line < "$f" 2>/dev/null || { rc=0; line="open: 0 merge(s) unchecked (at most 4), the check's state: open: green g"; }
+echo "$line"; exit "$rc"
+EOF
+chmod +x "$TMP/bin/check-gate"
 
 fail() { echo "FAIL $NAME: $*" >&2; for f in "$FIX/out" "$FIX/calls"; do [[ -f "$f" ]] && { echo "--- $f" >&2; cat "$f" >&2; }; done; exit 1; }
 pass() { echo "ok $NAME"; }
@@ -61,26 +80,16 @@ hasnt() { ! grep -qF -- "$2" "$1" || fail "did not expect \"$2\" in $1"; }
 NOW="$(date +%s)"
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; } # epoch
 
-# A fixture: main-green at g, and main N merges after it (m1..mN, each a minute
-# old more than the next, mN main's head; MINUTES, default 1, the oldest's age).
-fixture() { # name [unchecked [minutes]]
-  local i n="${2:-0}" age="${3:-1}" prev=g cs=""
+# A fixture: no merge request yet; the gate open unless told otherwise.
+fixture() { # name
   NAME="$1"; FIX="$TMP/$1"; mkdir -p "$FIX/api"; : > "$FIX/calls"
-  echo '{"object": {"sha": "g"}}' > "$FIX/api/git_ref_heads_main-green"
-  for (( i = 1; i <= n; i++ )); do
-    cs+="${cs:+,}{\"sha\": \"m$i\", \"parents\": [{\"sha\": \"$prev\"}, {\"sha\": \"side$i\"}], \"commit\": {\"committer\": {\"date\": \"$(iso $((NOW - (age - i + 1) * 60)))\"}}}"
-    prev="m$i"; echo '[]' > "$FIX/api/commits_m${i}_statuses"
-  done
-  echo "{\"object\": {\"sha\": \"$prev\"}}" > "$FIX/api/git_ref_heads_main"
-  (( n == 0 )) || echo "{\"status\": \"ahead\", \"commits\": [$cs]}" > "$FIX/api/compare_g...$prev"
-  status g looper/rolling-check success
   echo '[]' > "$FIX/api/pulls"
 }
 # A commit status, newest first in its list; CREATOR default the trusted login.
 status() { # sha context state [creator]
   local f="$FIX/api/commits_$1_statuses" old='[]'
   [[ ! -f "$f" ]] || old="$(cat "$f")"
-  jq -c --arg c "$2" --arg s "$3" --arg l "${4:-merger-app[bot]}" '[{context: $c, state: $s, creator: {login: $l}}] + .' <<<"$old" > "$f"
+  jq -c --arg c "$2" --arg s "$3" --arg l "${4:-tacplus-reader[bot]}" '[{context: $c, state: $s, creator: {login: $l}}] + .' <<<"$old" > "$f"
 }
 # An open merge request N from looper/alpha-ISSUE at head hN, green unless STATE, mergeable MERGEABLE.
 mr() { # n issue [mergeable [state [labels-json [created]]]]
@@ -97,20 +106,20 @@ merger() { # [VAR=value...] [-- args...]
   local rc=0 env=()
   while [[ $# -gt 0 && "$1" != -- ]]; do env+=("$1"); shift; done
   [[ $# -eq 0 ]] || shift
-  env PATH="$TMP/bin:$PATH" FIX="$FIX" HOME="$FIX/home" LOOPER_MERGER_TRUSTED=merger-app[bot] LOOPER_MERGER_MAX_AGE=30 "${env[@]}" \
+  env PATH="$TMP/bin:$PATH" FIX="$FIX" HOME="$FIX/home" LOOPER_MERGER_TRUSTED='tacplus-reader[bot]' LOOPER_MERGER_GATE="$TMP/bin/check-gate gate" "${env[@]}" \
     "$ROOT/looper-merger" pass --repo alpha "$@" > "$FIX/out" 2>&1 || rc=$?
   echo "$rc"
 }
 
 # --- a clean, green merge request merges at once, unbuilt, at its green head ----
-fixture clean-merges 1
+fixture clean-merges
 mr 7 41
 [[ "$(merger)" == 0 ]] || fail "exit"
 has "$FIX/calls" "merge pulls_7_merge sha=h7 merge_method=merge"
+has "$FIX/calls" "gate gate --repo alpha --branch looper/alpha-41 --sha h7 --dir $FIX/home/looper-merger/clones/alpha"
 has "$FIX/calls" "comment 41 The merger merged #7 (h7, its looper/gates green) into main as merge-o, unbuilt"
 has "$FIX/calls" "edit 41 --remove-label looper:landing --remove-label looper:merge-request"
-has "$FIX/out" "1 of at most 4 merges unchecked"
-has "$FIX/out" "#7: merged h7 as merge-o, unbuilt (2 of at most 4 unchecked)"
+has "$FIX/out" "#7: merged h7 as merge-o, unbuilt (the rolling check's gate: open: 0 merge(s) unchecked"
 pass
 
 # --- a VM report's merge request (looper#250): its issue is its branch's, looper/mr-NAME-N
@@ -126,9 +135,9 @@ has "$FIX/calls" "edit 91 --remove-label looper:landing --remove-label looper:me
 pass
 
 # --- only a green status of a trusted login merges -----------------------------
-fixture not-green 0
+fixture not-green
 mr 1 11 true pending
-mr 2 12 true none; status h2 looper/gates success report-app[bot]
+mr 2 12 true none; status h2 looper/gates success tacplus-looper[bot]
 mr 3 13 true failure
 mr 4 14 true none; status h4 other/ctx success
 [[ "$(merger)" == 0 ]] || fail "exit"
@@ -139,7 +148,7 @@ has "$FIX/out" "#3: not green at h3 (looper/gates failure): waits"
 has "$FIX/out" "#4: not green at h4 (looper/gates none): waits"
 pass
 
-fixture no-trusted 0
+fixture no-trusted
 mr 1 11
 [[ "$(merger LOOPER_MERGER_TRUSTED=)" == 2 ]] || fail "merged with no trusted login"
 has "$FIX/out" "LOOPER_MERGER_TRUSTED names no login"
@@ -147,7 +156,7 @@ hasnt "$FIX/calls" "merge "
 pass
 
 # --- a conflict goes back to its issue, once per head ---------------------------
-fixture conflict 0
+fixture conflict
 mr 5 51 false
 mr 6 61
 [[ "$(merger)" == 0 ]] || fail "exit"
@@ -164,90 +173,64 @@ jq -n '[{body: "The merger sent this back\n<!-- looper-merger: sent back h5 -->"
 has "$FIX/out" "#5: conflicts with main; sent back already at h5"
 pass
 
-fixture not-computed 0
+fixture not-computed
 mr 3 31 null
 [[ "$(merger)" == 0 ]] || fail "exit"
 [[ ! -s "$FIX/calls" ]] || fail "acted on an uncomputed mergeability"
 has "$FIX/out" "#3: GitHub has not computed its mergeability yet"
 pass
 
-# --- the bound: nothing merges while the rolling check is down, red or behind --
-fixture no-main-green 0
-rm "$FIX/api/git_ref_heads_main-green"
-mr 1 11; mr 2 21 false
+# --- the bound: a clean merge only while the rolling check's gate is open -----
+# Closed (no main-green, the check red or recovering, 4 unchecked, its age:
+# looper-check's to say), nothing merges and its line says why; a conflict
+# still goes back; the gate is not asked for what would not merge anyway.
+fixture gate-closed
+echo "1 closed: there is no main-green: the check has found no head of main green" > "$FIX/gate"
+mr 1 11; mr 2 21 false; mr 3 31 true pending
 [[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/out" "merges none of its 2 merge request(s): the rolling check is down: tacplus-dev/alpha has no main-green"
+has "$FIX/out" "#1: clean and green at h1: held, closed: there is no main-green"
 hasnt "$FIX/calls" "merge "
 has "$FIX/calls" "comment 2 The merger sent this back"
+[[ "$(grep -c '^gate ' "$FIX/calls")" == 1 ]] || fail "the gate was asked for more than the clean, green one"
 pass
 
-fixture four-unchecked 4
-mr 1 11
+# Asked again for each clean merge: the pass's own merges count against it.
+fixture gate-per-merge
+echo 3 > "$FIX/gate-opens"
+mr 1 11; mr 2 21; mr 3 31; mr 4 41
 [[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/out" "4 merges on main are unchecked by the rolling check (at most 4)"
+[[ "$(grep -c '^merge ' "$FIX/calls")" == 3 ]] || fail "merged $(grep -c '^merge ' "$FIX/calls"), not 3"
+hasnt "$FIX/calls" "merge pulls_4_merge"
+has "$FIX/out" "#4: clean and green at h4: held, closed: 4 merges on main are unchecked (at most 4)"
+pass
+
+# While the check recovers, the gate opens for its own branch alone (looper-check's answer).
+fixture gate-recovery
+echo "1 closed: reverting abc1234: allow looper/revert-abc1234" > "$FIX/gate"
+echo "0 open: looper/revert-abc1234 is the recovery's own branch (reverting abc1234: allow looper/revert-abc1234)" > "$FIX/gate-looper_revert-abc1234"
+mr 1 11
+mr 2 0; jq '.[1].head.ref = "looper/revert-abc1234"' "$FIX/api/pulls" > "$FIX/p" && mv "$FIX/p" "$FIX/api/pulls"
+[[ "$(merger)" == 0 ]] || fail "exit"
+has "$FIX/calls" "merge pulls_2_merge sha=h2"
+hasnt "$FIX/calls" "merge pulls_1_merge"
+has "$FIX/out" "#1: clean and green at h1: held, closed: reverting abc1234"
+pass
+
+# A gate that cannot be asked (no looper-check, GitHub unreadable) is closed.
+fixture gate-missing
+mr 1 11
+[[ "$(merger LOOPER_MERGER_GATE="$TMP/no-such-looper-check gate")" == 0 ]] || fail "exit"
 hasnt "$FIX/calls" "merge "
-pass
-
-fixture three-unchecked 3
-mr 1 11; mr 2 21
+has "$FIX/out" "#1: clean and green at h1: held, the rolling check's gate could not be asked (exit 127)"
+echo "2 " > "$FIX/gate"
 [[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/calls" "merge pulls_1_merge"
-hasnt "$FIX/calls" "merge pulls_2_merge"
-has "$FIX/out" "#2: clean and green at h2: held, 4 merges on main are unchecked"
-pass
-
-fixture stale 1 31
-mr 1 11
-[[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/out" "main's oldest unchecked merge is 31m old (one gate's age, 30m)"
 hasnt "$FIX/calls" "merge "
-pass
-
-# One gate's age, by default, is full's minutes in main's gates.yaml.
-fixture gate-age 1 31
-printf 'full:\n  run: x\n  minutes: 45\ndocs:\n  minutes: 1\n' > "$FIX/api/contents_gates.yaml"
-mr 1 11
-[[ "$(merger LOOPER_MERGER_MAX_AGE=)" == 0 ]] || fail "exit"
-has "$FIX/out" "one gate's age 45m"
-has "$FIX/calls" "merge pulls_1_merge"
-pass
-
-fixture red 2
-status m1 looper/rolling-check failure
-status m2 looper/rolling-check success report-app[bot]
-mr 1 11
-[[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/out" "the rolling check is red on m1: merging reopens with its next green check"
-hasnt "$FIX/calls" "merge "
-pass
-
-# A newer check running (pending) on main's head holds nothing; a newer green reopens.
-fixture check-running 2
-status m1 looper/rolling-check failure
-status m2 looper/rolling-check pending
-mr 1 11
-[[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/calls" "merge pulls_1_merge"
-pass
-
-fixture no-check-status 1
-echo '[]' > "$FIX/api/commits_g_statuses"
-mr 1 11
-[[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/out" "the rolling check is down: no looper/rolling-check status from a trusted login"
-hasnt "$FIX/calls" "merge "
-pass
-
-fixture off-line 1
-jq '.status = "diverged"' "$FIX/api/compare_g...m1" > "$FIX/c" && mv "$FIX/c" "$FIX/api/compare_g...m1"
-mr 1 11
-[[ "$(merger)" == 0 ]] || fail "exit"
-has "$FIX/out" "main-green g is not on main's first-parent line"
-hasnt "$FIX/calls" "merge "
+has "$FIX/out" "#1: clean and green at h1: held, the rolling check's gate could not be asked (exit 2)"
 pass
 
 # --- order, forks, refusals and the dry run -----------------------------------
-fixture order 2
+fixture order
+echo 2 > "$FIX/gate-opens"
 mr 1 11 true success '[]' 2026-11-25T00:00:00Z
 mr 2 21 true success '[{"name": "priority:high"}]' 2026-11-26T00:00:00Z
 mr 3 31 true success '[]' 2026-11-24T00:00:00Z
@@ -255,7 +238,7 @@ mr 3 31 true success '[]' 2026-11-24T00:00:00Z
 [[ "$(grep '^merge ' "$FIX/calls" | cut -d' ' -f2 | tr '\n' ' ')" == "pulls_2_merge pulls_3_merge " ]] || fail "order"
 pass
 
-fixture fork 0
+fixture fork
 mr 1 11
 jq '.[0].head.repo.full_name = "someone/alpha"' "$FIX/api/pulls" > "$FIX/p" && mv "$FIX/p" "$FIX/api/pulls"
 [[ "$(merger)" == 0 ]] || fail "exit"
@@ -263,7 +246,7 @@ has "$FIX/out" "#1: from a fork: never merged"
 hasnt "$FIX/calls" "merge "
 pass
 
-fixture refused 0
+fixture refused
 mr 1 11
 touch "$FIX/refuse"
 [[ "$(merger)" == 0 ]] || fail "exit"
@@ -271,16 +254,16 @@ has "$FIX/out" "#1: GitHub refused its merge at h1: the next pass"
 hasnt "$FIX/calls" "comment "
 pass
 
-fixture dry-run 0
+fixture dry-run
 mr 1 11; mr 2 21 false
 [[ "$(merger -- --dry-run)" == 0 ]] || fail "exit"
-[[ ! -s "$FIX/calls" ]] || fail "a dry run wrote"
+! grep -qv '^gate ' "$FIX/calls" || fail "a dry run wrote"   # the gate reads, and writes nothing on GitHub
 has "$FIX/out" "#1: would merge h1, unbuilt"
 has "$FIX/out" "#2: would send back (conflicts with main) to #21"
 pass
 
 # --- the shadow compile: measured, never required ------------------------------
-fixture shadow 0
+fixture shadow
 mr 1 11; mr 2 21
 touch "$FIX/shadow-red"
 [[ "$(merger LOOPER_MERGER_SHADOW="$TMP/bin/compile")" == 0 ]] || fail "exit"

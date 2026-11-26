@@ -87,13 +87,19 @@ the looper then marks it `promoted` or `declined` here with the date.
   CPUs (2 on tacplus's c4a-standard-8), a guess; the decision (point 2) sizes capacity from measurement. The
   parent's per-pass line (`builds: R running, W waiting (the longest for Ns), of S slots`) is that measurement: a
   week of it on tacplus's VM, beside each build's time, says whether 2 or 3 slots finish more builds an hour.
-- **The merger's job, live with the rolling check** (2026-11-26, #251): `looper-merger pass` is built and tested,
-  and merges nothing while a repository has no `main-green`; nothing runs it yet. It goes live with looper#249's
-  rolling check (the decision's migration, steps 3 and 4 together): a job of its own per project on a machine that
-  runs no project code (the in-cluster runner's normal pool, never a looper VM), every few minutes, one at a time
-  per repository (`resource_group`), as the manager app (`looper-token mint manager`), with `LOOPER_MERGER_TRUSTED`
-  the identity that sets looper#250's `looper/gates` and #249's `looper/rolling-check` statuses (never
-  tacplus-looper, a report's), and the merge train's manager retired for that repository the same day.
+- **The merger live, with the rolling check** (2026-11-26, #251): `looper-merger` asks #249's `looper-check gate`
+  before each clean merge and `looper-vm merger --org tacplus-dev` is its machine's process (tacplus-dev/cloud#111),
+  so nothing merges until `looper-check` is in the image and `main-green` exists. What is left is outside this
+  repository: cloud#111 pins a looper image digest with both `looper-vm merger` and `looper-check` (after #249 lands)
+  and lets the merger's account sign with the manager's key until `tacplus-merger` exists (the hub's proposal there;
+  or sets `LOOPER_MERGER_KEY`/`LOOPER_MERGER_APP_ID` to the merger's own); and the merge train's manager retires for
+  a repository the day its merger goes live (the decision's migration, steps 3 and 4 together), else both merge.
+- **The merger's own App** (2026-11-26, #251): once Jody makes `tacplus-merger` (README, The merger: its
+  permissions, installed org-wide, a bypass actor of main's ruleset), three settings change: `looper-vm`'s defaults
+  `LOOPER_MERGER_KEY=tacplus-merger` and `LOOPER_MERGER_APP_ID`, and `looper-ruleset apply` with
+  `LOOPER_MERGER_APP_ID`. Its token could then ask for pull requests read too, which a private repository's merge
+  requests need (the manager's App holds none, so the token does not ask for it today). Likewise
+  `LOOPER_CHECK_LOGIN` becomes `tacplus-check[bot]` once the check has its own App (#249).
 - **The shadow compile's verdict** (2026-11-26, #251; decision D1): `LOOPER_MERGER_SHADOW`'s measurements
   (`shadow.tsv`: exit and seconds per merge commit) are to be read beside the rolling check's verdict on the same
   commits: how often a red compile foretold a red check, and what it cost. Requiring it is Jody's decision on those

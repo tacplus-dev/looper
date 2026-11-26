@@ -109,6 +109,14 @@ case "$method $url" in
     t="ghs_${app#tacplus-}_$RANDOM$RANDOM"
     echo "token $app $t $(jq -c .permissions <<<"$data")" >> "$APP_STUB/api.log"
     printf '{"token": "%s", "expires_at": "2026-11-04T20:00:00Z"}\n' "$t" ;;
+  # The org's installation of the app whose JWT asks (a role with no installation id configured).
+  "GET https://api.github.com/orgs/"*/installation)
+    IFS=. read -r h p s <<<"$auth"; b64d "$s" > "$APP_STUB/sig"
+    case "$(b64d "$p" | jq -r .iss)" in 301) app=tacplus-looper inst=31 ;; 401) app=tacplus-manager inst=41 ;; *) exit 22 ;; esac
+    printf '%s' "$h.$p" | openssl dgst -sha256 -verify "$APP_STUB/keys/$app.pub" -signature "$APP_STUB/sig" >/dev/null 2>&1 ||
+      { echo "jwt-bad $app" >> "$APP_STUB/api.log"; exit 22; }
+    echo "installation $app $inst" >> "$APP_STUB/api.log"
+    printf '{"id": %s, "app_slug": "%s"}\n' "$inst" "$app" ;;
   # An issue, its events and a login's permission (looper#115), read with an
   # installation token: $APP_STUB/gh/<path>.json, a missing file a 404.
   "GET https://api.github.com/repos/"*|"DELETE https://api.github.com/installation/token")

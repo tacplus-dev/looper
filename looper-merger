@@ -19,14 +19,18 @@
 # A merge request (a GitHub pull request into main, from a branch of the same
 # repository: a fork's is never merged) is:
 #   green      its head carries the commit status LOOPER_MERGER_CONTEXT (default
-#              looper/gates) success, set by one of LOOPER_MERGER_TRUSTED (logins,
-#              comma-separated, required: the identity a report cannot mint,
-#              panel item 5; a status of anyone else's is not read). Pending, red
-#              or none, it waits: its report's business.
+#              looper/gates: not tacplus-dev/build, which a report's own --build
+#              sets too, on the gate set it chose: PROPOSALS.md) success, set by
+#              one of LOOPER_MERGER_TRUSTED (logins, comma-separated, required:
+#              the identity a report cannot mint, panel item 5; a status of
+#              anyone else's is not read). Pending, red or none, it waits: its
+#              report's business.
 #   clean      green, and GitHub finds it mergeable into main: it is merged at
-#              once, with no build (a merge commit, at exactly the head that is
-#              green: `sha`, so a push after the status merges nothing). A
-#              mergeability GitHub has not computed yet waits for the next pass.
+#              once, with no build, while the rolling check's gate is open (below):
+#              a merge commit, one first-parent commit of main per merge request
+#              (what the check bisects and reverts whole), at exactly the head
+#              that is green (`sha`, so a push after the status merges nothing).
+#              A mergeability GitHub has not computed yet waits for the next pass.
 #   conflicting  green, and not mergeable: sent back to its issue (the branch
 #              `looper/NAME-N` or `looper/mr-NAME-N`, else a `Closes #N` in its body), whose next
 #              report resolves it, the agent with the change's context (panel
@@ -38,23 +42,18 @@
 # and looper:merge-request removed, so the issue's next run reports and closes it.
 #
 # The bound (panel item 7, D2): clean merges are unbuilt only while the
-# rolling check (looper#249) is behind them. Nothing merges, and the pass says
-# why, while
-#   - main has no main-green (the ref the rolling check moves to each commit it
-#     finds green), or main-green is not on main's first-parent line: the check
-#     is down, or has never run. So the merger is live only with the check.
-#   - LOOPER_MERGER_UNCHECKED (default 4) merges or more are on main after
-#     main-green (main's first-parent commits since it), or the oldest of them
-#     is LOOPER_MERGER_MAX_AGE minutes old or more (default one gate's age: the
-#     full set's minutes in main's gates.yaml, else 70 for tacplus and 30 for
-#     the others), whichever is first: the check is behind, or stale.
-#   - the rolling check's newest verdict on main is red: the newest commit of
-#     main's first-parent line down to main-green that carries its status
-#     (LOOPER_ROLLING_CONTEXT, default looper/rolling-check, by one of
-#     LOOPER_MERGER_TRUSTED) has it failure or error. The check keeps it red
-#     while it runs again, bisects and reverts; merging reopens with its next
-#     green full check (D3). Pending (a check running) holds nothing.
-# Each merge counts against the bound at once, within the pass.
+# rolling check (looper#249) is behind them, and it is the check's to say:
+# before each clean merge the merger asks its gate, LOOPER_MERGER_GATE (default
+# `looper-check gate`, beside this script) --repo NAME --branch BRANCH --sha
+# HEAD --dir LOOPER_MERGER_DIR/clones/NAME (its clone: objects, no checkout).
+# Exit 0 open, anything else closed: no main-green or no state of the check,
+# the check red, bisecting or reverting (but for the recovery's own branch),
+# more than 4 merges on main unchecked or the oldest of them older than its
+# age, or a head that builds on a merge main reverted. Its one line is the
+# merger's reason, logged with the hold. Asked for each one, after the pass's
+# own merges, so each counts at once; one that cannot be asked (no looper-check
+# yet, GitHub unreadable) is closed: the merger is live only with the check.
+# Conflicts go back whatever the gate says.
 #
 # The shadow compile (D1): with LOOPER_MERGER_SHADOW set, a command, after the
 # pass's merges it runs `$LOOPER_MERGER_SHADOW NAME SHA` for each merge commit
@@ -66,22 +65,23 @@
 # machine for the compile (the project's VM). Requiring it is a decision on its
 # numbers (PROPOSALS.md), not a mode here.
 #
-# Environment: GH_TOKEN (gh's: the main-writing identity for a pass, a reader's
-# for --dry-run), LOOPER_ORG, LOOPER_MERGER_TRUSTED, LOOPER_MERGER_CONTEXT,
-# LOOPER_ROLLING_CONTEXT, LOOPER_MERGER_UNCHECKED, LOOPER_MERGER_MAX_AGE,
-# LOOPER_MERGER_SHADOW, LOOPER_MERGER_SHADOW_TIMEOUT, LOOPER_MERGER_DIR.
+# Environment: GH_TOKEN or GH_CONFIG_DIR (gh's: the main-writing identity for a
+# pass, a reader's for --dry-run), LOOPER_ORG, LOOPER_MERGER_TRUSTED,
+# LOOPER_MERGER_CONTEXT, LOOPER_MERGER_GATE, LOOPER_MERGER_GATE_TIMEOUT
+# (seconds, default 300), LOOPER_MERGER_SHADOW, LOOPER_MERGER_SHADOW_TIMEOUT,
+# LOOPER_MERGER_DIR; the gate's own (LOOPER_CHECK_LOGIN, the check's login,
+# whose statuses alone it reads; LOOPER_CHECK_MAX_UNCHECKED, LOOPER_CHECK_MAX_AGE).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=looper-lib.sh
 source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
 
 CONTEXT="${LOOPER_MERGER_CONTEXT:-looper/gates}"
-ROLLING="${LOOPER_ROLLING_CONTEXT:-looper/rolling-check}"
-UNCHECKED_MAX="${LOOPER_MERGER_UNCHECKED:-4}"
+read -ra GATE <<<"${LOOPER_MERGER_GATE:-$HERE/looper-check gate}"
+GATE_TIMEOUT="${LOOPER_MERGER_GATE_TIMEOUT:-300}"
 SHADOW="${LOOPER_MERGER_SHADOW:-}"
 SHADOW_TIMEOUT="${LOOPER_MERGER_SHADOW_TIMEOUT:-600}"
 DIR="${LOOPER_MERGER_DIR:-$HOME/looper-merger}"
-GREEN_REF="main-green"
 
 usage() { sed -n '/^#   looper-merger pass/,/^#$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
@@ -92,58 +92,18 @@ status_of() { # sha context
     | first(.[] | select(.context == $ctx and ((.creator.login // "") as $l | $t | index($l)))) | .state // empty'
 }
 
-# One gate's age, in minutes: LOOPER_MERGER_MAX_AGE, else full's minutes in main's gates.yaml.
-max_age() {
-  local m=""
-  if [[ -n "${LOOPER_MERGER_MAX_AGE:-}" ]]; then echo "$LOOPER_MERGER_MAX_AGE"; return; fi
-  m="$(gh api "repos/$R/contents/gates.yaml?ref=main" -H 'Accept: application/vnd.github.raw' 2>/dev/null |
-         awk '/^[^ \t#]/ { s = $1 } s == "full:" && /^[ \t]+minutes:/ { print $2; exit }')" || m=""
-  if [[ "$m" =~ ^[0-9]+$ ]]; then echo "$m"; elif [[ "$REPO" == tacplus ]]; then echo 70; else echo 30; fi
-}
-
-# The rolling check's bound (above): CHECK_HOLD empty when merging is open, else
-# why not; UNCHECKED the merges on main since main-green, OLDEST the epoch of
-# the oldest of them (empty with none).
-check_state() {
-  local main green cmp walk c st
-  CHECK_HOLD=""; UNCHECKED=0; OLDEST=""
-  main="$(gh api "repos/$R/git/ref/heads/main" --jq .object.sha)" || die "$R: could not read main"
-  green="$(gh api "repos/$R/git/ref/heads/$GREEN_REF" --jq .object.sha 2>/dev/null)" || green=""
-  [[ -n "$green" ]] || { CHECK_HOLD="the rolling check is down: $R has no $GREEN_REF (looper#249)"; return; }
-  walk=("$main")
-  if [[ "$main" != "$green" ]]; then
-    cmp="$(gh api "repos/$R/compare/$green...$main?per_page=250")" || die "$R: could not compare $GREEN_REF with main"
-    # main's first-parent line from its head down to main-green: "sha epoch" a line, main-green's child last.
-    mapfile -t walk < <(jq -r --arg head "$main" --arg green "$green" '
-      (.commits | map({key: .sha, value: {p: (.parents[0].sha // ""), d: .commit.committer.date}}) | from_entries) as $c
-      | if .status != "ahead" then empty else
-          [$head | recurse(if . == $green or ($c[.] | not) then empty else $c[.].p end)]
-          | if last != $green then empty else .[:-1][] | "\(.) \($c[.].d | fromdate)" end
-        end' <<<"$cmp")
-    (( ${#walk[@]} > 0 )) || { CHECK_HOLD="the rolling check is down: $GREEN_REF ${green:0:7} is not on main's first-parent line"; return; }
-    UNCHECKED=${#walk[@]}; OLDEST="${walk[-1]#* }"
-    walk=("${walk[@]%% *}" "$green")
-  fi
-  for c in "${walk[@]}"; do
-    st="$(status_of "$c" "$ROLLING")" || die "$R: could not read ${c:0:7}'s statuses"
-    [[ -z "$st" ]] || break
-  done
-  case "$st" in
-    failure|error) CHECK_HOLD="the rolling check is red on ${c:0:7}: merging reopens with its next green check" ;;
-    success|pending) bound_hold ;;
-    *) CHECK_HOLD="the rolling check is down: no $ROLLING status from a trusted login on main since $GREEN_REF ${green:0:7}" ;;
+# The rolling check's gate for a clean merge request: GATE_SAYS its line;
+# exit 0 open, 1 closed (or it could not be asked).
+gate() { # branch head
+  local rc=0 out
+  out="$(timeout -k 10 "$GATE_TIMEOUT" "${GATE[@]}" --repo "$REPO" --branch "$1" --sha "$2" --dir "$DIR/clones/$REPO" 2>>"$DIR/gate.log")" || rc=$?
+  GATE_SAYS="$(tail -n 1 <<<"$out")"
+  case "$rc" in
+    0) return 0 ;;
+    1) [[ -n "$GATE_SAYS" ]] || GATE_SAYS="closed (it said nothing)" ;;
+    *) GATE_SAYS="the rolling check's gate could not be asked (exit $rc)${GATE_SAYS:+: $GATE_SAYS}" ;;
   esac
-}
-# The bound on unchecked merges, as they stand now (check_state's, and the pass's own merges).
-bound_hold() {
-  local age
-  CHECK_HOLD=""
-  if (( UNCHECKED >= UNCHECKED_MAX )); then
-    CHECK_HOLD="$UNCHECKED merges on main are unchecked by the rolling check (at most $UNCHECKED_MAX)"
-  elif [[ -n "$OLDEST" ]]; then
-    age=$(( ($(date +%s) - OLDEST) / 60 ))
-    (( age < MAX_AGE )) || CHECK_HOLD="main's oldest unchecked merge is ${age}m old (one gate's age, ${MAX_AGE}m): the rolling check is behind"
-  fi
+  return 1
 }
 
 # The issue a merge request works: its branch's, looper/NAME-N or a VM report's
@@ -171,18 +131,14 @@ $mark"
 }
 
 pass() {
-  local prs pr head ref body n iss mergeable st sha nprs merged=()
+  local prs pr head ref body n iss mergeable st sha merged=()
   log "$R: a merger's pass${DRY:+ (dry run)}"
   prs="$(gh api "repos/$R/pulls?state=open&base=main&per_page=100" | jq -c --arg repo "$R" "
     map(select(.draft | not) | . + {createdAt: .created_at, fork: (.head.repo.full_name != \$repo)})
     | sort_by($ISSUE_ORDER)[] | {number, title, sha: .head.sha, ref: .head.ref, body: (.body // \"\"), fork}")" ||
     die "$R: could not list its merge requests"
   [[ -n "$prs" ]] || { log "$R: no open merge request"; return 0; }
-  nprs="$(wc -l <<<"$prs")"
-  MAX_AGE="$(max_age)"
-  check_state
-  if [[ -n "$CHECK_HOLD" ]]; then log "$R: merges none of its $nprs merge request(s): $CHECK_HOLD"
-  else log "$R: $UNCHECKED of at most $UNCHECKED_MAX merges unchecked, one gate's age ${MAX_AGE}m"; fi
+  mkdir -p "$DIR/clones"
   while IFS= read -r pr; do
     n="$(jq -r .number <<<"$pr")"; head="$(jq -r .sha <<<"$pr")"; ref="$(jq -r .ref <<<"$pr")"; body="$(jq -r .body <<<"$pr")"
     iss="$(issue_of "$ref" "$body")"
@@ -195,17 +151,15 @@ pass() {
       false) send_back "$n" "$head" "$iss"; continue ;;
       *) log "#$n: GitHub has not computed its mergeability yet: the next pass"; continue ;;
     esac
-    # A conflict goes back whatever the bound; a clean merge waits for it.
-    [[ -n "$CHECK_HOLD" ]] || bound_hold
-    if [[ -n "$CHECK_HOLD" ]]; then log "#$n: clean and green at ${head:0:7}: held, $CHECK_HOLD"; continue; fi
+    # A conflict goes back whatever the gate says; a clean merge waits for it.
+    gate "$ref" "$head" || { log "#$n: clean and green at ${head:0:7}: held, $GATE_SAYS"; continue; }
     if [[ -n "$DRY" ]]; then log "#$n: would merge ${head:0:7}, unbuilt"; continue; fi
     sha="$(gh api -X PUT "repos/$R/pulls/$n/merge" -f sha="$head" -f merge_method=merge --jq .sha)" ||
       { log "#$n: GitHub refused its merge at ${head:0:7}: the next pass"; continue; }
-    UNCHECKED=$((UNCHECKED + 1)); OLDEST="${OLDEST:-$(date +%s)}"
     merged+=("$n $head $sha")
-    log "#$n: merged ${head:0:7} as ${sha:0:7}, unbuilt ($UNCHECKED of at most $UNCHECKED_MAX unchecked)"
+    log "#$n: merged ${head:0:7} as ${sha:0:7}, unbuilt (the rolling check's gate: $GATE_SAYS)"
     [[ -n "$iss" ]] || continue
-    forge_issue_comment "$REPO" "$iss" "The merger merged #$n (${head:0:7}, its $CONTEXT green) into main as ${sha:0:7}, unbuilt: a clean merge, with $UNCHECKED of at most $UNCHECKED_MAX merges on main unchecked by the rolling check, which builds it next (looper#251)." ||
+    forge_issue_comment "$REPO" "$iss" "The merger merged #$n (${head:0:7}, its $CONTEXT green) into main as ${sha:0:7}, unbuilt: a clean merge, the rolling check's gate open ($GATE_SAYS); the check builds it next (looper#251)." ||
       log "#$iss: could not comment"
     forge_issue_edit "$REPO" "$iss" --remove-label "$LABEL_LANDING" --remove-label "$LABEL_MR" || log "#$iss: could not remove $LABEL_LANDING, $LABEL_MR"
   done <<<"$prs"
@@ -239,8 +193,7 @@ done
 [[ "$CMD" == pass && -n "$REPO" ]] || usage
 [[ "$LOOPER_FORGE" == github ]] || die "the merger merges GitHub pull requests: LOOPER_FORGE=$LOOPER_FORGE"
 [[ -n "${LOOPER_MERGER_TRUSTED:-}" ]] || die "LOOPER_MERGER_TRUSTED names no login whose statuses the merger trusts"
-[[ "$UNCHECKED_MAX" =~ ^[0-9]+$ ]] || die "LOOPER_MERGER_UNCHECKED: '$UNCHECKED_MAX' is not a whole number"
-[[ -z "${LOOPER_MERGER_MAX_AGE:-}" || "$LOOPER_MERGER_MAX_AGE" =~ ^[0-9]+$ ]] || die "LOOPER_MERGER_MAX_AGE: '$LOOPER_MERGER_MAX_AGE' is not a whole number"
+[[ "$GATE_TIMEOUT" =~ ^[0-9]+$ ]] || die "LOOPER_MERGER_GATE_TIMEOUT: '$GATE_TIMEOUT' is not a whole number of seconds"
 need gh; need jq
 R="$LOOPER_ORG/$REPO"
 pass

@@ -5,7 +5,9 @@
 # looper-vm (looper#238): the parent never blocks (a report or a list that
 # hangs holds up nothing), SIGTERM stops the whole tree within 25 seconds,
 # each report given its checkpoint, the idle exit, the cache discarded when it
-# is bad and never waited on, and two local builds at once sharing the cache.
+# is bad and never waited on, and two local builds at once sharing the cache;
+# the merger's machine (looper#251): a pass of each repository's merge
+# requests, one at a time, as the merger's identity, until SIGTERM.
 # A stub repo-looper plays the reports and the list ($FIX/ready, a number a
 # line); a stub docker plays the container socket, running looper-build in
 # the "container" with the environment it was given. repo-looper's own side
@@ -25,7 +27,7 @@ mkdir -p "$TMP/bin"
 # and records the call; $FIX/no-token refuses it.
 cat > "$TMP/bin/looper-token" <<'EOF'
 #!/usr/bin/env bash
-[[ "$1 $2" == "start report" && ! -e "$FIX/no-token" ]] || { echo "stub looper-token: refused $*" >&2; exit 1; }
+[[ ("$1 $2" == "start report" || "$1 $2" == "start merger") && ! -e "$FIX/no-token" ]] || { echo "stub looper-token: refused $*" >&2; exit 1; }
 # As the real one: with no id_token it signs only on a VM (LOOPER_VM).
 [[ -n "${LOOPER_VM:-}" ]] || { echo "stub looper-token: no id_token and no LOOPER_VM" >&2; exit 1; }
 mkdir -p "$3"; echo "github.com: {oauth_token: stub}" > "$3/hosts.yml"; echo "token $2 $3" >> "$FIX/calls"; echo 0
@@ -152,6 +154,78 @@ started 2 && fail "2 started before the next list was due"
 (( $(grep -c '^list ' "$FIX/calls") == 1 )) || fail "listed more than once in the interval: $(grep -c '^list ' "$FIX/calls")"
 kill -0 "$VM" 2>/dev/null || fail "the parent stopped"
 kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+pass
+
+# --- the merger's machine (looper#251, tacplus-dev/cloud#111) -------------------
+# No model, no container socket: every LOOPER_MERGER_POLL seconds one
+# `looper-merger pass` per repository with an open merge request into main
+# (one search, --except's left out), one at a time, as the merger's token, with
+# the machine's settings (it is given none). A pass that fails or hangs costs
+# its own repository's turn; SIGTERM stops it at once (it holds no state).
+cat > "$TMP/bin/looper-merger" <<'EOF'
+#!/usr/bin/env bash
+echo "merger $* gh=${GH_CONFIG_DIR:-none} org=$LOOPER_ORG key=$LOOPER_MERGER_KEY app=$LOOPER_MERGER_APP_ID trusted=$LOOPER_MERGER_TRUSTED check=$LOOPER_CHECK_LOGIN dir=$LOOPER_MERGER_DIR model=${CLAUDE_CODE_OAUTH_TOKEN:-none}" >> "$FIX/calls"
+[[ ! -e "$FIX/merger-hang-$3" ]] || { echo $$ > "$FIX/merger-pid"; sleep 1000 & wait; }
+[[ ! -e "$FIX/merger-fails-$3" ]] || { echo "could not read $3" >&2; exit 2; }
+EOF
+chmod +x "$TMP/bin/looper-merger"
+cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in "search issues"|"search prs") ;; *) exit 1 ;; esac
+echo "gh $*" >> "$FIX/calls"
+[[ ! -e "$FIX/gh-fails" ]] || exit 1
+if [[ "$2" == prs ]]; then cat "$FIX/prs"; else cat "$FIX/org"; fi
+EOF
+merger_vm() { # [VAR=value...]
+  env -u CLAUDE_CODE_OAUTH_TOKEN FIX="$FIX" PATH="$TMP/bin:$PATH" LOOPER_TOKEN="$TMP/bin/looper-token" LOOPER_VM_MERGER="$TMP/bin/looper-merger" \
+    LOOPER_CACHE="$FIX/cache" LOOPER_MERGER_POLL=1 "$@" "$ROOT/looper-vm" merger "${ARGS[@]}" > "$FIX/vm.out" 2>&1 & VM=$!
+}
+passes() { grep -c "^merger pass --repo $1 " "$FIX/calls" || true; } # repo
+fixture merger-org
+printf 'beta\ngamma\nalpha\nbeta\n' > "$FIX/prs"; touch "$FIX/merger-fails-beta"
+ARGS=(--org tacplus-dev --except alpha)
+merger_vm
+until_true "two passes each of beta and gamma" eval '(( $(passes beta) >= 2 && $(passes gamma) >= 2 ))'
+(( $(passes alpha) == 0 )) || fail "alpha, --except'd, was passed"
+c="$(cat "$FIX/calls")"
+has "$c" "gh search prs --owner tacplus-dev --state open --base main"
+has "$c" "token merger $FIX/cache/vm/gh"
+has "$c" "merger pass --repo gamma gh=$FIX/cache/vm/gh org=tacplus-dev key=tacplus-manager app=5632100 trusted=tacplus-reader[bot] check=tacplus-manager[bot] dir=$FIX/cache/merger model=none"
+has "$(cat "$FIX/vm.out")" "beta: the merger's pass failed (exit 2): could not read beta"
+grep -q "token report" <<<"$c" && fail "the merger minted a report's token"
+kill -TERM "$VM"; rc=0; wait "$VM" || rc=$?; VM=""
+(( rc == 0 )) || fail "SIGTERM: exited $rc"
+pass
+
+# Its settings are the deployment's to change; --repo passes only those named, with no search.
+fixture merger-repo
+ARGS=(--repo alpha)
+merger_vm LOOPER_MERGER_KEY=tacplus-merger LOOPER_MERGER_APP_ID=7 LOOPER_MERGER_TRUSTED=x LOOPER_CHECK_LOGIN=y
+until_true "two passes of alpha" eval '(( $(passes alpha) >= 2 ))'
+grep -q "^gh " "$FIX/calls" && fail "searched with --repo"
+has "$(cat "$FIX/calls")" "key=tacplus-merger app=7 trusted=x check=y"
+kill -TERM "$VM"; wait "$VM" || true; VM=""
+pass
+
+# SIGTERM while a pass hangs: out at once, the pass with it.
+fixture merger-sigterm
+touch "$FIX/merger-hang-alpha"
+ARGS=(--repo alpha)
+merger_vm
+until_true "the pass started" test -s "$FIX/merger-pid"
+t0=$SECONDS; kill -TERM "$VM"; rc=0; wait "$VM" || rc=$?; VM=""
+(( rc == 0 && SECONDS - t0 <= 5 )) || fail "exited $rc after $((SECONDS - t0))s"
+until_true "the pass stopped" eval '! kill -0 "$(cat "$FIX/merger-pid")" 2>/dev/null'
+pass
+
+fixture merger-no-identity
+touch "$FIX/no-token"; ARGS=(--repo alpha)
+merger_vm
+rc=0; wait "$VM" || rc=$?; VM=""
+(( rc == 2 )) || fail "exited $rc with no token"
+grep -q "^merger " "$FIX/calls" && fail "passed with no identity"
+has "$(cat "$FIX/vm.out")" "no merger token"
+ARGS=(--repo alpha)
 pass
 
 # --- SIGTERM: the tree stopped within 25 seconds --------------------------------

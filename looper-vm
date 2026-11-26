@@ -21,6 +21,15 @@
 #                             tacplus.lock), a child container through the VM's container socket,
 #                             once one of the VM's LOOPER_VM_BUILDS slots is free (the wait said);
 #                             the full log in FILE; exit 0 on a pass, 1 on a failure
+#   looper-vm merger --org ORG [--except NAME,...] | --repo NAME...
+#                             the merger's machine (looper#251, tacplus-dev/cloud#111): no
+#                             model, no container socket, no project code. Every
+#                             LOOPER_MERGER_POLL seconds (default 60) one `looper-merger pass`
+#                             per repository (--repo's, or each ORG repository with an open
+#                             merge request into main, less --except's), one at a time, each
+#                             at most LOOPER_MERGER_TIMEOUT seconds (default 900), as the
+#                             merger's identity (looper-token's merger role); until SIGTERM
+#                             (exit 0 at once: a pass holds no state, the next one starts over)
 #   looper-vm --self-test     its tools, the container socket and the cache, checked
 #
 # The parent never blocks (decision point 2): its loop only schedules and
@@ -95,13 +104,22 @@
 # LOOPER_VM_IDLE_MINUTES, LOOPER_VM_STOP_GRACE, LOOPER_VM_LIST_TIMEOUT (seconds,
 # default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER, LOOPER_VM_BUILDS,
 # LOOPER_VM_REPO_LOOPER (default the repo-looper beside this script),
-# LOOPER_VM_LOOPER_BUILD (likewise, looper-build).
+# LOOPER_VM_LOOPER_BUILD (likewise, looper-build), LOOPER_VM_MERGER (likewise,
+# looper-merger). The merger's machine is given no environment but the cache's,
+# so its settings default here, each the deployment's to change: LOOPER_MERGER_KEY
+# and LOOPER_MERGER_APP_ID (the app it merges as: the manager's, tacplus-manager,
+# until tacplus-merger exists), LOOPER_MERGER_TRUSTED (whose green it reads:
+# tacplus-reader[bot], the build off the VM's, looper#250), LOOPER_CHECK_LOGIN
+# (whose state of the rolling check its gate reads: tacplus-manager[bot], the
+# check machine's app until tacplus-check exists), LOOPER_MERGER_DIR (the gate's
+# clones, $LOOPER_CACHE/merger), LOOPER_MERGER_POLL, LOOPER_MERGER_TIMEOUT.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 HERE="$(dirname "$SELF")"
 REPO_LOOPER="${LOOPER_VM_REPO_LOOPER:-$HERE/repo-looper}"
 LOOPER_BUILD="${LOOPER_VM_LOOPER_BUILD:-$HERE/looper-build}"
+MERGER="${LOOPER_VM_MERGER:-$HERE/looper-merger}"
 TOKEN_CMD="${LOOPER_TOKEN:-$HERE/looper-token}"
 CACHE="${LOOPER_CACHE:-/cache}"
 POLL="${LOOPER_VM_POLL:-60}"
@@ -341,17 +359,18 @@ vm_credentials() {
 # configuration, kept fresh by looper-token for the parent's life, and its
 # lister reads it (GH_CONFIG_DIR); each report still mints its own. Without
 # it gh had no login and every list failed (exit 4), the VM idled and stopped.
-vm_identity() {
+vm_identity() { # role (default report)
   [[ -z "${GH_TOKEN:-}" ]] || return 0
-  local d="$STATE/gh"; rm -rf "$d"; mkdir -p "$d"; chmod 0700 "$d"
+  local d="$STATE/gh" role="${1:-report}"; rm -rf "$d"; mkdir -p "$d"; chmod 0700 "$d"
   # LOOPER_VM tells looper-token it is on a VM (sign as the VM's account, no
   # id_token); the parent is a VM's too, not only its children.
-  LOOPER_VM="$SELF" "$TOKEN_CMD" start report "$d" $$ >/dev/null 2>>"$STATE/vm.log" ||
-    die "no report token for the lister (looper-token start report): $(tail -n 3 "$STATE/vm.log" | tr '\n' ' ' | cut -c1-300)"
+  LOOPER_VM="$SELF" "$TOKEN_CMD" start "$role" "$d" $$ >/dev/null 2>>"$STATE/vm.log" ||
+    die "no $role token for the $([[ "$role" == report ]] && echo lister || echo merger) (looper-token start $role): $(tail -n 3 "$STATE/vm.log" | tr '\n' ' ' | cut -c1-300)"
   export GH_CONFIG_DIR="$d" GH_NO_UPDATE_NOTIFIER=1
 }
 
-parent() {
+# --repo's or --org's, checked; WHAT says which.
+targets() {
   local r
   if [[ -n "$ORG" ]]; then
     (( ${#REPOS[@]} == 0 )) || die "--org and --repo are one or the other"
@@ -364,6 +383,10 @@ parent() {
     for r in "${REPOS[@]}"; do [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--repo '$r' is not a repository's name"; done
     WHAT="${REPOS[*]}"; WHAT="${WHAT// /, }"
   fi
+}
+
+parent() {
+  targets
   for v in POLL STOP_GRACE LIST_TIMEOUT LIST_EVERY COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
   SLOTS="$(build_slots)" || exit 2
   (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is under 5 seconds"
@@ -377,6 +400,58 @@ parent() {
   while :; do
     pass
     sleep "$POLL" & z=$!
+    wait "$z" 2>/dev/null || true
+  done
+}
+
+# --- the merger's machine (looper#251) ------------------------------------------
+
+# The repositories a merger's pass takes, one a line: --repo's, or (--org) the
+# org's with an open merge request into main (one search), less --except's.
+merger_repos() {
+  if [[ -z "$ORG" ]]; then printf '%s\n' "${REPOS[@]}"; return 0; fi
+  local names skip=(-e '') x
+  names="$(timeout -k 5 60 gh search prs --owner "$ORG" --state open --base main --limit 1000 \
+    --json repository --jq '.[].repository.name' < /dev/null)" || return 1
+  for x in ${EXCEPT//,/ }; do skip+=(-e "$x"); done
+  sort -u <<<"$names" | grep -vxF "${skip[@]}" || true
+}
+
+merger_stop() {
+  log "SIGTERM: the merger stops${PASS:+ (its pass of $PASS_OF with it)}"
+  # shellcheck disable=SC2046
+  [[ -z "$PASS" ]] || kill -TERM $(tree_of "$PASS") 2>/dev/null || true
+  exit 0
+}
+
+merger_machine() {
+  local r rs rc z poll="${LOOPER_MERGER_POLL:-60}" limit="${LOOPER_MERGER_TIMEOUT:-900}"
+  targets
+  for v in poll limit; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_MERGER_${v^^} '${!v}' is not a number of seconds"; done
+  PASS="" PASS_OF=""
+  trap merger_stop TERM INT
+  cache_ready
+  STATE="$CACHE/vm"; mkdir -p "$STATE"
+  export LOOPER_ORG="${ORG:-${LOOPER_ORG:-tacplus-dev}}" LOOPER_FORGE=github
+  export LOOPER_KMS_KEYRING="${LOOPER_KMS_KEYRING:-projects/tacplus-ci/locations/us-central1/keyRings/looper}"
+  export LOOPER_MERGER_KEY="${LOOPER_MERGER_KEY:-tacplus-manager}" LOOPER_MERGER_APP_ID="${LOOPER_MERGER_APP_ID:-5632100}"
+  export LOOPER_MERGER_TRUSTED="${LOOPER_MERGER_TRUSTED:-tacplus-reader[bot]}" LOOPER_CHECK_LOGIN="${LOOPER_CHECK_LOGIN:-tacplus-manager[bot]}"
+  export LOOPER_MERGER_DIR="${LOOPER_MERGER_DIR:-$CACHE/merger}"
+  mkdir -p "$LOOPER_MERGER_DIR"
+  vm_identity merger
+  log "the merger of $WHAT: a pass every ${poll}s as $LOOPER_MERGER_KEY's app $LOOPER_MERGER_APP_ID, green the status of $LOOPER_MERGER_TRUSTED, the rolling check $LOOPER_CHECK_LOGIN's"
+  while :; do
+    rs="$(merger_repos)" || { log "the repositories of $ORG with a merge request could not be read (gh search): none this pass"; rs=""; }
+    for r in $rs; do
+      [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+      rc=0; PASS_OF="$r"
+      timeout -k 10 "$limit" "$MERGER" pass --repo "$r" < /dev/null > "$STATE/merger-pass.log" 2>&1 & PASS=$!
+      wait "$PASS" || rc=$?
+      PASS=""
+      cat "$STATE/merger-pass.log"
+      (( rc == 0 )) || log "$r: the merger's pass failed (exit $rc): $(tail -n 2 "$STATE/merger-pass.log" | tr '\n' ' ' | cut -c1-300)"
+    done
+    sleep "$poll" & z=$!
     wait "$z" 2>/dev/null || true
   done
 }
@@ -565,6 +640,17 @@ self_test() {
 REPO="" REPOS=() ORG="" EXCEPT="" WHAT=""
 case "${1:-}" in
   build) shift; build "$@" ;;
+  merger)
+    shift
+    while (( $# )); do
+      case "$1" in
+        --repo) REPOS+=("${2:-}"); shift 2 || die "--repo needs a name" ;;
+        --org) ORG="${2:-}"; shift 2 || die "--org needs a name" ;;
+        --except) EXCEPT="${2:-}"; shift 2 || die "--except needs NAME,..." ;;
+        *) die "merger: unknown argument $1 (looper-vm --help)" ;;
+      esac
+    done
+    merger_machine ;;
   --self-test) self_test ;;
   -h|--help|"") usage ;;
   *)

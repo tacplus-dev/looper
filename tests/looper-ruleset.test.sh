@@ -189,6 +189,26 @@ LOOPER_RULESET_OWNER=org-admins ruleset apply kernel >/dev/null 2>"$FIX/err" || 
 [[ "$(writes)" == 0 ]] || fail "not idempotent: $(cat "$FIX/gh")"
 pass
 
+# The merger's App (looper#251), LOOPER_MERGER_APP_ID once it is its own,
+# bypasses too: an Integration beside the manager's, once; none more when it
+# is the manager's own (the merger signing as the manager until it exists).
+scenario apply-merger
+LOOPER_MERGER_APP_ID=888 ruleset apply kernel >/dev/null 2>"$FIX/err" || fail "apply failed"
+[[ "$(jq -c '[.bypass_actors[] | select(.actor_type == "Integration") | .actor_id] | sort' <<<"$(cut -d' ' -f3- "$FIX/bodies")")" == '[777,888]' ]] ||
+  fail "actors: $(cat "$FIX/bodies")"
+grep -q "bypass: the manager App (777), the merger's App (888) and jody" "$FIX/err" || fail "log: $(cat "$FIX/err")"
+: > "$FIX/gh"
+LOOPER_MERGER_APP_ID=888 ruleset apply kernel >/dev/null 2>"$FIX/err" || fail "second apply failed"
+[[ "$(writes)" == 0 ]] || fail "not idempotent: $(cat "$FIX/gh")"
+LOOPER_MERGER_APP_ID=888 ruleset check kernel >/dev/null 2>&1 || fail "check failed"
+! ruleset check kernel >/dev/null 2>&1 || fail "check passed without the merger's App named"
+pass
+scenario apply-merger-is-manager
+LOOPER_MERGER_APP_ID=777 ruleset apply kernel >/dev/null 2>"$FIX/err" || fail "apply failed"
+[[ "$(jq -c '[.bypass_actors[] | select(.actor_type == "Integration") | .actor_id]' <<<"$(cut -d' ' -f3- "$FIX/bodies")")" == '[777]' ]] ||
+  fail "actors: $(cat "$FIX/bodies")"
+pass
+
 # Without LOOPER_MANAGER_APP_ID apply dies before any call, and so does check
 # once it reads a ruleset whose bypass actors it sees.
 scenario no-app-id

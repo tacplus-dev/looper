@@ -30,7 +30,8 @@
 # enforcement active, ref_name include refs/heads/main; rules update
 # (update_allows_fetch_and_merge false), non_fast_forward and deletion. Bypass
 # actors, bypass_mode always: the manager App (actor_type Integration,
-# actor_id LOOPER_MANAGER_APP_ID, required) and Jody's account. GitHub's REST
+# actor_id LOOPER_MANAGER_APP_ID, required), the merger's App (looper#251;
+# LOOPER_MERGER_APP_ID, once it is not the manager's) and Jody's account. GitHub's REST
 # API takes individual users as bypass actors (actor_type User; docs.github.com
 # /en/rest/repos/rules, Create a repository ruleset: Integration,
 # OrganizationAdmin, RepositoryRole, Team, DeployKey, User), so Jody is a User
@@ -53,7 +54,7 @@
 #
 # Environment: GH_TOKEN (gh's: an org owner for apply, an org owner or a
 # report's for check, a report's for probe), LOOPER_ORG, LOOPER_MANAGER_APP_ID
-# (apply, and check when it sees the bypass actors),
+# (apply, and check when it sees the bypass actors), LOOPER_MERGER_APP_ID,
 # LOOPER_RULESET_OWNER, LOOPER_GITHUB_URL (probe's git remote, default
 # https://github.com: <url>/<org>/<repo>.git).
 set -euo pipefail
@@ -78,16 +79,24 @@ repos() { # [repo...]
   done
 }
 
+# The Apps that bypass: the manager's, and the merger's when it is another.
+merger_app() { [[ "${LOOPER_MERGER_APP_ID:-$LOOPER_MANAGER_APP_ID}" != "$LOOPER_MANAGER_APP_ID" ]] && echo "$LOOPER_MERGER_APP_ID"; }
+apps_said() {
+  local m; m="$(merger_app)" || true
+  if [[ -n "$m" ]]; then echo "the manager App ($LOOPER_MANAGER_APP_ID), the merger's App ($m)"
+  else echo "the manager App ($LOOPER_MANAGER_APP_ID)"; fi
+}
+
 # The bypass actor for Jody's account (LOOPER_RULESET_OWNER, above), as JSON.
 owner_actor() {
   local login="${LOOPER_RULESET_OWNER:-}" id
   if [[ "$login" == org-admins ]]; then
-    log "bypass: the manager App ($LOOPER_MANAGER_APP_ID) and $LOOPER_ORG's owners (OrganizationAdmin)" >&2
+    log "bypass: $(apps_said) and $LOOPER_ORG's owners (OrganizationAdmin)" >&2
     echo '{"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}'; return
   fi
   [[ -n "$login" ]] || login="$(gh api user --jq .login)" || die "could not read GH_TOKEN's login; set LOOPER_RULESET_OWNER"
   id="$(gh api "users/$login" --jq .id)" && [[ "$id" =~ ^[0-9]+$ ]] || die "could not read the id of GitHub user $login"
-  log "bypass: the manager App ($LOOPER_MANAGER_APP_ID) and $login ($id, User)" >&2
+  log "bypass: $(apps_said) and $login ($id, User)" >&2
   jq -nc --argjson id "$id" '{actor_id: $id, actor_type: "User", bypass_mode: "always"}'
 }
 
@@ -102,8 +111,10 @@ wanted_rules() {
 }
 wanted() {
   [[ "${LOOPER_MANAGER_APP_ID:-}" =~ ^[0-9]+$ ]] || die "LOOPER_MANAGER_APP_ID (the manager App's id, tacplus-manager) is not set"
-  jq -c --argjson app "$LOOPER_MANAGER_APP_ID" --argjson owner "$(owner_actor)" \
-    '. + {bypass_actors: [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}, $owner]}' <<<"$(wanted_rules)"
+  [[ -z "${LOOPER_MERGER_APP_ID:-}" || "$LOOPER_MERGER_APP_ID" =~ ^[0-9]+$ ]] || die "LOOPER_MERGER_APP_ID '$LOOPER_MERGER_APP_ID' is not an App's id"
+  local apps; apps="$(jq -nc --arg m "$(merger_app || true)" --argjson app "$LOOPER_MANAGER_APP_ID" '[$app] + if $m == "" then [] else [$m | tonumber] end')"
+  jq -c --argjson apps "$apps" --argjson owner "$(owner_actor)" \
+    '. + {bypass_actors: ([$apps[] | {actor_id: ., actor_type: "Integration", bypass_mode: "always"}] + [$owner])}' <<<"$(wanted_rules)"
 }
 
 # A ruleset reduced to the fields set here, in one order: what is compared. A

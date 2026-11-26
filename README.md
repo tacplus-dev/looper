@@ -1914,29 +1914,51 @@ forge alone (no checkout, no build), so it runs on a machine that runs no projec
 write main. `looper-merger pass --repo NAME` takes NAME's open merge requests into main one at a time, by priority
 label, then oldest:
 
-- **Green** is the commit status `LOOPER_MERGER_CONTEXT` (`looper/gates`) success on the head, set by one of
-  `LOOPER_MERGER_TRUSTED` (required: the identity a report cannot mint, item 5; anyone else's status is not read).
-  Not green, it waits. A fork's merge request is never merged.
-- **Clean** (green, and GitHub finds it mergeable): merged at once, **with no build**, a merge commit at exactly its
-  green head; its issue gets `The merger merged`, and loses `looper:landing` and `looper:merge-request` (a VM report's
-  hold, looper#250), for its next run to report and close.
+- **Green** is the commit status `LOOPER_MERGER_CONTEXT` (`looper/gates`; not `tacplus-dev/build`, which a report's
+  own `--build` sets too, PROPOSALS.md) success on the head, set by one of `LOOPER_MERGER_TRUSTED` (required: the
+  identity a report cannot mint, item 5; `tacplus-reader[bot]` on the merger's machine; anyone else's status is not
+  read). Not green, it waits. A fork's merge request is never merged.
+- **Clean** (green, GitHub finds it mergeable, and the gate below open): merged at once, **with no build**, a merge
+  commit at exactly its green head, so one merge request is one first-parent commit of main (what the rolling check
+  bisects and reverts whole); its issue gets `The merger merged`, and loses `looper:landing` and
+  `looper:merge-request` (a VM report's hold, looper#250), for its next run to report and close.
 - **Conflicting** (green, not mergeable): **sent back** to its issue (the branch `looper/NAME-N` or a VM report's
   `looper/mr-NAME-N`, else a `Closes #N`), once per head, whose next report resolves it: the merger resolves nothing
   (item 4). The issue loses `looper:landing` and `looper:merge-request` and is ready again.
-- **The bound** (item 7, D2): no clean merge while main has no `main-green` or it is off main's first-parent line
-  (the rolling check, looper#249, down or never run: so the merger is live only with the check), while
-  `LOOPER_MERGER_UNCHECKED` (4) merges or more are on main after `main-green`, or the oldest of them is
-  `LOOPER_MERGER_MAX_AGE` minutes old (one gate's age: full's minutes in main's `gates.yaml`), or while the check's
-  newest verdict on main (`LOOPER_ROLLING_CONTEXT`, `looper/rolling-check`, by a trusted login) is red: it stays red
-  while the check runs again, bisects and reverts, and merging reopens with its next green (D3). Conflicts go back
-  whatever the bound.
+- **The bound** (item 7, D2) is the rolling check's to say (looper#249): before each clean merge the merger asks
+  `looper-check gate --repo NAME --branch BRANCH --sha HEAD --dir CLONE` (`LOOPER_MERGER_GATE`), exit 0 open,
+  anything else closed, its one line the reason the merger logs. Closed with no `main-green` or no state of the check,
+  while the check is red, bisecting or reverting (open then for the recovery's own branch alone), past 4 merges on
+  main unchecked or the oldest of them older than its age, or for a head that builds on a merge main reverted. Asked
+  again for each merge, so the pass's own count at once; a gate that cannot be asked (no `looper-check`, GitHub
+  unreadable) is closed: the merger is live only with the check. Conflicts go back whatever it says.
 - **The shadow compile** (D1): with `LOOPER_MERGER_SHADOW` (a command, run as `CMD NAME SHA` on each merge commit,
   which asks another machine for the compile), measured into `LOOPER_MERGER_DIR/shadow.tsv` (exit and seconds),
   never required.
+- **Its machine** (tacplus-dev/cloud#111): `merger`, a VM of its own, never spot, with no container socket, runs
+  `looper-vm merger --org tacplus-dev`: every `LOOPER_MERGER_POLL` seconds (60) one pass per repository with an open
+  merge request into main, one at a time, until SIGTERM. It holds no model token. The machine is given only its cache,
+  so `looper-vm` defaults the rest, each a setting: the app it merges as (`LOOPER_MERGER_KEY`, `LOOPER_MERGER_APP_ID`:
+  the manager's, `tacplus-manager` and 5632100, until the merger's own exists), whose green it reads
+  (`LOOPER_MERGER_TRUSTED`) and whose state of the check its gate reads (`LOOPER_CHECK_LOGIN`, `tacplus-manager[bot]`
+  until `tacplus-check` exists).
+- **Its identity**: `looper-token`'s role `merger`, signed through KMS as the VM's own account (the key
+  `LOOPER_MERGER_KEY`; the installation looked up with the app's JWT unless `LOOPER_MERGER_INSTALLATION_ID` is set).
+  Its App, `tacplus-merger` once Jody makes it, needs the repository permissions **Contents: write** (the merge),
+  **Issues: write** (comments, labels), **Pull requests: write** (a comment on a merge request; listing them and
+  their mergeability on a private repository), **Commit statuses: read** and **Metadata: read**, installed on every
+  repository of the org, and is a **bypass actor of main's ruleset** (`looper-ruleset apply` with
+  `LOOPER_MERGER_APP_ID`): once the managers retire it is the only identity that merges. Its token asks for
+  contents and issues write alone, what the manager's App holds, so either serves on the org's public repositories
+  (a private one's merge requests need pull requests read too: PROPOSALS.md).
 
 ```sh
 looper-merger pass --repo NAME [--dry-run]   # one pass; --dry-run writes nothing
-tests/looper-merger.test.sh                  # a clean green merge request merged unbuilt at its head; only a trusted green; a conflict sent back once per head; held with no main-green, 4 unchecked, one gate's age, a red check or main-green off main's line; a running check holds nothing; priority order, forks, a refused merge, the dry run; the shadow compile measured, a red one merging all the same; a VM report's looper/mr-NAME-N read as its issue, both hold labels taken off (#250)
+looper-vm merger --org tacplus-dev           # the merger's machine: a pass per repository with a merge request, until SIGTERM
+tests/looper-merger.test.sh                  # a clean green merge request merged unbuilt at its head; only a trusted green; a conflict sent back once per head; held while the check's gate is closed, asked for each merge, open for the recovery's branch alone, closed when it cannot be asked; priority order, forks, a refused merge, the dry run; the shadow compile measured, a red one merging all the same; a VM report's looper/mr-NAME-N read as its issue, both hold labels taken off (#250)
+tests/looper-vm.test.sh                      # merger-*: a pass per repository with a merge request, as the merger's token and settings, a failed pass costing its own turn, SIGTERM at once, no token no pass
+tests/looper-token.test.sh                   # merger: the merger's key and app as settings, its installation looked up, a looper VM refused
+tests/looper-ruleset.test.sh                 # apply-merger: the merger's App a bypass actor once it is not the manager's
 ```
 
 ## Running it

@@ -24,6 +24,13 @@
 #            set once the app holds it (looper#112). The managers, and the
 #            commits to main of the scans (their planning files, the roadmap's
 #            suggestions) once their model is done.
+#   merger   the merger's machine (looper#251, tacplus-dev/cloud#111), signing as
+#            its VM's account: contents and issues write, the ruleset's bypass
+#            actor (it merges a merge request into main, comments, labels). Its
+#            key and app are settings: LOOPER_MERGER_KEY (default tacplus-merger)
+#            and LOOPER_MERGER_APP_ID, so the manager's app serves until the
+#            merger's own exists; LOOPER_MERGER_INSTALLATION_ID, else the org's
+#            installation of that app, looked up with its JWT.
 #
 #   looper-token start ROLE DIR [PID [ISSUE]]
 #                                 mints ROLE's token (for a report, ISSUE's:
@@ -64,7 +71,8 @@
 # GCP_WIF_PROVIDER (projects/N/locations/global/workloadIdentityPools/P/providers/R),
 # LOOPER_KMS_KEYRING (projects/P/locations/L/keyRings/R), LOOPER_REPORT_APP_ID,
 # LOOPER_REPORT_INSTALLATION_ID, LOOPER_MANAGER_APP_ID,
-# LOOPER_MANAGER_INSTALLATION_ID; GCP_ID_TOKEN (the job's id_tokens, audience
+# LOOPER_MANAGER_INSTALLATION_ID, LOOPER_MERGER_KEY, LOOPER_MERGER_APP_ID,
+# LOOPER_MERGER_INSTALLATION_ID; GCP_ID_TOKEN (the job's id_tokens, audience
 # https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_MANAGER_WORKFLOWS;
 # LOOPER_GITHUB_API (default https://api.github.com); LOOPER_NET_TIMEOUT (a
 # call to GitHub's bound, seconds, default 300).
@@ -105,7 +113,11 @@ role_app() { # role
       # looper#112): GitHub refuses a set that names a permission it lacks.
       echo "tacplus-manager $LOOPER_MANAGER_APP_ID $LOOPER_MANAGER_INSTALLATION_ID" \
         "\"contents\":\"write\",\"issues\":\"write\",${LOOPER_MANAGER_WORKFLOWS:+\"workflows\":\"write\",}\"metadata\":\"read\"" ;;
-    *) fail "no role '$1': report or manager" ;;
+    merger)
+      : "${LOOPER_MERGER_APP_ID:?LOOPER_MERGER_APP_ID is not set (README, The merger)}"
+      echo "${LOOPER_MERGER_KEY:-tacplus-merger} $LOOPER_MERGER_APP_ID ${LOOPER_MERGER_INSTALLATION_ID:--}" \
+        '"contents":"write","issues":"write","metadata":"read"' ;;
+    *) fail "no role '$1': report, manager or merger" ;;
   esac
 }
 
@@ -229,6 +241,7 @@ mint() { # role dir [issue]
     { rm -f "$2/jwt-input" "$2/jwt-sig"; log "no signature with $key ($1's key): $why"; return 1; }
   sig="$(b64url < "$2/jwt-sig")"; rm -f "$2/jwt-input" "$2/jwt-sig"
   jwt="$header.$payload.$sig"
+  [[ "$inst" != - ]] || inst="$(installation_of "$jwt")" || { log "no installation of $1's app ($app) in $ORG"; return 1; }
   token="$(access_token "$key" "$jwt" "$inst" "$perms")" || return 1
   if [[ "$1" == report && -n "${3:-}" ]] && workflows_label "$token" "$3"; then
     t="$(access_token "$key" "$jwt" "$inst" "${perms/'"metadata":"read"'/'"workflows":"write","metadata":"read"'}")" || return 1
@@ -253,6 +266,13 @@ access_token() { # key jwt installation perms
   token="$(jq -r '.token // empty' <<<"$resp")"
   [[ -n "$token" ]] || { log "no token in GitHub's answer"; return 1; }
   printf '%s\n' "$token"
+}
+
+# The org's installation of the app whose JWT this is (a role configured with no installation id).
+installation_of() { # jwt
+  local id
+  id="$(curl -fsS --retry 2 -H "Authorization: Bearer $1" -H 'Accept: application/vnd.github+json' "$GITHUB_API/orgs/$ORG/installation" |
+    jq -r '.id // empty')" && [[ "$id" =~ ^[0-9]+$ ]] && printf '%s\n' "$id"
 }
 
 # A GitHub API GET with an installation token, its body on stdout.
