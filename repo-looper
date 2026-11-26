@@ -2343,8 +2343,30 @@ pre_land_report() { # run-dir
 # due (no commits, no map, or the set is the pre-land gate's, just run), or no
 # verdict, each said; 1 red, the failure said: nothing is queued. Never on a
 # build job: the batch's build is the manager's there (looper#204).
+# A local build of this run that passed the same gate set on the same tree
+# (its commit, printed): the land's gate need not build it again. A report
+# builds its change with --build and lands it at once; the land's rebased
+# commit is then the very tree it just built, and a second full build of it
+# waited behind other builds for the VM's slot past the run's time, so
+# finished, green work backed off unlanded (looper#250, #251, #252 on
+# 2026-11-26).
+green_local_build() { # builds-dir sha gates
+  local t r id s g
+  t="$(git -C "$CHECKOUT" rev-parse -q --verify "$2^{tree}" 2>/dev/null)" || return 1
+  for r in "$1"/*.taken; do
+    [[ -f "$r" ]] || continue
+    id="${r%.taken}"
+    [[ "$(cat "$id.rc" 2>/dev/null)" == 0 ]] || continue
+    s="$(sed -n 's/^sha=//p' "$r" | head -n 1)"; g="$(sed -n 's/^gates=//p' "$r" | head -n 1)"
+    [[ "$g" == "$3" && "$s" =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ "$(git -C "$CHECKOUT" rev-parse -q --verify "$s^{tree}" 2>/dev/null)" == "$t" ]] || continue
+    echo "$s"; return 0
+  done
+  return 1
+}
+
 vm_land_gate() { # run-dir
-  local run="$1" main sha out rc=0 set what
+  local run="$1" main sha out rc=0 set what green
   [[ -n "${LOOPER_VM:-}" && -d "$run/builds" ]] || return 0
   main="$(git -C "$CHECKOUT" rev-parse origin/main)"
   pre_land_tree "$(git -C "$CHECKOUT" rev-parse HEAD)" || return 0   # a conflict: pre_land_report said so, or the manager will
@@ -2355,6 +2377,11 @@ vm_land_gate() { # run-dir
   fi
   set="$GATES_SET"; sha="$(git rev-parse HEAD)"; out="$run/land-gates.log"
   what="your land's own gates ($GATE_MAP's $set) on your commits rebased on main ${main:0:7}"
+  if green="$(green_local_build "$run/builds" "$sha" "$set")"; then
+    popd >/dev/null; drop_worktree "$PL_WT"
+    log "$what: green already, in this run's local build of ${green:0:7} (the same tree, the same gates): not built again"
+    return 0
+  fi
   log "$what: a local build on this looper VM before the land is queued"
   model_build "$run/builds" "$sha" "$set" "$main" > "$out" 2>&1 || rc=$?
   popd >/dev/null; drop_worktree "$PL_WT"
