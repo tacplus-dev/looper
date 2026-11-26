@@ -190,3 +190,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-25 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#244)
 - 2026-11-25 looper issue GitLab's job activity limit refuses build pipelines (46 of 82 failed child pipelines today); the manager reads it as red and sends lands back (#237)
 - 2026-11-26 looper issue looper-vm: a limit on local builds running at once, the wait shown, and a cap on builds per issue (#248)
+- 2026-11-26 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main) (#259)
