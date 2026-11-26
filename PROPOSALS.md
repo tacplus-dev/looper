@@ -9,6 +9,15 @@ the looper then marks it `promoted` or `declined` here with the date.
   ignores `BUILD_RELEASE`. tacplus-dev/cloud#112's release schedules copy the file at the commit that re-pins it. The
   fix is to pin main's attested image at or after b6f80ed (main-9c8e17b, `sha256:ab11ea3e…`), verified with
   `gh attestation verify`. Waits on Jody: whether a re-pin is a feature or a chore, and which image to pin.
+- **Release records for seatrials** (2026-11-26, #262; tacplus-dev/fleet-seatrials#82, D4): dev rolls to each green
+  main release from its record, which fleet-seatrials' job token cannot read yet (tacplus-dev/build's job token
+  allowlist, and its pipeline user a Reporter there), which names no tacplus the service was built with, and which
+  nothing announces. The plan passes the pin to `release-report`, which adds `tacplus <commit> <build image>` to the
+  green record (the lock's `vX.Y.Z` tag resolved through tacplus-reader; unresolvable, red; a `build.lock` repository
+  none), and after a main record moves POSTs fleet-seatrials' pipeline trigger (a token in an environment-scoped
+  variable, dropped before a repository's code), logged and never failing the release. Waits on Jody: what D4
+  compares (services pin released tacplus, `release-tacplus/main` is main-green's commit), the builder stage, the
+  trigger token, and who applies the settings.
 - **A red release filed at once, not at the next scan** (2026-11-26, #252): a branch release's red record is filed
   as a bug by the nightly scan, as the build holds no credential that writes an issue; a red build-now trigger or
   release-branch build waits up to a day for its issue. The kicker (`looper-dispatch`, every 3 minutes, with the
