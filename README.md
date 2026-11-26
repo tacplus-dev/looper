@@ -214,6 +214,17 @@ looper creates both labels in a repository that lacks them.
   built: the model writes a design proposal as a comment and into PROPOSALS.md, and the issue is
   `needs-decision`. It ships in a minor, from main only. When the platform's roadmap cannot be read, the
   feature is neither built nor proposed (`looper:stuck`).
+- **A follow-up inherits its parent's approval** (#264): a feature no ROADMAP.md links is built all the
+  same when the looper's own app (`LOOPER_APP`, default `tacplus-looper[bot]`) filed it, its body's first
+  line is `Parent: <org>/<repo>#N`, that parent is open or closed as done, `approved`, linked by a ROADMAP.md
+  on main (its repository's or the platform's), and has a comment of the looper's app linking the follow-up.
+  The model then judges its scope first (the run's `inherit/`): production, a new standing cost, a security
+  or gate exception, or anything outside the parent's stated scope is proposed as above, saying why. One that
+  inherits is commented so (once: a later run judges it no more), and the looper commits its ROADMAP.md
+  line on its branch, `- Inherited (looper#264): <title> (#N), the other half of <parent>, ...`, which
+  reaches main with its land: the manager lets a land change ROADMAP.md by its own inherited line alone, the
+  inheritance checked again. One level only: a parent on a roadmap by its own inherited line passes on its
+  first parent's, which must itself have named the follow-up (the line says `itself inherited from <it>`).
 - **Before opening any issue**, every looper prompt and the scans read the repository's ROADMAP.md and the
   platform's (`ROADMAP.md` and `items/`): a feature already on a roadmap gets no new issue, but one
   (`feature`) asking for that entry to be prioritized, linking it and saying why now.

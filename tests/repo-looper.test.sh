@@ -17,7 +17,8 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # Issues: $FIX/issues/<repo>-<n>.json ({number,title,state,labels:[{name}],body,createdAt}).
 # Comments are appended to the issue's `comments` and to $FIX/comments as "<repo>#<n> <body>".
 # `gh api .../templates/repo/<file>` answers from $FIX/templates/<file>, and
-# `gh api .../roadmap/contents/ROADMAP.md` from $FIX/platform/ROADMAP.md, else 404.
+# `gh api .../roadmap/contents/ROADMAP.md` from $FIX/platform/ROADMAP.md, else 404, and
+# another repository's, `gh api .../<repo>/contents/ROADMAP.md`, from $FIX/roadmaps/<repo>.md.
 # A repository's labels are $FIX/labels/<repo>, a name a line (an issue's
 # labels are its repository's): an edit that names a label the repository
 # lacks fails, as gh's does (looper#80), and so does a label created twice.
@@ -75,6 +76,9 @@ case "$cmd" in
   "repo clone") git clone -q "${@:5}" "$FIX/origin.git" "$2"; echo "$2 ${*:5}" >> "$FIX/clones"; exit 0 ;;   # gh repo clone R DIR -- --quiet [git clone options]
   api\ */templates/repo/*) t="$FIX/templates/${cmd##*/}"; [[ -f "$t" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$t"; exit 0 ;;
   "api repos/tacplus-dev/roadmap/contents/ROADMAP.md") [[ -f "$FIX/platform/ROADMAP.md" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$FIX/platform/ROADMAP.md"; exit 0 ;;
+  # Another repository's ROADMAP.md on main (looper#264): $FIX/roadmaps/<repo>.md, else 404.
+  api\ repos/tacplus-dev/*/contents/ROADMAP.md) r="${cmd#api repos/tacplus-dev/}"; r="$FIX/roadmaps/${r%%/*}.md"
+    [[ -f "$r" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }; cat "$r"; exit 0 ;;
   # A commit's statuses (looper#71), newest first: $FIX/statuses/<sha>.json, which the stub build writes.
   "api graphql")
     echo "$2" >> "$FIX/graphql"; [[ ! -e "$FIX/graphql-fail" ]] || { echo "stub gh: HTTP 502" >&2; exit 1; }
@@ -189,7 +193,8 @@ echo "$2 ok"
 EOF
 chmod +x "$TMP/bin/looper-ruleset-stub"
 # The scenario's script for the prompt's role: $FIX/claude.sh works the issue,
-# classify.sh classifies it, propose.sh proposes a design, scan.sh is the
+# classify.sh classifies it, propose.sh proposes a design, inherit.sh judges a
+# follow-up's inheritance (looper#264), scan.sh is the
 # nightly scan, plan.sh the parent's plan (none: the model does nothing). Each prompt's first line is
 # appended to $FIX/prompts. The prompt names the run's outcome file; the
 # script gets it as $OUTCOME, the issue it works as $ISSUE, and the plan's
@@ -221,7 +226,7 @@ if grep -qxF -- "$model" "$FIX/limited" 2>/dev/null; then
 fi
 [[ ! -f "$FIX/usage" ]] || trap 'jq -nc --argjson u "$(cat "$FIX/usage")" "{type: \"result\", subtype: \"success\", result: \"done\", modelUsage: \$u}"' EXIT
 case "$first" in
-  *classifying*) s=classify.sh ;; *"proposing a design"*) s=propose.sh ;; *scanner*) s=scan.sh ;; *"parent looper"*) s=plan.sh ;; *) s=claude.sh ;;
+  *classifying*) s=classify.sh ;; *"proposing a design"*) s=propose.sh ;; *"inherits its parent's approval"*) s=inherit.sh ;; *scanner*) s=scan.sh ;; *"parent looper"*) s=plan.sh ;; *) s=claude.sh ;;
 esac
 [[ -f "$FIX/$s" ]] || exit 0
 ISSUE="$(grep -oE 'issue #[0-9]+' <<<"$first" | head -1 | tr -dc 0-9)" AREAS="$(grep -oE '/[^ `]*/areas' <<<"$prompt" | head -1)" \
@@ -1583,6 +1588,196 @@ run
 [[ "$(labels alpha 4)" == "approved,feature,looper:stuck" ]] || fail "labels $(labels alpha 4)"
 has "$(cat "$FIX/comments")" "could not read"
 main_unchanged
+pass
+
+# A follow-up inherits its parent's approval (looper#264): a feature no
+# ROADMAP.md links, filed by the looper's app as the other half of approved,
+# roadmapped work that named it, is built, its inherited ROADMAP.md line
+# landing with it; anything else is proposed as before.
+APP='tacplus-looper[bot]'
+followup() { # [author] [parent]: alpha#4, a feature with a Parent line
+  issue alpha 4 OPEN approved,feature "Parent: tacplus-dev/${2:-beta#7}"$'\n\n'"Do beta's half here."
+  jq --arg a "${1:-$APP}" '.author = $a' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+}
+parent() { # n labels [state [reason]]: beta#n
+  issue beta "$1" "${3:-OPEN}" "$2" "The whole thing."
+  jq --arg r "${4:-}" 'if $r != "" then .stateReason = $r else . end' "$FIX/issues/beta-$1.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/beta-$1.json"
+}
+names() { # n author body: a comment on beta#n
+  jq --arg a "$2" --arg b "$3" '.comments += [{body: $b, author: $a, created_at: "2026-11-26T00:00:00Z"}]' "$FIX/issues/beta-$1.json" > "$FIX/x" \
+    && mv "$FIX/x" "$FIX/issues/beta-$1.json"
+}
+beta_roadmap() { mkdir -p "$FIX/roadmaps"; printf '# Roadmap: beta\n\n## Next\n%s\n' "$1" > "$FIX/roadmaps/beta.md"; }
+inheriting() { # the usual follow-up: every condition holds
+  templates
+  roadmap $'## Now\n- Running (#1)\n\n## Next\n- Other (#2)\n\n## Later\n- Someday (#3)'
+  platform "- Nothing here"
+  followup; parent 7 approved,feature; names 7 "$APP" "Filed its other half, tacplus-dev/alpha#4."
+  beta_roadmap "- The whole thing (#7)"
+}
+not_inherited() { # why: proposed, not built, with why
+  p="$(prompts)"; has "$p" "proposing a design for issue #4"; lacks "$p" "working issue"; lacks "$p" "inherits its parent's approval"
+  [[ "$(labels alpha 4)" == "approved,feature,needs-decision" ]] || fail "labels $(labels alpha 4)"
+  has "$(cat "$FIX/comments")" "does not inherit its approval (looper#264): $1"
+  has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "does not inherit its approval (looper#264): $1"
+  lacks "$(origin show main:ROADMAP.md)" "Inherited"
+}
+
+scenario followup-inherits
+inheriting
+echo 'echo inherit > "$OUTCOME"' > "$FIX/inherit.sh"
+echo 'git log -1 --format=%s > "$FIX/head"; git show --stat --format= HEAD > "$FIX/head-files"' >> "$FIX/claude.sh"
+push_fix; close_it
+run
+[[ "$(prompts)" == "You are the looper of tacplus-dev/alpha, judging whether issue #4 inherits its parent's approval (looper#264).|You are the looper of tacplus-dev/alpha, working issue #4. "* ]] \
+  || fail "prompts: $(prompts)"
+jp="$(cat "$FIX"/project/looper-runs/*-issue-4/inherit/prompt.md)"
+has "$jp" "the other half of tacplus-dev/beta#7"; has "$jp" "a new standing cost"; has "$jp" "outside the parent's stated scope"
+has "$jp" "Do beta's half here."; has "$jp" "The whole thing."
+pp="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
+has "$pp" "This issue inherits the approval of its parent, tacplus-dev/beta#7 (looper#264)"
+[[ "$(cat "$FIX/head")" == "ROADMAP: #4, inherited from tacplus-dev/beta#7 (looper#264)" ]] || fail "the model's branch: $(cat "$FIX/head")"
+has "$(cat "$FIX/head-files")" "ROADMAP.md | 1 +"
+line="- Inherited (looper#264): Issue 4 (#4), the other half of tacplus-dev/beta#7, which a ROADMAP.md links and Jody approved; its approval came with it. The looper, $(date -u +%F)."
+[[ "$(origin show main:ROADMAP.md)" == $'# Roadmap: alpha\n\n## Now\n- Running (#1)\n\n## Next\n- Other (#2)\n'"$line"$'\n\n## Later\n- Someday (#3)' ]] \
+  || fail "ROADMAP.md: $(origin show main:ROADMAP.md)"
+[[ "$(origin log -2 --format=%s main)" == $'HISTORY.md: #4 (looper)\nfix' ]] || fail "main: $(origin log --oneline main)"
+[[ "$(labels alpha 4)" == "approved,feature" ]] || fail "labels $(labels alpha 4)"
+c="$(cat "$FIX/comments")"; has "$c" "This feature inherits the approval of its parent, tacplus-dev/beta#7 (looper#264)"
+has "$c" "The manager merged"; lacks "$c" "refused"
+pass
+
+# A later run of it (its land sent back, say) judges it no more, and its line is not added twice.
+scenario followup-inherited-resumed
+inheriting
+echo 'echo inherit > "$OUTCOME"' > "$FIX/inherit.sh"
+step "half done"
+run
+: > "$FIX/prompts"; : > "$FIX/claude.sh"; push_fix; close_it
+jq '.labels = [{name: "approved"}, {name: "feature"}]' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+run
+[[ "$(prompts)" == "You are the looper of tacplus-dev/alpha, working issue #4. "* ]] || fail "prompts: $(prompts)"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md | tail -n +1)" "This issue inherits the approval of its parent"
+[[ "$(origin show main:ROADMAP.md | grep -c Inherited)" == 1 ]] || fail "ROADMAP.md: $(origin show main:ROADMAP.md)"
+[[ "$(grep -c "This feature inherits" "$FIX/comments")" == 1 ]] || fail "comments: $(cat "$FIX/comments")"
+pass
+
+# The model judges it outside what the parent's approval covers: proposed, saying why.
+scenario followup-out-of-scope
+inheriting
+echo 'echo "propose: a new standing cost: a node that runs on" > "$OUTCOME"' > "$FIX/inherit.sh"
+run
+p="$(prompts)"; has "$p" "judging whether issue #4 inherits"; has "$p" "proposing a design for issue #4"; lacks "$p" "working issue"
+[[ "$(labels alpha 4)" == "approved,feature,needs-decision" ]] || fail "labels $(labels alpha 4)"
+has "$(cat "$FIX/comments")" "does not inherit its approval (looper#264): a new standing cost: a node that runs on"
+lacks "$(origin show main:ROADMAP.md)" "Inherited"
+pass
+
+# Filed by a person, not the looper's app.
+scenario followup-person-filed
+inheriting; followup jody
+run
+not_inherited "it was filed by jody, not by the looper ($APP)"
+pass
+
+# Filed by another bot.
+scenario followup-other-bot
+inheriting; followup 'renovate[bot]'
+run
+not_inherited "it was filed by renovate[bot], not by the looper"
+pass
+
+# Its parent is not approved.
+scenario followup-parent-not-approved
+inheriting; parent 7 feature; names 7 "$APP" "Filed tacplus-dev/alpha#4."
+run
+not_inherited "its parent tacplus-dev/beta#7 does not carry \`approved\`"
+pass
+
+# Its parent was closed, not as done.
+scenario followup-parent-not-planned
+inheriting; parent 7 approved,feature CLOSED NOT_PLANNED; names 7 "$APP" "Filed tacplus-dev/alpha#4."
+run
+not_inherited "its parent tacplus-dev/beta#7 is closed, not as done"
+pass
+
+# One closed as done passes it on.
+scenario followup-parent-done
+inheriting; parent 7 approved,feature CLOSED COMPLETED; names 7 "$APP" "Filed tacplus-dev/alpha#4."
+echo 'echo inherit > "$OUTCOME"' > "$FIX/inherit.sh"
+push_fix; close_it
+run
+has "$(prompts)" "working issue #4"
+has "$(origin show main:ROADMAP.md)" "- Inherited (looper#264): Issue 4 (#4), the other half of tacplus-dev/beta#7"
+pass
+
+# No ROADMAP.md links its parent (another repository's #7 is not it).
+scenario followup-parent-not-roadmapped
+inheriting; beta_roadmap "- Elsewhere (tacplus-dev/gamma#7)"
+run
+not_inherited "no ROADMAP.md on main links its parent tacplus-dev/beta#7"
+pass
+
+# The platform's ROADMAP.md linking it will do.
+scenario followup-parent-on-platform
+inheriting; rm "$FIX/roadmaps/beta.md"; platform "- Across repositories (tacplus-dev/beta#7)"
+echo 'echo inherit > "$OUTCOME"' > "$FIX/inherit.sh"
+push_fix; close_it
+run
+has "$(prompts)" "working issue #4"
+pass
+
+# Its parent never named it: no comment, or a person's, not the looper's.
+scenario followup-parent-never-named
+inheriting; parent 7 approved,feature; names 7 jody "Someone should file tacplus-dev/alpha#4."
+names 7 "$APP" "Filed tacplus-dev/alpha#40."
+run
+not_inherited "its parent tacplus-dev/beta#7 has no comment of the looper's naming it"
+pass
+
+# Its first line is not a Parent line: no inheritance, said as before.
+scenario followup-no-parent-line
+inheriting
+issue alpha 4 OPEN approved,feature $'Do it.\n\nParent: tacplus-dev/beta#7'
+jq --arg a "$APP" '.author = $a' "$FIX/issues/alpha-4.json" > "$FIX/x" && mv "$FIX/x" "$FIX/issues/alpha-4.json"
+run
+has "$(prompts)" "proposing a design for issue #4"; lacks "$(prompts)" "inherits its parent's approval"
+lacks "$(cat "$FIX/comments")" "does not inherit"
+pass
+
+# A follow-up of a follow-up (one level only): beta#8 is on a roadmap by its
+# inherited line from beta#7, so alpha#4 inherits only if beta#7 named it.
+second_level() {
+  inheriting; followup "$APP" beta#8
+  parent 8 approved,feature; names 8 "$APP" "Filed its other half, tacplus-dev/alpha#4."
+  beta_roadmap $'- The whole thing (#7)\n- Inherited (looper#264): Issue 8 (#8), the other half of tacplus-dev/beta#7, which a ROADMAP.md links and Jody approved; its approval came with it. The looper, 2026-11-26.'
+}
+scenario followup-second-level
+second_level; parent 7 approved,feature; names 7 "$APP" "Filed tacplus-dev/beta#8."
+run
+not_inherited "its parent tacplus-dev/beta#8 is on a roadmap by an inherited line, and its first parent, tacplus-dev/beta#7, has no comment of the looper's naming it (one level only)"
+pass
+
+scenario followup-second-level-named
+second_level
+echo 'echo inherit > "$OUTCOME"' > "$FIX/inherit.sh"
+push_fix; close_it
+run
+has "$(prompts)" "working issue #4"
+has "$(origin show main:ROADMAP.md)" "- Inherited (looper#264): Issue 4 (#4), the other half of tacplus-dev/beta#8, itself inherited from tacplus-dev/beta#7; its approval came with it."
+pass
+
+# The manager lets the inherited line alone through: a land that changes
+# ROADMAP.md otherwise too is refused, as any is (looper#123).
+scenario followup-roadmap-more
+inheriting
+echo 'echo inherit > "$OUTCOME"' > "$FIX/inherit.sh"
+echo 'echo "- Mine too (#9)" >> ROADMAP.md && git commit -qam more' >> "$FIX/claude.sh"
+push_fix; close_it
+run
+lacks "$(origin show main:ROADMAP.md)" "Inherited"
+c="$(cat "$FIX/comments")"; has "$c" "The manager refused"; has "$c" "its change to ROADMAP.md is not #4's inherited line alone (looper#264)"
+[[ "$(labels alpha 4)" == *needs-decision* ]] || fail "labels $(labels alpha 4)"
 pass
 
 # An unlabelled issue is classified first (a comment and the label), then

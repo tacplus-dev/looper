@@ -200,7 +200,9 @@
 # comment and the label). A bug is fixed and released as the next patch, and
 # backported. A feature is built only when a ROADMAP.md links it (the
 # repository's or tacplus-dev/roadmap's); otherwise the model proposes its
-# design (on the issue and in PROPOSALS.md) and the issue is needs-decision.
+# design (on the issue and in PROPOSALS.md) and the issue is needs-decision,
+# unless it is the looper's follow-up of approved, roadmapped work, which
+# inherits its parent's approval and its ROADMAP.md line (looper#264, inherit).
 # The nightly scan files its findings as bugs and never approves a feature;
 # every prompt reads the roadmaps before opening an issue. The platform
 # roadmap's scan files no issue: it writes suggestions (looper#50, below).
@@ -252,7 +254,8 @@
 # lands once its tag names another digest, looper#153),
 # LOOPER_JOB_MAX_HOURS (the longest
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
-# roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
+# roadmap's suggestion pass), LOOPER_APP (the looper's own app's login, whose follow-ups
+# inherit, default tacplus-looper[bot], looper#264), LOOPER_MODEL_USERS (0: the models run as the
 # job's user, not each as its own, looper#68) and LOOPER_USER_PREFIX (their
 # names, default looper-), LOOPER_VM, LOOPER_GIT_STORE, LOOPER_STORE_LOCK,
 # LOOPER_VM_CHECKPOINT_SECONDS (a looper VM's, looper#238) and LOOPER_VM_BUILDS_PER_ISSUE
@@ -2839,7 +2842,7 @@ $(sed 's/^/> /' <<<"$step")"
   elif [[ "$rc" == 3 ]]; then
     what="The manager sent [\`$b\`]($url) back to its report: rebasing it on main conflicts in $(sed 's/ /`, `/g; s/^/`/; s/$/`/' <<<"$conflicts"), which it does not resolve (only files its generated.yaml maps it regenerates, and PROPOSALS.md and HISTORY.md it unions; it never merges by hand). Nothing is merged; the branch stays. Rebase it on main (\`git fetch origin && git rebase origin/main\`), resolve them, verify, and land again; if the report's run has ended, the issue's next report resumes from the branch, its conflicts marked."
   elif [[ "$rc" == "$ROADMAP_RC" ]]; then
-    what="The manager refused [\`$b\`]($url): it changes ROADMAP.md, which is Jody's, changed only by an agent at his request, and $(cat "$rec/roadmap" 2>/dev/null || echo "this land is not"). A land may change ROADMAP.md only when its issue carries \`$LABEL_APPROVED\` from a member and its own text, a member's, says it is at Jody's request (looper#123). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. If Jody asked for it, say so in the issue's text, then remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise drop the ROADMAP.md change and propose it in PROPOSALS.md."
+    what="The manager refused [\`$b\`]($url): it changes ROADMAP.md, which is Jody's, changed only by an agent at his request, and $(cat "$rec/roadmap" 2>/dev/null || echo "this land is not"). A land may change ROADMAP.md only when its issue carries \`$LABEL_APPROVED\` from a member and its own text, a member's, says it is at Jody's request (looper#123), or by its own inherited line alone, when it inherits its parent's approval (looper#264). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. If Jody asked for it, say so in the issue's text, then remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise drop the ROADMAP.md change and propose it in PROPOSALS.md."
   elif [[ "$rc" == "$WORKFLOWS_RC" ]]; then
     what="The manager sent [\`$b\`]($url) back to its report, nothing built: it changes $(sed 's/ /`, `/g; s/^/`/; s/$/`/' < "$rec/workflows"), and origin refused the push of its build's commit: $(unbuilt_why "$rec/gates.log" | redact). This is no red: no gate ran. The token that pushes the build's commit pushes a change under \`.github/workflows/\` only with the workflows permission (the manager's: once \`tacplus-manager\` holds it, the project variable \`LOOPER_MANAGER_WORKFLOWS=write\`, looper#112). Nothing is merged; the branch stays, and this land is not tried again: the issue is \`$LABEL_DECISION\`. Once the token holds it, remove \`$LABEL_DECISION\`: its next run lands it again. Otherwise a person pushes the workflow change, and the land leaves it out (looper#194)."
   elif [[ "$rc" == 4 ]]; then
@@ -2954,9 +2957,10 @@ stage_land() { # issue id sha rec-dir
   git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$sha^" || { log "#$n: cannot check out $b's commits"; return 1; }
   ahead="$(git -C "$wt" rev-list --count "$ONTO..HEAD")"
   # A change to ROADMAP.md lands only at Jody's request; any other is refused
-  # here, before any build, with a verdict, never pushed to be refused again (looper#123).
+  # here, before any build, with a verdict, never pushed to be refused again
+  # (looper#123), but for a follow-up's inherited line (looper#264).
   if [[ "$ahead" != 0 && -n "$(git -C "$wt" rev-list -n 1 "$ONTO..HEAD" -- ROADMAP.md)" ]]; then
-    rr=0; roadmap_request "$n" || rr=$?
+    rr=0; roadmap_allowed "$n" "$wt" "$ONTO" HEAD || rr=$?
     if (( rr != 0 )); then
       drop_worktree "$wt"
       (( rr == 1 )) || { log "#$n: cannot read the issue, to tell whether its change to ROADMAP.md is at Jody's request"; return 1; }
@@ -3432,9 +3436,10 @@ judge_land() { # issue id sha rec-dir
   git -C "$CHECKOUT" worktree add -q -f --detach "$wt" "$sha^" || { log "#$n: cannot check out $b's commits"; return 1; }
   ahead="$(git -C "$wt" rev-list --count "$ONTO..HEAD")"
   # A change to ROADMAP.md lands only at Jody's request; any other is refused
-  # here, before its gates, with a verdict, never pushed to be refused again (looper#123).
+  # here, before its gates, with a verdict, never pushed to be refused again
+  # (looper#123), but for a follow-up's inherited line (looper#264).
   if [[ "$ahead" != 0 && -n "$(git -C "$wt" rev-list -n 1 "$ONTO..HEAD" -- ROADMAP.md)" ]]; then
-    rr=0; roadmap_request "$n" || rr=$?
+    rr=0; roadmap_allowed "$n" "$wt" "$ONTO" HEAD || rr=$?
     if (( rr != 0 )); then
       git -C "$CHECKOUT" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"; git -C "$CHECKOUT" worktree prune
       (( rr == 1 )) || { log "#$n: cannot read the issue, to tell whether its change to ROADMAP.md is at Jody's request"; return 1; }
@@ -3894,7 +3899,7 @@ roadmap_batch() { # main staging
         git -C "$CHECKOUT" merge-base --is-ancestor "$c" "$after" 2>/dev/null || continue
       found=1
       [[ -z "${seen[$id]:-}" ]] || break
-      rr=0; roadmap_request "$n" || rr=$?
+      rr=0; roadmap_allowed "$n" "$CHECKOUT" "$before" "$after" || rr=$?
       (( rr != 2 )) || die "nothing merged: #$n's change to ROADMAP.md cannot be told at Jody's request (the forge cannot be read); the lands stay queued for the next batch"
       seen[$id]="$rr"
       if (( rr == 1 )); then
@@ -4697,6 +4702,197 @@ on_roadmap() { # issue
   links_issue "$REPO" "$1" <<<"$p" || return 1
 }
 
+# A follow-up inherits its parent's approval (looper#264, tacplus-dev/roadmap
+# decisions/issue-flow-2026-10-27.md): a feature no ROADMAP.md links is built
+# all the same when it is the stated other half of approved, roadmapped work:
+# the looper's own app (LOOPER_APP) filed it, its body's first line is
+# `Parent: <org>/<repo>#N`, that parent is open or closed as done, carries
+# approved, a ROADMAP.md on main links it, and a comment of the looper's app
+# on it links this issue. One level only: a parent on a roadmap by an
+# inherited line alone passes on its first parent's, which must have named
+# this issue itself. What the parent's scope does not cover the model judges
+# (inherit_judge). The inherited line (inherit_line) goes on the issue's
+# branch, so it reaches main with the issue's land, which the manager lets
+# change ROADMAP.md by that line alone (roadmap_inherited).
+LOOPER_APP="${LOOPER_APP:-tacplus-looper[bot]}"
+INHERITED="- Inherited (looper#264):"   # an inherited ROADMAP.md line's start
+
+# 0: inherited, INHERIT_PARENT and INHERIT_ROOT (`<repo>#<n>`, the parent and
+# its first parent) set; 1: not, INHERIT_WHY saying why (empty when the issue
+# names no parent); 2: the forge cannot be read.
+inherit() { # issue
+  local n="$1" t a body ref pr pn st l root rr rn c own=""
+  INHERIT_WHY="" INHERIT_PARENT="" INHERIT_ROOT=""
+  body="$(forge_issue_view "$REPO" "$n" body .body)" || return 2
+  ref="$(head -n 1 <<<"$body" | tr -d '\r' | sed -nE 's/^[[:space:]]*[Pp][Aa][Rr][Ee][Nn][Tt]:[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p')"
+  [[ -n "$ref" ]] || return 1
+  pr="${ref#"$LOOPER_ORG/"}"; pn="${pr##*#}"; pr="${pr%#*}"
+  if [[ "$ref" != "$LOOPER_ORG/"*"#"* || ! "$pn" =~ ^[0-9]+$ || ! "$pr" =~ ^[A-Za-z0-9_.][A-Za-z0-9_./-]*$ ]]; then
+    INHERIT_WHY="its first line names no parent as \`Parent: $LOOPER_ORG/<repo>#<n>\`"; return 1
+  fi
+  t="$(forge_issue_texts "$REPO" "$n")" && t="$(head -n 1 <<<"$t")" && [[ -n "$t" ]] || return 2
+  a="$(jq -r .a <<<"$t")"
+  [[ "$a" == "$LOOPER_APP" ]] || { INHERIT_WHY="it was filed by $a, not by the looper ($LOOPER_APP)"; return 1; }
+  st="$(forge_issue_view "$pr" "$pn" state,stateReason '.state + " " + (.stateReason // "")')" || return 2
+  [[ "$st" == "OPEN "* || "$st" == "CLOSED COMPLETED" ]] || { INHERIT_WHY="its parent $ref is closed, not as done"; return 1; }
+  l="$(forge_issue_view "$pr" "$pn" labels '.labels[].name')" || return 2
+  grep -qxF "$LABEL_APPROVED" <<<"$l" || { INHERIT_WHY="its parent $ref does not carry \`$LABEL_APPROVED\`"; return 1; }
+  c=0; root="$(roadmapped "$pr" "$pn")" || c=$?
+  (( c != 2 )) || return 2
+  (( c == 0 )) || { INHERIT_WHY="no ROADMAP.md on main links its parent $ref"; return 1; }
+  rr="${root% *}"; rn="${root#* }"
+  [[ "$rr" != "$REPO" ]] || own=own
+  t="$(forge_issue_texts "$rr" "$rn")" || return 2
+  c="$(tail -n +2 <<<"$t" | jq -r --arg a "$LOOPER_APP" 'select(.a == $a) | .t')" || return 2
+  if ! links_issue "$REPO" "$n" $own <<<"$c"; then
+    if [[ "$root" == "$pr $pn" ]]; then INHERIT_WHY="its parent $ref has no comment of the looper's naming it"
+    else INHERIT_WHY="its parent $ref is on a roadmap by an inherited line, and its first parent, $LOOPER_ORG/$rr#$rn, has no comment of the looper's naming it (one level only)"; fi
+    return 1
+  fi
+  INHERIT_PARENT="$LOOPER_ORG/$pr#$pn" INHERIT_ROOT="$LOOPER_ORG/$rr#$rn"
+}
+
+# Whether a ROADMAP.md on main links the issue: its repository's (but by
+# another issue's inherited line) or the platform's. Prints `<repo> <n>`, the
+# issue itself, or, when its repository's links it by its own inherited line
+# alone, that line's first parent. 1: none; 2: the platform's cannot be read.
+roadmapped() { # repo n
+  local m p l r
+  if [[ "$1" == "$REPO" && -f "$CHECKOUT/ROADMAP.md" ]]; then m="$(cat "$CHECKOUT/ROADMAP.md")"
+  else m="$(forge_file "$1" ROADMAP.md 2>/dev/null)" || m=""; fi
+  if links_issue "$1" "$2" own <<<"$(grep -vF -- "$INHERITED" <<<"$m")"; then echo "$1 $2"; return 0; fi
+  p="$(platform_file ROADMAP.md)" || return 2
+  if links_issue "$1" "$2" <<<"$p"; then echo "$1 $2"; return 0; fi
+  l="$(grep -F -- "$INHERITED" <<<"$m" | grep -E "\(#$2\), the other half of " | head -n 1)" || return 1
+  r="$(sed -nE 's/.*, itself inherited from ([^ ,;]+).*/\1/p' <<<"$l")"
+  [[ -n "$r" ]] || r="$(sed -nE 's/.*\(#[0-9]+\), the other half of ([^ ,;]+).*/\1/p' <<<"$l")"
+  r="${r#"$LOOPER_ORG/"}"
+  [[ "$r" == *"#"* && "${r##*#}" =~ ^[0-9]+$ ]] || return 1
+  echo "${r%#*} ${r##*#}"
+}
+
+# The looper's comment that the issue inherited (a later run judges it no more).
+INHERIT_MARK="<!-- looper-inherited -->"
+inherited_said() { # issue
+  local c; c="$(forge_issue_comments "$REPO" "$1" 2>/dev/null)" || return 1
+  grep -qF -- "$INHERIT_MARK" <<<"$c"
+}
+
+# The issue's inherited ROADMAP.md line (inherit's INHERIT_PARENT and INHERIT_ROOT).
+inherit_line() { # issue title
+  local why="which a ROADMAP.md links and Jody approved"
+  [[ "$INHERIT_ROOT" == "$INHERIT_PARENT" ]] || why="itself inherited from $INHERIT_ROOT"
+  printf '%s %s (#%s), the other half of %s, %s; its approval came with it. The looper, %s.\n' \
+    "$INHERITED" "$(tr -s '\n\r' '  ' <<<"$2" | sed 's/ *$//')" "$1" "$INHERIT_PARENT" "$why" "$(date -u +%F)"
+}
+
+# ROADMAP.md with the line: the last of its `## Next` section, else at its end.
+add_roadmap_line() { # line
+  local f=ROADMAP.md
+  if [[ -f "$f" ]] && grep -q '^## Next' "$f"; then
+    awk -v line="$1" '
+      { l[NR] = $0 }
+      /^## Next/ { s = NR; next }
+      s && !e && /^## / { e = NR }
+      END {
+        if (!e) e = NR + 1
+        last = s; for (i = s + 1; i < e; i++) if (l[i] ~ /[^[:space:]]/) last = i
+        for (i = 1; i <= NR; i++) { print l[i]; if (i == last) print line }
+      }' "$f" > "$f.new" && mv "$f.new" "$f"
+  else
+    printf '%s\n' "$1" >> "$f"
+  fi
+}
+
+# The inherited line on the issue's branch, a commit of ROADMAP.md alone (a
+# resumed run's work holds it already, uncommitted: resume).
+commit_inherited() { # issue
+  local n="$1" title
+  ( cd "$CHECKOUT"
+    if ! grep -F -- "$INHERITED" ROADMAP.md 2>/dev/null | grep -qF "(#$n), the other half of "; then
+      title="$(forge_issue_view "$REPO" "$n" title .title)" || title="Issue $n"
+      add_roadmap_line "$(inherit_line "$n" "$title")"
+    fi
+    git add ROADMAP.md
+    ! git diff --cached --quiet HEAD -- ROADMAP.md || exit 0
+    git commit -q --no-verify -m "ROADMAP: #$n, inherited from $INHERIT_PARENT (looper#264)" -- ROADMAP.md
+  ) || { log "#$n: could not commit its inherited ROADMAP.md line"; return 1; }
+  [[ "$CHECKOUT" != "$(report_dir "$n")" ]] || report_reown "$n"
+}
+
+# Whether a land's change to ROADMAP.md (base...head) is its issue's
+# inherited line alone (looper#264): one line added and none taken out, an inherited line of the
+# issue naming its parent, which still passes on its approval (inherit).
+# Fails 1, ROADMAP_WHY saying why, else 2 when the forge cannot be read.
+roadmap_inherited() { # issue git-dir base head
+  local n="$1" d plus minus rc=0
+  INHERIT_LINE=""
+  d="$(git -C "$2" diff --no-color -U0 "$3...$4" -- ROADMAP.md)"
+  plus="$(grep -E '^\+' <<<"$d" | grep -vE '^\+\+\+ ' || true)"
+  minus="$(grep -E '^-' <<<"$d" | grep -vE '^--- ' || true)"
+  # A change holding the issue's inherited line is judged as one (INHERIT_LINE), not at Jody's request.
+  grep -qF -- "+$INHERITED" <<<"$plus" && grep -qF -- "(#$n), the other half of " <<<"$plus" && INHERIT_LINE=1
+  if [[ -n "$minus" || "$(grep -c . <<<"$plus")" != 1 || "${plus#+}" != "$INHERITED "*"(#$n), the other half of "* ]]; then
+    ROADMAP_WHY="its change to ROADMAP.md is not #$n's inherited line alone (looper#264)"; return 1
+  fi
+  inherit "$n" || rc=$?
+  (( rc != 2 )) || return 2
+  (( rc == 0 )) || { ROADMAP_WHY="#$n does not inherit its parent's approval: ${INHERIT_WHY:-it names no parent} (looper#264)"; return 1; }
+  [[ "$plus" == *", the other half of $INHERIT_PARENT, "* ]] || { ROADMAP_WHY="#$n's inherited line does not name its parent, $INHERIT_PARENT (looper#264)"; return 1; }
+}
+
+# Whether a land (base...head) may change ROADMAP.md: by its issue's
+# inherited line alone (roadmap_inherited, looper#264), or at Jody's request
+# (roadmap_request, looper#123). Fails 1, ROADMAP_WHY saying why, else 2 when
+# the forge cannot be read.
+roadmap_allowed() { # issue git-dir base head
+  local rc=0
+  roadmap_inherited "$@" || rc=$?
+  (( rc != 0 )) || return 0
+  [[ "$rc" == 1 && -z "$INHERIT_LINE" ]] || return "$rc"
+  roadmap_request "$1"
+}
+
+# What the parent's scope does not cover (looper#264): the model judges whether
+# the issue is production, a new standing cost, a security or gate exception,
+# or outside its parent's stated scope, and writes its verdict to the run's
+# inherit/outcome: `inherit`, or `propose: <why>`. 0: inherit; 1: not,
+# INHERIT_WHY saying why.
+inherit_judge() { # issue run-dir limit
+  local n="$1" dir="$2/inherit" pr pn v
+  mkdir -p "$dir"
+  new_nonce "$dir"
+  pr="${INHERIT_PARENT#"$LOOPER_ORG/"}"; pn="${pr##*#}"; pr="${pr%#*}"
+  cat > "$dir/prompt.md" <<PR
+You are the looper of $LOOPER_ORG/$REPO, judging whether issue #$n inherits its parent's approval (looper#264).
+Change no file, push nothing, comment nothing. Issue #$n is a feature no ROADMAP.md links, filed by the looper as
+the other half of $INHERIT_PARENT, which is approved and on a roadmap$([[ "$INHERIT_ROOT" == "$INHERIT_PARENT" ]] || echo " by an inheritance from $INHERIT_ROOT"), and that named it. It is built with its
+parent's approval unless it is any of these ($ISSUE_FLOW):
+- production: a change to a production system, its data or its traffic;
+- a new standing cost: something that bills or runs on from now on (a service, a node, a schedule, a subscription);
+- a security or gate exception: a gate, check or security control skipped, weakened or excepted;
+- outside the parent's stated scope: more than the parent asks of this repository.
+Read both issues (their texts are at the end of this prompt) and what they cite. Then write your verdict, one
+line, to $dir/outcome: \`inherit\` when it is none of those, else \`propose: <which, and why, in a sentence>\`.
+When in doubt, propose: a person decides then.
+$(provenance_rule)
+
+The issue, #$n (its title and body, then each comment, oldest first):
+
+$(issue_texts "$n")
+
+Its parent, $INHERIT_PARENT (its title and body, then each comment, oldest first):
+
+$(forge_issue_texts "$pr" "$pn" | wrap_texts)
+PR
+  run_claude "$dir/prompt.md" "$dir/claude.log" "$(( $3 < 1800 ? $3 : 1800 ))" "$dir" || log "judging #$n's inheritance exited non-zero"
+  v="$(head -n 1 "$dir/outcome" 2>/dev/null | tr -d '\r')" || v=""
+  [[ "$v" == inherit ]] && return 0
+  INHERIT_WHY="${v#propose:}"; INHERIT_WHY="${INHERIT_WHY# }"
+  [[ "$v" == propose:* && -n "$INHERIT_WHY" ]] || INHERIT_WHY="the looper's judgment of its scope gave no verdict"
+  return 1
+}
+
 # Ends the issue's run without working it: the label, and a comment saying why.
 hold() { # issue label why
   forge_issue_edit "$REPO" "$1" --remove-label "$LABEL_IN_PROGRESS" --add-label "$2" >/dev/null || true
@@ -4729,8 +4925,14 @@ PR
 
 # A feature that no ROADMAP.md links is not built: the model proposes its
 # design, on the issue and in PROPOSALS.md, and the issue waits on a decision.
-propose() { # issue run-dir limit
-  local n="$1" run="$2"
+# One that names a parent it does not inherit from (looper#264) says why.
+propose() { # issue run-dir limit [why it does not inherit]
+  local n="$1" run="$2" why="" said=""
+  if [[ -n "${4:-}" ]]; then
+    why="
+It names a parent, but does not inherit its approval (looper#264): $4. Say so in your proposal."
+    said=" It names a parent, but does not inherit its approval (looper#264): $4."
+  fi
   new_nonce "$run"
   cat > "$run/prompt.md" <<PR
 You are the looper of $LOOPER_ORG/$REPO, proposing a design for issue #$n. Your working directory is a clone
@@ -4738,7 +4940,7 @@ of this repository on its own branch, $BRANCH, at origin/main. Read the issue (i
 prompt) and the documents it cites.
 
 It is a feature, and no ROADMAP.md links it (neither this repository's nor $LOOPER_ORG/$LOOPER_ROADMAP_REPO's), so it is not
-built ($ISSUE_FLOW): a feature needs design, Jody's approval and a ROADMAP.md entry first. Do not build it.
+built ($ISSUE_FLOW): a feature needs design, Jody's approval and a ROADMAP.md entry first. Do not build it.$why
 1. Comment on the issue with a design proposal: what and why, the approach and the alternatives, the surface or
    contract it changes, the risks, its size, and the questions Jody must answer.
 2. Add it to PROPOSALS.md, in that file's format (what, why, links: this issue). Commit only PROPOSALS.md on
@@ -4752,7 +4954,7 @@ The issue, #$n (its title and body, then each comment, oldest first):
 $(issue_texts "$n")
 PR
   run_claude "$run/prompt.md" "$run/claude.log" "$(( $3 < 3600 ? $3 : 3600 ))" "$run" || log "proposing #$n exited non-zero"
-  hold "$n" "$LABEL_DECISION" "This is a \`$LABEL_FEATURE\` that no ROADMAP.md links (\`$LOOPER_ORG/$REPO:ROADMAP.md\`, \`$LOOPER_ORG/$LOOPER_ROADMAP_REPO:ROADMAP.md\`), so it is not built ($ISSUE_FLOW): its design proposal is on this issue and in PROPOSALS.md. Once Jody approves the design and an agent adds it to a ROADMAP.md, linking this issue, remove \`$LABEL_DECISION\` and the looper builds it. Run record: $(run_record "$run")."
+  hold "$n" "$LABEL_DECISION" "This is a \`$LABEL_FEATURE\` that no ROADMAP.md links (\`$LOOPER_ORG/$REPO:ROADMAP.md\`, \`$LOOPER_ORG/$LOOPER_ROADMAP_REPO:ROADMAP.md\`), so it is not built ($ISSUE_FLOW):$said Its design proposal is on this issue and in PROPOSALS.md. Once Jody approves the design and an agent adds it to a ROADMAP.md, linking this issue, remove \`$LABEL_DECISION\` and the looper builds it. Run record: $(run_record "$run")."
 }
 
 # The newest release on main (a vX.Y.Z tag main contains), or nothing.
@@ -5301,16 +5503,39 @@ work_issue() { # issue
     hold "$n" "$LABEL_DECISION" "This issue is labelled neither \`$LABEL_BUG\` nor \`$LABEL_FEATURE\`, and the looper could not classify it ($ISSUE_FLOW). A person labels it \`$LABEL_BUG\` or \`$LABEL_FEATURE\` and removes \`$LABEL_DECISION\`. Run record: $(run_record "$run")."
     report "$n" "$LABEL_DECISION"; return 0
   fi
+  local inherited=""
   if [[ "$kind" == "$LABEL_FEATURE" ]]; then
     local on=0; on_roadmap "$n" || on=$?
     case "$on" in
       0) ;;
-      1) propose "$n" "$run" "$limit"; report "$n" proposed; return 0 ;;
+      1) # A follow-up of approved, roadmapped work inherits its approval (looper#264).
+         local ih=0; inherit "$n" || ih=$?
+         if (( ih == 2 )); then
+           hold "$n" "$LABEL_STUCK" "The looper could not read this feature's parent, or what it needs of it, to tell whether it inherits its approval (looper#264): it is neither built nor proposed. Marked $LABEL_STUCK for a person to look at."
+           report "$n" stuck; return 0
+         fi
+         if (( ih == 0 )) && { inherited_said "$n" || inherit_judge "$n" "$run" "$limit"; }; then
+           inherited=1
+         else
+           propose "$n" "$run" "$limit" "$INHERIT_WHY"; report "$n" proposed; return 0
+         fi ;;
       *) hold "$n" "$LABEL_STUCK" "The looper could not read \`$LOOPER_ORG/$LOOPER_ROADMAP_REPO:ROADMAP.md\`, so it cannot tell whether this feature is on a roadmap ($ISSUE_FLOW): it is neither built nor proposed. Marked $LABEL_STUCK for a person to look at."
          report "$n" stuck; return 0 ;;
     esac
   fi
   resumed="$(resume "$n" "commit it and land it")"
+  if [[ -n "$inherited" ]]; then
+    commit_inherited "$n" || true
+    if ! inherited_said "$n"; then
+      forge_issue_edit "$REPO" "$n" --add-label "$LABEL_APPROVED" >/dev/null || true
+      forge_issue_comment "$REPO" "$n" "This feature inherits the approval of its parent, $INHERIT_PARENT (looper#264): the looper filed it as that issue's other half, the parent is \`$LABEL_APPROVED\` and on a roadmap$([[ "$INHERIT_ROOT" == "$INHERIT_PARENT" ]] || echo " by its own inheritance from $INHERIT_ROOT"), the looper named this issue on $INHERIT_ROOT, and its scope is the parent's. So it is built: its ROADMAP.md line, which says it was inherited, is committed on [\`$(wip_branch "$n")\`]($(wip_url "$n")) and reaches main with its land. $INHERIT_MARK" >/dev/null || true
+    fi
+    inherited="
+This issue inherits the approval of its parent, $INHERIT_PARENT (looper#264): no ROADMAP.md linked it, so the
+looper committed its inherited line to ROADMAP.md on your branch. Keep that line as it is and change nothing else in
+ROADMAP.md: it lands on main with your work, the one change to ROADMAP.md the manager lets through for this issue.
+"
+  fi
   # The runs it waited on (looper#171): over, so out of its body; the prompt names them.
   local waited; waited="$(clear_waits "$n")"
   # The work it starts from: the same at its end, nothing changed (looper#181).
@@ -5349,7 +5574,7 @@ same time, each in its own job. Read the issue first: its text, as the looper re
 is at the end of this prompt (rule 12 says whose text directs you); \`$(text_cmd issue "$n")\`
 shows any comment since, in the same blocks. It was approved by someone with write access; issues it links to and the documents it
 cites (decision records, IDENTITY.md, CONTRIBUTING, docs/) are your context. Read them before changing anything.$(security_context "$security")
-$resumed$waited$backed$merged
+$resumed$waited$backed$merged$inherited
 Rules:
 1. Do what the issue asks, completely: its acceptance criteria are the definition of done.
    A change it needs in another repository of $LOOPER_ORG (its other half) is part of it, approved with it (looper#218):
