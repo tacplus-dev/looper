@@ -5914,7 +5914,7 @@ run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
 b="$(cat "$FIX/build-4")"
 has "$b" "the local build of alpha $(cut -c1-7 "$FIX/head"), the gates docs on base ${main0:0:7}, in the build image it pins, on this looper VM: its full log is $FIX/project/looper-runs/"
 has "$b" "verdict: success: the gates docs passed"; has "$b" "rc 0"
-has "$(cat "$FIX/vm-builds")" "build --repo alpha --dir $FIX/work/alpha/issues/4 --sha $(cat "$FIX/head") --gates docs --base $main0 --log $FIX/project/looper-runs/"
+has "$(cat "$FIX/vm-builds")" "build --repo alpha --issue 4 --dir $FIX/work/alpha/issues/4 --sha $(cat "$FIX/head") --gates docs --base $main0 --log $FIX/project/looper-runs/"
 [[ ! -e "$FIX/builds" ]] || fail "a build job was triggered: $(cat "$FIX/builds")"
 has "$(cat "$FIX/land-4")" "The manager merged"
 has "$(cat "$FIX/probe")" "docker: alpha builds locally on this looper VM, through --build (looper#238): a report has no container runtime. Build with: "
@@ -5963,6 +5963,59 @@ l="$(cat "$FIX/land-4")"
 has "$l" "your land's own gates (gates.yaml's docs) on your commits rebased on main ${m:0:7}: green"
 has "$l" "The manager merged"
 [[ "$(grep -c -- "--gates docs --base $m " "$FIX/vm-builds")" == 2 ]] || fail "not the --build's and the land's local builds: $(cat "$FIX/vm-builds")"
+pass
+
+# A cap on a run's local builds (LOOPER_VM_BUILDS_PER_ISSUE, looper#248): the
+# build past it is refused, and the looper stops the run, checkpointed, and
+# says so on its issue, which stays approved for its next run.
+scenario vm-build-cap
+pin_seed
+cat > "$FIX/vm-stub" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1" == build ]] || exit 9
+echo "$*" >> "$FIX/vm-builds"
+while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
+echo "verdict: failure: fail: the gates docs (gates.yaml) exited 1" >> "$log"; exit 1
+EOS
+chmod +x "$FIX/vm-stub"
+cat > "$FIX/claude.sh" <<'EOS'
+for i in 1 2 3; do
+  echo "red $i" > notes.md && git add -A && git commit -qm "try $i"
+  "$ROOT/repo-looper" --repo alpha --issue 4 --build > "$FIX/build-$i" 2>&1; echo "rc $?" >> "$FIX/build-$i"
+done
+sleep 300
+EOS
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1 LOOPER_VM_BUILDS_PER_ISSUE=2
+[[ "$(wc -l < "$FIX/vm-builds")" == 2 ]] || fail "built: $(cat "$FIX/vm-builds")"
+has "$(cat "$FIX/vm-builds")" "build --repo alpha --issue 4 --dir "
+has "$(cat "$FIX/build-2")" "verdict: failure: fail: the gates docs"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/builds/*.refused)" "this run has asked for 2 local builds, this looper VM's cap per issue per run (LOOPER_VM_BUILDS_PER_ISSUE): the looper stops the run"
+has "$OUT" "claude stopped on #4: it asked for more than 2 local builds (LOOPER_VM_BUILDS_PER_ISSUE)"
+grep -qF "The run asked for more than 2 local builds, this looper VM's cap per issue per run (LOOPER_VM_BUILDS_PER_ISSUE), so the looper stopped it." <<<"$(others)" ||
+  fail "the comment: $(others)"
+[[ "$(origin show looper/alpha-4:notes.md)" == "red 3" ]] || fail "the branch: $(origin log --oneline looper/alpha-4)"
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+lacks "$(labels alpha 4)" "looper:stuck"
+main_unchanged
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "A run has at most 2 local builds (LOOPER_VM_BUILDS_PER_ISSUE"
+pass
+
+# A local build that waits for one of the VM's build slots (looper#248): the
+# model's --build says it waits, then how long it waited.
+scenario vm-build-slot
+pin_seed; build_model notes.md "the docs"
+cat > "$FIX/vm-stub" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1" == build ]] || exit 9
+while (( $# )); do [[ "$1" == --log ]] && log="$2"; shift; done
+echo "waiting for a build slot: all 1 of this looper VM's (LOOPER_VM_BUILDS) are taken: beta#9 abcdef0" >> "$log"; sleep 2
+{ echo "took build slot 1 of 1 after 2s waiting"; echo "verdict: success: the gates docs passed"; } >> "$log"
+EOS
+chmod +x "$FIX/vm-stub"
+run LOOPER_VM="$FIX/vm-stub" LOOPER_BUILD_POLL=1
+b="$(cat "$FIX/build-4")"
+has "$b" "it is waiting for a build slot: all 1 of this looper VM's (LOOPER_VM_BUILDS) are taken: beta#9 abcdef0"
+has "$b" "it took build slot 1 of 1 after 2s waiting"; has "$b" "verdict: success: the gates docs passed"; has "$b" "rc 0"
 pass
 
 echo "repo-looper: all scenarios pass"

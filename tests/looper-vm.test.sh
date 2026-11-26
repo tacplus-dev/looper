@@ -315,3 +315,59 @@ env FIX="$FIX" PATH="$TMP/bin:$PATH" LOOPER_CACHE="$FIX/cache" LOOPER_CACHE_HOST
   --dir "$FIX/clone" --sha "$(git -C "$FIX/clone" rev-parse HEAD)" --log "$FIX/b.log" || fail "exited $?: $(cat "$FIX/b.log")"
 has "$(cat "$FIX/docker-runs")" "-v /mnt/disks/cache:$FIX/cache -v /mnt/disks/cache/deps/cargo/registry:/usr/local/cargo/registry"
 pass
+
+# --- build slots (looper#248) --------------------------------------------------------
+# LOOPER_VM_BUILDS=2 and three builds at once: two run, the third waits and
+# says so in its log, first come first served; the parent's pass logs the
+# builds running and waiting and the longest wait, and names the one that
+# waits. Once one ends the third takes its slot, saying how long it waited.
+fixture build-slots
+git init -q -b main "$FIX/clone"
+printf 'build_image: ghcr.io/tacplus-dev/build:1.0.0@sha256:%s\n' "$(printf 'b%.0s' {1..64})" > "$FIX/clone/build.lock"
+cat > "$FIX/clone/gates.yaml" <<'EOF'
+full:
+  run: 'n=$(cat n); echo "gates of $n"; touch "$FIX/ran-$n"; until [ -e "$FIX/release-$n" ]; do sleep 0.1; done'
+EOF
+for n in 1 2 3; do echo "$n" > "$FIX/clone/n"; git -C "$FIX/clone" add -A; git -C "$FIX/clone" commit -qm "$n"; sha[n]="$(git -C "$FIX/clone" rev-parse HEAD)"; done
+SLOTS=(LOOPER_VM_BUILDS=2)
+vm PATH="$TMP/bin:$PATH" "${SLOTS[@]}"
+until_true "the parent's cache" test -f "$FIX/cache/.looper-vm"
+slot_build() { # n
+  env FIX="$FIX" PATH="$TMP/bin:$PATH" LOOPER_CACHE="$FIX/cache" "${SLOTS[@]}" "$ROOT/looper-vm" build --repo alpha --issue "$1" \
+    --dir "$FIX/clone" --sha "${sha[$1]}" --log "$FIX/b$1.log"
+}
+slot_build 1 & b1=$!
+until_true "build 1 runs" test -e "$FIX/ran-1"
+slot_build 2 & b2=$!
+until_true "build 2 runs" test -e "$FIX/ran-2"
+slot_build 3 & b3=$!
+until_true "build 3 waits" grep -qs "waiting for a build slot" "$FIX/b3.log"
+sleep 1.5
+[[ ! -e "$FIX/ran-3" ]] || fail "build 3 ran beside 1 and 2"
+has "$(cat "$FIX/b3.log")" "waiting for a build slot: all 2 of this looper VM's (LOOPER_VM_BUILDS) are taken: alpha#1 ${sha[1]:0:7}, alpha#2 ${sha[2]:0:7}"
+until_true "the parent counts it" grep -q "builds: 2 running, 1 waiting (the longest for [1-9][0-9]*s), of 2 slots" "$FIX/vm.out"
+has "$(cat "$FIX/vm.out")" "alpha#3: its local build of ${sha[3]:0:7} waits for a build slot (2 of 2 run)"
+touch "$FIX/release-2"; wait "$b2" || fail "build 2 exited $?"
+until_true "build 3 takes 2's slot" test -e "$FIX/ran-3"
+grep -q "^took build slot [12] of 2 after [1-9][0-9]*s waiting" "$FIX/b3.log" || fail "build 3: $(cat "$FIX/b3.log")"
+grep -q "^build slot 1 of 2 (LOOPER_VM_BUILDS)" "$FIX/b1.log" || fail "build 1: $(cat "$FIX/b1.log")"
+until_true "the parent sees it" grep -q "builds: 2 running, 0 waiting, of 2 slots" "$FIX/vm.out"
+touch "$FIX/release-1" "$FIX/release-3"; wait "$b1" || fail "build 1 exited $?"; wait "$b3" || fail "build 3 exited $?"
+has "$(cat "$FIX/b3.log")" "verdict: success: the gates full passed"
+until_true "the parent sees none" grep -q "builds: 0 running, 0 waiting, of 2 slots" "$FIX/vm.out"
+[[ -z "$(ls "$FIX/cache/vm/slots" | grep -v '^slot-')" ]] || fail "markers left: $(ls "$FIX/cache/vm/slots")"
+kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+# A build killed outright leaves its marker: no slot is held by it (its lock
+# went with it), and the parent drops the marker.
+slot_build 1 & b1=$!
+until_true "build 1 runs again" eval '[[ -n "$(ls "$FIX/cache/vm/slots" | grep "^run-")" ]]'
+kill_tree "$b1"; wait "$b1" 2>/dev/null || true
+vm PATH="$TMP/bin:$PATH" "${SLOTS[@]}"
+until_true "the dead build's marker dropped" eval '[[ -z "$(ls "$FIX/cache/vm/slots" | grep -v "^slot-")" ]]'
+kill_tree "$VM"; wait "$VM" 2>/dev/null || true; VM=""
+# A limit that is not a number stops the parent at once.
+vm LOOPER_VM_BUILDS=x
+rc=0; wait "$VM" || rc=$?; VM=""
+(( rc == 2 )) || fail "LOOPER_VM_BUILDS=x: exited $rc"
+has "$(cat "$FIX/vm.out")" "LOOPER_VM_BUILDS 'x' is not a number of builds"
+pass

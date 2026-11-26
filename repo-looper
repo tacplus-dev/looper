@@ -250,8 +250,9 @@
 # --job-timeout, default 11), LOOPER_SUGGEST_MAX and LOOPER_SUGGEST_PROJECTS (the
 # roadmap's suggestion pass), LOOPER_MODEL_USERS (0: the models run as the
 # job's user, not each as its own, looper#68) and LOOPER_USER_PREFIX (their
-# names, default looper-), LOOPER_VM, LOOPER_GIT_STORE, LOOPER_STORE_LOCK and
-# LOOPER_VM_CHECKPOINT_SECONDS (a looper VM's, looper#238), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
+# names, default looper-), LOOPER_VM, LOOPER_GIT_STORE, LOOPER_STORE_LOCK,
+# LOOPER_VM_CHECKPOINT_SECONDS (a looper VM's, looper#238) and LOOPER_VM_BUILDS_PER_ISSUE
+# (a run's local builds on one, at most, default 20, looper#248), GIT_AUTHOR_NAME/EMAIL. In a GitLab job, CI_JOB_URL and
 # CI_PROJECT_DIR name the job and its artifacts in issue comments, and --list and
 # --issue read the project's jobs (CI_API_V4_URL, CI_PROJECT_ID; CI_JOB_ID, this
 # job, is not another) with GITLAB_TOKEN, else CI_JOB_TOKEN; a run polls its own.
@@ -1331,6 +1332,7 @@ WORKFLOWS_RC=78   # a land sent back: origin refused its change under .github/wo
 # Origin's refusal of a push that changes .github/workflows/ without the workflows permission (GitHub's words).
 WORKFLOWS_REFUSED='refusing to allow .* to create or update workflow'
 BUILD_MAX="${LOOPER_BUILD_MAX:-30}"   # a report run's builds, at most
+VM_BUILDS_PER_ISSUE="${LOOPER_VM_BUILDS_PER_ISSUE:-20}"   # a report run's local builds on a looper VM, at most (looper#248)
 # GitLab's job activity limit (looper#237): on the free plan GitLab refuses to
 # create a pipeline, a build's child pipeline among them, once the build
 # project's alive pipelines hold LOOPER_BUILD_JOB_CAP (500) jobs. No build is
@@ -2085,11 +2087,11 @@ commit_map() { # sha
 # image through the VM's container socket, its full log in builds/<id>.log
 # (the model reads it) and its exit in builds/<id>.rc. Its wait is the one a
 # build job would have (build_wait).
-local_build() { # builds-dir id sha gates base
+local_build() { # builds-dir id sha gates base issue
   local d="$1" id="$2"
   commit_map "$3"; build_wait "$4" > "$d/$id.wait"
   : > "$d/$id.log"; chmod 0644 "$d/$id.log"
-  ( rc=0; "$LOOPER_VM" build --repo "$REPO" --dir "$CHECKOUT" --sha "$3" --gates "$4" --base "$5" --log "$d/$id.log" >/dev/null 2>&1 || rc=$?
+  ( rc=0; "$LOOPER_VM" build --repo "$REPO" ${6:+--issue "$6"} --dir "$CHECKOUT" --sha "$3" --gates "$4" --base "$5" --log "$d/$id.log" >/dev/null 2>&1 || rc=$?
     echo "$rc" > "$d/$id.rc.new" && mv -f "$d/$id.rc.new" "$d/$id.rc" ) </dev/null &
   echo "local $d/$id.log" > "$d/$id.started"
   log "started a local build of $REPO ${3:0:7} (the gates ${4:-full}) for its model: $d/$id.log"
@@ -2097,22 +2099,38 @@ local_build() { # builds-dir id sha gates base
 
 # A local build's verdict (looper#238), as build_verdict's: its lines, exit 0
 # on a pass, 1 on a failure (the log's end printed), 2 with none within its wait.
+# A build that waits for one of the VM's build slots (looper#248) says so, and
+# how long it waited once it has one; its wait starts then, and its wait for a
+# slot is bounded by the same.
 local_verdict() { # builds-dir id sha gates base
-  local d="$1" id="$2" w t0 said now v rc
+  local d="$1" id="$2" w t0 said now v rc slot="" waited=""
   w="$(cat "$d/$id.wait" 2>/dev/null)" || true; [[ "$w" =~ ^[0-9]+$ ]] || w="$BUILD_WAIT"
   t0="$(date +%s)"; said="$t0"
   echo "the local build of $REPO ${3:0:7}, the gates ${4:-full}${5:+ on base ${5:0:7}}, in the build image it pins, on this looper VM: its full log is $d/$id.log"
   while [[ ! -s "$d/$id.rc" ]]; do
     now="$(date +%s)"
+    if [[ -z "$slot" ]] && slot="$(grep -m 1 -E '^(took )?build slot [0-9]+ of' "$d/$id.log")"; then
+      [[ "$slot" != took* ]] || echo "it $slot"
+      t0="$now"; said="$now"
+    elif [[ -z "$slot" && -z "$waited" ]] && waited="$(grep -m 1 '^waiting for a build slot' "$d/$id.log")"; then
+      echo "it is $waited"
+    fi
+    if [[ -z "$slot" ]] && (( now >= t0 + w )); then echo "no verdict: no build slot on this looper VM within $(hours "$w") (LOOPER_VM_BUILDS): its log so far is $d/$id.log"; return 2; fi
     if (( now >= t0 + w )); then echo "no verdict within $(hours "$w") of its start: its log so far is $d/$id.log"; return 2; fi
     if (( now - said >= BUILD_SAY )); then log "waiting for the local build's verdict: running since $(hours "$(( now - t0 ))")" >&2; said="$now"; fi
     sleep 1
   done
+  [[ -n "$slot" ]] || ! slot="$(grep -m 1 '^took build slot [0-9]* of' "$d/$id.log")" || echo "it $slot"
   rc="$(cat "$d/$id.rc")"; v="$(grep '^verdict: ' "$d/$id.log" | tail -n 1)" || v=""
   echo "${v:-verdict: failure: the local build exited $rc with no verdict}"
   [[ "$rc" == 0 ]] && return 0
   echo "its log's end ($d/$id.log has it all):"; tail -n 40 "$d/$id.log"
   return 1
+}
+
+# On a looper VM, a run's local builds so far (its builds/ directory's).
+local_builds() { # builds-dir
+  grep -l '^local ' "$1"/*.started 2>/dev/null | wc -l
 }
 
 # The report's looper serves its model's build requests (looper#71), every
@@ -2124,7 +2142,10 @@ local_verdict() { # builds-dir id sha gates base
 # skipped is written to <id>.cancelled, for the model's wait (build_verdict),
 # and one whose child pipeline GitLab refused (build_refused, looper#237) to
 # <id>.refused-child first, why; one passed, or past its wait, is read no more (<id>.over).
-build_server() { # run-dir
+# On a looper VM a run has at most VM_BUILDS_PER_ISSUE local builds (looper#248:
+# the VM's builds are shared, and spent): the request past them is refused, and
+# the looper stops the model (pid: the run's `stopped` is build-cap).
+build_server() { # run-dir [model-pid issue]
   local d="$1/builds" r id sha gates base p k=0 z="" polled=0 st w why
   trap 'kill "$z" 2>/dev/null; exit 0' TERM
   while :; do
@@ -2135,8 +2156,12 @@ build_server() { # run-dir
       base="$(sed -n 's/^base=//p' "$d/$id.taken" | head -n 1)"
       if ! [[ "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]]; then
         echo "not a build request (sha=, gates=, base=)" > "$d/$id.refused"
+      elif [[ -n "${LOOPER_VM:-}" ]] && (( $(local_builds "$d") >= VM_BUILDS_PER_ISSUE )); then
+        echo "this run has asked for $VM_BUILDS_PER_ISSUE local builds, this looper VM's cap per issue per run (LOOPER_VM_BUILDS_PER_ISSUE): the looper stops the run" > "$d/$id.refused"
+        log "a local build of $REPO ${sha:0:7} for its model: refused, the run's $VM_BUILDS_PER_ISSUE local builds are its cap (LOOPER_VM_BUILDS_PER_ISSUE): stopping the run"
+        [[ -z "${2:-}" ]] || { echo build-cap > "$1/stopped"; kill -TERM "$2" 2>/dev/null || true; }
       elif [[ -n "${LOOPER_VM:-}" ]]; then
-        local_build "$d" "$id" "$sha" "$gates" "$base"
+        local_build "$d" "$id" "$sha" "$gates" "$base" "${3:-}"
       elif commit_map "$sha"; BUILDS_LEFT=$(( BUILD_MAX - k )) get_build "$sha" "$gates" "$base"; then
         echo "$BUILD_W" > "$d/$id.wait"
         # A build of the same key, green or queued or running, is reused (looper#134).
@@ -2338,6 +2363,11 @@ vm_land_gate() { # run-dir
     1) { log "nothing queued: $what failed. The batch's build runs these same gates, and a red land turns its whole batch red: fix it here first. Rebase on main (git fetch origin && git rebase origin/main), fix it, commit, verify with --build and land again. Its end ($out has it all):"
          tail -n 40 "$out"; } >&2
        return 1 ;;
+    5) if [[ "$(cat "$run/stopped" 2>/dev/null)" == build-cap ]]; then
+         log "nothing queued: $what were not built: this run has had its $VM_BUILDS_PER_ISSUE local builds (LOOPER_VM_BUILDS_PER_ISSUE, looper#248), and the looper stops it"
+         return 1
+       fi
+       log "$what: no verdict ($(pre_land_why "$out")); the land is queued all the same, and the batch's build judges it" ;;
     *) log "$what: no verdict ($(pre_land_why "$out")); the land is queued all the same, and the batch's build judges it" ;;
   esac
 }
@@ -4024,7 +4054,7 @@ run_claude() { # prompt-file log-file seconds run-dir [issue]
       --allowedTools "Bash,Read,Edit,Write,Grep,Glob,Task,Agent,TodoWrite,WebFetch,WebSearch" \
       < "$1" > "$dir/out" 2>&1 ) & pid=$!
   watch_run "$pid" "$2" "$4" "${5:-}" & watcher=$!
-  [[ "$builds" != 1 ]] || { build_server "$4" >> "$4/builds.log" 2>&1 & server=$!; }
+  [[ "$builds" != 1 ]] || { build_server "$4" "$pid" "${5:-}" >> "$4/builds.log" 2>&1 & server=$!; }
   wait "$pid" || rc=$?
   kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null || true
   [[ -z "$server" ]] || { kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true; }
@@ -4806,6 +4836,9 @@ verify_rule() { # issue
       "a pass, 1 on a failure, 2 with none within its wait). It is feedback only: the manager's merge builds again. You have" \
       "no container runtime yourself (no \`docker\`, so no \`tacplus\` here either): your builds are --build's. What needs" \
       "no container (a script's tests, a linter) you may run yourself. The full gates are $(gates_hint | sed 's/^the full gates, //')."
+    printf '\n   %s\n   %s' \
+      "A run has at most $VM_BUILDS_PER_ISSUE local builds (LOOPER_VM_BUILDS_PER_ISSUE, its land's own gates among them): the" \
+      "one after is refused and stops the run, checkpointed. A build may wait for one of this VM's build slots: it says so."
   else
   printf '%s\n   %s\n   %s\n   %s\n   %s\n   %s' \
     "Verify with a build job: \`$LOOPER_SELF --repo $REPO --issue $1 --build\` checkpoints and builds" \
@@ -5091,6 +5124,7 @@ PR
     done:*) log "claude stopped on #$n: its run was done and it had not exited ${DONE_GRACE}s later" ;;
     idle:*) log "claude stopped on #$n: idle (no output, no change) for ${LOOPER_IDLE_MINUTES:-20} minutes" ;;
     job-gone:*) log "claude stopped on #$n: GitLab no longer runs this job (${CI_JOB_URL:-$CI_JOB_ID})" ;;
+    build-cap:*) log "claude stopped on #$n: it asked for more than $VM_BUILDS_PER_ISSUE local builds (LOOPER_VM_BUILDS_PER_ISSUE)" ;;
     :0) log "claude finished #$n" ;;
     :124|:137) log "claude stopped on #$n: the time limit ($(hours "$limit"))" ;;
     *) log "claude exited $rc on #$n" ;;
@@ -5191,6 +5225,7 @@ Run record: $(run_record "$run")." >/dev/null || true
   # Not landed: whatever the run leaves is kept on the issue's branch.
   local timed_out="" why="the run's end"
   if [[ "$stopped" == idle ]]; then why="the run went idle"
+  elif [[ "$stopped" == build-cap ]]; then why="the build cap"
   elif [[ "$rc" == 124 || "$rc" == 137 ]]; then timed_out=1; why="the time limit"; fi
   local kept=1; checkpoint "$n" "$why" "$run" || kept=""
   local wip="" b; b="$(wip_branch "$n")"
@@ -5246,6 +5281,8 @@ $(sed 's/^/> /' "$run/step")"
   # ran that long, or hung) is retried, never stuck (looper#133).
   local capped=""; [[ "$stopped" != idle ]] || capped="$(build_capped "$run")" || true
   if [[ -n "$timed_out" ]]; then ended="The run reached its time limit ($(hours "$limit")) before finishing."
+  elif [[ "$stopped" == build-cap ]]; then
+    ended="The run asked for more than $VM_BUILDS_PER_ISSUE local builds, this looper VM's cap per issue per run (LOOPER_VM_BUILDS_PER_ISSUE), so the looper stopped it."
   elif [[ -n "$capped" ]]; then
     ended="The run's build had $capped, and the run then went idle: no output and no change in its checkout for ${LOOPER_IDLE_MINUTES:-20} minutes, so the looper stopped it."
   elif [[ "$stopped" == idle && -n "$head_after" && -n "$progress" ]]; then
@@ -5282,7 +5319,7 @@ This issue stays $LABEL_APPROVED: the next run resumes from that branch. Run rec
   # approved and is not started again until something changes, or a day later.
   # A run woken before its back-off's until keeps that until and its paths
   # (looper#213): a wake that found nothing does not put the wait off a day.
-  if [[ -z "$timed_out" && -z "$capped" && -z "$head_after" && -n "$progress" && "$stopped" != idle && -n "$resumed" && -s "$run/start-tree" ]] \
+  if [[ -z "$timed_out" && -z "$capped" && -z "$head_after" && -n "$progress" && "$stopped" != idle && "$stopped" != build-cap && -n "$resumed" && -s "$run/start-tree" ]] \
      && [[ "$(work_tree 2>/dev/null)" == "$(cat "$run/start-tree")" ]]; then
     local back pu prest paths=() when; back=$(( $(date +%s) + LOOPER_BACKOFF_MAX ))
     when="$(hours "$LOOPER_BACKOFF_MAX") from now, $(hold_iso "$back")"
@@ -5301,8 +5338,9 @@ So this issue backs off (looper#181): it stays $LABEL_APPROVED, with a \`Backed-
   fi
   # A fix landed is progress however the run ended: one that went idle waiting
   # on its land after the land was done is not stuck (looper#37), nor one that
-  # waited out its build (looper#133).
-  if [[ -n "$timed_out" || -n "$capped" ]] || [[ -n "$progress" && ( "$stopped" != idle || -n "$head_after" ) ]]; then
+  # waited out its build (looper#133), nor one stopped at its local builds' cap
+  # (looper#248): the next run has its own.
+  if [[ -n "$timed_out" || -n "$capped" || "$stopped" == build-cap ]] || [[ -n "$progress" && ( "$stopped" != idle || -n "$head_after" ) ]]; then
     local more=""
     if [[ -n "$timed_out" ]]; then report "$n" timeout; more=" A line \`Timeout: <hours>h\` in the body (at most 10h) gives a run more time."
     elif [[ -n "$head_after" ]]; then report "$n" landed

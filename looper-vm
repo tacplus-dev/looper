@@ -15,10 +15,11 @@
 #                             the same parent for an org's shared VM (decision point 12): every
 #                             ORG repository with an open approved issue, less those named (each
 #                             on a VM of its own), its children across all of them
-#   looper-vm build --repo NAME --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE
+#   looper-vm build --repo NAME [--issue N] --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE
 #                             a local build: the gates of SHA (gates.yaml's SET, else its full,
 #                             else `just gates`) in the build image the commit pins (build.lock,
-#                             tacplus.lock), a child container through the VM's container socket;
+#                             tacplus.lock), a child container through the VM's container socket,
+#                             once one of the VM's LOOPER_VM_BUILDS slots is free (the wait said);
 #                             the full log in FILE; exit 0 on a pass, 1 on a failure
 #   looper-vm --self-test     its tools, the container socket and the cache, checked
 #
@@ -80,12 +81,17 @@
 # set): `looper-build gates-local` in the commit's pinned build image, a
 # container started through the container socket (LOOPER_VM_DOCKER, default
 # docker), the cache mounted at its own path. Feedback only: the merge path
-# stays the manager's build (point 6).
+# stays the manager's build (point 6). At most LOOPER_VM_BUILDS run at once
+# (looper#248; default a quarter of the VM's CPUs): one that waits for a slot
+# says so in its log, and for how long once it has one; the parent logs, each
+# pass, the builds running and waiting and the longest wait, and names each
+# build that starts waiting. A report's looper stops its run once it asks for
+# more than LOOPER_VM_BUILDS_PER_ISSUE local builds (repo-looper's).
 #
 # Environment: GH_TOKEN and the model's credentials, as repo-looper's;
 # LOOPER_CACHE, LOOPER_CACHE_HOST, LOOPER_VM_POLL (seconds, default 60),
 # LOOPER_VM_IDLE_MINUTES, LOOPER_VM_STOP_GRACE, LOOPER_VM_LIST_TIMEOUT (seconds,
-# default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER,
+# default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER, LOOPER_VM_BUILDS,
 # LOOPER_VM_REPO_LOOPER (default the repo-looper beside this script),
 # LOOPER_VM_LOOPER_BUILD (likewise, looper-build).
 set -euo pipefail
@@ -180,7 +186,7 @@ tree_of() { # pid...
 }
 
 declare -A CHILD=() ENDED=()   # REPO#N -> pid; REPO#N -> when its report ended
-LISTER="" LISTED=0 IDLE_SINCE="" STOPPING="" STATE=""
+LISTER="" LISTED=0 IDLE_SINCE="" STOPPING="" STATE="" SLOTS=1
 
 record() { # the running children, for a person or a test to read
   local n
@@ -263,6 +269,7 @@ pass() {
     done < "$STATE/list"
   fi
   record
+  builds_said
   if (( ${#CHILD[@]} || ready || ! LISTED )); then IDLE_SINCE=""
   else
     IDLE_SINCE="${IDLE_SINCE:-$now}"
@@ -351,19 +358,98 @@ parent() {
     WHAT="${REPOS[*]}"; WHAT="${WHAT// /, }"
   fi
   for v in POLL STOP_GRACE LIST_TIMEOUT COOLDOWN; do [[ "${!v}" =~ ^[0-9]+$ ]] || die "LOOPER_VM_$v '${!v}' is not a number of seconds"; done
+  SLOTS="$(build_slots)" || exit 2
   (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is under 5 seconds"
   trap stop TERM INT
   cache_ready
   STATE="$CACHE/vm"; mkdir -p "$STATE"; rm -f "$STATE/list" "$STATE/list.new"
   vm_credentials
   vm_identity
-  log "looper-vm of $WHAT: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m"
+  log "looper-vm of $WHAT: cache $CACHE, a pass every ${POLL}s, idle exit after $(( IDLE / 60 ))m, $SLOTS local build(s) at once"
   local z
   while :; do
     pass
     sleep "$POLL" & z=$!
     wait "$z" 2>/dev/null || true
   done
+}
+
+# --- build slots (looper#248) ----------------------------------------------------
+#
+# At most LOOPER_VM_BUILDS local builds run at once on the VM (default a
+# quarter of its CPUs, at least 1): several full gate runs sharing 8 CPUs all
+# crawl. Each running build holds the lock of one slot (slots/slot-N) for its
+# life, its lock going with it however it ends; one that finds none free
+# waits, first come first served. Each says what it is in a marker the parent
+# reads (slots/wait-PID while it waits, slots/run-PID while it runs: when it
+# started waiting, then how long it waited, and REPO#N SHA7).
+
+# The VM's limit: LOOPER_VM_BUILDS, or its CPUs' quarter.
+build_slots() {
+  local n="${LOOPER_VM_BUILDS:-}"
+  if [[ -z "$n" ]]; then n=$(( $(nproc 2>/dev/null || echo 4) / 4 )); (( n >= 1 )) || n=1; fi
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 )) || die "LOOPER_VM_BUILDS '$n' is not a number of builds"
+  echo "$n"
+}
+
+# The live markers of a kind (wait, run): "PID ITS-LINE" lines. A dead build's
+# (killed outright, its EXIT trap never run) is removed.
+slot_markers() { # kind
+  local f p l
+  for f in "$CACHE/vm/slots/$1"-*; do
+    [[ -f "$f" ]] || continue
+    p="${f##*-}"
+    if [[ -d "/proc/$p" ]] && l="$(cat "$f" 2>/dev/null)"; then echo "$p $l"; else rm -f "$f"; fi
+  done
+}
+
+# A slot taken for this build (SLOT, its lock on the descriptor SLOT_FD), or
+# waited for: the wait said in its log when it starts, every minute, and when
+# it ends, with how long.
+take_slot() { # what (REPO#N SHA7)
+  local d="$CACHE/vm/slots" n i t0 said="" now first
+  n="$(build_slots)"; mkdir -p "$d"
+  t0=$(date +%s)
+  echo "$t0 $1" > "$d/.new-$$" && mv -f "$d/.new-$$" "$d/wait-$$"
+  while :; do
+    first="$(slot_markers wait | sort -k2,2n -k1,1n | head -n 1 | cut -d' ' -f1)"
+    if [[ "$first" == "$$" ]]; then
+      for (( i = 1; i <= n; i++ )); do
+        exec {SLOT_FD}>>"$d/slot-$i"
+        if flock -n "$SLOT_FD"; then SLOT="$i"; break 2; fi
+        exec {SLOT_FD}>&-
+      done
+    fi
+    now=$(date +%s)
+    if [[ -z "$said" ]]; then
+      echo "waiting for a build slot: all $n of this looper VM's (LOOPER_VM_BUILDS) are taken: $(slot_markers run | cut -d' ' -f4- | paste -sd, - | sed 's/,/, /g')"; said="$now"
+    elif (( now - said >= 60 )); then
+      echo "still waiting for a build slot: $(( now - t0 ))s so far"; said="$now"
+    fi
+    sleep 1
+  done
+  now=$(date +%s)
+  echo "$t0 $(( now - t0 )) $1" > "$d/.new-$$" && mv -f "$d/.new-$$" "$d/run-$$"; rm -f "$d/wait-$$"
+  if [[ -n "$said" ]]; then echo "took build slot $SLOT of $n after $(( now - t0 ))s waiting"
+  else echo "build slot $SLOT of $n (LOOPER_VM_BUILDS)"; fi
+}
+
+# The parent's word on the VM's builds, each pass: how many run and wait, the
+# longest wait, and each build that started waiting since the last pass.
+declare -A WAITING=()
+builds_said() {
+  local now runs waits p t what nw=0 longest=0
+  local -A seen=()
+  now=$(date +%s)
+  runs="$(slot_markers run)"; waits="$(slot_markers wait)"
+  while read -r p t what; do
+    [[ -n "$p" ]] || continue
+    nw=$(( nw + 1 )); seen[$p]=1
+    (( now - t <= longest )) || longest=$(( now - t ))
+    [[ -n "${WAITING[$p]:-}" ]] || log "${what% *}: its local build of ${what##* } waits for a build slot ($(grep -c . <<<"$runs" || true) of $SLOTS run)"
+  done <<<"$waits"
+  WAITING=(); for p in "${!seen[@]}"; do WAITING[$p]=1; done
+  log "builds: $(grep -c . <<<"$runs" || true) running, $nw waiting$( (( nw == 0 )) || echo " (the longest for ${longest}s)"), of $SLOTS slots"
 }
 
 # --- a local build ------------------------------------------------------------
@@ -386,10 +472,10 @@ image_env() { # image name
 host_path() { local h="${LOOPER_CACHE_HOST:-$CACHE}"; echo "$h${1#"$CACHE"}"; } # path under the cache
 
 build() {
-  local dir="" sha="" gates="" base="" logf=""
+  local dir="" sha="" gates="" base="" logf="" issue=""
   while (( $# )); do
     case "$1" in
-      --repo) REPO="$2"; shift 2 ;; --dir) dir="$2"; shift 2 ;; --sha) sha="$2"; shift 2 ;;
+      --repo) REPO="$2"; shift 2 ;; --issue) issue="$2"; shift 2 ;; --dir) dir="$2"; shift 2 ;; --sha) sha="$2"; shift 2 ;;
       --gates) gates="$2"; shift 2 ;; --base) base="$2"; shift 2 ;; --log) logf="$2"; shift 2 ;;
       *) die "build: unknown argument $1" ;;
     esac
@@ -397,13 +483,15 @@ build() {
   [[ -n "$REPO" && -d "$dir" && "$sha" =~ ^[0-9a-f]{40}$ && "$base" =~ ^([0-9a-f]{40})?$ && -n "$logf" ]] ||
     die "build needs --repo NAME --dir CHECKOUT --sha SHA --log FILE"
   [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || die "build: '$gates' is not a gate set"
+  [[ "$issue" =~ ^([0-9]+)?$ ]] || die "build: --issue '$issue' is not an issue's number"
+  build_slots >/dev/null
   : > "$logf"
   exec >> "$logf" 2>&1
   cache_dirs
   local b objects image id rc=0 cargo m=()
   b="$(mktemp -d "$CACHE/builds/$REPO-XXXXXX")"; chmod 0755 "$b"
   # shellcheck disable=SC2064
-  trap "rm -rf '$b'" EXIT
+  trap "rm -rf '$b' '$CACHE/vm/slots/wait-$$' '$CACHE/vm/slots/run-$$'" EXIT
   trap 'exit 143' TERM
   # Its own checkout of the commit, borrowing the report's objects (and through
   # them the shared store's): the report's own work tree is the model's.
@@ -415,7 +503,9 @@ build() {
   cp "$LOOPER_BUILD" "$b/looper-build"; mkdir -p "$b/out"
   id="looper-vm-$REPO-${sha:0:12}-$$"
   echo "local build of $REPO ${sha:0:7}, the gates ${gates:-full}${base:+ on base ${base:0:7}}, in $image (container $id)"
-  "$DOCKER" pull -q "$image" >/dev/null 2>&1 || true   # by digest: a failure here is the run's to say
+  take_slot "$REPO${issue:+#$issue} ${sha:0:7}"
+  # The slot's lock is this script's alone: what a build leaves running does not hold it.
+  "$DOCKER" pull -q "$image" >/dev/null 2>&1 {SLOT_FD}>&- || true   # by digest: a failure here is the run's to say
   cargo="$(image_env "$image" CARGO_HOME)" || cargo=""
   [[ -n "$cargo" ]] || cargo=/root/.cargo
   m=(-v "$(host_path "$CACHE"):$CACHE"
@@ -426,7 +516,7 @@ build() {
     -e BUILD_SRC="$b/src" -e BUILD_OUT="$b/out" \
     -e GOMODCACHE="$CACHE/deps/go/mod" -e GOCACHE="$CACHE/deps/go/build" -e npm_config_cache="$CACHE/deps/npm" \
     -e GRADLE_USER_HOME="$CACHE/deps/gradle" -e SCCACHE_DIR="$CACHE/deps/sccache" -e CCACHE_DIR="$CACHE/deps/ccache" \
-    "$image" bash "$b/looper-build" gates-local < /dev/null || rc=$?
+    "$image" bash "$b/looper-build" gates-local < /dev/null {SLOT_FD}>&- || rc=$?
   local v; v="$(cat "$b/out/build-verdict" 2>/dev/null)" || v=""
   if [[ "$v" == pass && "$rc" == 0 ]]; then echo "verdict: success: the gates ${gates:-full} passed"; exit 0; fi
   echo "verdict: failure: ${v:-the build container exited $rc with no verdict}"

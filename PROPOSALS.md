@@ -12,6 +12,17 @@ the looper then marks it `promoted` or `declined` here with the date.
   last green; a flake or a re-pin files none), a `bug` issue "gate map miss: <paths> ran <sets>, <gate> broke" filed
   by the looper's code, quoting the repository's `gate-audit` output where it has one; the map itself is never
   edited. Waits on Jody: whether to wait for #249, where the record lives, and the audit hook's contract.
+- **A local build bounded, and stopped with its run** (2026-11-26, #248): `looper-vm build` has no time limit, and
+  the report's looper starts it detached from its build server, so a build outlives the run that asked for it (a run
+  stopped at its time limit, its build cap, or its verdict's wait). With build slots, such a build holds one of the
+  VM's `LOOPER_VM_BUILDS` slots until it ends, and a hung one holds it for good: every other report's builds wait
+  behind it. `looper-vm build` could run its container under the build's wait (`builds/<id>.wait`, plus a margin)
+  and the build server could stop its builds' trees when it is stopped (`docker rm -f` of the container by its
+  label).
+- **Build slots sized from measurement** (2026-11-26, #248): `LOOPER_VM_BUILDS` defaults to a quarter of the VM's
+  CPUs (2 on tacplus's c4a-standard-8), a guess; the decision (point 2) sizes capacity from measurement. The
+  parent's per-pass line (`builds: R running, W waiting (the longest for Ns), of S slots`) is that measurement: a
+  week of it on tacplus's VM, beside each build's time, says whether 2 or 3 slots finish more builds an hour.
 - **looper-vm's end-to-end run on tacplus** (2026-11-24, #238): the parent, its SIGTERM stop, the resume from the
   forge, the shared cache and the local build are tested here with stubs (no container runtime in a report or a
   build job). The issue's last criterion, a local run with a container runtime building a tacplus issue end to end,

@@ -1786,15 +1786,24 @@ Merges stay with the repository's manager (point 6). Its image is looper#239's, 
   commit checked out on its own borrowing the report's objects. The model gets the verdict and the path of the
   **full log**, which it reads. Feedback only: the manager's build is the merge's verdict. The model itself still
   has no container runtime.
+- **Builds bounded** (looper#248; decisions/agentic-dev-flow-2026-11-25.md, point 2). At most `LOOPER_VM_BUILDS` local
+  builds run at once on a VM (default a quarter of its CPUs, at least 1: several full gate runs sharing 8 CPUs all
+  crawl). Each holds the lock of one slot (`vm/slots/slot-N` on the cache) for its life; one that finds none free
+  waits, first come first served, and **says so**: in its log (what holds the slots, every minute how long so far,
+  and how long it waited once it has one), so in its model's `--build` output, whose wait for the verdict starts
+  once it has its slot. The parent logs, **each pass, the builds running and waiting and the longest wait**, and
+  names each build that starts waiting. A run has at most `LOOPER_VM_BUILDS_PER_ISSUE` local builds (20, its land's
+  own gates among them): the request past them is refused, and the looper stops the run, checkpointed, and says so
+  on its issue, which stays `approved`: the next run has its own.
 - **Idle exit.** With no report running and no ready issue for `LOOPER_VM_IDLE_MINUTES` (15), it exits 0 and the VM
   shuts down (scale to zero); a list that fails counts as none.
 
 ```sh
 looper-vm --repo NAME          # the parent: until idle (exit 0) or SIGTERM (exit 0 within 25 s, each report checkpointed)
-looper-vm build --repo NAME --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE   # a local build (exit 0 pass, 1 fail)
+looper-vm build --repo NAME [--issue N] --dir CHECKOUT --sha SHA [--gates SET] [--base SHA] --log FILE   # a local build, once a slot is free (exit 0 pass, 1 fail)
 looper-vm --self-test          # its tools, the container socket and the cache (looper#239's image)
-tests/looper-vm.test.sh        # the parent: two reports that never end and a third started beside them, a list that hangs holding up nothing; SIGTERM: a report's checkpoint, a tree with setsid and timeout children and a report that ignores it, all gone and the parent out within 25 s; idle exit, never while a report runs; a cache with no stamp, an unreadable git store and an unwritable cache; two local builds at once, one green and one red, sharing the cache's dependency caches, each its own checkout; the host's path of the cache (stub docker)
-tests/repo-looper.test.sh      # vm-list: a VM's list names the runs a stopped VM left; vm-sigterm: a report's SIGTERM is its checkpoint and comment within 25 s, then, the disk gone, the next VM lists and resumes it from the forge; vm-store: two reports' clones borrow one store, made once; vm-build: --build is a local build, its log's path in the verdict
+tests/looper-vm.test.sh        # the parent: two reports that never end and a third started beside them, a list that hangs holding up nothing; SIGTERM: a report's checkpoint, a tree with setsid and timeout children and a report that ignores it, all gone and the parent out within 25 s; idle exit, never while a report runs; a cache with no stamp, an unreadable git store and an unwritable cache; two local builds at once, one green and one red, sharing the cache's dependency caches, each its own checkout; the host's path of the cache (stub docker); build slots: three builds on two, the third waiting and saying so, the parent counting builds running and waiting and the longest wait, the third taking a freed slot with its wait said, a killed build's marker dropped
+tests/repo-looper.test.sh      # vm-list: a VM's list names the runs a stopped VM left; vm-sigterm: a report's SIGTERM is its checkpoint and comment within 25 s, then, the disk gone, the next VM lists and resumes it from the forge; vm-store: two reports' clones borrow one store, made once; vm-build: --build is a local build, its log's path in the verdict; vm-build-slot: a build waiting for a slot says so, and how long; vm-build-cap: the run past LOOPER_VM_BUILDS_PER_ISSUE is stopped, checkpointed, its issue told
 ```
 
 ## Running it
