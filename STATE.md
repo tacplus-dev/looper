@@ -292,11 +292,14 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   `looper/mr-NAME-N` and takes `looper:merge-request` off on a merge or a send-back (left open: its next run is
   told so); the kicker's status (`tacplus-dev/build`) is not yet the merger's (`looper/gates`, PROPOSALS.md);
   `looper-merger pass --repo NAME` (#251, the agentic flow's step 5), a fixed program that reads and writes the forge
-  alone: a merge request with a trusted login's green `looper/gates` status on its head merged at once, unbuilt, at
-  that head, a conflicting one sent back to its issue once per head, nothing merged while main has no `main-green`
-  on its first-parent line, 4 merges unchecked after it or the oldest one gate's age old, or the
-  `looper/rolling-check` verdict red; an optional shadow compile measured, never required; tested against a gh stub,
-  and run by no job yet: it goes live with the rolling check (#249; PROPOSALS.md)
+  alone: a merge request with a trusted login's green `looper/gates` status on its head (not yet set by the kicker's
+  build, PROPOSALS.md) merged at once, unbuilt, as one merge commit at that head, while the rolling check's gate (`looper-check gate`,
+  #249) is open, asked for each merge, a gate that cannot be asked closed; a conflicting one sent back to its issue
+  once per head; an optional shadow compile measured, never required. `looper-vm merger --org ORG` is its machine's
+  process (tacplus-dev/cloud#111: no socket, no model): a pass per repository with a merge request, as looper-token's
+  `merger` role (its key and app settings, the manager's until tacplus-merger exists), and `looper-ruleset` adds the
+  merger's own App as a bypass actor once it has one. Tested against stubs; live once cloud#111 pins an image with
+  it and `looper-check` (PROPOSALS.md)
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its kicker and plan as
   pods of the in-cluster `kick` runner (59685138, `arm64, kick`, tacplus-dev/cluster#39, #222: never behind the
   reports and managers they start), the pinned repositories' reports and managers and the hub's probes as pods of
