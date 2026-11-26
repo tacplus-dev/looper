@@ -22,14 +22,15 @@
 # its scanners (looper#49).
 #
 # The build environment follows the newest released tacplus line (the project's
-# rule: a MAJOR.MINOR, never a patch pin).
-ARG TACPLUS_LINE=2.6
-ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:${TACPLUS_LINE}
+# rule: a MAJOR.MINOR, never a patch pin), its build image pinned by digest
+# (looper#234, #258: a release builds no floating tag), a literal the nightly
+# relock reads and moves to the line's newest build. The line is written here
+# alone: the image's (LOOPER_TACPLUS_LINE) is its base's own TACPLUS_LINE.
+ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:2.6@sha256:72fcd0448dc768bc3fc709c14b17acbc3470e94cf5b03b7d65520cae07e6f121
 ARG CLAUDE_CODE_VERSION=2.1.308
 
 FROM ${BUILD_IMAGE}
 ARG CLAUDE_CODE_VERSION
-ARG TACPLUS_LINE
 LABEL org.opencontainers.image.title="looper" \
       org.opencontainers.image.description="tacplus-dev looper: the tacplus build image plus the claude CLI and the per-repository looper; tacplus runs in the build image of its line" \
       org.opencontainers.image.source="https://github.com/tacplus-dev/looper" \
@@ -38,7 +39,8 @@ LABEL org.opencontainers.image.title="looper" \
 # file of its /usr/local/bin by sha256, under its name, for the scan below to
 # say which of the image's binaries are tacplus-dev/tacplus's to fix.
 ARG BUILD_IMAGE
-RUN mkdir -p /usr/local/share/looper && \
+RUN test -n "${TACPLUS_LINE:-}" || { echo "$BUILD_IMAGE names no TACPLUS_LINE: no tacplus build image" >&2; exit 1; }; \
+    mkdir -p /usr/local/share/looper && \
     { echo "# $BUILD_IMAGE"; find /usr/local/bin -type f -exec sha256sum {} + | LC_ALL=C sort -k2; } > /usr/local/share/looper/base-image.sha256
 # The docker CLI, replaced by a fixed release by digest (looper#177): build:2.6
 # ships 29.9.3, built with go1.26.10, whose net/http has GO-2026-6859 (fixed in
