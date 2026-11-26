@@ -8,7 +8,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   pins main-1fca965's image (#246). Its `looper-build` predates #252, so a `"release"` run executes an old `plan` that
   ignores `BUILD_RELEASE`. tacplus-dev/cloud#112's release schedules copy the file at the commit that re-pins it. The
   fix is to pin main's attested image at or after b6f80ed (main-9c8e17b, `sha256:ab11ea3e…`), verified with
-  `gh attestation verify`. Waits on Jody: whether a re-pin is a feature or a chore, and which image to pin.
+  `gh attestation verify`. Waits on Jody: whether a re-pin is a feature or a chore, and which image to pin. Since
+  then main's newest image is main-a8e4e29 (`sha256:00fdcde7…`, a ROADMAP-only commit past 9c8e17b). A member approved
+  cloud#112 on that issue; no ROADMAP.md links #261 yet.
 - **Release records for seatrials** (2026-11-26, #262; tacplus-dev/fleet-seatrials#82, D4): dev rolls to each green
   main release from its record, which fleet-seatrials' job token cannot read yet (tacplus-dev/build's job token
   allowlist, and its pipeline user a Reporter there), which names no tacplus the service was built with, and which
