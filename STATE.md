@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#252).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#250).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -278,6 +278,19 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   `<repo>:<branch>-<commit12>` by digest; `release-report` moves `release-<repo>/<branch>/record` forward only (an
   older build never takes a newer one's place), sets `tacplus-dev/release/<branch>`, and records a red one, which the
   nightly scan files as an approved bug;
+  on a looper VM (`looper-vm`, #238) a pinned GitHub repository's report `--land`s by opening a merge request (#250,
+  step 4 of `tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`): its own commits rebased onto
+  `main-green` (main's head until #249 makes it), the set their diff calls for built locally, and only on green
+  `looper/mr-NAME-N` pushed at that commit and its pull request opened with its evidence (commit, base, gate set,
+  verdict, the log on the run's checkpoint); red, no verdict or a conflict opens nothing; the issue
+  `looper:merge-request` while it is open, freed by the VM's list and the kicker once merged or closed, its next run
+  told which; the kicker (while `LOOPER_VM_REPOS` names a VM) starts each open one's build status in the build project,
+  on its merge base and the set main's map gives its diff (`repo-looper --gate-set`), never the report's own; one run
+  per issue by a forge claim, `looper/claim-NAME-N`, compare-and-swap, renewed, given up at the end and on SIGTERM (on a
+  VM, and for a VM project's fallback report here); `LOOPER_VM_MR=0` in the VM's environment keeps its reports
+  queueing with the manager (the hub's switch until the merger, #251); the merger reads its issue from
+  `looper/mr-NAME-N` and takes `looper:merge-request` off on a merge or a send-back (left open: its next run is
+  told so); the kicker's status (`tacplus-dev/build`) is not yet the merger's (`looper/gates`, PROPOSALS.md);
   `looper-merger pass --repo NAME` (#251, the agentic flow's step 5), a fixed program that reads and writes the forge
   alone: a merge request with a trusted login's green `looper/gates` status on its head merged at once, unbuilt, at
   that head, a conflicting one sent back to its issue once per head, nothing merged while main has no `main-green`
@@ -295,7 +308,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58) with the
   failed step's log tail, read by the jobs API since the report job runs inside the run it reports (#154)
-- **Known gaps:** branch releases (#252) publish nothing until #249 makes `main-green`, tacplus-dev/cloud#112 adds
+- **Known gaps:** the merge request (#250) has no live merger yet (#251's goes live with #249's rolling check): nothing
+  merges one, and a red build status on it stays until a person sends it back (the merger sends back conflicts alone); it takes effect on a VM with the image built after its land
+  (tacplus-dev/cloud's looper_vms); its status build is the build project's, which the design retires later
+  (PROPOSALS.md); branch releases (#252) publish nothing until #249 makes `main-green`, tacplus-dev/cloud#112 adds
   their schedules and publish's identity on the build project's protected main, and the hub copies
   `ci/build.gitlab-ci.yml` there; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands; a red
   release is filed at the next nightly scan, not at once (PROPOSALS.md); the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
