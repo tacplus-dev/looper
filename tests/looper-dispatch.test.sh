@@ -1326,6 +1326,23 @@ OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOP
 [[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "the VM's label was removed: $(labels alpha 4) $OUT"
 [[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
 pass
+# Its VM off, nothing holds the issue: released, so it is ready and the VM is
+# started for it. A group that cannot be read releases nothing.
+scenario vm-orphan-vm-off
+in_progress
+echo 0 > "$FIX/vm-alpha"
+OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"
+[[ "$(labels alpha 4)" == approved ]] || fail "the label stayed with the VM off: $(labels alpha 4) $OUT"
+grep -q '^alpha#4 .*its looper VM (looper-vm-alpha) is off' "$FIX/comments" || fail "comments: $(cat "$FIX/comments" 2>/dev/null)"
+[[ "$(cat "$FIX/vm-calls" 2>/dev/null)" == "resize alpha 1" ]] || fail "the VM was not started for it: $(cat "$FIX/vm-calls" 2>/dev/null) $OUT"
+pass
+scenario vm-orphan-vm-unread
+in_progress
+OUT="$(env -u CI_API_V4_URL -u CI_PIPELINE_SOURCE -u GH_TOKEN "${VMENV[@]}" LOOPER_LIB="$ROOT/looper-lib.sh" PATH="$TMP/bin:$PATH" HOME="$FIX/home" FIX="$FIX" GITLAB_TOKEN=tok \
+  "$ROOT/looper-dispatch" run 2>&1)" || fail "the kick failed: $OUT"
+[[ "$(labels alpha 4)" == approved,looper:in-progress ]] || fail "released with its group unread: $(labels alpha 4) $OUT"
+pass
 # An org's shared VM (decision point 12): `*=shared` takes every repository not
 # named on its own, so alpha's ready issue starts looper-vm-shared, and a
 # repository named on its own (alpha=solo) keeps its own group.
