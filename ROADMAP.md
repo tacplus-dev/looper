@@ -68,6 +68,7 @@ Done (moved from Next on 2026-11-05):
 - Release records for seatrials: fleet-seatrials reads them, the record names its tacplus, a green main release triggers seatrials (#262; tacplus-dev/fleet-seatrials#82). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
 - ci/build.gitlab-ci.yml pins a looper image that carries the release builds (#261; tacplus-dev/cloud#112). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
 - A follow-up issue the looper files as the stated half of an approved, roadmapped parent inherits the parent's approval and ROADMAP link (#264). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
+- Branch releases publish to the release registry in tacplus-ci as the release account (#265; tacplus-dev/cloud#115). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
