@@ -5586,7 +5586,7 @@ gate_map
 git -C "$FIX/seed" tag v1.2.3 && git -C "$FIX/seed" push -q origin v1.2.3
 run
 p="$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)"
-has "$p" 'Verify with the full gates, `echo full >> "$FIX/ran"` (gates.yaml'"'"'s full)'
+has "$p" 'The full gates are `echo full >> "$FIX/ran"` (gates.yaml'"'"'s full)'; has "$p" "Verify what needs no container"
 has "$p" "--issue 4 --land\`."; has "$p" "the gate set and batch the land ran in"
 has "$p" "a release never ships on"
 pass
