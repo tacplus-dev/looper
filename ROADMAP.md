@@ -65,6 +65,7 @@ Done (moved from Next on 2026-11-05):
 - security-exceptions.yaml: an optional where scopes an exception to a path, so an exception never accepts its rule everywhere (#182; the 2026-11-13 suggestion). Hub, under Jody's 2026-11-17 decisions.
 - **The agentic development flow** replaces the merge train: a VM's report builds for itself and opens a merge request with its evidence on main-green (#250); a small fixed merger per project merges clean MRs unbuilt, inside a bound, and sends conflicts back (#251); a rolling check of main with main-green and a fixed recovery procedure (#249); release builds by branch, publishing exactly the checked commit (#252); builds on a VM bounded (#248). Hub, at Jody's request, 2026-11-25 (`tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`, approved after a panel review).
 - Record every miss of a repository's gate map when the full check of main is red (#253; the panel's item 11). Hub, at Jody's request, 2026-11-26 (`tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`; "dont wait on me unless you absolutely have to").
+- Release records for seatrials: fleet-seatrials reads them, the record names its tacplus, a green main release triggers seatrials (#262; tacplus-dev/fleet-seatrials#82). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
