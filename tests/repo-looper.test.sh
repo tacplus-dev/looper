@@ -5860,8 +5860,10 @@ pass
 # On a project's own VM, looper-vm's parent starts each report with LOOPER_VM
 # set: its list names the runs a stopped VM left, SIGTERM (the VM stopping) is
 # a checkpoint and the run's end, its next run resumes from the forge alone,
-# the clones share one git object store, and a --build is a local build.
-VMS=(LOOPER_VM="$ROOT/looper-vm")
+# the clones share one git object store, and a --build is a local build. Their
+# lands queue with the manager (LOOPER_VM_MR=0): alpha is pinned (looper#73),
+# and a merge request's local build, through a stub, is vm-mr-*'s (looper#250).
+VMS=(LOOPER_VM="$ROOT/looper-vm" LOOPER_VM_MR=0)
 
 # Its list: the ready issues, then those a stopped VM left (approved,
 # looper:in-progress, otherwise ready), not one landing (the manager's verdict
