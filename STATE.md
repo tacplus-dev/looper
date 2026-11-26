@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#251).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#252).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -272,7 +272,12 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   `forge_*` functions, `Blocked-by: seabeam/<path>#N` (subgroups) on GitLab, an issue's URL read as its reference and an unreadable
   `Blocked-by:` line held (#87), a reference to another org held and never read, GitLab roles for prompt provenance; `looper-dispatch plan` writes the pipeline's child jobs, each where it runs (#84: the reports and manager of a repository whose gates are build jobs on the in-cluster control runner, `LOOPER_CONTROL_TAGS`, default `arm64, control`, with their kind's requests and limits as `KUBERNETES_*` variables, a report 150m/512Mi, a manager 250m/256Mi (#229, cluster#53: each kind's p90 of 2026-11-23, the cluster's slot count), the kicker and the plan 50m (#165: from the pods' use, limits unchanged; each pod logs its use at its end, the recap's requests against use per kind, an item once a p90 is over its request by more than LOOPER_RECAP_REQUEST_MARGIN, 10%), `LOOPER_REQUESTS_<kind>`; a job that still needs Docker, an unpinned repository's or any scan's, on the VM runners' tags: a report `LOOPER_JOB_TAGS_<repo>`, #55, a manager `LOOPER_MANAGER_TAGS_<repo>`, a scan `LOOPER_SCAN_TAGS_<repo>`, #91, else `LOOPER_JOB_TAGS`) and the plan's git identity, on a schedule a scan per repository (#56),
   `ci/tacplus-dev.gitlab-ci.yml` is tacplus-dev's pipeline file, and `ci/instance.gitlab-ci.yml` is a GitLab-hosted instance's pipeline (kicker, plan, jobs, nightly scan); tested on
-  both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end;
+  both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end; release
+  builds by branch (#252): the build pipeline's `release` input, `main` building `main-green`'s commit (never main's
+  head), `release/X.Y` its head, `branches` or no repo a fan-out of each branch with something new, publishing
+  `<repo>:<branch>-<commit12>` by digest; `release-report` moves `release-<repo>/<branch>/record` forward only (an
+  older build never takes a newer one's place), sets `tacplus-dev/release/<branch>`, and records a red one, which the
+  nightly scan files as an approved bug;
   `looper-merger pass --repo NAME` (#251, the agentic flow's step 5), a fixed program that reads and writes the forge
   alone: a merge request with a trusted login's green `looper/gates` status on its head merged at once, unbuilt, at
   that head, a conflicting one sent back to its issue once per head, nothing merged while main has no `main-green`
@@ -290,7 +295,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58) with the
   failed step's log tail, read by the jobs API since the report job runs inside the run it reports (#154)
-- **Known gaps:** the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
+- **Known gaps:** branch releases (#252) publish nothing until #249 makes `main-green`, tacplus-dev/cloud#112 adds
+  their schedules and publish's identity on the build project's protected main, and the hub copies
+  `ci/build.gitlab-ci.yml` there; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands; a red
+  release is filed at the next nightly scan, not at once (PROPOSALS.md); the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
   `is_error` result) and the `modelUsage` names are the CLI's as of 2026-11-13, unexercised against a spent quota; a
   high model refused mid-run (its quota spent during the run) is not retried on the default: that run ends, and the
   next run probes and falls back; the model's own user (#68) takes effect with the image built after its land (the broker,
