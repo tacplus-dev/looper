@@ -31,6 +31,11 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **`gates.yaml`'s `memory:` sizes nothing** (2026-11-26, #73): it sized a report's containers through
   `looper-docker` (#74); the map still reads it, and tacplus's and others' maps still set it. A build job could size
   its gates job by it (today `BUILD_GATES_REQUESTS_<repo>`, #202), or the key could go.
+- **`tests/looper-docker.test.sh` out of image.yml** (2026-11-26, #73): `.github/workflows/image.yml`'s Test step
+  still runs it, and #73 carried no `looper:workflows`, so its land could not change that step. The file stays, now
+  a test that looper-docker and its broker stay retired, so the step passes and main's image still publishes. A
+  land on an issue with `looper:workflows` could drop it from the step (or run gates.yaml's full there, #58's entry)
+  and fold its checks into `tests/repo-looper.test.sh`.
 - **The build pipeline's looper image re-pinned to one with release builds** (2026-11-26, #261): `ci/build.gitlab-ci.yml`
   pins main-1fca965's image (#246). Its `looper-build` predates #252, so a `"release"` run executes an old `plan` that
   ignores `BUILD_RELEASE`. tacplus-dev/cloud#112's release schedules copy the file at the commit that re-pins it. The
