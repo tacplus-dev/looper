@@ -15,7 +15,8 @@
 # tacplus-dev/build's jobs are read with GITLAB_TOKEN, or with its own token
 # read from Secret Manager by version when LOOPER_RECAP_BUILD_TOKEN_SECRET is
 # set (looper#85; tacplus-dev/cloud#12); Cloud Build is not read. The image at
-# main's head is current only with main-<sha7>'s digest (looper#115).
+# main's head is current only with main-<sha7>'s digest (looper#115). Every repository whose nightly
+# published no report is named, and why (looper#220).
 # The advice's check is looper-suggest's (tests/looper-suggest.test.sh).
 # Run: tests/looper-recap.test.sh   (REGEN=1: rewrite tests/recap/expected.json)
 set -euo pipefail
@@ -44,6 +45,8 @@ case "$rest" in
   jobs\?*) page="$(grep -oE 'page=[0-9]+' <<<"$rest" | tail -1 | cut -d= -f2)"
            f="$FX/gitlab/$proj/jobs-$page.json"; [[ -f "$f" ]] || { [[ -d "$FX/gitlab/$proj" ]] && { echo '[]'; exit 0; }; exit 22; }; cat "$f" ;;
   jobs/*/trace) id="${rest#jobs/}"; id="${id%/trace}"; f="$FX/gitlab/$proj/trace-$id.txt"; [[ -f "$f" ]] || exit 22; cat "$f" ;;
+  pipelines/*/bridges\?*|pipelines/*/jobs\?*) id="${rest#pipelines/}"; what="${id#*/}"; f="$FX/gitlab/$proj/pipeline-${id%%/*}-${what%%\?*}.json"
+                                              [[ -f "$f" ]] || exit 22; cat "$f" ;;
   pipelines/*) f="$FX/gitlab/$proj/pipeline-${rest#pipelines/}.json"; [[ -f "$f" ]] || exit 22; cat "$f" ;;
   *) exit 22 ;;
 esac
@@ -456,6 +459,85 @@ FX="$TMP/fx" recap classify "$TMP/v.json" --history "$TMP/fx/history" > "$TMP/vc
    "2026-11-01,2026-11-02 2 4 1 18 5" ]] || fail "build hours: $(jq -c .build_hours "$TMP/vc.json")"
 has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" \
   "Build hours (looper#185; the nightly's start, its 3 h the quietest): 7 gate builds over 2 nights; quietest from 18:00Z (0 builds in 3 h), busiest 05:00Z (4)."
+# Every repository whose nightly published no report that night is named (looper#220; 2026-11-21/22: ten of 31
+# repositories' security jobs failed runner_system_failure three times each and published nothing). The fan-out's
+# plan (pipeline 90) named alpha beta delta epsilon gamma; its child (100) runs each one's nightly-plan-<repo> and
+# the bridge nightly-<repo> to that repository's pipeline, where security-<repo> runs. alpha's report published
+# (91); epsilon's too, its job red on a finding (95); beta's security job failed runner_system_failure three times
+# (92); gamma's left no findings and published only a summary saying so (93, looper#210); delta's plan failed, so
+# its nightly never ran.
+NAME=collect-nightly-no-report
+rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"; d="$TMP/fx/gitlab/tacplus-dev_build"
+job() { # id name pipeline status [reason]
+  jq -n --argjson i "$1" --arg n "$2" --argjson p "$3" --arg s "$4" --arg r "${5:-}" \
+    '{id: $i, name: $n, status: $s, created_at: "2026-11-01T04:00:00.000Z", started_at: "2026-11-01T04:15:00.000Z",
+      finished_at: "2026-11-01T05:00:00.000Z", pipeline: {id: $p}, web_url: "https://gitlab.com/tacplus-dev/build/-/jobs/\($i)"}
+     + (if $r != "" then {failure_reason: $r} else {} end)'
+}
+bridge() { # repo [downstream]
+  jq -n --arg r "$1" --arg p "${2:-}" '{name: "nightly-\($r)", status: (if $p == "" then "skipped" else "success" end),
+    downstream_pipeline: (if $p == "" then null else {id: ($p | tonumber)} end)}'
+}
+published() { # repo
+  echo "[2026-11-01T04:59:00Z] published as security-$1/latest (what the nightly scan reads) and security-$1/abc (a land on it compares with it), and as security-$1/nightly (what the next run's new is measured against)"
+}
+{ cat "$d/jobs-1.json"; job 2090 plan 90 success
+  job 2100 nightly-plan-alpha 100 success; job 2101 nightly-plan-beta 100 success; job 2102 nightly-plan-delta 100 failed script_failure
+  job 2103 nightly-plan-epsilon 100 success; job 2104 nightly-plan-gamma 100 success; } | jq -s '.[0] + .[1:]' > "$TMP/jobs.json"
+mv "$TMP/jobs.json" "$d/jobs-1.json"
+for p in 90:nightly 100:""; do
+  jq -n --arg n "${p#*:}" --argjson i "${p%%:*}" \
+    '{id: $i, name: (if $n == "" then null else $n end), created_at: "2026-11-01T03:30:00.000Z", web_url: "https://gitlab.com/tacplus-dev/build/-/pipelines/\($i)"}' > "$d/pipeline-${p%%:*}.json"
+done
+{ bridge alpha 91; bridge beta 92; bridge delta; bridge epsilon 95; bridge gamma 93; } | jq -s . > "$d/pipeline-100-bridges.json"
+job 2091 security-alpha 91 success | jq -s . > "$d/pipeline-91-jobs.json"
+{ job 2092 security-beta 92 failed runner_system_failure; job 2093 security-beta 92 failed runner_system_failure
+  job 2094 security-beta 92 failed runner_system_failure; job 2098 gates 92 success; } | jq -s . > "$d/pipeline-92-jobs.json"
+job 2095 security-gamma 93 failed script_failure | jq -s . > "$d/pipeline-93-jobs.json"
+job 2097 security-epsilon 95 failed script_failure | jq -s . > "$d/pipeline-95-jobs.json"
+echo "[2026-11-01T03:31:00Z] plan: the nightly of 5 repositories of tacplus-dev, 1 at a time on arm64, build-nightly: alpha beta delta epsilon gamma; no pin on main: omega" > "$d/trace-2090.txt"
+published alpha > "$d/trace-2091.txt"; published epsilon > "$d/trace-2097.txt"
+echo "[2026-11-01T04:59:00Z] the security job left no findings: published security-gamma/latest/summary.md saying so (the findings are left as they were)" > "$d/trace-2095.txt"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(v '.nightly | "\(.planned) \(.published | join(",")) \([.no_report[].repo] | join(","))"')" == "5 alpha,epsilon beta,delta,gamma" ]] ||
+  fail "nightly: $(jq -c .nightly "$TMP/v.json")"
+[[ "$(v '.nightly.no_report[] | select(.repo == "beta") | "\(.why) \(.url)"')" == \
+   "security-beta failed runner_system_failure, 3 attempts https://gitlab.com/tacplus-dev/build/-/jobs/2094" ]] || fail "beta: $(jq -c .nightly "$TMP/v.json")"
+[[ "$(v '.nightly.no_report[] | select(.repo == "gamma") | .why')" == "security-gamma left no findings: only a summary saying so (looper#210)" ]] ||
+  fail "gamma: $(jq -c .nightly "$TMP/v.json")"
+[[ "$(v '.nightly.no_report[] | select(.repo == "delta") | "\(.why) \(.url)"')" == \
+   "its nightly never ran (nightly-delta skipped) https://gitlab.com/tacplus-dev/build/-/jobs/2102" ]] || fail "delta: $(jq -c .nightly "$TMP/v.json")"
+[[ "$(v '.items[] | select(.key == "nightly/no_report") | "\(.count) \(.over) \(.recovered) \(.summary)"')" == \
+   "3 true false 3 of 5 repositories' nightly published no report: beta (security-beta failed runner_system_failure, 3 attempts), delta (its nightly never ran (nightly-delta skipped)), gamma (security-gamma left no findings: only a summary saying so (looper#210))" ]] ||
+  fail "item: $(jq -c .items "$TMP/v.json")"
+# No gate build among them.
+[[ "$(v .builds.builds)" == 1 ]] || fail "builds: $(jq -c .builds "$TMP/v.json")"
+FX="$TMP/fx" recap classify "$TMP/v.json" --history "$FX/history" > "$TMP/vc.json" || fail "classify"
+has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" \
+  "Nightly (looper#220): 2 of 5 repositories published a report; none: [beta](https://gitlab.com/tacplus-dev/build/-/jobs/2094) (security-beta failed runner_system_failure, 3 attempts), [delta](https://gitlab.com/tacplus-dev/build/-/jobs/2102) (its nightly never ran (nightly-delta skipped)), [gamma](https://gitlab.com/tacplus-dev/build/-/jobs/2095) (security-gamma left no findings: only a summary saying so (looper#210))."
+has "$(jq -r '.recurring[].key' "$TMP/vc.json")" nightly/no_report
+# A repository's pipeline that cannot be read is named, not guessed; one still running at the window's end too.
+rm "$d/pipeline-93-jobs.json"
+jq 'map(.status = "running" | del(.finished_at, .failure_reason))' "$d/pipeline-95-jobs.json" > "$TMP/j.json" && mv "$TMP/j.json" "$d/pipeline-95-jobs.json"
+rm "$d/trace-2097.txt"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(v '.nightly.no_report[] | select(.repo == "gamma") | .why')" == "its pipeline 93 not read: GET projects/tacplus-dev%2Fbuild/pipelines/93/jobs: curl exit 22" ]] ||
+  fail "gamma: $(jq -c .nightly "$TMP/v.json")"
+[[ "$(v '.nightly.no_report[] | select(.repo == "epsilon") | .why')" == "security-epsilon running when read" ]] || fail "epsilon: $(jq -c .nightly "$TMP/v.json")"
+# Every one published: no item, and the report says so.
+{ bridge alpha 91; bridge beta 96; bridge gamma 97; } | jq -s . > "$d/pipeline-100-bridges.json"
+job 2096 security-beta 96 success | jq -s . > "$d/pipeline-96-jobs.json"; job 2099 security-gamma 97 success | jq -s . > "$d/pipeline-97-jobs.json"
+sed -i 's/ alpha beta delta epsilon gamma;/ alpha beta gamma;/; s/of 5 repositories/of 3 repositories/' "$d/trace-2090.txt"
+jq 'map(select(.id != 2102 and .id != 2103))' "$d/jobs-1.json" > "$TMP/jobs.json" && mv "$TMP/jobs.json" "$d/jobs-1.json"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(v '.nightly | "\(.planned) \(.no_report | length)"')" == "3 0" ]] || fail "nightly: $(jq -c .nightly "$TMP/v.json")"
+lacks "$(v '.items[].key')" nightly/
+FX="$TMP/fx" recap classify "$TMP/v.json" --history "$FX/history" > "$TMP/vc.json" || fail "classify"
+has "$(FX="$TMP/fx" recap report "$TMP/v.json" "$TMP/vc.json")" "Nightly (looper#220): every one of 3 repositories published a report."
+# No nightly in the window: none, and no line.
+lacks "$(recap report "$FX/expected.json" "$TMP/vc.json")" "Nightly (looper#220)"
+pass
+
 # A job's queue is its wait for a runner, GitLab's queued_duration (looper#206): a security-report created
 # with its pipeline that waits 11 hours on its needs (the gates) is queued 30 s once they finish, not
 # 660 min; created to started is its "waited" figure. A job without queued_duration (canceled while

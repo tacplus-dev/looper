@@ -44,7 +44,10 @@
 #       distinct commits they built, and the commits built again; classify
 #       puts the ratio beside the earlier nights'; and by the UTC hour each
 #       was created, which classify sums over the nights for the quietest
-#       hours to start the nightly fan-out in (looper#185). The
+#       hours to start the nightly fan-out in (looper#185). Every
+#       repository the nightly fan-out ran whose security job published no
+#       report, and why (looper#220): followed from its plan through its
+#       bridge nightly-<repo> to security-<repo>'s log. The
 #       concurrency (looper#107: no per-repository cap), from the kicker's
 #       capacity lines, in all and per repository: how many reports were active
 #       and running at once (peak and mean), the hours ready issues waited with
@@ -337,6 +340,11 @@ DISK = re.compile(r"disk at the end: (\d+)% used")
 POD_USE = re.compile(r"pod use at the end: cpu (\d+)m mean over (\d+) s, memory (?:(\d+)Mi|\?) peak; requested cpu (\S+), memory (\S+)")
 # The plan's line for each job it plans (looper-dispatch plan_job): its resource group.
 PLANNED = re.compile(r"\] planned (\S+) \(.*, resource_group (\S+)\)$")
+# The nightly fan-out's plan (looper-build plan, looper#164): the repositories it runs the nightly of; and a
+# security job's report (looper-scan report): published, or only a summary saying it left no findings (looper#210).
+NIGHTLY_PLAN = re.compile(r"\] plan: the nightly of \d+ repositories of \S+, \d+ at a time on [^:]*: ([^;]*); no pin on main")
+REPORT_PUBLISHED = re.compile(r"\] published as security-\S+/latest ")
+REPORT_NONE = re.compile(r"\] the security job left no findings: published ")
 
 
 QUEUED = re.compile(r"queued since (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
@@ -399,7 +407,8 @@ def read_log(text, started, finished):
     room for it, looper#84), a pull or gate failure, and for a looper job its
     plans, holds, lands and disk, and a control pod's use against its requests."""
     out = {"prepare_at": None, "host": None, "pull": False, "gate_fail": False, "executor": None, "pod_pending": False, "pod_full": False,
-           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}, "pod_use": None}
+           "plans": [], "holds": {}, "overlaps": {}, "lands": [], "deferred": 0, "disk_pct": None, "groups": {}, "models": {}, "pod_use": None,
+           "nightly_plan": None, "report": None}
     now = started
     waiting = {}   # issue -> (reason, since)
     landing = {}   # issue -> since
@@ -497,6 +506,13 @@ def read_log(text, started, finished):
         if m:
             out["pod_use"] = {"cpu_m": int(m.group(1)), "s": int(m.group(2)), "memory_mi": None if m.group(3) is None else int(m.group(3)),
                               "cpu_request_m": cpu_m(m.group(4)), "memory_request_mi": memory_mi(m.group(5))}
+            continue
+        m = NIGHTLY_PLAN.search(line)
+        if m:
+            out["nightly_plan"] = m.group(1).split()
+            continue
+        if REPORT_PUBLISHED.search(line) or REPORT_NONE.search(line):
+            out["report"] = "published" if REPORT_PUBLISHED.search(line) else "none"
             continue
         m = PLANNED.search(line)
         if m:
@@ -806,6 +822,7 @@ def collect(until):
         out["projects"][project] = p
         if project == ENV.get("LOOPER_RECAP_BUILD_PROJECT", "tacplus-dev/build"):
             out["builds"] = builds_of(project, tok, rows, items)
+            out["nightly"] = nightly_of(project, tok, rows, items)
         for cls, fl in sorted(fails.items()):
             n, rec = len(fl), all(r for r, _, _ in fl)
             # The hours its failed jobs ran before failing: lost, then waited again on the retry.
@@ -983,6 +1000,88 @@ def builds_of(project, tok, rows, items):
                                  + ", ".join(f"{r} {sha[:10]} {len(v)}" for (r, sha), v in again[:3]),
                       "evidence": [b["url"] for _, v in again[:3] for b in v][:5]})
     return out
+
+
+def nightly_of(project, tok, rows, items):
+    """Every repository whose nightly published no report (looper#220: on
+    2026-11-21/22 ten of 31 repositories' security jobs failed
+    runner_system_failure three times each and published nothing): those the
+    fan-out's plan named and those whose nightly-plan-<repo> finished in the
+    window. Each one's security-<repo>, in the pipeline its bridge
+    nightly-<repo> started, published its report (looper-scan report's line,
+    or the job passed), or why not: only a summary saying it left no findings
+    (looper#210), its last attempt's failure, still running when read, its
+    nightly never run, a pipeline not read. None when no nightly ran."""
+    planned, plans = set(), {}
+    for j, lg, *_ in rows:
+        planned.update(lg["nightly_plan"] or [])
+        m = re.fullmatch(r"nightly-plan-([\w.-]+)", j.get("name") or "")
+        if m:
+            planned.add(m.group(1))
+            plans[m.group(1)] = j
+    if not planned:
+        return None
+    seen = {j["id"]: lg for j, lg, *_ in rows}
+    bridges, unread = {}, {}
+    for pid in sorted({(j.get("pipeline") or {}).get("id") for j in plans.values()} - {None}):
+        try:
+            got = json.loads(gitlab(f"projects/{enc(project)}/pipelines/{pid}/bridges?per_page=100", tok))
+        except (Unreadable, ValueError) as e:
+            unread.update({r: f"its fan-out pipeline {pid} not read: {e}" for r, j in plans.items() if (j.get("pipeline") or {}).get("id") == pid})
+            continue
+        for b in got if isinstance(got, list) else []:
+            m = re.fullmatch(r"nightly-([\w.-]+)", (b or {}).get("name") or "")
+            if m and not m.group(1).startswith("plan-"):
+                bridges[m.group(1)] = b
+    published, none = [], []
+    for r in sorted(planned):
+        plan, b = plans.get(r) or {}, bridges.get(r)
+        down = ((b or {}).get("downstream_pipeline") or {}).get("id")
+        why, url = unread.get(r), plan.get("web_url")
+        if why is None and b is None:
+            why = f"no nightly-plan-{r} finished in the window"
+        elif why is None and down is None:
+            why = f"its nightly never ran (nightly-{r} {b.get('status')})"
+        if why is not None:
+            none.append({"repo": r, "why": why, "url": url})
+            continue
+        try:
+            got = json.loads(gitlab(f"projects/{enc(project)}/pipelines/{down}/jobs?include_retried=true&per_page=100", tok))
+            sec = sorted((j for j in got if j.get("name") == f"security-{r}"), key=lambda j: j["id"])
+        except (Unreadable, ValueError, TypeError, AttributeError, KeyError) as e:
+            none.append({"repo": r, "why": f"its pipeline {down} not read: {e}", "url": url})
+            continue
+        if not sec:
+            none.append({"repo": r, "why": f"its pipeline {down} ran no security-{r}", "url": url})
+            continue
+        lgs = []
+        for j in sec:
+            if j["id"] not in seen:
+                try:
+                    text = gitlab(f"projects/{enc(project)}/jobs/{j['id']}/trace", tok)
+                except Unreadable:
+                    text = ""
+                seen[j["id"]] = read_log(text, when(j.get("started_at")), when(j.get("finished_at")))
+            lgs.append(seen[j["id"]])
+        if any(lg["report"] == "published" for lg in lgs) or any(j.get("status") == "success" for j in sec):
+            published.append(r)
+            continue
+        j, lg, st = sec[-1], lgs[-1], sec[-1].get("status")
+        if lg["report"] == "none":
+            why = f"security-{r} left no findings: only a summary saying so (looper#210)"
+        elif st == "failed":
+            why = f"security-{r} failed {failure_class(j, lg)}" + (f", {len(sec)} attempts" if len(sec) > 1 else "")
+        elif st in ("canceled", "skipped"):
+            why = f"security-{r} {st}"
+        else:
+            why = f"security-{r} {st} when read"
+        none.append({"repo": r, "why": why, "url": j.get("web_url")})
+    if none:
+        items.append({"key": "nightly/no_report", "count": len(none), "over": True, "recovered": False,
+                      "summary": f"{len(none)} of {len(planned)} repositories' nightly published no report: "
+                                 + ", ".join(f"{x['repo']} ({x['why']})" for x in none),
+                      "evidence": [x["url"] for x in none if x["url"]][:5]})
+    return {"planned": len(planned), "published": published, "no_report": none}
 
 
 def gh_json(*args):
@@ -1620,6 +1719,11 @@ def report(night, classes, sdir, cov):
                     f"{len(bh['nights'])} night{'s' * (len(bh['nights']) != 1)}; quietest from {bh['quietest']:02d}:00Z "
                     f"({bh['quietest_builds']} builds in {NIGHTLY_HOURS} h), busiest {bh['busiest']:02d}:00Z ({bh['by_hour'][bh['busiest']]})."
                     if (bh := classes.get("build_hours")) else ""))
+    ng = night.get("nightly")
+    if ng:
+        L.append("Nightly (looper#220): " + (f"every one of {ng['planned']} repositories published a report." if not ng["no_report"] else
+                 f"{len(ng['published'])} of {ng['planned']} repositories published a report; none: "
+                 + ", ".join((f"[{x['repo']}]({x['url']})" if x["url"] else x["repo"]) + f" ({x['why']})" for x in ng["no_report"]) + "."))
     cp = night.get("capacity")
     if cp:
         w, vm, node, full = cp["waiting_for_room"], cp["one_more_vm"], cp["one_more_node"], cp["pool_full"]

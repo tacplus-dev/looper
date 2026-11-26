@@ -242,8 +242,12 @@ variables:
   # slot (2026-11-18 03:00Z its children held all of them, and tacplus#340's
   # land got no runner in 15 min). Its fan-out runs this many repositories at
   # a time (each a resource group, nightly-slot-<n>), its jobs on these tags:
-  # the build runner's until the cluster's runner file serves a nightly entry
-  # of its own (arm64, build-nightly) whose concurrent leaves the pool room.
+  # the build runner's until the cluster's nightly entry (arm64,
+  # build-nightly, tacplus-dev/cluster#46: the spot pool at a PriorityClass
+  # between the report builds' and the lands', build's ceilings, 3500m 12Gi,
+  # so every repository's gates and CodeQL fit it) is registered and its token
+  # written (tacplus-dev/cloud#116), never before: no runner would take them
+  # (looper#220).
   BUILD_NIGHTLY_SLOTS: "1"
   # The report builds' gates at a time (looper#195): each report's holds a
   # resource group report-slot-<n>, so the rest of the build pool (the

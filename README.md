@@ -1024,7 +1024,14 @@ commits they built, the commits built again, and an item `builds/duplicates` ove
 builds a commit; the report puts tonight's ratio beside the earlier nights' and says whether it is falling. **Build
 hours** (looper#185): those builds by the UTC hour their pipeline was created (`builds.by_hour`), summed over the
 nights that have them (classify's `build_hours`), and the report names the quietest `LOOPER_RECAP_NIGHTLY_HOURS` (3)
-to start the nightly fan-out in (the fewest builds, then the fewest around them) and the busiest hour. A source
+to start the nightly fan-out in (the fewest builds, then the fewest around them) and the busiest hour. **The
+nightly's reports** (looper#220; on 2026-11-21/22 ten of 31 repositories' security jobs failed `runner_system_failure`
+three times each and published nothing, and their scans read the last run's report as that night's): every repository
+the fan-out's plan named, or whose `nightly-plan-<repo>` ran, is followed through its bridge `nightly-<repo>` to its
+pipeline's `security-<repo>`, which published its report (`looper-scan report`'s `published as` line, or the job
+passed) or did not, and why: only a summary saying it left no findings (looper#210), its last attempt's failure and
+how many attempts, still running when read, its nightly never run, a pipeline not read (`nightly`). One item,
+`nightly/no_report`, always over, names them all, and the report has a line `Nightly` naming each. A source
 it cannot read is named in `sources`, never guessed.
 `tacplus-dev/build`'s jobs (`LOOPER_RECAP_BUILD_PROJECT`) are read with `GITLAB_TOKEN` (looper#85): the cloud gitlab
 stack makes `tacplus-looper-bot` a Reporter of tacplus-dev/build (tacplus-dev/cloud#12, option B), so the scan job
@@ -1112,7 +1119,7 @@ them, and the transient list. The hub reads it into Jody's daily report. A night
 
 ```sh
 looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115); the gate builds by hour, summed over the nights, the quietest hours for the nightly and the busiest (#185)
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115); the gate builds by hour, summed over the nights, the quietest hours for the nightly and the busiest (#185); every repository whose nightly published no report named, and why: a runner lost three times, only a summary saying it left no findings, its nightly never run, a pipeline not read, still running (#220)
 ```
 
 ## Build pipeline
@@ -1448,8 +1455,9 @@ tacplus#340's land build got no runner in 15 min): a land's build waits on a run
 on nobody. The fan-out runs `BUILD_NIGHTLY_SLOTS` repositories at a time (1 in `ci/build.gitlab-ci.yml`): the nth
 repository's plan and trigger hold the resource group `nightly-slot-<n mod slots>`, the trigger until its child
 pipeline is done, so the next waits; and every job of a nightly runs on `BUILD_NIGHTLY_TAGS` (the build runner's
-`arm64, build` until the cluster's runner file serves an entry of its own, `arm64, build-nightly`, whose `concurrent`
-leaves the pool room; a build's jobs never). Its hour is the quietest of the lands' builds: the nightly recap's
+`arm64, build` until the cluster's entry of its own, `arm64, build-nightly`, is registered: tacplus-dev/cluster#46 on
+the spot pool at a PriorityClass that preempts the report builds and that a land's build preempts, with build's ceilings,
+and its registration tacplus-dev/cloud#116, looper#220; a build's jobs never). Its hour is the quietest of the lands' builds: the nightly recap's
 build hours ([Nightly recap](#nightly-recap)).
 The schedule: `{"nightly": true}`, on `main`. A release's `sbom-<repo>` makes the SBOM of the image `publish-<repo>` pushed.
 
