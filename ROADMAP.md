@@ -67,6 +67,7 @@ Done (moved from Next on 2026-11-05):
 - Record every miss of a repository's gate map when the full check of main is red (#253; the panel's item 11). Hub, at Jody's request, 2026-11-26 (`tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`; "dont wait on me unless you absolutely have to").
 - Release records for seatrials: fleet-seatrials reads them, the record names its tacplus, a green main release triggers seatrials (#262; tacplus-dev/fleet-seatrials#82). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
 - ci/build.gitlab-ci.yml pins a looper image that carries the release builds (#261; tacplus-dev/cloud#112). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
+- A follow-up issue the looper files as the stated half of an approved, roadmapped parent inherits the parent's approval and ROADMAP link (#264). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-26.
 
 ## Later
 - A protected release line with review, instead of pushing to main (README)
