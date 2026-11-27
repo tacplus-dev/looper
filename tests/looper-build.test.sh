@@ -33,7 +33,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=stub -keyout "$SRV/k
 echo "$WRITE_TOKEN" > "$SRV/writers"
 work="$TMP/demo"; git init -q "$work"
 LOCK="tacplus: 2.6.1
-build_image: us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A"
+build_image: us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A"
 declare -A SHA
 case_commit() { # name justfile-body [lock]
   git -C "$work" checkout -q --orphan "$1"
@@ -63,9 +63,9 @@ case_commit chatty 'gates:
     for i in 1 2 3 4 5; do echo "still going $i"; sleep 1; done' "$LOCK"
 case_commit nopin "$PASS_GATES"
 case_commit tagpin "$PASS_GATES" "tacplus: 2.6.1
-build_image: us-docker.pkg.dev/jody1-328023/tacplus/build:2.6"
+build_image: us-docker.pkg.dev/tags-example/tacplus/build:2.6"
 case_commit otherline "$PASS_GATES" "tacplus: 2.6.1
-build_image: us-docker.pkg.dev/jody1-328023/tacplus/build:2.5.3@$DIGEST_A"
+build_image: us-docker.pkg.dev/tags-example/tacplus/build:2.5.3@$DIGEST_A"
 printf 'FROM scratch\nCOPY data.txt /\n' > "$work/Dockerfile"
 git -C "$work" checkout -q pass; printf 'FROM scratch\nCOPY data.txt /\n' > "$work/Dockerfile"
 git -C "$work" add Dockerfile; git -C "$work" commit -qm "a Dockerfile"; SHA[release]="$(git -C "$work" rev-parse HEAD)"
@@ -531,7 +531,7 @@ case "\$method \$url" in
     cp "$TMP/verify-record" "\$out" ;;
   # Artifact Registry's manifest of the release (publish's check for an image already there): \$TMP/existing, else 404;
   # \$TMP/registry-code another answer.
-  "GET https://us-docker.pkg.dev/v2/jody1-328023/tacplus/demo/manifests/"*|"GET https://us-docker.pkg.dev/v2/tacplus-ci/releases/demo/manifests/"*)
+  "GET https://us-docker.pkg.dev/v2/tags-example/tacplus/demo/manifests/"*|"GET https://us-docker.pkg.dev/v2/tacplus-ci/releases/demo/manifests/"*)
     echo "manifest \$auth\$([[ "\$url" != */tacplus-ci/releases/* ]] || echo " releases")" >> "$TMP/api.log"
     code=404; [[ -f "$TMP/existing" ]] && code=200; [[ -f "$TMP/registry-code" ]] && code="\$(cat "$TMP/registry-code")"
     [[ "\$code" != 200 ]] || cp "$TMP/existing" "\$out"
@@ -780,7 +780,7 @@ build() { # [VAR=value...] -- args
     GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
     TACPLUS_READER_APP_ID="$APP_ID" TACPLUS_READER_INSTALLATION_ID="$INSTALLATION" TACPLUS_READER_APP_KEY="$KEY" \
     CI_JOB_TOKEN=glcbt-stub CI_PIPELINE_URL=https://gitlab.com/tacplus-dev/build/-/pipelines/1 \
-    BUILD_REPO=demo BUILD_OUT="$OUT" "${e[@]}" "${CMD:-$ROOT/looper-build}" "$@")
+    BUILD_REPO=demo BUILD_OUT="$OUT" BUILD_REGISTRY=us-docker.pkg.dev/tags-example/tacplus "${e[@]}" "${CMD:-$ROOT/looper-build}" "$@")
 }
 verdict_is() { # expected (a prefix)
   [[ -f "$OUT/build-verdict" ]] || fail "no build-verdict"
@@ -791,7 +791,7 @@ verdict_is() { # expected (a prefix)
 NAME="plan: the gates job runs in the pinned image, on the build runner"
 build BUILD_SHA="${SHA[pass]}" -- plan 2>"$TMP/err" || fail "plan failed"
 y="$OUT/build-gates.yml"
-grep -qxF "  image: \"us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A\"" "$y" || fail "not the pinned image: $(cat "$y" | head -8)"
+grep -qxF "  image: \"us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A\"" "$y" || fail "not the pinned image: $(cat "$y" | head -8)"
 grep -qxF "  tags: [arm64, build]" "$y" || fail "not on the build runner"
 grep -qxF "    BUILD_SHA: \"${SHA[pass]}\"" "$y" || fail "not the commit"
 # Its own timeout, a report job's longest (looper#140): not the project's default.
@@ -833,7 +833,7 @@ pass
 
 NAME="plan: a pin by tag, not digest, fails"
 if build BUILD_SHA="${SHA[tagpin]}" -- plan 2>"$TMP/err"; then fail "planned with a tag"; fi
-verdict_is "fail: tacplus.lock: build_image: 'us-docker.pkg.dev/jody1-328023/tacplus/build:2.6' must name the image by digest"
+verdict_is "fail: tacplus.lock: build_image: 'us-docker.pkg.dev/tags-example/tacplus/build:2.6' must name the image by digest"
 pass
 
 NAME="plan: an image of another line than the pin fails"
@@ -1265,7 +1265,7 @@ pass
 
 # The pinned image's own tacplus (looper#137): a tacplus project's gates run
 # with TACPLUS_BIN=tacplus, once the job's image is the one tacplus.lock pins.
-PINNED="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A"
+PINNED="us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A"
 mkdir -p "$TMP/image-bin"
 printf '#!/bin/sh\necho "image tacplus $*"\n' > "$TMP/image-bin/tacplus"; chmod +x "$TMP/image-bin/tacplus"
 NAME="gates: a tacplus project's gates run the pinned image's own tacplus, not a wrapper that needs Docker"
@@ -1278,9 +1278,9 @@ grep -qxF "generated tacplus=tacplus" "$OUT/gates.log" || fail "just generated r
 pass
 
 NAME="gates: a job in another image than tacplus.lock pins fails, and runs no gate"
-if build BUILD_SHA="${SHA[tacplus]}" CI_JOB_IMAGE="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.2@$DIGEST_A" \
+if build BUILD_SHA="${SHA[tacplus]}" CI_JOB_IMAGE="us-docker.pkg.dev/tags-example/tacplus/build:2.6.2@$DIGEST_A" \
      PATH="$TMP/image-bin:$TMP/bin:$PATH" -- gates 2>"$TMP/err"; then fail "passed"; fi
-verdict_is "fail: the job runs in us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.2@$DIGEST_A, not the build image tacplus.lock pins ($PINNED)"
+verdict_is "fail: the job runs in us-docker.pkg.dev/tags-example/tacplus/build:2.6.2@$DIGEST_A, not the build image tacplus.lock pins ($PINNED)"
 [[ ! -s "$OUT/gates.log" ]] || fail "the gates ran: $(cat "$OUT/gates.log")"
 pass
 
@@ -1540,7 +1540,7 @@ pass
 
 NAME="publish: rootless BuildKit, reproducible, pushed with a federated token, its digest and archive kept; no Docker"
 build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
-img="us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3@$(cat "$TMP/digest")"
+img="us-docker.pkg.dev/tags-example/tacplus/demo:1.2.3@$(cat "$TMP/digest")"
 [[ "$(cat "$OUT/image")" == "$img" ]] || fail "image $(cat "$OUT/image")"
 [[ -s "$OUT/image.tar" ]] || fail "no image.tar for the SBOM job"
 [[ ! -s "$TMP/docker.log" ]] || fail "used Docker: $(cat "$TMP/docker.log")"
@@ -1552,7 +1552,7 @@ for o in "--frontend dockerfile.v0" "--opt platform=linux/amd64,linux/arm64" "--
          "--opt label:org.opencontainers.image.revision=${SHA[release]}" \
          "--opt label:org.opencontainers.image.source=https://github.com/tacplus-dev/demo" \
          "--output type=oci,dest=$OUT/image.tar,rewrite-timestamp=true" \
-         "--output type=image,name=us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3,push=true,oci-mediatypes=true,rewrite-timestamp=true"; do
+         "--output type=image,name=us-docker.pkg.dev/tags-example/tacplus/demo:1.2.3,push=true,oci-mediatypes=true,rewrite-timestamp=true"; do
   grep -q -- " $o" "$TMP/buildctl.log" || fail "buildctl without $o: $(cat "$TMP/buildctl.log")"
 done
 grep -qxF "auth oauth2accesstoken:ya29.stub" "$TMP/buildctl.log" || fail "not pushed with the federated token"
@@ -1596,7 +1596,7 @@ grep -q "no tacplus-image-build in this image: host Docker" "$TMP/err" || fail "
 [[ "$(grep -c "^SOURCE_DATE_EPOCH=$epoch\$" "$TMP/docker.log")" == 2 ]] || fail "not built twice at the commit's time"
 grep -q -- "--provenance=false --sbom=false" "$TMP/docker.log" || fail "attestations"
 grep -q -- "--output type=oci,dest=$OUT/image.tar,rewrite-timestamp=true" "$TMP/docker.log" || fail "no reproducible oci build"
-grep -q -- "--output type=image,name=us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3,push=true,oci-mediatypes=true,rewrite-timestamp=true" \
+grep -q -- "--output type=image,name=us-docker.pkg.dev/tags-example/tacplus/demo:1.2.3,push=true,oci-mediatypes=true,rewrite-timestamp=true" \
   "$TMP/docker.log" || fail "no reproducible push"
 grep -q -- "--driver-opt image=moby/buildkit:v[0-9.]*@sha256:" "$TMP/docker.log" || fail "the builder is not pinned"
 grep -qxF "auth oauth2accesstoken:ya29.stub" "$TMP/docker.log" || fail "not pushed with the federated token"
@@ -1625,7 +1625,7 @@ build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed"
 ! grep -q "push=true" "$TMP/buildctl.log" || fail "pushed again"
 echo "sha256:$(printf 'b%.0s' {1..64})" > "$TMP/digest"
 if build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err"; then fail "published over another digest"; fi
-verdict_is "fail: us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3 is already published as"
+verdict_is "fail: us-docker.pkg.dev/tags-example/tacplus/demo:1.2.3 is already published as"
 rm "$TMP/existing"
 pass
 
@@ -1633,13 +1633,13 @@ NAME="publish: a registry that cannot say whether the release is there publishes
 echo 500 > "$TMP/registry-code"
 if build "${REL[@]}" "${BK[@]}" -- publish 2>"$TMP/err"; then fail "published"; fi
 rm "$TMP/registry-code"
-verdict_is "fail: the registry answered 500 for us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3"
+verdict_is "fail: the registry answered 500 for us-docker.pkg.dev/tags-example/tacplus/demo:1.2.3"
 ! grep -q "push=true" "$TMP/buildctl.log" || fail "pushed"
 pass
 
 NAME="publish: --dry-run builds and pushes nothing, with no GCP identity"
 build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 "${BK[@]}" -- publish --dry-run 2>"$TMP/err" || fail "dry run failed"
-[[ "$(cat "$OUT/image")" == "us-docker.pkg.dev/jody1-328023/tacplus/demo:1.2.3@$(cat "$TMP/digest")" ]] || fail "$(cat "$OUT/image")"
+[[ "$(cat "$OUT/image")" == "us-docker.pkg.dev/tags-example/tacplus/demo:1.2.3@$(cat "$TMP/digest")" ]] || fail "$(cat "$OUT/image")"
 ! grep -q "push=true" "$TMP/buildctl.log" || fail "pushed"
 [[ ! -s "$TMP/gcloud.log" ]] || fail "federated: $(cat "$TMP/gcloud.log")"
 pass
@@ -1670,7 +1670,7 @@ printf 'repo demo\nkind nightly\nchecked %s\nverified %s\nresult pass\nrun %s\n'
 build BUILD_SHA= BUILD_VERIFY=true "${VAPI[@]}" -- plan 2>"$TMP/err" || fail "verify plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
 y="$OUT/build-gates.yml"
 sed -n '/^verify-demo:$/,/^verify-report:$/p' "$y" > "$TMP/v.yml"
-grep -qxF "  image: \"us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A\"" "$TMP/v.yml" || fail "not the pinned image: $(cat "$TMP/v.yml" | head -20)"
+grep -qxF "  image: \"us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A\"" "$TMP/v.yml" || fail "not the pinned image: $(cat "$TMP/v.yml" | head -20)"
 grep -qxF "  tags: [arm64, build]" "$TMP/v.yml" || fail "not on the build runner"
 grep -qxF "    BUILD_SHA: \"$(git -C "$work" rev-parse main)\"" "$TMP/v.yml" || fail "not main's head"
 grep -qxF "    BUILD_VERIFY_SINCE: \"${SHA[verify1]}\"" "$TMP/v.yml" || fail "not the last verified commit: $(grep BUILD_ "$TMP/v.yml")"
@@ -1748,7 +1748,7 @@ grep -qxF "verify ran job-token=none key=none" "$OUT/verify/verify.log" || fail 
 pass
 
 NAME="verify: in the pinned image, just verify runs the image's own tacplus (looper#137)"
-build BUILD_SHA="${SHA[verify2]}" BUILD_TAG=v1.2.3 CI_JOB_IMAGE="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A" \
+build BUILD_SHA="${SHA[verify2]}" BUILD_TAG=v1.2.3 CI_JOB_IMAGE="us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A" \
   PATH="$TMP/image-bin:$TMP/bin:$PATH" -- verify 2>"$TMP/err" || fail "the verification failed: $(cat "$TMP/err")"
 grep -qxF "verify tacplus=tacplus" "$OUT/verify/verify.log" || fail "not the image's tacplus: $(cat "$OUT/verify/verify.log")"
 pass
@@ -3157,7 +3157,7 @@ sed -n '/^release-report:$/,/^[^ ]/p' "$y" > "$TMP/rr.yml"
 for l in '  stage: .post' '  when: always' '  resource_group: release-demo-main' '  dependencies: ["sbom-demo"]' \
          "    BUILD_SHA: \"${SHA[release]}\"" '    BUILD_RELEASE: "main"' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' \
          '    - looper-build release-report' '    paths: [release/]' \
-         "    BUILD_TACPLUS_COMMIT: \"$TPC\"" "    BUILD_PIN_IMAGE: \"us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A\"" \
+         "    BUILD_TACPLUS_COMMIT: \"$TPC\"" "    BUILD_PIN_IMAGE: \"us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A\"" \
          '  environment:' '    name: seatrials-trigger' '    action: access'; do
   grep -qxF -- "$l" "$TMP/rr.yml" || fail "release-report lacks '$l': $(cat "$TMP/rr.yml")"
 done
@@ -3178,15 +3178,26 @@ for l in '  environment:' '    name: registry' "      aud: https://iam.googleapi
          '    BUILD_REGISTRY: "us-docker.pkg.dev/tacplus-ci/releases"' "    GCP_RELEASE_WIF_PROVIDER: \"$RPROV\"" "    GCP_RELEASE_PUBLISH_SA: \"$RSA\""; do
   grep -qxF -- "$l" "$TMP/publish.yml" || fail "the publish job lacks '$l': $(cat "$TMP/publish.yml")"
 done
-! grep -q 'GCP_WIF_PROVIDER\|jody1-328023\|GCP_PUBLISH_SA' "$TMP/publish.yml" || fail "a branch release's publish names the tags' registry or provider: $(cat "$TMP/publish.yml")"
+! grep -q 'GCP_WIF_PROVIDER\|tags-example\|GCP_PUBLISH_SA' "$TMP/publish.yml" || fail "a branch release's publish names the tags' registry or provider: $(cat "$TMP/publish.yml")"
 "$ROOT/looper-ci-lint" "$OUT/build-gates.yml" > "$TMP/lint" 2>&1 || fail "not valid GitLab CI: $(cat "$TMP/lint")"
 build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 "${RR[@]}" -- plan 2>"$TMP/err" ||
   fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
 sed -n '/^publish-demo:$/,/^  script:$/p' "$OUT/build-gates.yml" > "$TMP/publish.yml"
-for l in '      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER' '    BUILD_REGISTRY: "us-docker.pkg.dev/jody1-328023/tacplus"'; do
+for l in '      aud: https://iam.googleapis.com/$GCP_WIF_PROVIDER' '    BUILD_REGISTRY: "us-docker.pkg.dev/tags-example/tacplus"'; do
   grep -qxF -- "$l" "$TMP/publish.yml" || fail "a tag's publish lacks '$l': $(cat "$TMP/publish.yml")"
 done
 ! grep -q 'GCP_RELEASE_\|tacplus-ci' "$TMP/publish.yml" || fail "a tag's publish is the release registry's: $(cat "$TMP/publish.yml")"
+pass
+
+NAME="plan, publish: a tag's release with no BUILD_REGISTRY is refused: there is no default registry (looper#265)"
+if build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_REGISTRY= -- plan 2>"$TMP/err"; then fail "planned a tag with no registry"; fi
+verdict_is "fail: a release of demo v1.2.3 publishes to BUILD_REGISTRY, which this pipeline does not set"
+[[ ! -e "$OUT/build-gates.yml" ]] || fail "wrote a tag's release with no registry"
+if build BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 BUILD_REGISTRY= "${BK[@]}" -- publish --dry-run 2>"$TMP/err"; then
+  fail "published a tag with no registry"
+fi
+verdict_is "fail: a release of demo v1.2.3 publishes to BUILD_REGISTRY, which this pipeline does not set"
+! grep -q 'jody1-328023' "$ROOT/looper-build" || fail "looper-build names jody1-328023 (tacplus-dev/cloud#15): $(grep -n jody1-328023 "$ROOT/looper-build")"
 pass
 
 NAME="plan: a branch release with no release registry, or a malformed one, is refused, never published to the tags' (looper#265)"
@@ -3314,13 +3325,13 @@ NAME="publish: a branch release is its image <branch>-<commit> by digest in the 
 # As the plan writes its job (looper#265), with the project's provider and account, the tags', in its environment too.
 RBP=(BUILD_RELEASE=main CI_COMMIT_BRANCH=main CI_COMMIT_REF_NAME=main CI_COMMIT_REF_PROTECTED=true CI_API_V4_URL=https://gitlab.example/api/v4 CI_PROJECT_ID=42
      BUILD_SHA="${SHA[release]}" BUILD_REGISTRY=us-docker.pkg.dev/tacplus-ci/releases GCP_RELEASE_WIF_PROVIDER="$RPROV" GCP_RELEASE_PUBLISH_SA="$RSA"
-     GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g GCP_PUBLISH_SA=tags@jody1-328023.iam.gserviceaccount.com)
+     GCP_ID_TOKEN=eyJ.stub.id GCP_WIF_PROVIDER=projects/1/locations/global/workloadIdentityPools/p/providers/g GCP_PUBLISH_SA=tags@tags-example.iam.gserviceaccount.com)
 build "${RBP[@]}" "${BK[@]}" -- publish 2>"$TMP/err" || fail "publish failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
 RIMG="us-docker.pkg.dev/tacplus-ci/releases/demo:main-${SHA[release]:0:12}@$(cat "$TMP/digest")"
 [[ "$(cat "$OUT/image")" == "$RIMG" ]] || fail "image $(cat "$OUT/image")"
 grep -q "^gcloud iam workload-identity-pools create-cred-config $RPROV --service-account=$RSA " "$TMP/gcloud.log" ||
   fail "not federated as the release account: $(cat "$TMP/gcloud.log")"
-! grep -q 'providers/g\|jody1-328023' "$TMP/gcloud.log" || fail "federated through the tags' provider: $(cat "$TMP/gcloud.log")"
+! grep -q 'providers/g\|tags-example' "$TMP/gcloud.log" || fail "federated through the tags' provider: $(cat "$TMP/gcloud.log")"
 grep -qxF "manifest Bearer ya29.stub releases" "$TMP/api.log" || fail "the release registry was not asked: $(cat "$TMP/api.log")"
 grep -qxF "auth oauth2accesstoken:ya29.stub" "$TMP/buildctl.log" || fail "not pushed with the federated token"
 grep -q -- "--output type=image,name=us-docker.pkg.dev/tacplus-ci/releases/demo:main-${SHA[release]:0:12},push=true" "$TMP/buildctl.log" ||
@@ -3340,7 +3351,7 @@ done
 pass
 
 # release-report's inputs from its plan (looper#262): the tacplus a release is built with.
-PIN="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A"
+PIN="us-docker.pkg.dev/tags-example/tacplus/build:2.6.1@$DIGEST_A"
 RT=("${RB[@]}" BUILD_TACPLUS_COMMIT="$TPC" BUILD_PIN_IMAGE="$PIN")
 
 NAME="release-report: green, the record moves to the commit, and the release's own status is green (looper#252)"
@@ -3413,7 +3424,7 @@ build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_TACPLUS_COMMIT=none BUILD_PIN
 grep -qxF "image $RIMG" "$TMP/put/release-demo/main/record" && ! grep -q '^tacplus ' "$TMP/put/release-demo/main/record" ||
   fail "$(cat "$TMP/put/release-demo/main/record" 2>&1)"
 for e in "BUILD_TACPLUS_COMMIT= BUILD_PIN_IMAGE=$PIN" "BUILD_TACPLUS_COMMIT=v2.6.1 BUILD_PIN_IMAGE=$PIN" \
-         "BUILD_TACPLUS_COMMIT=$TPC BUILD_PIN_IMAGE=us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1"; do
+         "BUILD_TACPLUS_COMMIT=$TPC BUILD_PIN_IMAGE=us-docker.pkg.dev/tags-example/tacplus/build:2.6.1"; do
   rm -rf "$TMP/put"
   # shellcheck disable=SC2086
   if build "${RB[@]}" BUILD_SHA="${SHA[release]}" $e BUILD_OUT="$A" -- release-report 2>"$TMP/err"; then fail "released with $e"; fi

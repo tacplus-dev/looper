@@ -1275,7 +1275,7 @@ jobs run `looper-build`, from this image.
   new child works under that parent too. A security job whose runner is lost on every try (or that times out) sets no verdict.
 - **`publish-<repo>`**, on a release (below), a job of the child pipeline once the gates, the security checks and
   the formal verification passed: the repository's `Dockerfile` built for `linux/amd64` and `linux/arm64`, pushed as
-  `us-docker.pkg.dev/jody1-328023/tacplus/<repo>:X.Y.Z` (tacplus-dev/tacplus#223), its digest recorded in the
+  `<BUILD_REGISTRY>/<repo>:X.Y.Z` (a branch release's: below), its digest recorded in the
   artifact `image`, its OCI archive in `image.tar` (7 days) for **`sbom-<repo>`**, in the looper image (Syft, below).
   **No host Docker** (looper#73): it runs in `BUILD_BUILDER_IMAGE`, a build image with rootless BuildKit
   (`tacplus-image-build`, tacplus-dev/tacplus#315), whose daemon runs in the job's own container (the in-cluster
@@ -1365,8 +1365,9 @@ ref). `ci/build.gitlab-ci.yml` carries the three values from cloud's ci stack ou
 job, the provider as its `id_token`'s literal audience, by those names (a project variable takes precedence over a
 job's of the same name, so a job's `GCP_WIF_PROVIDER` would lose to the tags' provider); a release with any of them
 unset is refused in its plan (red, nothing built or published), never published to the tags' registry. A tag's
-release (`vX.Y.Z`) is unchanged: `us-docker.pkg.dev/jody1-328023/tacplus`, through `GCP_WIF_PROVIDER`, the path every
-`tacplus.lock`'s `build_image` pins.
+release (`vX.Y.Z`) goes through `GCP_WIF_PROVIDER` to the build project's `BUILD_REGISTRY`, which has no default (the
+project that held it is being deleted, tacplus-dev/cloud#15): a tag's release with none is refused in its plan and its
+publish, and where tags publish (the path `tacplus.lock`s' `build_image` pins) is tacplus-dev/tacplus#223's to move.
 
 - **green** (the SBOM job left the image by digest): the release's **record**, the build project's generic package
   `release-<repo>`, version `main` or `release-X.Y`, file `record` (`repo`, `branch`, `commit`, `image` by digest,

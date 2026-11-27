@@ -71,7 +71,10 @@ BUILD_GITHUB_URL="${BUILD_GITHUB_URL:-https://github.com}"
 BUILD_GITHUB_API="${BUILD_GITHUB_API:-https://api.github.com}"
 BUILD_OUT="${BUILD_OUT:-$PWD}"
 BUILD_RUNNER_TAGS="${BUILD_RUNNER_TAGS:-arm64, build}"
-BUILD_REGISTRY="${BUILD_REGISTRY:-us-docker.pkg.dev/jody1-328023/tacplus}"
+# Where a tag's release publishes: no default (looper#265, tacplus-dev/cloud#15):
+# a tag's release with none is refused. A branch release's is its plan's
+# BUILD_RELEASE_REGISTRY.
+BUILD_REGISTRY="${BUILD_REGISTRY:-}"
 BUILD_PLATFORMS="${BUILD_PLATFORMS:-linux/amd64,linux/arm64}"
 # A branch release's verdict is a status of its own (looper#252): a commit
 # green in a land's build is not yet released.
@@ -154,7 +157,7 @@ Environment: BUILD_REPO, BUILD_SHA, BUILD_TAG (a release, vX.Y.Z), BUILD_RELEASE
 commit is main-green's, or release/X.Y, its head, which the plan reads, BUILD_SHA empty; branches: each release/X.Y
 branch with something new since its record; with BUILD_REPO empty, every pinned repository's), BUILD_RELEASE_REGISTRY,
 GCP_RELEASE_WIF_PROVIDER and GCP_RELEASE_PUBLISH_SA (where a branch release publishes and as whom: its plan writes
-them into its publish job; a tag's, BUILD_REGISTRY, GCP_WIF_PROVIDER and GCP_PUBLISH_SA), BUILD_NIGHTLY (true: the
+them into its publish job; a tag's, BUILD_REGISTRY, no default, GCP_WIF_PROVIDER and GCP_PUBLISH_SA), BUILD_NIGHTLY (true: the
 nightly security checks of the main branch, whose head the plan reads when BUILD_SHA is empty; with BUILD_REPO
 empty too, the plan's child pipeline is every pinned repository's nightly, BUILD_NIGHTLY_SLOTS of them at a
 time; a nightly's jobs on BUILD_NIGHTLY_TAGS, default the build runner's), BUILD_VERIFY
@@ -489,6 +492,8 @@ check_release() { # dir
     return 0
   fi
   [[ -n "${BUILD_TAG:-}" ]] || return 0
+  [[ -n "$BUILD_REGISTRY" ]] ||
+    verdict fail "a release of $BUILD_REPO $BUILD_TAG publishes to BUILD_REGISTRY, which this pipeline does not set (no default: tacplus-dev/tacplus#223 names where a tag's release goes)"
   [[ "${CI_COMMIT_TAG:-}" == "$BUILD_REPO/$BUILD_TAG" ]] ||
     verdict fail "a release build of $BUILD_REPO $BUILD_TAG runs on the build project's protected tag $BUILD_REPO/$BUILD_TAG, not '${CI_COMMIT_REF_NAME:-}'"
   local at

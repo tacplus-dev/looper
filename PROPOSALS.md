@@ -4,15 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
-- **Branch releases published to tacplus-ci's release registry** (2026-11-26, #265; tacplus-dev/cloud#115, design B
-  approved there): a branch release publishes to `us-docker.pkg.dev/jody1-328023/tacplus`, which grants
-  fleet-seatrials#82's `seatrials-deploy@tacplus-dev` nothing and is being emptied (cloud#15). `publish_jobs` would write
-  a branch release's publish with the release provider's literal `aud`, `BUILD_REGISTRY` from `BUILD_RELEASE_REGISTRY`,
-  and `GCP_RELEASE_WIF_PROVIDER`/`GCP_RELEASE_PUBLISH_SA` under those names (a project variable beats a job's yaml
-  variable of the same name); `registry_login` picks the pair by kind, and the plan refuses a branch release that has
-  none. The three values sit in `ci/build.gitlab-ci.yml` from cloud's `releases` output. Tag releases stay unchanged
-  (every `tacplus.lock` pins that path). The record's `image` moves once, with no format change. Waits on Jody: file or
-  project variables, refuse or fall back, the order with #261's re-pin, and whether tags move later.
+- **What still names jody1-328023** (2026-11-27, #265; tacplus-dev/cloud#15, Jody wants the project deleted once
+  nothing uses it): since #265 `looper-build` has no default registry, so a tag's release publishes only where the
+  build project's `BUILD_REGISTRY` says (tacplus-dev/tacplus#223's to set, with `GCP_WIF_PROVIDER`). `runner-image`
+  still defaults `RUNNER_IMAGE_PROJECT` to jody1-328023 (and its test pins it), and README's Infrastructure and
+  runner sections describe jody1-328023's interim runners (#43, closed when those VMs are gone). Retiring
+  `runner-image` with #43, and cutting those sections to a line of history, would leave the repository naming the
+  project nowhere.
 - **The VM tags and the split manager with no job left** (2026-11-26, #73): `looper-dispatch plan` still puts a
   repository without build jobs on the VM runners' tags (`arm64, autoscale`) and splits its manager into a verdict and
   a merge job (#90). Since #73 an unpinned repository's report and land stop at once, so only a pinned one without the
@@ -36,13 +34,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   a test that looper-docker and its broker stay retired, so the step passes and main's image still publishes. A
   land on an issue with `looper:workflows` could drop it from the step (or run gates.yaml's full there, #58's entry)
   and fold its checks into `tests/repo-looper.test.sh`.
-- **The build pipeline's looper image re-pinned to one with release builds** (2026-11-26, #261): `ci/build.gitlab-ci.yml`
-  pins main-1fca965's image (#246). Its `looper-build` predates #252, so a `"release"` run executes an old `plan` that
-  ignores `BUILD_RELEASE`. tacplus-dev/cloud#112's release schedules copy the file at the commit that re-pins it. The
-  fix is to pin main's attested image at or after b6f80ed (main-9c8e17b, `sha256:ab11ea3e…`), verified with
-  `gh attestation verify`. Waits on Jody: whether a re-pin is a feature or a chore, and which image to pin. Since
-  then main's newest image is main-a8e4e29 (`sha256:00fdcde7…`, a ROADMAP-only commit past 9c8e17b). A member approved
-  cloud#112 on that issue; no ROADMAP.md links #261 yet.
 - **What the record's `tacplus` line is checked for, and the builder stage** (2026-11-26, #262; fleet-seatrials#82,
   D4): a release's record names the commit of its pin's tacplus release and the build image (`tacplus <commit>
   <image>`), but services pin released tacplus while `release-tacplus/main/record` is main-green's, so D4's check
