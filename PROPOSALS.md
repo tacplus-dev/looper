@@ -4,6 +4,14 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **An exception that accepts nothing told** (2026-11-27, #271): `security-exceptions.yaml` still accepted
+  GO-2026-6278 and GO-2026-6974 in the image's gh two days after 541f9ee built gh with both fixes, and only a
+  nightly scan's hand check noticed. The policy reads exceptions in two places, a tree run and the image build's
+  `looper-scan image`, each against the exceptions in this repository. Where an entry has a `where`, the run that
+  reads that path (here the image's) could list it under the summary's warnings when it matched no finding there:
+  "exception GO-2026-6974 (usr/local/bin/gh) accepted nothing: drop it". This is how the summary already warns about an entry
+  with no `where`. A stale entry would then be dropped before it could silently accept a regression, as the baseline's
+  stale entries would be (the 2026-11-13 proposal above).
 - **The looper VMs roll onto main's image by themselves** (2026-11-27, #268; tacplus-dev/cloud#122): a VM runs the
   looper image cloud's `looper_vms` pins by digest, moved by hand, so a fix to `looper-vm` reaches no VM until someone
   bumps it and applies the ci stack: #267's dockerd sidecar merged at 07:15Z and tacplus#947's images build at 07:42Z
