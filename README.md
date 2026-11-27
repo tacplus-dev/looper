@@ -2498,8 +2498,9 @@ one's report and land stop at once, saying to pin it first); in tacplus-dev/buil
 `BUILD_BUILDER_IMAGE` is empty (on `BUILD_DOCKER_TAGS`, `arm64, build-docker`, the VM build pool's own tag: [Build pipeline](#build-pipeline), looper#73, looper#172). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
 jobs' alone; no job of `ci/tacplus-dev.gitlab-ci.yml` asks for them (`tests/looper-dispatch.test.sh`: ci-control), and
 `LOOPER_CONTROL_TAGS` names the control runner's (default `arm64, control`). The hub unpauses `control` once this is on
-main; tacplus-dev/cloud#11 (*No VMs outside GKE*) removes the VM pools when nothing is left on them, and looper#43 closes
-when they are gone.
+main; tacplus-dev/cloud#113 (closed 2026-11-27) removed the `ci` stack's pools and manager, tacplus-dev/cloud#11 (*No VMs
+outside GKE*, closed 2026-11-27) refuses any other VM and lists jody1-328023's interim VMs for Jody to delete, and
+looper#43 closes when they are gone (with the project, tacplus-dev/cloud#15).
 
 ### The interim VM runners
 
@@ -2511,7 +2512,9 @@ plugin, driving its own managed instance group `runner-arm64-tacplus` (template
 the hub applies [A fresh VM is ready before its job](#a-fresh-vm-is-ready-before-its-job)): up to 5 workers, size 0 at rest.
 The same tags are also the `shared` pool's of tacplus-dev/cloud's `ci` stack (runner 58534919 *tacplus-ci shared*;
 cloud's README, The pools: one always-on t2a-standard-8 and a second on demand, up to 13 jobs a VM, so not a fresh VM
-per job): looper#43's run of 2026-11-16 (job 18051387188) ran there. Both go with tacplus-dev/cloud#11.
+per job): looper#43's run of 2026-11-16 (job 18051387188) ran there. That pool is gone (tacplus-dev/cloud#113, closed
+2026-11-27); jody1-328023's `gitlab-runner-mgr` and the paused runners 57939705 and 58307468 are unused and go with the
+project (tacplus-dev/cloud#11 lists them for Jody; tacplus-dev/cloud#15).
 
 **Two pools** (looper#55). tacplus's gates ran Kani at 12 GB a child (no longer, looper#74: its reports get 4 GB unless its `gates.yaml` asks more; the pools stand until the recap says otherwise), so on a t2a-standard-8 (8 CPUs, 31 GB) its job
 gets two children; every other repository fits four. tacplus's reports therefore run on a larger pool, the others stay, and so
@@ -2650,9 +2653,9 @@ runtime, so there is no marker file), and one VM per job. `runner/`, `runner-ima
 stay until the redesign's issues retire them. The runner VMs themselves get no fix (Jody, 2026-11-06): they are
 retired (no SSH in any form, and the docker-autoscaler VMs use it). looper#84 (landed 2026-11-16) moved the agents' jobs
 onto the in-cluster control runner; [what still needs Docker](#the-interim-vm-runners) (tacplus's jobs, its nightly scan
-among them, until tacplus#340) follows, and tacplus-dev/cloud#11 then removes the `ci` stack's runner manager and pools and lists
-jody1-328023's interim VMs for Jody to delete. looper#43 closes when they are gone, with no `runner-image measure`
-tables. The steps below are the procedure for jody1-328023's Ubuntu workers, kept as a record.
+among them, until tacplus#340, closed) followed; tacplus-dev/cloud#113 removed the `ci` stack's runner manager and pools, and
+tacplus-dev/cloud#11 (both closed 2026-11-27) lists jody1-328023's interim VMs for Jody to delete with the project
+(tacplus-dev/cloud#15). looper#43 closes when they are gone, with no `runner-image measure` tables. The steps below are the procedure for jody1-328023's Ubuntu workers, kept as a record.
 
 1. **The bake's identity.** It gets a service account that can only manage the bake's own VMs, disks and images, and
    that only tacplus-dev/build's protected main can use, from a web or scheduled run. The build's `GCP_WIF_PROVIDER` is
