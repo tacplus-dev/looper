@@ -1353,9 +1353,9 @@ Its plan resolves the commit once (`build-sha`) and every job builds that commit
 (CodeQL and Trivy, a release's), the formal verification, publish and the SBOM; then **`release-report`** (`.post`, whatever the rest did; one at a time per branch,
 resource group `release-<repo>-<branch>`).
 
-**Publish** is `us-docker.pkg.dev/tacplus-ci/releases/<repo>:<branch>-<commit, 12 hex>` (`main-0123456789ab`), by
+**Publish** is `us-central1-docker.pkg.dev/tacplus-ci/releases/<repo>:<branch>-<commit, 12 hex>` (`main-0123456789ab`), by
 digest, reproducible, never pushed over another digest: the **release registry** (looper#265), which
-tacplus-dev/cloud#115 makes in tacplus-ci as code (no cleanup policy: a deployment pins a release by digest), and
+tacplus-dev/cloud#115 makes in tacplus-ci as code, in `us-central1` (the one region tacplus-ci's policy admits, cloud#120; no cleanup policy: a deployment pins a release by digest), and
 which deployments' accounts (fleet-seatrials' `seatrials-deploy@tacplus-dev`) read to copy a release by digest into
 their own. Its one writer is `release-publish@tacplus-ci.iam.gserviceaccount.com`, which only this project's protected
 `main`, in the environment `registry` (the publish job's), may become: the job's `id_token` goes through the provider

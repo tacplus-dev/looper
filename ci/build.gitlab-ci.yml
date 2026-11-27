@@ -240,12 +240,13 @@ variables:
   # A branch release's publish (looper#265): the release registry in
   # tacplus-ci, written by its one account, which only this project's
   # protected main, in its environment registry, may become (tacplus-dev/cloud
-  # #115: the ci stack's output releases; none is secret). The plan writes
-  # them into the publish job by these names: a project variable would win
-  # over a job's GCP_WIF_PROVIDER. A tag's release publishes to the project's
+  # #115, in us-central1, the region tacplus-ci's policy admits, by #120: the
+  # ci stack's output releases; none is secret). The plan writes them into the
+  # publish job by these names: a project variable would win over a job's
+  # GCP_WIF_PROVIDER. A tag's release publishes to the project's
   # BUILD_REGISTRY (no default: with none it is refused; tacplus-dev/tacplus
   # #223's to set) through its GCP_WIF_PROVIDER.
-  BUILD_RELEASE_REGISTRY: "us-docker.pkg.dev/tacplus-ci/releases"
+  BUILD_RELEASE_REGISTRY: "us-central1-docker.pkg.dev/tacplus-ci/releases"
   GCP_RELEASE_WIF_PROVIDER: "projects/79638967213/locations/global/workloadIdentityPools/gitlab-com/providers/tacplus-dev-build-release"
   GCP_RELEASE_PUBLISH_SA: "release-publish@tacplus-ci.iam.gserviceaccount.com"
   # The nightly (looper#185): a land's build waits on a run and blocks a
