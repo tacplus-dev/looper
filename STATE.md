@@ -294,7 +294,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   a failed trigger logged, never red);
   on a looper VM (`looper-vm`, #238) a pinned GitHub repository's report `--land`s by opening a merge request (#250,
   step 4 of `tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`): its own commits rebased onto
-  `main-green` (main's head until #249 makes it), the set their diff calls for built locally, and only on green
+  `main-green` (main's head until #249 makes it), the set their diff calls for built locally (each local build's
+  gates with a dockerd of their own, a privileged `docker:dind` sidecar as their `DOCKER_HOST`, #267, so an
+  image-building set such as tacplus's `images` can pass on a VM; unchecked on the VM itself yet), and only on green
   `looper/mr-NAME-N` pushed at that commit and its pull request opened with its evidence (commit, base, gate set,
   verdict, the log on the run's checkpoint); red, no verdict or a conflict opens nothing; the issue
   `looper:merge-request` while it is open, freed by the VM's list and the kicker once merged or closed, its next run
