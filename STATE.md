@@ -357,8 +357,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   pools a fresh worker installs and restarts Docker at boot under its first job, which fails in preparation and is
   retried; the VMs get no fix (Jody, 2026-11-06): #84 (closed 2026-11-16) moved the agents' jobs onto the in-cluster
   control runner, and no looper job needs Docker since #73, and
-  tacplus-dev/cloud#11 (*No VMs outside GKE*, in progress) then removes cloud's `ci` pools and manager and lists
-  jody1-328023's interim VMs for Jody to delete; #43 is blocked by cloud#11 and closes when the VMs are gone, with no
+  tacplus-dev/cloud#113 removed cloud's `ci` pools and manager and tacplus-dev/cloud#11 (*No VMs outside GKE*, both closed
+  2026-11-27) lists jody1-328023's interim VMs (unused, runners paused) for Jody to delete with the project; #43 is
+  blocked by tacplus-dev/cloud#15 (jody1-328023 deleted) and closes when the VMs are gone, with no
   `runner-image measure` tables (no looper job has a GitLab `read_api` token to take them); until the hub applies the worker per job (README, Infrastructure, #42), a looper worker
   outlives its jobs: a failed job's containers keep running on it and the autoscaler keeps sending it jobs, even
   once it no longer answers SSH (tacplus, 2026-10-31); README's Credentials (#25) are applied (hub, checked 2026-11-03): the jobs' `GITLAB_TOKEN` is
