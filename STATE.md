@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by looper (#264).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#262).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -282,7 +282,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   `<repo>:<branch>-<commit12>` by digest; `release-report` moves `release-<repo>/<branch>/record` forward only (an
   older build never takes a newer one's place), sets `tacplus-dev/release/<branch>`, and records a red one, which the
   nightly scan files as an approved bug; `ci/build.gitlab-ci.yml` pins main-7c1dc4d's image (#261), whose
-  `looper-build` has them (main-1fca965's, pinned before, ignored `release`);
+  `looper-build` has them (main-1fca965's, pinned before, ignored `release`); the green record names the tacplus it
+  was built with (#262: `tacplus <commit> <build image>`, the pin's release tag's commit, unreadable red, none for
+  `build.lock`), and a main record that moved starts fleet-seatrials' pipeline (its environment-scoped trigger token;
+  a failed trigger logged, never red);
   on a looper VM (`looper-vm`, #238) a pinned GitHub repository's report `--land`s by opening a merge request (#250,
   step 4 of `tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`): its own commits rebased onto
   `main-green` (main's head until #249 makes it), the set their diff calls for built locally, and only on green
@@ -321,7 +324,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   (tacplus-dev/cloud's looper_vms); its status build is the build project's, which the design retires later
   (PROPOSALS.md); branch releases (#252) publish nothing until #249 makes `main-green`, tacplus-dev/cloud#112 adds
   their schedules and publish's identity on the build project's protected main, and the hub copies
-  `ci/build.gitlab-ci.yml` there; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands; a red
+  `ci/build.gitlab-ci.yml` there; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands, and
+  reads them and is triggered once tacplus-dev/cloud#117 sets the build project's job token allowlist, Reporter and
+  `BUILD_SEATRIALS_TRIGGER_TOKEN` (until then `release-report` logs "seatrials not started"); a red
   release is filed at the next nightly scan, not at once (PROPOSALS.md); the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
   `is_error` result) and the `modelUsage` names are the CLI's as of 2026-11-13, unexercised against a spent quota; a
   high model refused mid-run (its quota spent during the run) is not retried on the default: that run ends, and the
