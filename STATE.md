@@ -283,7 +283,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end; release
   builds by branch (#252): the build pipeline's `release` input, `main` building `main-green`'s commit (never main's
   head), `release/X.Y` its head, `branches` or no repo a fan-out of each branch with something new, publishing
-  `<repo>:<branch>-<commit12>` by digest to the release registry `us-docker.pkg.dev/tacplus-ci/releases` as
+  `<repo>:<branch>-<commit12>` by digest to the release registry `us-central1-docker.pkg.dev/tacplus-ci/releases` as
   `release-publish@tacplus-ci` (#265; a tag's release to the build project's `BUILD_REGISTRY`, no default, refused
   without one: tacplus-dev/tacplus#223's to set); `release-report` moves `release-<repo>/<branch>/record` forward only (an
   older build never takes a newer one's place), sets `tacplus-dev/release/<branch>`, and records a red one, which the
