@@ -4,6 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **A run's git identity and refs set up by the VM, not by the run** (2026-11-27, #274): on looper-vm-tacplus-dev-9zc5
+  the run user had no git identity (its `~/.gitconfig` without `user.name`, no `GIT_AUTHOR_*` in its environment), so
+  `--checkpoint` and `--land` failed until the run set one in its worktree's config; and the clone's `.git/refs/looper`
+  was root's, so the checkpoint's `update_ref` of `refs/looper/looper/looper-274` failed (harmless so far). On
+  looper-vm-tacplus-dev-3sr1 and the VM of the run after, both were right. `looper-vm` could set the run user's
+  identity and chown the clone's refs when it creates the user (#68), and a run could fail at its start, naming
+  what is missing, rather than at its first checkpoint.
 - **An exception that accepts nothing told** (2026-11-27, #271): `security-exceptions.yaml` still accepted
   GO-2026-6278 and GO-2026-6974 in the image's gh two days after 541f9ee built gh with both fixes, and only a
   nightly scan's hand check noticed. The policy reads exceptions in two places, a tree run and the image build's
