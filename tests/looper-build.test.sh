@@ -537,7 +537,8 @@ case "\$method \$url" in
     [[ "\$code" != 200 ]] || cp "$TMP/existing" "\$out"
     printf '%s' "\$code" ;;
   # A branch release's records (looper#252): \$TMP/pkg/release-<repo>/<branch>/<file>.
-  "GET https://gitlab.example/api/v4/projects/42/packages/generic/release-"*)
+  # And the nightly gates' last record (looper#253): \$TMP/pkg/gates-<repo>/latest/record.
+  "GET https://gitlab.example/api/v4/projects/42/packages/generic/release-"*|"GET https://gitlab.example/api/v4/projects/42/packages/generic/gates-"*)
     echo "package-get \$auth \${url#*/generic/}" >> "$TMP/api.log"
     f="$TMP/pkg/\${url#*/generic/}"; [[ -f "\$f" ]] || exit 22
     if [[ -n "\$out" ]]; then cp "\$f" "\$out"; else cat "\$f"; fi ;;
@@ -1826,6 +1827,30 @@ OUT="$RED_GATES"
 build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
 [[ "$(grec result)" == none && "$(grec why)" == "the gates job left no verdict"* ]] || fail "$(cat "$OUT/gates-report/record")"
 grep -q "gates-demo/latest/record " "$TMP/api.log" || fail "no verdict is not published: $(cat "$TMP/api.log")"
+pass
+
+NAME="gates-report: the last green full check and the reds since, carried from the last record (looper#253)"
+mkdir -p "$TMP/pkg/gates-demo/latest"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true BUILD_OUT="$GREEN_OUT" "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+OUT="$GREEN_OUT"
+[[ "$(grec green) $(grec reds)" == "${SHA[pass]} 0" ]] || fail "a green record is not its own last green: $(cat "$OUT/gates-report/record")"
+grep -q "^package-get JOB-TOKEN: glcbt-stub gates-demo/latest/record" "$TMP/api.log" || fail "the last record is not read: $(cat "$TMP/api.log")"
+cp "$OUT/gates-report/record" "$TMP/pkg/gates-demo/latest/record"
+build BUILD_SHA="${SHA[fail]}" BUILD_NIGHTLY=true BUILD_OUT="$RED_GATES" "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+OUT="$RED_GATES"
+[[ "$(grec result) $(grec green) $(grec reds)" == "fail ${SHA[pass]} 1" ]] || fail "a first red: $(cat "$OUT/gates-report/record")"
+cp "$OUT/gates-report/record" "$TMP/pkg/gates-demo/latest/record"
+build BUILD_SHA="${SHA[fail]}" BUILD_NIGHTLY=true BUILD_OUT="$RED_GATES" "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+OUT="$RED_GATES"
+[[ "$(grec green) $(grec reds)" == "${SHA[pass]} 2" ]] || fail "a red run again: $(cat "$OUT/gates-report/record")"
+cp "$OUT/gates-report/record" "$TMP/pkg/gates-demo/latest/record"
+build BUILD_SHA="${SHA[pass]}" BUILD_NIGHTLY=true "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+[[ "$(grec result) $(grec green) $(grec reds)" == "none ${SHA[pass]} 2" ]] || fail "no verdict changes neither: $(cat "$OUT/gates-report/record")"
+printf 'repo demo\nresult fail\ngreen not-a-commit\nreds many\n' > "$TMP/pkg/gates-demo/latest/record"
+build BUILD_SHA="${SHA[fail]}" BUILD_NIGHTLY=true BUILD_OUT="$RED_GATES" "${VAPI[@]}" -- gates-report 2>"$TMP/err" || fail "the report failed: $(cat "$TMP/err")"
+OUT="$RED_GATES"
+[[ "$(grec reds)" == 1 && -z "$(grec green)" ]] || fail "an unreadable last record is taken: $(cat "$OUT/gates-report/record")"
+rm -rf "$TMP/pkg/gates-demo"
 pass
 
 NAME="gates-report: only a nightly's: a build's or a release's gates are no verdict on main"

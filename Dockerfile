@@ -281,7 +281,7 @@ RUN set -eu; python3 -m venv /opt/scanners/venv; \
 COPY looper-lib.sh /usr/local/lib/looper/
 # The runner VMs' startup-script and bake (runner-image, looper#43).
 COPY runner/ /usr/local/lib/looper/runner/
-COPY repo-looper looper-dispatch looper-build looper-scan looper-token looper-ruleset looper-suggest looper-recap looper-trace looper-verify tacplus looper-smoke looper-pkill runner-image looper-vm looper-merger /usr/local/bin/
+COPY repo-looper looper-dispatch looper-build looper-scan looper-token looper-ruleset looper-suggest looper-recap looper-trace looper-verify looper-gatemiss tacplus looper-smoke looper-pkill runner-image looper-vm looper-merger /usr/local/bin/
 # The image's Go binaries under the tree's policy (looper#167; README: Security
 # checks): govulncheck -mode=binary on every one under /usr/local/bin, the
 # tools above and the base image's, with this commit's security-exceptions.yaml

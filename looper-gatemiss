@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-gatemiss: every miss of a repository's gate map recorded when the full
+# check of main is red (looper#253; tacplus-dev/roadmap
+# decisions/agentic-dev-flow-2026-11-25.md, the panel's item 11: "record every
+# miss the rolling check finds; never let a red check rewrite the map by
+# itself"). A land runs the gate sets its diff calls for (gates.yaml, looper#48);
+# the full check of main is the net under that map. When it is red, every land
+# since its last green that ran a set other than full is a possible miss; the
+# culprit among them, when one is found, is a miss: the failing gate was not in
+# the sets its diff chose. The nightly scan (repo-looper --scan), which may
+# write issues, reads the nightly's record into a directory and runs this on
+# it; the rolling check (looper#249) may run it on its own:
+#
+#   looper-gatemiss file DIR OWNER/REPO CLONE
+#
+# DIR holds `record`, a "key value" line each (looper-build gates-report's):
+# checked (the commit the full check built), result (pass, fail or none), why,
+# run, green (the last green full check's commit), reds (the red full checks in
+# a row since: a red run again is 2), and, from a check that has them, culprit
+# (a commit its bisect named) and gate (the failing gate's name); and
+# `log-tail`, the failing gate's log, and `audit`, the repository's own account
+# of the culprit's sets and their legs (tacplus: `just gate-audit BASE HEAD`),
+# both quoted when present. CLONE is a clone of the repository holding main to
+# `checked`: the lands' changed paths and their gates.yaml are read there.
+#
+# A land is the manager's verdict on its issue (repo-looper, looper#70): a
+# comment by one of LOOPER_GATEMISS_TRUSTED (logins, comma-separated; default
+# tacplus-manager[bot]) with `<!-- looper-land id=ID rc=0 landed=BEFORE..AFTER
+# set=SET -->` (no set: full) and the set's reasons in its text, its AFTER
+# between green and checked on main.
+#
+# Nothing is filed, and it says why, when the check is not red (pass, none), red
+# once only (a flake until it is red again), with no green to count from, with
+# no single culprit (several lands and no bisect: the red's own issue lists
+# them), or when the culprit ran full. A miss is one `bug` issue, "gate map
+# miss: <paths> ran <sets>, <gate> broke", naming the land, its changed paths,
+# the sets chosen and why, each set's legs and full's (its gates.yaml), the
+# failing gate and its log; a comment on the land's issue links it. Its marker
+# (the land's commit) files it once. The map itself is never edited here: the
+# issue is fixed like any bug, and a fix to gates.yaml runs full.
+# GH_TOKEN: issues write on OWNER/REPO.
+set -euo pipefail
+
+TRUSTED="${LOOPER_GATEMISS_TRUSTED:-tacplus-manager[bot]}"
+# A commit changing these alone is the looper's own record, no land's (they merge by union).
+OWN_RECORD='^(HISTORY|PROPOSALS)\.md$'
+
+log() { printf '[%s] looper-gatemiss: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+
+# A record's value (the last line of that key).
+field() { sed -n "s/^$2 //p" "$1/record" | tail -n 1; } # dir key
+
+marker() { echo "<!-- looper-gatemiss land=$1 -->"; } # the land's last commit
+
+# A set's run: command in the gates.yaml of a commit.
+legs() { # clone commit set
+  git -C "$1" show "$2:gates.yaml" 2>/dev/null | awk -v set="$3" '
+    /^[A-Za-z0-9_-]+:[ \t]*$/ { s = $0; sub(/:.*/, "", s); next }
+    s == set && /^[ \t]+run:/ { v = $0; sub(/^[ \t]+run:[ \t]*/, "", v); print v; exit }'
+}
+
+# The lands of the manager's verdicts since green's time, as "n before after
+# set<TAB>why" lines: those on main between green and checked.
+lands() { # repo clone green checked
+  local repo="$1" clone="$2" green="$3" checked="$4" since n login body m before after set why
+  since="$(git -C "$clone" log -1 --format=%cI "$green")"
+  gh api "repos/$repo/issues/comments?since=$since&per_page=100" --paginate \
+    --jq '.[] | select(.body | contains("<!-- looper-land id=")) | [(.issue_url | split("/") | last), .user.login, .body] | @json' |
+  while IFS= read -r m; do
+    n="$(jq -r '.[0]' <<<"$m")"; login="$(jq -r '.[1]' <<<"$m")"; body="$(jq -r '.[2]' <<<"$m")"
+    [[ ",$TRUSTED," == *",$login,"* ]] || continue
+    m="$(grep -oE '<!-- looper-land id=[^ ]+ rc=0 landed=[0-9a-f]{40}\.\.[0-9a-f]{40}( set=[A-Za-z0-9_+-]+)? -->' <<<"$body" | tail -n 1)" || continue
+    before="$(sed -nE 's/.* landed=([0-9a-f]+)\.\..*/\1/p' <<<"$m")"; after="$(sed -nE 's/.* landed=[0-9a-f]+\.\.([0-9a-f]+).*/\1/p' <<<"$m")"
+    set="$(sed -nE 's/.* set=([^ ]+) -->/\1/p' <<<"$m")"
+    git -C "$clone" merge-base --is-ancestor "$after" "$checked" 2>/dev/null || continue
+    ! git -C "$clone" merge-base --is-ancestor "$after" "$green" 2>/dev/null || continue
+    why="${body#*on the gates ${set:-full} (}"
+    if [[ "$why" == "$body" ]]; then why=""; else why="${why%%)*}"; fi
+    printf '%s %s %s %s\t%s\n' "$n" "$before" "$after" "${set:-full}" "$why"
+  done | sort -u
+}
+
+file_record() { # dir repo clone
+  local dir="$1" repo="$2" clone="$3" result checked green reds culprit gate run why
+  [[ -f "$dir/record" ]] || { log "no record: nothing to file"; return 0; }
+  result="$(field "$dir" result)"; checked="$(field "$dir" checked)"; green="$(field "$dir" green)"
+  reds="$(field "$dir" reds)"; culprit="$(field "$dir" culprit)"; gate="$(field "$dir" gate)"
+  run="$(field "$dir" run)"; why="$(field "$dir" why)"
+  [[ "$result" == fail ]] || { log "the full check of $repo is ${result:-unread}: no miss to find"; return 0; }
+  [[ "$checked" =~ ^[0-9a-f]{40}$ ]] || { log "the record names no commit it checked: nothing to file"; return 0; }
+  [[ "$reds" =~ ^[0-9]+$ ]] && (( 10#$reds >= 2 )) ||
+    { log "the full check of $repo is red at ${checked:0:7} once only: a flake until it is red again; nothing filed"; return 0; }
+  [[ "$green" =~ ^[0-9a-f]{40}$ ]] && git -C "$clone" merge-base --is-ancestor "$green" "$checked" 2>/dev/null ||
+    { log "no green full check of $repo before ${checked:0:7} to count lands from: nothing filed"; return 0; }
+
+  local all n before after set lwhy c files owned=" " stray="" k l=""
+  all="$(lands "$repo" "$clone" "$green" "$checked")" || { log "the manager's verdicts on $repo could not be read: nothing filed"; return 1; }
+  while IFS=$'\t' read -r k lwhy; do
+    [[ -n "$k" ]] || continue
+    read -r n before after set <<<"$k"
+    [[ "$set" == full ]] || log "a possible miss: #$n ${before:0:7}..${after:0:7} ran $set${lwhy:+ ($lwhy)}"
+    owned+="$(git -C "$clone" rev-list "$before..$after" | paste -sd' ' -) "
+  done <<<"$all"
+  # The commits since green no land holds, but the looper's own record.
+  for c in $(git -C "$clone" rev-list "$green..$checked"); do
+    [[ "$owned" != *" $c "* ]] || continue
+    files="$(git -C "$clone" diff-tree --no-commit-id --name-only -r --root "$c")"
+    grep -qvE "$OWN_RECORD" <<<"$files" || continue
+    stray+=" ${c:0:7}"
+  done
+
+  [[ -z "$culprit" || "$culprit" =~ ^[0-9a-f]{7,40}$ ]] || { log "the record's culprit '$culprit' is no commit: nothing filed"; return 0; }
+  if [[ -n "$culprit" ]]; then
+    l="$(while IFS=$'\t' read -r k lwhy; do
+           [[ -n "$k" ]] || continue; read -r n before after set <<<"$k"
+           [[ " $(git -C "$clone" rev-list "$before..$after" | paste -sd' ' -) " == *" $culprit"* ]] && printf '%s\t%s\n' "$k" "$lwhy"
+         done <<<"$all" | head -n 1)"
+    [[ -n "$l" ]] || { log "the culprit ${culprit:0:7} is no land of the manager's: nothing filed"; return 0; }
+  elif [[ -n "$all" && "$(wc -l <<<"$all")" == 1 && -z "$stray" ]]; then
+    l="$all"
+  else
+    log "no single culprit of the red at ${checked:0:7} since ${green:0:7} ($(grep -c . <<<"$all" || true) land(s)${stray:+, and commits no land holds:$stray}) and no bisect: nothing filed"
+    return 0
+  fi
+  IFS=$'\t' read -r k lwhy <<<"$l"; read -r n before after set <<<"$k"
+  [[ "$set" != full ]] || { log "the culprit #$n ${before:0:7}..${after:0:7} ran full: no miss of the map"; return 0; }
+
+  local texts
+  texts="$(gh issue list --repo "$repo" --state all --label bug --limit 500 --json body --jq '.[].body')" ||
+    { log "the issues of $repo could not be read: nothing filed, the next check files it"; return 1; }
+  if grep -qF -- "$(marker "$after")" <<<"$texts"; then log "the miss of #$n (${after:0:7}) is filed already"; return 0; fi
+
+  local paths np shown title body s audit=""
+  paths="$(git -C "$clone" diff --name-only --no-renames "$before" "$after")"
+  np="$(grep -c . <<<"$paths" || true)"
+  shown="$(head -n 3 <<<"$paths" | paste -sd, - | sed 's/,/, /g')"
+  (( np <= 3 )) || shown+=" and $(( np - 3 )) more"
+  title="gate map miss: $shown ran $set, ${gate:-full} broke"
+  [[ ! -s "$dir/audit" ]] || audit="
+
+The repository's own account of the land's sets and their legs:
+
+~~~~~~
+$(head -c 20000 "$dir/audit")
+~~~~~~"
+  body="The full check of main is red at $checked (${run:-its run unnamed}), red again since: it is no flake. Its culprit is the land of #$n, ${before:0:7}..${after:0:7}$( [[ -n "$culprit" ]] && echo " (the culprit by bisect: ${culprit:0:7})" || echo " (the only land since the last green full check, ${green:0:7})" ), which ran the gate set \`$set\`, not \`full\`: the gate map (gates.yaml) let through a change whose failing gate its sets lack (looper#253). Fix the map (the paths the sets name, or a set's legs) from this issue; a change to gates.yaml runs full. Fixing main itself is the red's own issue's.
+
+**The land:** #$n, $before..$after.
+
+**Its changed paths ($np):**
+$(head -n 100 <<<"$paths" | sed 's/.*/- `&`/')$( (( np <= 100 )) || printf '\n- and %s more' "$(( np - 100 ))")
+
+**The sets its diff chose, and why:** \`$set\`${lwhy:+ ($lwhy)}.
+
+**Their legs, and full's** (gates.yaml at ${after:0:7}):
+$(for s in ${set//+/ } full; do printf -- '- `%s`: `%s`\n' "$s" "$(legs "$clone" "$after" "$s")"; done)$audit
+
+**The failing gate:** ${gate:-full}${why:+: $why}. Its log's end:
+
+~~~~~~
+$(tail -n 60 "$dir/log-tail" 2>/dev/null | head -c 20000 || echo "(no log)")
+~~~~~~
+
+$(marker "$after")"
+  local i
+  if i="$(gh issue create --repo "$repo" --title "$title" --label bug --label approved --body "$body")"; then
+    i="${i##*/}"
+    log "a miss of the gate map: #$n ${before:0:7}..${after:0:7} ran $set, ${gate:-full} broke: filed as #$i"
+    gh issue comment "$n" --repo "$repo" --body "The full check of main is red at ${checked:0:7}, and this issue's land (${before:0:7}..${after:0:7}, on the gates \`$set\`) is its culprit: a miss of the gate map, filed as #$i (looper#253)." >/dev/null ||
+      log "#$n could not be told of #$i"
+  else
+    log "the miss of #$n could not be filed: the next check files it"; return 1
+  fi
+}
+
+case "${1:-}" in
+  file) [[ $# -eq 4 ]] || { usage >&2; exit 2; }; file_record "$2" "$3" "$4" ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

@@ -726,6 +726,37 @@ read from that tree.
   [build pipeline](#build-pipeline)'s release build, which always runs `just gates`) runs them before it ships,
   and the build pipeline's verdict is always the full gates.
 
+#### Gate map misses
+
+A partial set is safe only if something notices the change it let through (looper#253; tacplus-dev/roadmap
+`decisions/agentic-dev-flow-2026-11-25.md`, the panel's item 11: "record every miss the rolling check finds; never
+let a red check rewrite the map by itself"). The full check of main is that net: when it is red, every land since
+its last green full check that ran a set other than full is a **possible miss**, and its **culprit**, when one is
+found, is a **miss** if it landed on a partial set: the failing gate was not in the sets its diff chose.
+`looper-gatemiss file DIR OWNER/REPO CLONE` records it, from the full check's record (the nightly's
+`gates-<repo>/latest`, which the scan of a pinned repository reads before its model; the rolling check's,
+looper#249, with its bisect's `culprit`) and the manager's verdicts on the lands since (the `looper-land` marker of a
+comment by `LOOPER_GATEMISS_TRUSTED`, default `tacplus-manager[bot]`: its range and set, and its text's reasons):
+
+- **The culprit** is the commit the record's `culprit` names (a bisect's), else the only land since the last green
+  (commits changing `HISTORY.md` or `PROPOSALS.md` alone are the looper's own record, no land's). Several lands and
+  no bisect is no single culprit: nothing is filed, and each possible miss is logged; the red's own issue lists them.
+- **Nothing is filed** for a check red once only (`reds` 1: a flake until it is red again; green when run again, it
+  never is), a culprit that ran full, a record with no `green`, or no verdict (`none`).
+- **A miss** is one `bug` issue, approved, `gate map miss: <paths> ran <sets>, <gate> broke`: the land (its issue
+  and range), its changed paths, the sets chosen and why, each set's `run` and full's (gates.yaml at the land), the
+  repository's own account of the sets' legs when the check gives one (`audit` beside the record: tacplus's
+  `just gate-audit BASE HEAD`, which is repository code and runs where gates run, never in the scan's job), and the
+  failing gate's log. Its marker (the land's last commit) files it once; a comment on the land's issue links it.
+- **The map is never edited by a red check**: the issue is fixed like any bug, and its change to `gates.yaml` runs
+  full.
+
+```sh
+looper-gatemiss file DIR OWNER/REPO CLONE  # the scan's filing, of the full check's record read into DIR
+tests/looper-gatemiss.test.sh              # a red after a land on a partial set, red again, files one miss (its land, paths, sets and why, the legs, the failing gate) and tells the land's issue; read again nothing; the audit quoted; a flake none; a land on full none; several lands no bisect none, a bisect's culprit its own; another login's verdict no land; no green none (stub gh)
+tests/repo-looper.test.sh                  # scan-gatemiss: the scan of a pinned repository files the miss before its model, red once nothing
+```
+
 #### The pre-land gate
 
 A land written against an older main can break only under a check that landed on main after it (tacplus,
@@ -1185,8 +1216,11 @@ jobs run `looper-build`, from this image.
 - **`gates-report`**, a nightly's alone, in the looper image after `gates` (also when they fail; allowed to fail):
   the gates' verdict on main as the repository's latest (looper#73), the generic package `gates-<repo>`, version
   `latest`: `record` (`repo`, `kind nightly`, `checked` the commit, `result` pass, fail or none, `why` a red one's
-  reason or that the gates job left no verdict, `run` the pipeline, `at`) and `log-tail` (the last 200 lines of
-  `gates.log`). The nightly scan of a pinned repository reads it rather than run the gates.
+  reason or that the gates job left no verdict, `run` the pipeline, `at`, and, carried from the last record
+  (looper#253), `green` the last green full check's commit and `reds` the red ones in a row since, a red run again
+  2, no verdict changing neither) and `log-tail` (the last 200 lines of `gates.log`). The nightly scan of a pinned
+  repository reads it rather than run the gates, and files a miss of the gate map from it
+  ([Gate map misses](#gate-map-misses)).
 - **A job whose runner is lost runs again** (looper#148): the build's VMs are spot, and a preempted one ends its job
   `runner_system_failure`. Every job, the child pipeline's too (the parent's `default:` does not reach it), is
   retried twice on `runner_system_failure`, `scheduler_failure` and `unknown_failure`, so the build's verdict

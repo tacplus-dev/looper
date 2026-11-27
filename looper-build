@@ -1511,12 +1511,17 @@ cmd_verify_report() {
 
 # A nightly's gates on main (looper#73), as the repository's latest: the build
 # project's generic package gates-<repo>, its record (repo, kind, checked,
-# result pass, fail or none, why, run, at) and the gates' log tail. The
-# nightly scan reads it (repo-looper) instead of running the gates itself.
+# result pass, fail or none, why, run, at, and green and reds: below) and the
+# gates' log tail. The nightly scan reads it (repo-looper) instead of running
+# the gates itself.
+# The record carries the last one forward (looper#253): green, the commit of
+# the last green full check, and reds, the red ones in a row since (a red run
+# again is 2: no flake); no verdict changes neither. The scan files a miss of
+# the gate map from them (looper-gatemiss).
 cmd_gates_report() {
   check_inputs
   [[ "${BUILD_NIGHTLY:-}" == true ]] || { log "gates-report: not a nightly: a build's gates are no verdict on main; nothing published"; return 0; }
-  local d="$BUILD_OUT/gates-report" f v result why
+  local d="$BUILD_OUT/gates-report" f v result why green="" reds=0 last=""
   mkdir -p "$d"
   v="$(head -n 1 "$BUILD_OUT/build-verdict" 2>/dev/null || true)"
   case "$v" in
@@ -1524,8 +1529,25 @@ cmd_gates_report() {
     fail:*) result=fail; why="${v#fail: }" ;;
     *) result=none; why="the gates job left no verdict (its runner lost, after GitLab's retries, or it timed out)" ;;
   esac
+  if [[ -n "${CI_JOB_TOKEN:-}" && -n "${CI_API_V4_URL:-}" && -n "${CI_PROJECT_ID:-}" ]]; then
+    last="$(curl -fsS -H "JOB-TOKEN: $CI_JOB_TOKEN" \
+              "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/gates-$BUILD_REPO/latest/record" 2>/dev/null)" || last=""
+  fi
+  lastof() { sed -n "s/^$1 //p" <<<"$last" | tail -n 1; } # key
+  case "$(lastof result)" in
+    pass) green="$(lastof checked)" ;;
+    fail|none) green="$(lastof green)"; reds="$(lastof reds)" ;;
+  esac
+  [[ "$green" =~ ^[0-9a-f]{40}$ ]] || green=""
+  [[ "$reds" =~ ^[0-9]+$ ]] || reds=0
+  case "$result" in
+    pass) green="$BUILD_SHA"; reds=0 ;;
+    fail) reds=$(( 10#$reds + 1 )) ;;
+  esac
   { printf 'repo %s\nkind nightly\nchecked %s\nresult %s\n' "$BUILD_REPO" "$BUILD_SHA" "$result"
     [[ -z "$why" ]] || printf 'why %s\n' "$why"
+    [[ -z "$green" ]] || printf 'green %s\n' "$green"
+    printf 'reds %s\n' "$reds"
     printf 'run %s\nat %s\n' "${CI_PIPELINE_URL:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$d/record"
   tail -n 200 "$BUILD_OUT/gates.log" > "$d/log-tail" 2>/dev/null || true
   cat "$d/record" >&2

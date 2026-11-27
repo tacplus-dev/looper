@@ -123,6 +123,11 @@ case "$cmd" in
   # A push's files (looper#213): origin's diff from one sha to another.
   api\ repos/*/compare/*) c="${cmd##*/compare/}"
     git -C "$FIX/origin.git" diff --name-only --no-renames "${c%...*}" "${c#*...}" | jq -R '{filename: .}' | jq -s '{files: .}' | jq -r "$q" ;;
+  # The repository's comments (looper#253): every issue's, each with its issue's URL.
+  api\ repos/*/issues/comments\?*)
+    shopt -s nullglob; files=("$FIX/issues/$(cut -d/ -f3 <<<"${cmd#api }")"-*.json); shopt -u nullglob
+    jq -s '[.[] | .number as $n | .comments[] | {body, issue_url: "https://api.github.com/repos/tacplus-dev/alpha/issues/\($n)", user: {login: (.author // "jody")}}]' \
+      "${files[@]+"${files[@]}"}" < /dev/null | jq -r "$q" ;;
   api\ repos/*/issues/*)
     p="${cmd#api repos/*/}"; p="${p%%\?*}"; f="$FIX/issues/${p%%/*}-$(cut -d/ -f3 <<<"$p").json"
     [[ -f "$f" ]] || { echo "stub gh: HTTP 404" >&2; exit 1; }
@@ -4211,6 +4216,37 @@ lacks "$pp" "the full gates, "
 rm -rf "$FIX/gates" "$FIX"/project/looper-runs/*-scan
 OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" PATH="$FIX/dk:$TMP/bin:$PATH" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
 has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "3. The repository's own gates on main are the nightly build's (tacplus-dev/build, looper#73), and its record could not be read: do not run them"
+pass
+
+# A red full check whose culprit landed on a partial set (looper#253): the
+# scan files the miss of the gate map before its model, with looper-gatemiss,
+# from the nightly's record and the manager's verdict on the land; red once (a
+# flake until it is red again), nothing.
+scenario scan-gatemiss
+templates; pin_seed; : > "$FIX/scan.sh"
+green="$(origin rev-parse main)"
+echo notes > "$FIX/seed/notes.md"; git -C "$FIX/seed" add -A; git -C "$FIX/seed" commit -qm notes; git -C "$FIX/seed" push -q origin main
+red="$(origin rev-parse main)"
+comment alpha 4 "tacplus-manager[bot]" NONE "The manager merged it on main: ${green:0:7}..${red:0:7}, on the gates docs (its one changed path, notes.md, maps to docs): green.
+
+<!-- looper-land id=20261126T000000Z-4-1 rc=0 landed=$green..$red set=docs -->"
+mkdir -p "$FIX/gates"
+gates_red() { # reds
+  printf 'repo alpha\nkind nightly\nchecked %s\nresult fail\nwhy just gates exited 3\ngreen %s\nreds %s\nrun https://gitlab.com/tacplus-dev/build/-/pipelines/78\nat 2026-11-26T03:00:00Z\n' \
+    "$red" "$green" "$1" > "$FIX/gates/record"
+}
+gates_red 1; printf 'test full ... FAILED\n' > "$FIX/gates/log-tail"
+OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" PATH="$FIX/dk:$TMP/bin:$PATH" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+has "$OUT" "red at ${red:0:7} once only: a flake until it is red again"
+[[ "$(jq -s '[.[] | select(.title | startswith("gate map miss"))] | length' "$FIX"/issues/alpha-*.json)" == 0 ]] || fail "a flake filed a miss"
+has "$(cat "$FIX"/project/looper-runs/*-scan/prompt.md)" "the looper files itself, \`gate map miss: ...\` (looper#253)"
+gates_red 2; rm -rf "$FIX"/project/looper-runs/*-scan
+OUT="$(looper GITLAB_TOKEN=glpat-t "${BUILDS[@]}" PATH="$FIX/dk:$TMP/bin:$PATH" -- --repo alpha --scan 2>&1)" || { echo "$OUT"; fail "scan exited non-zero"; }
+v="$(jq -s '[.[] | select(.title | startswith("gate map miss"))]' "$FIX"/issues/alpha-*.json)"
+[[ "$(jq length <<<"$v")" == 1 ]] || fail "not one miss: $OUT"
+[[ "$(jq -r '.[0].title' <<<"$v")" == "gate map miss: notes.md ran docs, full broke" ]] || fail "$(jq -r '.[0].title' <<<"$v")"
+has "$(jq -r '.[0].body' <<<"$v")" "test full ... FAILED"
+has "$(cat "$FIX"/project/looper-runs/*-scan/gatemiss.log)" "filed as #$(jq -r '.[0].number' <<<"$v")"
 pass
 scenario scan-unpinned-gates
 templates; : > "$FIX/scan.sh"

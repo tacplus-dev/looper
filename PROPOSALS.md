@@ -65,14 +65,17 @@ the looper then marks it `promoted` or `declined` here with the date.
   read the pipeline as written; the first red release on tacplus-dev/build shows GitLab running it with that job
   skipped (GitLab refuses a dependency only for expired or erased artifacts; if it refuses this too, the image could
   come from the SBOM job's package instead).
-- **Every gate map miss recorded when main's full check is red** (2026-11-26, #253): a scoped gate map (tacplus#976)
-  is safe only if something notices the change it let through; the agentic flow's decision (item 11) makes main's
-  full check that net, but today a full red is fixed like any other and nobody learns the map was wrong. A durable
-  per-land record of its sets and why (a git note on the land's commit), a `last-green` full-check record (or #249's
-  `main-green`), and, when the culprit of a red is a land on a partial set (#249's bisect, or the only land since the
-  last green; a flake or a re-pin files none), a `bug` issue "gate map miss: <paths> ran <sets>, <gate> broke" filed
-  by the looper's code, quoting the repository's `gate-audit` output where it has one; the map itself is never
-  edited. Waits on Jody: whether to wait for #249, where the record lives, and the audit hook's contract.
+- **Gate map misses from the rolling check, with the repository's audit** (2026-11-26, #253): `looper-gatemiss`
+  files a miss from the nightly's full check today (its record's `green` and `reds`; the culprit only when a single
+  land is in the red's range). The rolling check (#249, `looper-check`) has the rerun and the bisect the nightly
+  lacks: on a red whose culprit its bisect names, it could write the same record (`result fail`, `checked`, `green`
+  its main-green, `reds 2` after its rerun, `culprit`, `gate` its red group) and run `looper-gatemiss file`, so a
+  red with several lands still finds its miss. It is also where repository code runs: it could run
+  `just gate-audit <before> <after>` of the culprit (tacplus's, when the justfile has the recipe) in the build and
+  put its output beside the record as `audit`, which the issue quotes; the nightly scan never runs it (its job holds
+  the looper's token). And a land is the manager's verdict comment today (its `looper-land` marker): once the merger
+  (#251) merges by merge commits, its merges need the same record (a marker on the merge request's issue, or the
+  set and why read from the merge commit) for `looper-gatemiss` to count them as lands.
 - **A local build bounded, and stopped with its run** (2026-11-26, #248): `looper-vm build` has no time limit, and
   the report's looper starts it detached from its build server, so a build outlives the run that asked for it (a run
   stopped at its time limit, its build cap, or its verdict's wait). With build slots, such a build holds one of the
@@ -1163,6 +1166,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   tags unchanged), built in #265: `ci/build.gitlab-ci.yml` carries `BUILD_RELEASE_REGISTRY`, `GCP_RELEASE_WIF_PROVIDER`
   and `GCP_RELEASE_PUBLISH_SA`; the plan writes them into a branch release's publish job. It takes effect when the hub
   copies a file pinning a looper image that has it, after cloud#115's `apply:ci` (with #261's re-pin, or after it).
+- **Every gate map miss recorded when main's full check is red** (2026-11-26, #253): promoted 2026-11-26 (ROADMAP.md,
+  at Jody's request) and done in #253: the nightly's gates record carries its last green and its reds in a row, and
+  `looper-gatemiss` files a miss from it in the scan, its land read from the manager's verdict (its `looper-land`
+  marker and text) rather than a new git note. The rolling check's part is open above.
 - **Scan the looper image's own binaries** (2026-11-03, #62–#65, #47) and **The security checks scan the binaries the
   image builds** (2026-11-06, #101): done in #167 (2026-11-16): the `Dockerfile`'s last step, `looper-scan image`,
   runs `govulncheck -mode=binary` on every Go binary under `/usr/local/bin` under the tree's policy and
