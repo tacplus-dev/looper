@@ -201,3 +201,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-27 looper issue Record every miss of a repository's gate map when the full check of main is red (#253)
 - 2026-11-27 looper issue looper-vm build: a VM's local build has no container runtime, so an image-building gate (tacplus's images set) can never pass (#267)
 - 2026-11-27 looper issue A rolling check of main: main-green, a bound on unchecked merges, and a fixed recovery procedure (#249)
+- 2026-11-27 looper issue Branch releases publish to the release registry in tacplus-ci (us-docker.pkg.dev/tacplus-ci/releases) as release-publish (#265)
