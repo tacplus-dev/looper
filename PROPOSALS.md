@@ -43,15 +43,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   `gh attestation verify`. Waits on Jody: whether a re-pin is a feature or a chore, and which image to pin. Since
   then main's newest image is main-a8e4e29 (`sha256:00fdcde7…`, a ROADMAP-only commit past 9c8e17b). A member approved
   cloud#112 on that issue; no ROADMAP.md links #261 yet.
-- **Release records for seatrials** (2026-11-26, #262; tacplus-dev/fleet-seatrials#82, D4): dev rolls to each green
-  main release from its record, which fleet-seatrials' job token cannot read yet (tacplus-dev/build's job token
-  allowlist, and its pipeline user a Reporter there), which names no tacplus the service was built with, and which
-  nothing announces. The plan passes the pin to `release-report`, which adds `tacplus <commit> <build image>` to the
-  green record (the lock's `vX.Y.Z` tag resolved through tacplus-reader; unresolvable, red; a `build.lock` repository
-  none), and after a main record moves POSTs fleet-seatrials' pipeline trigger (a token in an environment-scoped
-  variable, dropped before a repository's code), logged and never failing the release. Waits on Jody: what D4
-  compares (services pin released tacplus, `release-tacplus/main` is main-green's commit), the builder stage, the
-  trigger token, and who applies the settings.
+- **What the record's `tacplus` line is checked for, and the builder stage** (2026-11-26, #262; fleet-seatrials#82,
+  D4): a release's record names the commit of its pin's tacplus release and the build image (`tacplus <commit>
+  <image>`), but services pin released tacplus while `release-tacplus/main/record` is main-green's, so D4's check
+  cannot be equality (ancestry, or the same minor line, is fleet-seatrials#82's to choose; the line could carry the
+  version too, so a line check needs no GitHub read). And the line names what the gates and generation ran in, not a
+  release Dockerfile's builder stage, a pin of its own: a release could be red when the two differ.
 - **A red release filed at once, not at the next scan** (2026-11-26, #252): a branch release's red record is filed
   as a bug by the nightly scan, as the build holds no credential that writes an issue; a red build-now trigger or
   release-branch build waits up to a day for its issue. The kicker (`looper-dispatch`, every 3 minutes, with the

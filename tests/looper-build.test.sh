@@ -45,7 +45,7 @@ case_commit() { # name justfile-body [lock]
   SHA[$1]="$(git -C "$work" rev-parse HEAD)"
 }
 PASS_GATES='gates:
-    echo "gates ok job-token=${CI_JOB_TOKEN:-none} key=${TACPLUS_READER_APP_KEY:-none} app=${TACPLUS_READER_APP_ID:-none}"
+    echo "gates ok job-token=${CI_JOB_TOKEN:-none} key=${TACPLUS_READER_APP_KEY:-none} app=${TACPLUS_READER_APP_ID:-none} trigger=${BUILD_SEATRIALS_TRIGGER_TOKEN:-none}"
     mkdir -p target && echo built > target/out
     test "$(cat data.txt)" = tracked'
 case_commit pass "$PASS_GATES" "$LOCK"
@@ -426,6 +426,15 @@ git -C "$work" checkout -q -b release/1.2 "${SHA[release]}"; echo next > "$work/
 git -C "$work" add next.txt; git -C "$work" commit -qm "a fix on 1.2"; SHA[relnext]="$(git -C "$work" rev-parse HEAD)"
 git clone -q --bare "$work" "$SRV/repos/github.com/tacplus-dev/demo.git"
 git -C "$SRV/repos/github.com/tacplus-dev/demo.git" config uploadpack.allowAnySHA1InWant true
+# The tacplus a release is built with (looper#262): tacplus-dev/tacplus, its
+# release v2.6.1 (demo's pin) an annotated tag; nolock, a repository pinned by
+# build.lock (no compiler), its main-green that pin.
+tp="$TMP/tacplus"; git init -q "$tp"; git -C "$tp" commit -q --allow-empty -m "tacplus 2.6.1"
+git -C "$tp" tag -a v2.6.1 -m v2.6.1; TPC="$(git -C "$tp" rev-parse HEAD)"
+git clone -q --bare "$tp" "$SRV/repos/github.com/tacplus-dev/tacplus.git"
+git clone -q --bare "$work" "$SRV/repos/github.com/tacplus-dev/nolock.git"
+git -C "$SRV/repos/github.com/tacplus-dev/nolock.git" update-ref refs/heads/main-green "${SHA[mapped]}"
+git -C "$SRV/repos/github.com/tacplus-dev/nolock.git" config uploadpack.allowAnySHA1InWant true
 : > "$SRV/log"
 python3 -I "$ROOT/tests/git-server.py" "$SRV/repos" "$SRV/cert.pem" "$SRV/key.pem" "$SRV/log" "$SRV/writers" > "$SRV/port" &
 pid=$!
@@ -442,10 +451,11 @@ mkdir -p "$TMP/bin"
 echo "$READ_TOKEN" > "$TMP/token"   # what the app hands out
 cat > "$TMP/bin/curl" <<EOF
 #!/usr/bin/env bash
-method=GET data="" auth="" url="" out="" w=""
+method=GET data="" auth="" url="" out="" w="" form=()
 while ((\$#)); do
   case "\$1" in
     -X) method="\$2"; shift 2 ;;
+    -F) [[ "\$2" != *'=<-' ]] && form+=("\$2") || form+=("\${2%%=*}=\$(cat)"); shift 2 ;;
     -w) w="\$2"; shift 2 ;;
     -H) [[ "\$2" == Authorization:* ]] && auth="\${2#Authorization: }"; [[ "\$2" == JOB-TOKEN:* ]] && auth="\$2"; shift 2 ;;
     --upload-file) method=PUT; up="\$2"; shift 2 ;;
@@ -534,6 +544,11 @@ case "\$method \$url" in
   "PUT https://gitlab.example/api/v4/projects/42/packages/generic/"*)
     [[ "\$url" != */release-* ]] || { p="$TMP/put/\${url#*/generic/}"; mkdir -p "\${p%/*}"; cp "\$up" "\$p"; }
     echo "package-put \$auth \${url#*/generic/} \$(sha256sum < "\$up" | cut -c1-12)" >> "$TMP/api.log" ;;
+  # fleet-seatrials' pipeline trigger (looper#262): \$TMP/trigger-refused, GitLab refuses it.
+  "POST https://gitlab.example/api/v4/projects/tacplus-dev%2Ffleet-seatrials/trigger/pipeline")
+    echo "trigger \${form[*]}" >> "$TMP/api.log"
+    [[ ! -f "$TMP/trigger-refused" ]] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+    printf '{"id":7,"ref":"main","web_url":"https://gitlab.com/tacplus-dev/fleet-seatrials/-/pipelines/7","user":{"web_url":"https://gitlab.com/fleet-bot"}}\n' ;;
   *) echo "curl stub: \$method \$url" >&2; exit 22 ;;
 esac
 EOF
@@ -901,6 +916,11 @@ NAME="gates: the repository's code sees no job token and no app key, and the key
 grep -qF "job-token=none key=none app=none" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
 [[ ! -e "$KEY" ]] || fail "the app's key file is still there"
 grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"}}' "$TMP/api.log" || fail "$(cat "$TMP/api.log")"
+pass
+
+NAME="gates: the repository's code never sees fleet-seatrials' trigger token, even with its environment's scope lost (looper#262)"
+build BUILD_SHA="${SHA[pass]}" BUILD_SEATRIALS_TRIGGER_TOKEN=glptt-stub -- gates 2>"$TMP/err" || fail "gates failed: $(cat "$TMP/err")"
+grep -qF "job-token=none key=none app=none trigger=none" "$OUT/gates.log" || fail "$(cat "$OUT/gates.log")"
 pass
 
 NAME="gates: the same commit twice gives the same verdict (fail)"
@@ -3111,9 +3131,16 @@ grep -qxF '    BUILD_SCAN_KIND: "release"' "$y" || fail "not a release's securit
 sed -n '/^release-report:$/,/^[^ ]/p' "$y" > "$TMP/rr.yml"
 for l in '  stage: .post' '  when: always' '  resource_group: release-demo-main' '  dependencies: ["sbom-demo"]' \
          "    BUILD_SHA: \"${SHA[release]}\"" '    BUILD_RELEASE: "main"' '    BUILD_STATUS_URL: "https://gitlab.com/tacplus-dev/build/-/pipelines/1"' \
-         '    - looper-build release-report' '    paths: [release/]'; do
+         '    - looper-build release-report' '    paths: [release/]' \
+         "    BUILD_TACPLUS_COMMIT: \"$TPC\"" "    BUILD_PIN_IMAGE: \"us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A\"" \
+         '  environment:' '    name: seatrials-trigger' '    action: access'; do
   grep -qxF -- "$l" "$TMP/rr.yml" || fail "release-report lacks '$l': $(cat "$TMP/rr.yml")"
 done
+# The environment is release-report's alone: no other job reaches the trigger token (looper#262).
+[[ "$(grep -cx '    name: seatrials-trigger' "$y")" == 1 ]] || fail "another job has the trigger's environment: $(grep -n -B8 seatrials-trigger "$y")"
+grep -qxF 'token {"permissions":{"contents":"read","metadata":"read"},"repositories":["tacplus"]}' "$TMP/api.log" ||
+  fail "the tacplus tag was not read with a token of its own: $(grep '^token' "$TMP/api.log")"
+grep -q "built with tacplus 2.6.1, ${TPC:0:12}" "$TMP/err" || fail "the plan does not say which tacplus: $(cat "$TMP/err")"
 grep -q "a release of main, as main-${SHA[release]:0:12}" "$TMP/err" || fail "the plan does not say what it releases: $(cat "$TMP/err")"
 "$ROOT/looper-ci-lint" "$y" > "$TMP/lint" 2>&1 || fail "not valid GitLab CI: $(cat "$TMP/lint")"
 pass
@@ -3158,11 +3185,25 @@ build "${RB[@]}" BUILD_RELEASE=release/1.2 BUILD_SHA= -- plan 2>"$TMP/err" || fa
 [[ "$(cat "$OUT/build-sha")" == "${SHA[relnext]}" ]] || fail "build-sha $(cat "$OUT/build-sha"), not release/1.2's head"
 grep -qxF '  resource_group: release-demo-release-1.2' "$OUT/build-gates.yml" || fail "$(grep resource_group "$OUT/build-gates.yml")"
 grep -qxF '    BUILD_RELEASE: "release/1.2"' "$OUT/build-gates.yml" || fail "$(grep BUILD_RELEASE "$OUT/build-gates.yml")"
+grep -qxF "    BUILD_TACPLUS_COMMIT: \"$TPC\"" "$OUT/build-gates.yml" || fail "a release branch's record names no tacplus: $(grep BUILD_TACPLUS "$OUT/build-gates.yml")"
+! grep -qx '  environment:\|    name: seatrials-trigger' <(sed -n '/^release-report:$/,$p' "$OUT/build-gates.yml") || fail "a release branch's report reaches the trigger"
 if build "${RB[@]}" BUILD_RELEASE=release/9.9 BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned a branch that is not there"; fi
 verdict_is "fail: tacplus-dev/demo has no release/9.9: nothing to release"
 if build "${RB[@]}" BUILD_REPO=late BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned a main with no main-green"; fi
 verdict_is "fail: tacplus-dev/late has no main-green (the commit of main the rolling check found green, looper#249): nothing to release"
 [[ ! -e "$OUT/build-gates.yml" && ! -e "$OUT/build-sha" ]] || fail "wrote a release of nothing"
+pass
+
+NAME="plan: a release names the tacplus it is built with (looper#262): the pin's release tag's commit; none it can read is red, a build.lock repository none"
+git -C "$SRV/repos/github.com/tacplus-dev/tacplus.git" tag -d v2.6.1 >/dev/null
+if build "${RB[@]}" BUILD_SHA= -- plan 2>"$TMP/err"; then fail "planned a release whose tacplus cannot be told"; fi
+git -C "$SRV/repos/github.com/tacplus-dev/tacplus.git" fetch -q "$tp" refs/tags/v2.6.1:refs/tags/v2.6.1
+verdict_is "fail: the tacplus demo is built with cannot be told: tacplus-dev/tacplus has no tag v2.6.1 (or it cannot be read)"
+[[ "$(cat "$OUT/build-sha")" == "${SHA[release]}" ]] || fail "no commit for the red record: $(cat "$OUT/build-sha" 2>&1)"
+build "${RB[@]}" BUILD_REPO=nolock BUILD_SHA= -- plan 2>"$TMP/err" || fail "plan failed: $(cat "$OUT/build-verdict" "$TMP/err" 2>/dev/null)"
+grep -qxF '    BUILD_TACPLUS_COMMIT: "none"' "$OUT/build-gates.yml" || fail "$(grep BUILD_TACPLUS "$OUT/build-gates.yml")"
+grep -qxF "    BUILD_PIN_IMAGE: \"ghcr.io/tacplus-dev/looper:main@$DIGEST_A\"" "$OUT/build-gates.yml" || fail "$(grep BUILD_PIN "$OUT/build-gates.yml")"
+! grep -q '"repositories":\["tacplus"\]' "$TMP/api.log" || fail "a build.lock repository read tacplus: $(grep '^token' "$TMP/api.log")"
 pass
 
 NAME="plan: a release builds no commit asked for, its full gates with no wait, and is no tag's, nightly, verify run or report's build"
@@ -3273,14 +3314,20 @@ for e in CI_COMMIT_REF_PROTECTED=false "CI_COMMIT_REF_NAME=demo/v1.2.3 CI_COMMIT
 done
 pass
 
+# release-report's inputs from its plan (looper#262): the tacplus a release is built with.
+PIN="us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1@$DIGEST_A"
+RT=("${RB[@]}" BUILD_TACPLUS_COMMIT="$TPC" BUILD_PIN_IMAGE="$PIN")
+
 NAME="release-report: green, the record moves to the commit, and the release's own status is green (looper#252)"
 rm -rf "$TMP/pkg" "$TMP/put"; A="$TMP/rr-a"; mkdir -p "$A"; echo "$RIMG" > "$A/image"
-build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>"$TMP/err" || fail "release-report failed: $(cat "$TMP/err")"
+build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>"$TMP/err" || fail "release-report failed: $(cat "$TMP/err")"
 r="$TMP/put/release-demo/main/record"
 [[ -f "$r" ]] || fail "no record published: $(cat "$TMP/api.log")"
 for l in "repo demo" "branch main" "commit ${SHA[release]}" "image $RIMG" "run https://gitlab.com/tacplus-dev/build/-/pipelines/1"; do
   grep -qxF "$l" "$r" || fail "the record lacks '$l': $(cat "$r")"
 done
+# The tacplus it was built with (looper#262, D4), after image.
+[[ "$(sed -n '4,5p' "$r" | paste -sd'|' -)" == "image $RIMG|tacplus $TPC $PIN" ]] || fail "not the tacplus line after image: $(cat "$r")"
 [[ ! -e "$TMP/put/release-demo/main/red" ]] || fail "a red record of a green release"
 grep -q "^status Bearer $READ_TOKEN ${SHA[release]} {\"state\":\"success\",\"context\":\"tacplus-dev/release/main\",\"description\":\"released: demo:main-${SHA[release]:0:12}@sha256:" "$TMP/api.log" ||
   fail "not the release's green status: $(grep '^status' "$TMP/api.log")"
@@ -3292,24 +3339,24 @@ pass
 NAME="release-report: an older build never takes a newer release's place; a newer one does"
 mkdir -p "$TMP/pkg/release-demo/main"; printf 'repo demo\nbranch main\ncommit %s\n' "${SHA[relnext]}" > "$TMP/pkg/release-demo/main/record"
 rm -rf "$TMP/put"
-build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>"$TMP/err" || fail "an older green build failed: $(cat "$TMP/err")"
+build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>"$TMP/err" || fail "an older green build failed: $(cat "$TMP/err")"
 [[ ! -e "$TMP/put/release-demo/main/record" ]] || fail "the record moved back to an older commit: $(cat "$TMP/put/release-demo/main/record")"
 grep -qF "\"state\":\"success\",\"context\":\"tacplus-dev/release/main\",\"description\":\"green, not released: the release of main is ${SHA[relnext]:0:12}, newer\"" "$TMP/api.log" ||
   fail "the status does not say it is not released: $(grep '^status' "$TMP/api.log")"
 printf 'repo demo\nbranch main\ncommit %s\n' "${SHA[release]}" > "$TMP/pkg/release-demo/main/record"
 B="$TMP/rr-b"; mkdir -p "$B"; echo "us-docker.pkg.dev/tacplus-ci/releases/demo:main-${SHA[relnext]:0:12}@$(cat "$TMP/digest")" > "$B/image"
-build "${RB[@]}" BUILD_SHA="${SHA[relnext]}" BUILD_OUT="$B" -- release-report 2>"$TMP/err" || fail "a newer green build failed: $(cat "$TMP/err")"
+build "${RT[@]}" BUILD_SHA="${SHA[relnext]}" BUILD_OUT="$B" -- release-report 2>"$TMP/err" || fail "a newer green build failed: $(cat "$TMP/err")"
 grep -qxF "commit ${SHA[relnext]}" "$TMP/put/release-demo/main/record" || fail "the record did not move forward: $(cat "$TMP/put/release-demo/main/record" 2>&1)"
 # One it cannot tell (the recorded commit is not there): the record stays.
 printf 'commit %s\n' "$(printf '1%.0s' {1..40})" > "$TMP/pkg/release-demo/main/record"; rm -rf "$TMP/put"
-build "${RB[@]}" BUILD_SHA="${SHA[relnext]}" BUILD_OUT="$B" -- release-report 2>"$TMP/err" || fail "release-report failed: $(cat "$TMP/err")"
+build "${RT[@]}" BUILD_SHA="${SHA[relnext]}" BUILD_OUT="$B" -- release-report 2>"$TMP/err" || fail "release-report failed: $(cat "$TMP/err")"
 [[ ! -e "$TMP/put/release-demo/main/record" ]] || fail "moved past a commit it could not read"
 rm -rf "$TMP/pkg"
 pass
 
 NAME="release-report: red, nothing released: a red record for the nightly scan and the release's status red with its reason; a failed plan's too"
 rm -rf "$TMP/put"; C="$TMP/rr-c"; mkdir -p "$C"; echo "fail: just gates exited 3: a gate fails" > "$C/build-verdict"
-if build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$C" -- release-report 2>"$TMP/err"; then fail "a red release passed"; fi
+if build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$C" -- release-report 2>"$TMP/err"; then fail "a red release passed"; fi
 red="$TMP/put/release-demo/main/red"
 for l in "repo demo" "branch main" "commit ${SHA[release]}" "why just gates exited 3: a gate fails" "run https://gitlab.com/tacplus-dev/build/-/pipelines/1"; do
   grep -qxF "$l" "$red" || fail "the red record lacks '$l': $(cat "$red" 2>&1)"
@@ -3319,19 +3366,72 @@ grep -qF "\"state\":\"failure\",\"context\":\"tacplus-dev/release/main\",\"descr
   fail "not the release's red status: $(grep '^status' "$TMP/api.log")"
 # No verdict of its own (a later job failed): the run says which.
 rm -rf "$TMP/put"; D="$TMP/rr-d"; mkdir -p "$D"
-if build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$D" -- release-report 2>"$TMP/err"; then fail "a red release passed"; fi
+if build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$D" -- release-report 2>"$TMP/err"; then fail "a red release passed"; fi
 grep -q "^why a job of the release failed" "$TMP/put/release-demo/main/red" || fail "$(cat "$TMP/put/release-demo/main/red" 2>&1)"
 # The reason the security job set on this pipeline's commit status stays (cmd_status's "the build failed").
 grep -q '^statuses ' "$TMP/api.log" || fail "the status set already was not read: $(cat "$TMP/api.log")"
 # A failed plan's: its commit from build-sha.
 rm -rf "$TMP/put"; E="$TMP/rr-e"; mkdir -p "$E"; echo "${SHA[release]}" > "$E/build-sha"; echo "fail: no pin: demo has no tacplus.lock" > "$E/build-verdict"
-if build "${RB[@]}" BUILD_SHA= BUILD_OUT="$E" -- release-report 2>"$TMP/err"; then fail "a failed plan's release passed"; fi
+if build "${RT[@]}" BUILD_SHA= BUILD_OUT="$E" -- release-report 2>"$TMP/err"; then fail "a failed plan's release passed"; fi
 grep -qxF "commit ${SHA[release]}" "$TMP/put/release-demo/main/red" && grep -qxF "why no pin: demo has no tacplus.lock" "$TMP/put/release-demo/main/red" ||
   fail "$(cat "$TMP/put/release-demo/main/red" 2>&1)"
 # No commit resolved (no main-green yet): nothing to record, no status.
 rm -rf "$TMP/put"; F="$TMP/rr-f"; mkdir -p "$F"; echo "fail: tacplus-dev/demo has no main-green" > "$F/build-verdict"
-build "${RB[@]}" BUILD_SHA= BUILD_OUT="$F" -- release-report 2>"$TMP/err" || fail "no release failed its job: $(cat "$TMP/err")"
+build "${RT[@]}" BUILD_SHA= BUILD_OUT="$F" -- release-report 2>"$TMP/err" || fail "no release failed its job: $(cat "$TMP/err")"
 [[ ! -e "$TMP/put" ]] && ! grep -q '^status ' "$TMP/api.log" || fail "recorded a release of nothing: $(cat "$TMP/api.log")"
+pass
+
+NAME="release-report: a build.lock repository's record names no tacplus; a tacplus line that cannot be told is red, nothing released (looper#262)"
+rm -rf "$TMP/pkg" "$TMP/put"
+build "${RB[@]}" BUILD_SHA="${SHA[release]}" BUILD_TACPLUS_COMMIT=none BUILD_PIN_IMAGE="ghcr.io/tacplus-dev/looper:main@$DIGEST_A" BUILD_OUT="$A" \
+  -- release-report 2>"$TMP/err" || fail "release-report failed: $(cat "$TMP/err")"
+grep -qxF "image $RIMG" "$TMP/put/release-demo/main/record" && ! grep -q '^tacplus ' "$TMP/put/release-demo/main/record" ||
+  fail "$(cat "$TMP/put/release-demo/main/record" 2>&1)"
+for e in "BUILD_TACPLUS_COMMIT= BUILD_PIN_IMAGE=$PIN" "BUILD_TACPLUS_COMMIT=v2.6.1 BUILD_PIN_IMAGE=$PIN" \
+         "BUILD_TACPLUS_COMMIT=$TPC BUILD_PIN_IMAGE=us-docker.pkg.dev/jody1-328023/tacplus/build:2.6.1"; do
+  rm -rf "$TMP/put"
+  # shellcheck disable=SC2086
+  if build "${RB[@]}" BUILD_SHA="${SHA[release]}" $e BUILD_OUT="$A" -- release-report 2>"$TMP/err"; then fail "released with $e"; fi
+  [[ ! -e "$TMP/put/release-demo/main/record" ]] || fail "a record with $e: $(cat "$TMP/put/release-demo/main/record")"
+  grep -q "^why the tacplus demo is built with cannot be told" "$TMP/put/release-demo/main/red" || fail "$e: $(cat "$TMP/put/release-demo/main/red" 2>&1)"
+  grep -qF '"state":"failure","context":"tacplus-dev/release/main","description":"release: the tacplus demo is built with cannot be told' "$TMP/api.log" ||
+    fail "$e: not the release's red status: $(grep '^status' "$TMP/api.log")"
+done
+pass
+
+NAME="release-report: a main release that moved its record starts fleet-seatrials' pipeline once, ref main, no variables (looper#262)"
+rm -rf "$TMP/pkg" "$TMP/put" "$TMP/trigger-refused"
+build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_SEATRIALS_TRIGGER_TOKEN=glptt-stub BUILD_OUT="$A" -- release-report 2>"$TMP/err" ||
+  fail "release-report failed: $(cat "$TMP/err")"
+[[ "$(grep '^trigger ' "$TMP/api.log")" == "trigger token=glptt-stub ref=main" ]] || fail "not one trigger of main: $(grep '^trigger' "$TMP/api.log")"
+grep -qF "seatrials: pipeline https://gitlab.com/tacplus-dev/fleet-seatrials/-/pipelines/7 started" "$TMP/err" || fail "$(cat "$TMP/err")"
+! grep -q glptt-stub "$TMP/err" "$A/release/record" || fail "the trigger token is in the log or the record"
+# Refused: logged, and the release still passes.
+touch "$TMP/trigger-refused"; rm -rf "$TMP/pkg" "$TMP/put"
+build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_SEATRIALS_TRIGGER_TOKEN=glptt-stub BUILD_OUT="$A" -- release-report 2>"$TMP/err" ||
+  fail "a refused trigger failed the release: $(cat "$TMP/err")"
+grep -q "seatrials not started: .*it rolls at its daily schedule" "$TMP/err" || fail "the refusal is not logged: $(cat "$TMP/err")"
+[[ -f "$TMP/put/release-demo/main/record" ]] || fail "no record"
+rm -f "$TMP/trigger-refused"
+# No token: nothing, said so.
+rm -rf "$TMP/pkg" "$TMP/put"
+build "${RT[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>"$TMP/err" || fail "release-report failed: $(cat "$TMP/err")"
+! grep -q '^trigger ' "$TMP/api.log" && grep -q "seatrials not started: no trigger token" "$TMP/err" || fail "$(cat "$TMP/err")"
+pass
+
+NAME="release-report: green not released, red, and a release branch's release start no seatrials pipeline (looper#262)"
+T=(BUILD_SEATRIALS_TRIGGER_TOKEN=glptt-stub)
+mkdir -p "$TMP/pkg/release-demo/main"; printf 'commit %s\n' "${SHA[relnext]}" > "$TMP/pkg/release-demo/main/record"; rm -rf "$TMP/put"
+build "${RT[@]}" "${T[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$A" -- release-report 2>"$TMP/err" || fail "$(cat "$TMP/err")"
+! grep -q '^trigger ' "$TMP/api.log" || fail "an older build not released started seatrials"
+rm -rf "$TMP/pkg" "$TMP/put"
+if build "${RT[@]}" "${T[@]}" BUILD_SHA="${SHA[release]}" BUILD_OUT="$C" -- release-report 2>"$TMP/err"; then fail "a red release passed"; fi
+! grep -q '^trigger ' "$TMP/api.log" || fail "a red release started seatrials"
+G="$TMP/rr-g"; mkdir -p "$G"; echo "us-docker.pkg.dev/tacplus-ci/releases/demo:release-1.2-${SHA[relnext]:0:12}@$(cat "$TMP/digest")" > "$G/image"
+build "${RT[@]}" "${T[@]}" BUILD_RELEASE=release/1.2 BUILD_SHA="${SHA[relnext]}" BUILD_OUT="$G" -- release-report 2>"$TMP/err" || fail "$(cat "$TMP/err")"
+grep -qxF "tacplus $TPC $PIN" "$TMP/put/release-demo/release-1.2/record" || fail "a release branch's record names no tacplus: $(cat "$TMP/put/release-demo/release-1.2/record" 2>&1)"
+! grep -q '^trigger ' "$TMP/api.log" || fail "a release branch's release started seatrials"
+rm -rf "$TMP/pkg" "$TMP/put"
 pass
 
 # --- the real thing ---------------------------------------------------------------

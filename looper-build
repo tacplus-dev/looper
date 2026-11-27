@@ -48,9 +48,11 @@
 #   release-report  a branch release's verdict (looper#252): main's release
 #            builds main-green, the commit the rolling check found green,
 #            and a release/X.Y branch's its head; green, the release's record
-#            moves to it, never back to an older commit, and its commit
-#            status (tacplus-dev/release/<branch>) is green; red, a record of
-#            the red one, which the nightly scan files as a bug
+#            moves to it, never back to an older commit, naming the tacplus
+#            it was built with (looper#262), and its commit status
+#            (tacplus-dev/release/<branch>) is green; main's that moved starts
+#            fleet-seatrials' pipeline (a failed trigger logged, never red);
+#            red, a record of the red one, which the nightly scan files as a bug
 #
 # Self-contained (no looper-lib.sh, no jq on the gates path): the plan embeds
 # this very file in the gates job, which runs in the repository's pinned build
@@ -165,7 +167,10 @@ is older runs no gates, and gates running longer are stopped, red), BUILD_GATES_
 BUILD_GATES_REQUESTS_<repo> (the gates job's "<cpu> <memory> <cpu limit> <memory limit>"; unset, the runner's
 defaults), BUILD_SCAN_REQUESTS_<repo> (a build's security job's, in the same form; unset,
 BUILD_SCAN_REQUESTS, default 2 8Gi 3500m 12Gi), within BUILD_RUNNER_CEILINGS ("<cpu> <memory>", default 3500m 12Gi), the tacplus-reader
-app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY);
+app (TACPLUS_READER_APP_ID, TACPLUS_READER_INSTALLATION_ID, TACPLUS_READER_APP_KEY); release-report's
+BUILD_TACPLUS_COMMIT and BUILD_PIN_IMAGE (the plan's: the tacplus a release is built with, none for build.lock) and
+BUILD_SEATRIALS_TRIGGER_TOKEN, BUILD_SEATRIALS_PROJECT (fleet-seatrials' pipeline trigger after a main release moved,
+default tacplus-dev/fleet-seatrials; no token, none);
 outputs go to BUILD_OUT (default: here).
 EOF
 }
@@ -433,7 +438,7 @@ read_pin() { # dir
     echo "$image"; return 0
   fi
   [[ -f "$lock" ]] || verdict fail "no pin: $BUILD_REPO has no tacplus.lock (nor build.lock) at $BUILD_SHA (run \`tacplus pin\` and commit it)"
-  version="$(sed -n 's/^tacplus:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$lock" | head -1)"
+  version="$(pin_version "$1")"
   image="$(sed -n 's/^build_image:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$lock" | head -1)"
   [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] ||
     verdict fail "tacplus.lock: tacplus: '$version' must be an exact MAJOR.MINOR.PATCH release"
@@ -445,6 +450,29 @@ read_pin() { # dir
     verdict fail "tacplus.lock: build_image '$image' is not of the pin's line $line"
   fi
   echo "$image"
+}
+
+# tacplus.lock's release (X.Y.Z, as read_pin checked it); none, a build.lock's.
+pin_version() { # dir
+  [[ -f "$1/tacplus.lock" ]] || return 0
+  sed -n 's/^tacplus:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' "$1/tacplus.lock" | head -1
+}
+
+# The tacplus a branch release is built with (looper#262; the decision's D4,
+# consumers checked against the release's digest before they deploy): the
+# commit of its pin's release, tag vX.Y.Z of tacplus-dev/tacplus, read with a
+# token of its own for that repository alone. Prints the commit; none it can
+# read fails the plan, and so the release is red: a record naming no tacplus
+# is one fleet-seatrials would refuse.
+pin_tacplus_commit() { # scratch-git-dir version
+  local token at
+  token="$(reader_token '"contents":"read","metadata":"read"' tacplus)" ||
+    verdict fail "the tacplus $BUILD_REPO is built with cannot be told: no read-only token for $BUILD_ORG/tacplus (the tacplus-reader app)"
+  at="$(BUILD_GITHUB_TOKEN="$token" git -C "$1" ls-remote "$BUILD_GITHUB_URL/$BUILD_ORG/tacplus.git" "refs/tags/v$2" "refs/tags/v$2^{}" 2>/dev/null |
+          awk 'NR==1 || /\^\{\}$/ {c=$1} END {print c}')" || true
+  [[ "$at" =~ ^[0-9a-f]{40}$ ]] ||
+    verdict fail "the tacplus $BUILD_REPO is built with cannot be told: $BUILD_ORG/tacplus has no tag v$2 (or it cannot be read)"
+  echo "$at"
 }
 
 # A release: the build project's pipeline runs on its protected tag
@@ -508,6 +536,15 @@ cmd_plan() {
   fetch_commit "$src"
   check_release "$src"
   image="$(read_pin "$src")"
+  BUILD_TACPLUS_COMMIT=""
+  if [[ -n "${BUILD_RELEASE:-}" ]]; then
+    local version; version="$(pin_version "$src")"
+    if [[ -z "$version" ]]; then BUILD_TACPLUS_COMMIT=none; log "release: $BUILD_REPO pins build.lock: no tacplus it is built with"
+    else
+      BUILD_TACPLUS_COMMIT="$(pin_tacplus_commit "$src" "$version")"
+      log "release: $BUILD_REPO is built with tacplus $version, ${BUILD_TACPLUS_COMMIT:0:12}, in $image"
+    fi
+  fi
   rm -rf "$src"
   write_gates_pipeline "$image" > "$BUILD_OUT/build-gates.yml"
   if [[ "${BUILD_VERIFY:-}" == true ]]; then
@@ -793,7 +830,7 @@ EOF
   if [[ "${BUILD_VERIFY:-}" != true ]]; then gates_jobs "$1"; fi
   if [[ "${BUILD_VERIFY:-}" == true ]] || is_release; then verify_jobs "$1"; fi
   if is_release; then publish_jobs; fi
-  if [[ -n "${BUILD_RELEASE:-}" ]]; then release_report_job; fi
+  if [[ -n "${BUILD_RELEASE:-}" ]]; then release_report_job "$1"; fi
 }
 
 # A job's script: this very script, embedded, run with the command given.
@@ -1027,8 +1064,15 @@ EOF
 # pipeline (.post, whatever they did): green when the SBOM job, the last of
 # them, passed and so left the image published; else red. One at a time per
 # branch (its resource group), so two releases of one branch never both read
-# the record before either writes it.
-release_report_job() {
+# the record before either writes it. It has no source (GIT_STRATEGY none):
+# the tacplus the release is built with, the plan's (looper#262). Main's
+# alone has the environment seatrials-trigger, the scope of fleet-seatrials'
+# trigger token, which no other job reaches.
+release_report_job() { # image
+  local env=""; [[ "$BUILD_RELEASE" != main ]] || env='
+  environment:
+    name: seatrials-trigger
+    action: access'
   cat <<EOF
 release-report:
   stage: .post
@@ -1036,7 +1080,7 @@ release-report:
   tags: [$BUILD_RUNNER_TAGS]
   when: always
   resource_group: release-$BUILD_REPO-$(release_slug "$BUILD_RELEASE")
-  dependencies: ["sbom-$BUILD_REPO"]
+  dependencies: ["sbom-$BUILD_REPO"]$env
   variables:
     GIT_STRATEGY: none
     BUILD_REPO: "$BUILD_REPO"
@@ -1044,6 +1088,8 @@ release-report:
     BUILD_RELEASE: "$BUILD_RELEASE"
     BUILD_ORG: "$BUILD_ORG"
     BUILD_STATUS_URL: "${CI_PIPELINE_URL:-}"
+    BUILD_TACPLUS_COMMIT: "$BUILD_TACPLUS_COMMIT"
+    BUILD_PIN_IMAGE: "$1"
   script:
     - looper-build release-report
   artifacts:
@@ -1083,9 +1129,11 @@ verify_last() {
 
 # GitLab's own job credentials (the job token can call GitLab's API, and is in
 # the clone URL) are no part of a build: dropped before the repository's code.
+# So is fleet-seatrials' trigger token (looper#262), release-report's alone by
+# its environment's scope, should that scope ever be lost.
 drop_job_credentials() {
   unset CI_JOB_TOKEN CI_BUILD_TOKEN CI_REGISTRY_PASSWORD CI_DEPENDENCY_PROXY_PASSWORD CI_REPOSITORY_URL \
-        CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2
+        CI_JOB_JWT CI_JOB_JWT_V1 CI_JOB_JWT_V2 BUILD_SEATRIALS_TRIGGER_TOKEN
 }
 
 # A build nobody waits for any more (looper#130): its requester waits
@@ -1824,13 +1872,22 @@ cmd_release_report() {
   mkdir -p "$d"; now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   image="$(head -n 1 "$BUILD_OUT/image" 2>/dev/null || true)"
   [[ "$image" =~ ^[^@[:space:]]+:$(release_version)@sha256:[0-9a-f]{64}$ ]] || image=""
+  # The tacplus it was built with (looper#262), the plan's: a tacplus
+  # project's commit and the build image by digest; a build.lock's none.
+  local tp="" bad=""
+  if [[ "${BUILD_TACPLUS_COMMIT:-}" =~ ^[0-9a-f]{40}$ && "${BUILD_PIN_IMAGE:-}" =~ $PIN_IMAGE ]]; then
+    tp="tacplus $BUILD_TACPLUS_COMMIT $BUILD_PIN_IMAGE"
+  elif [[ "${BUILD_TACPLUS_COMMIT:-}" != none ]]; then
+    bad="the tacplus $BUILD_REPO is built with cannot be told (BUILD_TACPLUS_COMMIT '${BUILD_TACPLUS_COMMIT:-}', BUILD_PIN_IMAGE '${BUILD_PIN_IMAGE:-}'): ${image:-its image} is published, not released"
+  fi
   token="$(reader_token '"statuses":"write","contents":"read","metadata":"read"' "$BUILD_REPO")" ||
     verdict fail "no token for the release's commit status (the tacplus-reader app)"
-  if [[ -z "$image" ]]; then
+  if [[ -z "$image" || -n "$bad" ]]; then
     v="$(head -n 1 "$BUILD_OUT/build-verdict" 2>/dev/null || true)"
     # With no reason of its own (a later job failed), the status keeps the one
     # its gates' or security checks' job set on this pipeline (cmd_status).
-    if [[ "$v" == fail:* ]]; then why="${v#fail: }"; text="release: $why"
+    if [[ -n "$image" ]]; then why="$bad"; text="release: $why"
+    elif [[ "$v" == fail:* ]]; then why="${v#fail: }"; text="release: $why"
     else why="a job of the release failed (its gates, security checks, formal verification, publish or SBOM: the run and the commit status tacplus-dev/release/$BUILD_RELEASE say which); nothing was published"; text="the build failed"; fi
     { printf 'repo %s\nbranch %s\ncommit %s\nwhy %s\nrun %s\nat %s\n' "$BUILD_REPO" "$BUILD_RELEASE" "$BUILD_SHA" "$why" "${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" "$now"; } > "$d/red"
     cat "$d/red" >&2
@@ -1847,12 +1904,37 @@ cmd_release_report() {
       log "release-report: the commit status was not set"
     return 0
   fi
-  { printf 'repo %s\nbranch %s\ncommit %s\nimage %s\nrun %s\nat %s\n' "$BUILD_REPO" "$BUILD_RELEASE" "$BUILD_SHA" "$image" "${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" "$now"; } > "$d/record"
+  { printf 'repo %s\nbranch %s\ncommit %s\nimage %s\n' "$BUILD_REPO" "$BUILD_RELEASE" "$BUILD_SHA" "$image"
+    [[ -z "$tp" ]] || printf '%s\n' "$tp"
+    printf 'run %s\nat %s\n' "${BUILD_STATUS_URL:-${CI_PIPELINE_URL:-}}" "$now"; } > "$d/record"
   cat "$d/record" >&2
   curl -fsS -o /dev/null -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$d/record" "$(release_url "$BUILD_REPO" "$BUILD_RELEASE" record)" ||
     verdict fail "the package registry refused the release's record: $image is published, not released"
   BUILD_OUT="$BUILD_OUT" BUILD_STATUS_TOKEN="$token" "$SELF" status success "released: ${image##*/}" || log "release-report: the commit status was not set"
   log "release-report: released $BUILD_REPO $BUILD_RELEASE: $image, as release-$BUILD_REPO/$(release_slug "$BUILD_RELEASE")/record"
+  [[ "$BUILD_RELEASE" != main ]] || seatrials_trigger
+}
+
+# A main release that moved its record starts fleet-seatrials' pipeline on its
+# main (looper#262), so dev rolls to it now, not at its daily schedule. No
+# variables: fleet-seatrials reads the records itself and refuses anything
+# older. Its pipeline trigger token (BUILD_SEATRIALS_TRIGGER_TOKEN, a masked
+# variable of the build project scoped to the environment seatrials-trigger,
+# release-report's alone) goes to curl on its stdin, never its arguments. A
+# trigger that fails only leaves the roll to that schedule: logged, never the
+# release's failure.
+seatrials_trigger() {
+  local project="${BUILD_SEATRIALS_PROJECT:-tacplus-dev/fleet-seatrials}" resp url
+  if [[ -z "${BUILD_SEATRIALS_TRIGGER_TOKEN:-}" ]]; then
+    log "seatrials not started: no trigger token (BUILD_SEATRIALS_TRIGGER_TOKEN); it rolls at its daily schedule"; return 0
+  fi
+  if resp="$(printf '%s' "$BUILD_SEATRIALS_TRIGGER_TOKEN" | curl -fsS --max-time 60 -X POST -F 'token=<-' -F ref=main \
+               "$CI_API_V4_URL/projects/${project//\//%2F}/trigger/pipeline" 2>&1)"; then
+    url="$(printf '%s' "$resp" | grep -o '"web_url"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')" || true
+    log "seatrials: pipeline ${url:-of $project} started"
+  else
+    log "seatrials not started: GitLab refused $project's trigger ($(printf '%s' "$resp" | tail -n 1)); it rolls at its daily schedule"
+  fi
 }
 
 # Whether the recorded commit is an ancestor of this one: their histories,
