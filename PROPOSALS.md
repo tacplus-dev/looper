@@ -4,6 +4,13 @@ Written by loopers. Each proposal: what, why, links. Jody promotes accepted ones
 the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
+- **The looper VMs roll onto main's image by themselves** (2026-11-27, #268; tacplus-dev/cloud#122): a VM runs the
+  looper image cloud's `looper_vms` pins by digest, moved by hand, so a fix to `looper-vm` reaches no VM until someone
+  bumps it and applies the ci stack: #267's dockerd sidecar merged at 07:15Z and tacplus#947's images build at 07:42Z
+  still ran the image of main-7c1dc4d. The image workflow could, after it attests a main image, open a pin change on
+  cloud (as `image-failed` opens a bug), or the VM's `looper-vm.sh` could read the newest attested `main-<sha7>` digest
+  at each boot (verified with `gh attestation verify`, the merge-train's rule of #115) instead of a pinned one; either
+  way a land reaches the VMs in about an image build. Needs a decision: a pin review per roll versus none.
 - **What still names jody1-328023** (2026-11-27, #265; tacplus-dev/cloud#15, Jody wants the project deleted once
   nothing uses it): since #265 `looper-build` has no default registry, so a tag's release publishes only where the
   build project's `BUILD_REGISTRY` says (tacplus-dev/tacplus#223's to set, with `GCP_WIF_PROVIDER`). `runner-image`
