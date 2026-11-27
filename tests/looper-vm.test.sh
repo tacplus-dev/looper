@@ -349,14 +349,18 @@ case "$1" in
   image) echo "PATH=/usr/bin"; echo "CARGO_HOME=/usr/local/cargo"; exit 0 ;;
   run)
     echo "$*" >> "$FIX/docker-runs"; shift
-    vars=() wd=""
+    vars=() wd="" detached=""
     while [[ "$1" == -* ]]; do
-      case "$1" in -e) vars+=("$2") ;; -w) wd="$2" ;; esac
-      [[ "$1" == --rm ]] && { shift; continue; }
+      case "$1" in -e) vars+=("$2") ;; -w) wd="$2" ;; -d) detached=1 ;; esac
+      [[ "$1" == --rm || "$1" == -d || "$1" == --privileged ]] && { shift; continue; }
       shift 2
     done
+    [[ -z "$detached" ]] || { echo "c0ffee"; exit 0; }   # the build's dockerd: up, unless dind-down
     shift   # the image
     cd "$wd" && exec env -i PATH="$PATH" HOME="$HOME" FIX="$FIX" "${vars[@]}" "$@" ;;
+  exec) echo "$*" >> "$FIX/docker-execs"; [[ ! -e "$FIX/dind-down" ]] ;;
+  logs) echo "dockerd: the stub's last words" ;;
+  rm) echo "$*" >> "$FIX/docker-rms" ;;
 esac
 EOF
 chmod +x "$TMP/bin/docker"
@@ -404,6 +408,53 @@ git -C "$FIX/clone" add -A; git -C "$FIX/clone" commit -qm c
 env FIX="$FIX" PATH="$TMP/bin:$PATH" LOOPER_CACHE="$FIX/cache" LOOPER_CACHE_HOST=/mnt/disks/cache "$ROOT/looper-vm" build --repo alpha \
   --dir "$FIX/clone" --sha "$(git -C "$FIX/clone" rev-parse HEAD)" --log "$FIX/b.log" || fail "exited $?: $(cat "$FIX/b.log")"
 has "$(cat "$FIX/docker-runs")" "-v /mnt/disks/cache:$FIX/cache -v /mnt/disks/cache/deps/cargo/registry:/usr/local/cargo/registry"
+# Its dockerd mounts the cache from there too.
+grep -q -- "^run -d --privileged .* -v /mnt/disks/cache:$FIX/cache docker:" "$FIX/docker-runs" || fail "dockerd's mount: $(cat "$FIX/docker-runs")"
+pass
+
+# A build's own container runtime (looper#267): a gate that builds and runs
+# images (tacplus's images set) gets DOCKER_HOST, a dockerd of the build's own
+# in a privileged sidecar (so --security-opt seccomp=unconfined and
+# apparmor=unconfined are allowed), its socket and data root under the build's
+# directory and the cache at its own path, as the gates see it; the sidecar is
+# removed with the build. One that does not answer builds nothing, said;
+# LOOPER_VM_DIND_IMAGE empty gives none.
+fixture build-runtime
+git init -q -b main "$FIX/clone"
+printf 'build_image: ghcr.io/tacplus-dev/build:1.0.0@sha256:%s\n' "$(printf 'b%.0s' {1..64})" > "$FIX/clone/build.lock"
+printf 'full:\n  run: '"'"'echo "DOCKER_HOST=${DOCKER_HOST:-none}"; touch "$FIX/gated"'"'"'\n' > "$FIX/clone/gates.yaml"
+git -C "$FIX/clone" add -A; git -C "$FIX/clone" commit -qm c; c="$(git -C "$FIX/clone" rev-parse HEAD)"
+rb() { # log env...
+  local l="$1"; shift
+  env FIX="$FIX" PATH="$TMP/bin:$PATH" LOOPER_CACHE="$FIX/cache" "$@" "$ROOT/looper-vm" build --repo alpha --dir "$FIX/clone" --sha "$c" --log "$l"
+}
+rb "$FIX/rt.log" || fail "exited $?: $(cat "$FIX/rt.log")"
+l="$(cat "$FIX/rt.log")"; runs="$(cat "$FIX/docker-runs")"
+b="$(sed -n 's|^DOCKER_HOST=unix://\(.*\)/docker/docker.sock$|\1|p' <<<"$l")"
+[[ "$b" == "$FIX/cache/builds/alpha-"* ]] || fail "the gates' DOCKER_HOST: $l"
+has "$l" "its own container runtime: dockerd in docker:29.10.1-dind@sha256:"
+has "$l" "verdict: success: the gates full passed"
+side="$(grep -- '^run -d ' "$FIX/docker-runs")" || fail "no dockerd started: $runs"
+has "$side" "run -d --privileged --name looper-vm-alpha-${c:0:12}-"
+has "$side" "-v $FIX/cache:$FIX/cache docker:29.10.1-dind@sha256:"
+has "$side" "dockerd --host=unix://$b/docker/docker.sock --data-root $b/docker/root"
+grep -q "^exec looper-vm-alpha-${c:0:12}-[0-9]*-docker docker --host unix://$b/docker/docker.sock version" "$FIX/docker-execs" || fail "not waited for: $(cat "$FIX/docker-execs")"
+grep -q "^rm -f -v looper-vm-alpha-${c:0:12}-[0-9]*-docker$" "$FIX/docker-rms" || fail "the sidecar left: $(cat "$FIX/docker-rms" 2>/dev/null)"
+[[ -z "$(ls -A "$FIX/cache/builds")" ]] || fail "builds left: $(ls "$FIX/cache/builds")"
+# A dockerd that never answers: nothing built, said, the sidecar removed.
+rm -f "$FIX/docker-rms" "$FIX/gated"; touch "$FIX/dind-down"
+rc=0; rb "$FIX/down.log" LOOPER_VM_DIND_WAIT=2 || rc=$?
+(( rc == 1 )) || fail "a runtime that never answers: exited $rc: $(cat "$FIX/down.log")"
+has "$(cat "$FIX/down.log")" "verdict: failure: its container runtime (dockerd in docker:29.10.1-dind@sha256:"
+has "$(cat "$FIX/down.log")" "did not answer within 2s: nothing built"
+has "$(cat "$FIX/down.log")" "dockerd: the stub's last words"
+[[ ! -e "$FIX/gated" ]] || fail "the gates ran with no runtime"
+grep -q -- "-docker$" "$FIX/docker-rms" || fail "the dead sidecar left"
+# LOOPER_VM_DIND_IMAGE empty: no runtime, as before.
+rm -f "$FIX/dind-down" "$FIX/docker-runs"
+rb "$FIX/none.log" LOOPER_VM_DIND_IMAGE= || fail "exited $?: $(cat "$FIX/none.log")"
+has "$(cat "$FIX/none.log")" "DOCKER_HOST=none"
+! grep -q -- '^run -d ' "$FIX/docker-runs" || fail "a dockerd with LOOPER_VM_DIND_IMAGE empty"
 pass
 
 # --- build slots (looper#248) --------------------------------------------------------

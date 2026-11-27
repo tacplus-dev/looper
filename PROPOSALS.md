@@ -169,6 +169,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   needs looper#239's image (`looper-vm --self-test` in it) on cloud#108's VM, or any host with Docker: run
   `looper-vm --repo tacplus` there with tacplus's credentials and a ready issue, and record the time to its first
   verdict beside an in-cluster report's.
+- **A local build's dockerd, checked on the VM** (2026-11-27, #267): each local build's gates get a dockerd of their
+  own (a privileged `docker:dind` sidecar, its socket and data root under the build's directory), tested here with
+  a stub docker only. Unchecked until tacplus#947's `images` land runs on `looper-vm-tacplus`: that dockerd starts
+  on Container-Optimized OS (AppArmor on the host, its data root overlay2 on the cache disk) and its containers take
+  `--security-opt apparmor=unconfined`. `looper-vm --self-test` could start one and say so. The socket's path is
+  under `LOOPER_CACHE` (`/cache` on the VM): a cache path past about 60 characters puts it over a unix socket's 108.
+  Every build now pays the sidecar's start (seconds); a gate map key saying which sets need one would spare the rest.
 - **One project, one place: a VM and the in-cluster reports never both** (2026-11-24, #238): on a VM, a report takes
   an approved issue labelled `looper:in-progress` as one a stopped VM left. That holds once looper#241 starts no
   in-cluster report for a project with a VM; while both run (the pilot "beside the current in-cluster looper"), a

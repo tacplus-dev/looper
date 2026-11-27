@@ -98,7 +98,8 @@
 # local build the report's looper runs (repo-looper's build_server, LOOPER_VM
 # set): `looper-build gates-local` in the commit's pinned build image, a
 # container started through the container socket (LOOPER_VM_DOCKER, default
-# docker), the cache mounted at its own path. Feedback only: the merge path
+# docker), the cache mounted at its own path, with a dockerd of its own beside
+# it as its DOCKER_HOST (looper#267: runtime). Feedback only: the merge path
 # stays the manager's build (point 6), or, where a report's --land opens a
 # merge request (looper#250), its build status, set off the VM. At most LOOPER_VM_BUILDS run at once
 # (looper#248; default a quarter of the VM's CPUs): one that waits for a slot
@@ -112,6 +113,8 @@
 # LOOPER_VM_LIST_EVERY (seconds between lists, default 300),
 # LOOPER_VM_IDLE_MINUTES, LOOPER_VM_STOP_GRACE, LOOPER_VM_LIST_TIMEOUT (seconds,
 # default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER, LOOPER_VM_BUILDS,
+# LOOPER_VM_DIND_IMAGE (a build's dockerd, by digest; empty, none), LOOPER_VM_DIND_WAIT
+# (seconds it is given to answer, default 60),
 # LOOPER_VM_REPO_LOOPER (default the repo-looper beside this script),
 # LOOPER_VM_LOOPER_BUILD (likewise, looper-build), LOOPER_VM_LOOPER_CHECK (likewise,
 # looper-check), LOOPER_VM_CHECK_RESTART, LOOPER_VM_MERGER (likewise,
@@ -144,6 +147,9 @@ LIST_TIMEOUT="${LOOPER_VM_LIST_TIMEOUT:-300}"
 LIST_EVERY="${LOOPER_VM_LIST_EVERY:-300}"
 COOLDOWN="${LOOPER_VM_COOLDOWN:-300}"
 DOCKER="${LOOPER_VM_DOCKER:-docker}"
+# Each local build's own container runtime (looper#267): empty, none.
+DIND="${LOOPER_VM_DIND_IMAGE-docker:29.10.1-dind@sha256:fbbc96e0af32cdc190aff92ba97a1281a115351a723afe21af78879cc55126b0}"
+DIND_WAIT="${LOOPER_VM_DIND_WAIT:-60}"
 # The cache's layout: a cache with another stamp is discarded.
 STAMP="looper-vm cache 1"
 
@@ -651,6 +657,34 @@ image_env() { # image name
 # The cache's path on the host, for a bind mount through the socket.
 host_path() { local h="${LOOPER_CACHE_HOST:-$CACHE}"; echo "$h${1#"$CACHE"}"; } # path under the cache
 
+# The build's own container runtime (looper#267), for a gate that builds and
+# runs images (tacplus's images set: docker build, then docker run with
+# --security-opt seccomp=unconfined and apparmor=unconfined for rootless
+# BuildKit): a dockerd of its own in a privileged sidecar (LOOPER_VM_DIND_IMAGE,
+# by digest), its socket and data root under the build's directory on the
+# cache, the cache mounted at its own path as in the gates' container, so a
+# gate's `docker run -v "$PWD:..."` mounts what the gates see. What a gate
+# builds, tags and leaves running is its own, gone with the sidecar: never the
+# VM's, nor another build's (two builds' tacplus-local/base:latest never
+# collide). Privileged, so its containers' --security-opt are allowed; the VM's
+# socket is root on the VM already (the decision's point 5). Its name in SIDECAR
+# once started, for the build's EXIT trap; fails when it does not answer
+# within LOOPER_VM_DIND_WAIT seconds.
+SIDECAR=""
+runtime() { # name dir
+  mkdir -p "$2/root"
+  "$DOCKER" pull -q "$DIND" >/dev/null 2>&1 {SLOT_FD}>&- || true   # by digest, as the build image
+  SIDECAR="$1"
+  "$DOCKER" run -d --privileged --name "$1" --label "looper-vm=$REPO" -v "$(host_path "$CACHE"):$CACHE" \
+    "$DIND" dockerd --host="unix://$2/docker.sock" --data-root "$2/root" >/dev/null {SLOT_FD}>&- || return 1
+  local i; for (( i = 0; i < DIND_WAIT; i++ )); do
+    "$DOCKER" exec "$1" docker --host "unix://$2/docker.sock" version >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  "$DOCKER" logs --tail 20 "$1" 2>&1 || true
+  return 1
+}
+
 build() {
   local dir="" sha="" gates="" base="" logf="" issue=""
   while (( $# )); do
@@ -664,14 +698,16 @@ build() {
     die "build needs --repo NAME --dir CHECKOUT --sha SHA --log FILE"
   [[ "$gates" =~ ^([A-Za-z0-9_-]+(\+[A-Za-z0-9_-]+)*)?$ ]] || die "build: '$gates' is not a gate set"
   [[ "$issue" =~ ^([0-9]+)?$ ]] || die "build: --issue '$issue' is not an issue's number"
+  [[ "$DIND_WAIT" =~ ^[0-9]+$ ]] || die "LOOPER_VM_DIND_WAIT '$DIND_WAIT' is not a number of seconds"
   build_slots >/dev/null
   : > "$logf"
   exec >> "$logf" 2>&1
   cache_dirs
-  local b objects image id rc=0 cargo m=()
+  local b objects image id rc=0 cargo m=() rt=()
   b="$(mktemp -d "$CACHE/builds/$REPO-XXXXXX")"; chmod 0755 "$b"
+  # The sidecar first: its data root is under the build's directory.
   # shellcheck disable=SC2064
-  trap "rm -rf '$b' '$CACHE/vm/slots/wait-$$' '$CACHE/vm/slots/run-$$'" EXIT
+  trap "[[ -z \"\$SIDECAR\" ]] || \"\$DOCKER\" rm -f -v \"\$SIDECAR\" >/dev/null 2>&1; rm -rf '$b' '$CACHE/vm/slots/wait-$$' '$CACHE/vm/slots/run-$$'" EXIT
   trap 'echo "verdict: failure: ended before its gates ran: the VM is stopping, or a newer local build of this issue took its place in the queue"; exit 143' TERM
   # Its own checkout of the commit, borrowing the report's objects (and through
   # them the shared store's): the report's own work tree is the model's.
@@ -691,7 +727,13 @@ build() {
   m=(-v "$(host_path "$CACHE"):$CACHE"
      -v "$(host_path "$CACHE/deps/cargo/registry"):$cargo/registry" -v "$(host_path "$CACHE/deps/cargo/git"):$cargo/git")
   trap '"$DOCKER" rm -f "$id" >/dev/null 2>&1; exit 143' TERM
-  "$DOCKER" run --rm --name "$id" --label "looper-vm=$REPO" "${m[@]}" -w "$b/src" \
+  if [[ -n "$DIND" ]]; then
+    runtime "$id-docker" "$b/docker" ||
+      { echo "verdict: failure: its container runtime (dockerd in $DIND, container $id-docker) did not answer within ${DIND_WAIT}s: nothing built"; exit 1; }
+    echo "its own container runtime: dockerd in $DIND (container $id-docker), the gates' DOCKER_HOST unix://$b/docker/docker.sock"
+    rt=(-e DOCKER_HOST="unix://$b/docker/docker.sock")
+  fi
+  "$DOCKER" run --rm --name "$id" --label "looper-vm=$REPO" "${m[@]}" -w "$b/src" "${rt[@]}" \
     -e BUILD_REPO="$REPO" -e BUILD_SHA="$sha" -e BUILD_GATES="$gates" -e BUILD_BASE="$base" -e BUILD_IMAGE="$image" \
     -e BUILD_SRC="$b/src" -e BUILD_OUT="$b/out" \
     -e GOMODCACHE="$CACHE/deps/go/mod" -e GOCACHE="$CACHE/deps/go/build" -e npm_config_cache="$CACHE/deps/npm" \
