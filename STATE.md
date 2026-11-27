@@ -170,7 +170,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   `nightly: true`, main's head, no commit status; with no `repo`, one pipeline fanning out to every repository whose
   main pins its build image, each its own child pipeline, #164; `BUILD_NIGHTLY_SLOTS`, 1, at a time, each repository's plan and child in the resource group
   `nightly-slot-<n>`, every nightly job on `BUILD_NIGHTLY_TAGS`, a build's never, so the lands' builds never wait behind it, #185:
-  still the build runner's tags until the cluster's nightly entry (tacplus-dev/cluster#46, landed) is registered, tacplus-dev/cloud#116 (#220), and the schedule's hour the recap's quietest build hours, PROPOSALS.md) and a release add
+  `arm64, build-nightly`, the cluster's nightly entry (tacplus-dev/cluster#46), registered by tacplus-dev/cloud#116 (#220), in effect in tacplus-dev/build once the hub's copy takes it after cluster runs that entry, and the schedule's hour the recap's quietest build hours, PROPOSALS.md) and a release add
   CodeQL (public repositories only; its `--ram` and `--threads` sized to the job's cgroup, a 2048 MB or quarter reserve
   left, its job `BUILD_SCAN_CODEQL_REQUESTS`, `2 12Gi 3500m 12Gi`, each analysis's peak in the summary's `### Memory`, #189:
   CodeQL's own default heap ran the Java and Rust nightlies out of memory; the gates job `BUILD_GATES_REQUESTS_<repo>`, unset the runner's defaults, both within `BUILD_RUNNER_CEILINGS`, `3500m 12Gi`, #202: tacplus's gates were OOM-killed at 8Gi) and Trivy; the scanners run side by side, `BUILD_SCAN_JOBS` (the
