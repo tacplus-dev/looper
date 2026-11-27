@@ -118,7 +118,7 @@ stages:
 
 looper-plan:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  image: ghcr.io/tacplus-dev/looper@sha256:eb5201e0fe22aa5e5d877155e684c83f7d9a785b43fa288f0b072600c9f4f4bd
   needs: []
   <<: *looper-rules
   extends: [.looper-identity, .kick]
@@ -162,7 +162,7 @@ looper-run:
 # that waited for a runner do not run their hours back to back.
 looper-kick:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  image: ghcr.io/tacplus-dev/looper@sha256:eb5201e0fe22aa5e5d877155e684c83f7d9a785b43fa288f0b072600c9f4f4bd
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_PIPELINE_SCHEDULE_DESCRIPTION =~ /kicker/
@@ -182,7 +182,7 @@ looper-kick:
 # after the setup and whenever the ruleset or the apps change.
 looper-ruleset-probe:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  image: ghcr.io/tacplus-dev/looper@sha256:eb5201e0fe22aa5e5d877155e684c83f7d9a785b43fa288f0b072600c9f4f4bd
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -206,7 +206,7 @@ looper-ruleset-probe:
 # from the variable to gcloud's stdin, never to the log or a file.
 looper-vm-secret:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  image: ghcr.io/tacplus-dev/looper@sha256:eb5201e0fe22aa5e5d877155e684c83f7d9a785b43fa288f0b072600c9f4f4bd
   needs: []
   rules:
     - if: ($CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "main"
@@ -237,7 +237,7 @@ looper-vm-secret:
 # expected one, and says why (gcloud's own error, its class).
 looper-token-diagnose:
   stage: plan
-  image: ghcr.io/tacplus-dev/looper@sha256:790b78493c18c89d2127887c08e48229ebcd5b3cc77120dc94e272ea5ad1ad81
+  image: ghcr.io/tacplus-dev/looper@sha256:eb5201e0fe22aa5e5d877155e684c83f7d9a785b43fa288f0b072600c9f4f4bd
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
