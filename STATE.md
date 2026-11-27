@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#262).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#253).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -150,7 +150,11 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   image on `BUILD_DOCKER_TAGS`, the plan saying so, and its SBOM by `sbom-<repo>` in the looper image (#73, step 1);
   a nightly's `gates-report` publishes its gates' verdict on main (`gates-<repo>/latest`: record and log tail), which a
   pinned repository's nightly scan reads as its item 3 instead of running the gates, its model with no container
-  runtime and its job on the control runner with a report's requests (#73, step 2);
+  runtime and its job on the control runner with a report's requests (#73, step 2), the record carrying the last
+  green full check and the reds in a row since, from which the scan files each miss of the gate map with
+  `looper-gatemiss` (#253: a red held on a second night whose only land since green ran a partial set, one approved
+  `bug`, "gate map miss: <paths> ran <sets>, <gate> broke"; a flake, a land on full or several lands, none; README: Gate
+  map misses; the rolling check's bisect and the repository's `gate-audit` are #249's part, PROPOSALS.md);
   tested against a local origin and stub GitHub, BuildKit and registry, and with a real buildx (same commit, same
   digest; a real rootless BuildKit where one starts); its deterministic security checks (#49, `looper-scan`, README:
   Security checks): every build's child pipeline runs OSV-Scanner, govulncheck, cargo-deny, Semgrep CE, gitleaks, gosec,
