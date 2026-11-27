@@ -198,3 +198,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-27 looper issue ci/build.gitlab-ci.yml: pin a looper image that carries #252's release builds (the looper half of tacplus-dev/cloud#112) (#261)
 - 2026-11-27 looper issue A follow-up issue filed as the stated half of approved, roadmapped work inherits the parent's approval and ROADMAP link (#264)
 - 2026-11-27 looper issue Release records for seatrials: fleet-seatrials reads release-* packages, the record names the tacplus it was built with (D4), a green main release triggers seatrials (#262)
+- 2026-11-27 looper issue Record every miss of a repository's gate map when the full check of main is red (#253)
