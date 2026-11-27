@@ -277,7 +277,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-26 by lo
   head), `release/X.Y` its head, `branches` or no repo a fan-out of each branch with something new, publishing
   `<repo>:<branch>-<commit12>` by digest; `release-report` moves `release-<repo>/<branch>/record` forward only (an
   older build never takes a newer one's place), sets `tacplus-dev/release/<branch>`, and records a red one, which the
-  nightly scan files as an approved bug;
+  nightly scan files as an approved bug; `ci/build.gitlab-ci.yml` pins main-7c1dc4d's image (#261), whose
+  `looper-build` has them (main-1fca965's, pinned before, ignored `release`);
   on a looper VM (`looper-vm`, #238) a pinned GitHub repository's report `--land`s by opening a merge request (#250,
   step 4 of `tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`): its own commits rebased onto
   `main-green` (main's head until #249 makes it), the set their diff calls for built locally, and only on green
