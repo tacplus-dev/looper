@@ -195,3 +195,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-26 looper issue The looper image's Dockerfile builds FROM tacplus/build:2.6 by a floating tag, built of ARGs the relock cannot read or pin (#258)
 - 2026-11-26 looper issue A report on a VM opens a merge request with its evidence, on main-green, instead of queueing a land (#250)
 - 2026-11-27 looper issue Retire looper-docker, its broker and the host socket's path once every repository is pinned; image builds in the build job without host Docker (#73)
+- 2026-11-27 looper issue ci/build.gitlab-ci.yml: pin a looper image that carries #252's release builds (the looper half of tacplus-dev/cloud#112) (#261)
