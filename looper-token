@@ -31,6 +31,12 @@
 #            and LOOPER_MERGER_APP_ID, so the manager's app serves until the
 #            merger's own exists; LOOPER_MERGER_INSTALLATION_ID, else the org's
 #            installation of that app, looked up with its JWT.
+#   check    tacplus-check (LOOPER_CHECK_APP_ID set), else tacplus-manager
+#            (tacplus-dev/cloud#111: a setting, the machines' accounts that
+#            key's signers too): contents, statuses, issues and pull requests
+#            write, no bypass of main's ruleset (looper#249). The rolling check
+#            of main on its reserved machines: main-green, its verdicts, a
+#            revert's branch and pull request, the issues it files.
 #
 #   looper-token start ROLE DIR [PID [ISSUE]]
 #                                 mints ROLE's token (for a report, ISSUE's:
@@ -72,7 +78,8 @@
 # LOOPER_KMS_KEYRING (projects/P/locations/L/keyRings/R), LOOPER_REPORT_APP_ID,
 # LOOPER_REPORT_INSTALLATION_ID, LOOPER_MANAGER_APP_ID,
 # LOOPER_MANAGER_INSTALLATION_ID, LOOPER_MERGER_KEY, LOOPER_MERGER_APP_ID,
-# LOOPER_MERGER_INSTALLATION_ID; GCP_ID_TOKEN (the job's id_tokens, audience
+# LOOPER_MERGER_INSTALLATION_ID, LOOPER_CHECK_APP_ID, LOOPER_CHECK_INSTALLATION_ID;
+# GCP_ID_TOKEN (the job's id_tokens, audience
 # https://iam.googleapis.com/$GCP_WIF_PROVIDER); LOOPER_MANAGER_WORKFLOWS;
 # LOOPER_GITHUB_API (default https://api.github.com); LOOPER_NET_TIMEOUT (a
 # call to GitHub's bound, seconds, default 300).
@@ -117,7 +124,20 @@ role_app() { # role
       : "${LOOPER_MERGER_APP_ID:?LOOPER_MERGER_APP_ID is not set (README, The merger)}"
       echo "${LOOPER_MERGER_KEY:-tacplus-merger} $LOOPER_MERGER_APP_ID ${LOOPER_MERGER_INSTALLATION_ID:--}" \
         '"contents":"write","issues":"write","metadata":"read"' ;;
-    *) fail "no role '$1': report, manager or merger" ;;
+    check)
+      # The check's own app once it is configured; until then the manager's
+      # (tacplus-dev/cloud#111: the check machines' accounts its key's signers
+      # too), asking the check's permissions all the same.
+      local perms='"contents":"write","statuses":"write","issues":"write","pull_requests":"write","metadata":"read"'
+      if [[ -n "${LOOPER_CHECK_APP_ID:-}" ]]; then
+        : "${LOOPER_CHECK_INSTALLATION_ID:?LOOPER_CHECK_INSTALLATION_ID is not set}"
+        echo "tacplus-check $LOOPER_CHECK_APP_ID $LOOPER_CHECK_INSTALLATION_ID $perms"
+      else
+        : "${LOOPER_MANAGER_APP_ID:?neither LOOPER_CHECK_APP_ID nor LOOPER_MANAGER_APP_ID is set (the check signs as tacplus-check, else tacplus-manager)}"
+        : "${LOOPER_MANAGER_INSTALLATION_ID:?LOOPER_MANAGER_INSTALLATION_ID is not set}"
+        echo "tacplus-manager $LOOPER_MANAGER_APP_ID $LOOPER_MANAGER_INSTALLATION_ID $perms"
+      fi ;;
+    *) fail "no role '$1': report, manager, merger or check" ;;
   esac
 }
 

@@ -660,14 +660,30 @@ sync_checkout() {
 }
 
 # A report's clone (looper#70): its own, LOOPER_WORK/NAME/issues/N, at
-# origin/main (anything a killed run left unpushed kept on a local branch, as
+# REPORT_BASE (anything a killed run left unpushed kept on a local branch, as
 # sync_checkout does), on the issue's own branch; so its model's user owns all
 # of it (looper#68). Its pushes to main are refused (looper.child): only the
-# manager merges.
+# manager merges. Loopers build on main-green (looper#249): on a looper VM a
+# report starts at origin/main-green, the last commit the rolling check of main
+# (looper-check) found green, when the repository has one on main; else, and
+# outside a VM, at origin/main. A resume and a land still rebase onto main.
+REPORT_BASE=origin/main
 prepare_report() {
   sync_checkout
   git -C "$CHECKOUT" config looper.child true
-  git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" origin/main
+  REPORT_BASE=origin/main
+  if [[ -n "${LOOPER_VM:-}" ]] && git -C "$CHECKOUT" ls-remote --exit-code origin refs/heads/main-green >/dev/null 2>&1 &&
+     fetch "$CHECKOUT" '+refs/heads/main-green:refs/remotes/origin/main-green' &&
+     git -C "$CHECKOUT" merge-base --is-ancestor origin/main-green origin/main; then
+    REPORT_BASE=origin/main-green
+  fi
+  git -C "$CHECKOUT" checkout -q -f -B "$BRANCH" "$REPORT_BASE"
+}
+# The prompt's words for where the clone starts.
+report_base() {
+  if [[ "$REPORT_BASE" == origin/main-green ]]; then
+    echo "at origin/main-green (the last commit the rolling check of main found green: loopers build on it, looper#249)"
+  else echo "at origin/main"; fi
 }
 
 # The planning files every repository carries (tacplus-dev/roadmap
@@ -4936,7 +4952,7 @@ It names a parent, but does not inherit its approval (looper#264): $4. Say so in
   new_nonce "$run"
   cat > "$run/prompt.md" <<PR
 You are the looper of $LOOPER_ORG/$REPO, proposing a design for issue #$n. Your working directory is a clone
-of this repository on its own branch, $BRANCH, at origin/main. Read the issue (its text is at the end of this
+of this repository on its own branch, $BRANCH, $(report_base). Read the issue (its text is at the end of this
 prompt) and the documents it cites.
 
 It is a feature, and no ROADMAP.md links it (neither this repository's nor $LOOPER_ORG/$LOOPER_ROADMAP_REPO's), so it is not
@@ -5524,6 +5540,7 @@ work_issue() { # issue
     esac
   fi
   resumed="$(resume "$n" "commit it and land it")"
+  [[ -z "$resumed" ]] || REPORT_BASE=origin/main   # a resume rebases onto main
   if [[ -n "$inherited" ]]; then
     commit_inherited "$n" || true
     if ! inherited_said "$n"; then
@@ -5569,7 +5586,7 @@ your run: it backs off again (rule 9 says how to wait until a date).
   local security; security="$(security_report "$run")"
   cat > "$run/prompt.md" <<PR
 You are the looper of $LOOPER_ORG/$REPO, working issue #$n. Your working directory is a clone of this
-repository on its own branch, $BRANCH, at origin/main: other issues of this repository may be worked at the
+repository on its own branch, $BRANCH, $(report_base): other issues of this repository may be worked at the
 same time, each in its own job. Read the issue first: its text, as the looper read it when this run started,
 is at the end of this prompt (rule 12 says whose text directs you); \`$(text_cmd issue "$n")\`
 shows any comment since, in the same blocks. It was approved by someone with write access; issues it links to and the documents it

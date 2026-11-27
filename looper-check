@@ -1,0 +1,531 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# looper-check: the rolling check of a repository's main and its fixed
+# recovery procedure (looper#249; tacplus-dev/roadmap
+# decisions/agentic-dev-flow-2026-11-25.md, step 6 of the flow and the panel's
+# items 3, 7, 8, 9 and 10). It runs on a reserved machine of its own
+# (tacplus-dev/cloud#111): not spot, not a looper's VM, not the GitLab build
+# project. It writes no main: it moves the ref main-green, posts commit
+# statuses, proposes reverts as pull requests and files issues.
+#
+#   looper-check --repo NAME [--until-idle]
+#                                the check, back to back: whenever main moved since its
+#                                last check, its head on the full gates; until SIGTERM, or
+#                                with --until-idle until main is unmoved (a check machine's,
+#                                which then sizes itself to 0: exit 0)
+#   looper-check once --repo NAME
+#                                one pass: exit 0 green (or main unmoved), 1 red (handled:
+#                                reverted, filed), 2 no verdict or GitHub unreadable
+#                                (nothing decided; the next pass tries again)
+#   looper-check needed --repo NAME
+#                                the orchestrator's question (tacplus-dev/cloud#111: the
+#                                merger's always-on machine, which starts the check's): does
+#                                main's head lack the check's verdict (no looper/rolling-check
+#                                status, or pending: a check under way or cut off)? exit 0
+#                                needed, 1 not (checked, or it pins no build image), 2 unreadable
+#   looper-check gate --repo NAME --sha SHA [--branch BRANCH] [--dir CLONE]
+#                                the merger's question before each clean merge (looper#251,
+#                                LOOPER_MERGER_GATE; CLONE its clone, made if absent): may
+#                                BRANCH at SHA merge now? exit 0 open, 1 closed; one line
+#                                says why (the gate, below)
+#
+# The check. A pass fetches main and main-green; when main's head H is the one
+# it checked last, it builds nothing. Otherwise it builds H on the check's
+# groups (LOOPER_CHECK_GROUPS, gate sets of gates.yaml, default full), all at
+# once, each a local build (LOOPER_CHECK_BUILD, default `looper-vm build`: the
+# commit's pinned build image, through the machine's container socket). A head
+# that pins no build image (build.lock, tacplus.lock) is not checked.
+#   Green: the ref main-green moves to H (loopers build on it) and H gets the
+#     status looper/rolling-check success: merging is open.
+#   Red, the procedure is fixed (decision point 8, the panel's 9):
+#   1. Merging stops: H's status looper/rolling-check is a failure.
+#   2. The red groups run again on H: green, a flake, which reverts nothing:
+#      green as above, and the flake recorded (LOOPER_CHECK_DIR/NAME.flakes).
+#   3. The red groups run on main-green G again: red there too, no shipped
+#      change caused it (an image re-pin's findings, an outside dependency): it
+#      reverts nothing and freezes nothing. One issue says so (bug, approved,
+#      priority:high, looper:main-check), main-green moves on to H (its tree no
+#      worse than G's, so the merger's bound does not freeze merging), H's
+#      status a success (outside).
+#   4. Else the merges since G (main's first-parent commits G..H) are bisected
+#      on the red groups: the culprit is the first on which they are red.
+#   5. It is reverted on H (git revert, -m 1 for a merge commit). The revert
+#      applied and the red groups green on the reverted tree (D3): the revert
+#      is pushed to looper/revert-<sha7>, given the statuses looper/gates and
+#      looper/rolling-check success (statuses no report can mint: the check's
+#      identity), and proposed as a pull request labelled looper:revert;
+#      merging is closed but for that branch. The culprit's issue (its pull request's branch
+#      looper/NAME-N, else a "(N)" or "(#N)" in its subject) is reopened,
+#      approved and given the failure: its work returns as a revert of the
+#      revert or as new commits, never the same tree (gate, below).
+#   6. Otherwise (the revert conflicts, the groups still red with it reverted,
+#      or no main-green to bisect from): one "fix main" issue (bug, approved,
+#      priority:high, looper:main-check; one open at a time, a later red a
+#      comment on it) for one looper, merging closed but for its branch.
+#   Merging reopens when the next full check is green (D3): until then each
+#   new head of main gets the failure again before it is built. A build with no
+#   verdict decides nothing: the pass ends (exit 2) and the next one builds
+#   again. A pass that handled H does not build it again.
+#
+# The check's state: main-green, and the status looper/rolling-check
+# (LOOPER_ROLLING_CONTEXT) on main's heads the check builds, its newest on
+# main's first-parent line the state: success (open), pending (checking, open)
+# or failure (closed), its description what it is (`open: green <sha7>`,
+# `checking <sha7>`, `bisecting <groups> since <sha7>`, `reverting <sha7>:
+# allow <branch>`, `fix-main #N: allow <branch>`, `outside #N: ...`). While
+# closed, the `allow` branch alone may merge: the recovery's own.
+#
+# The machine (tacplus-dev/cloud#111, Jody 2026-11-25: builders run only while
+# used): a check machine runs while there is something to check and sizes
+# itself to 0 otherwise. It runs `looper-check --until-idle` per repository
+# (looper-vm check), which ends once main is unmoved; the orchestrator, the
+# merger's always-on machine, asks `looper-check needed` of each repository and
+# starts the check's machine when one says so. A verdict GitHub refused is
+# posted again before an idle check ends, so it is not needed forever.
+#
+# The gate (looper#251 asks it of each clean merge, on the merger's machine:
+# GitHub read with the merger's token, main fetched into CLONE). Closed, its
+# line saying why, when
+#   - main has no main-green, or it is off main's first-parent line, or no
+#     state of the check by LOOPER_CHECK_LOGIN (the check's own login: a
+#     report cannot mint it) is on that line down to main-green: the check is
+#     down, so merging is live only with it.
+#   - the check is red (bisecting, reverting, a fix main), but for the branch
+#     its state allows, which merges past the bound too: the recovery is what
+#     reopens merging (D3).
+#   - the bound (D2, the panel's 7): LOOPER_CHECK_MAX_UNCHECKED (4) merges or
+#     more on main after main-green (its first-parent commits since it), or the
+#     oldest of them LOOPER_CHECK_MAX_AGE minutes old or more (one gate's age:
+#     full's minutes in main's gates.yaml, else 70 for tacplus, 30 the others).
+#   - the head builds on a merge main reverted (the merge or its merged side an
+#     ancestor) with no revert of that revert since (the panel's 10): merging
+#     the same branch again would bring back only its later commits. Its work
+#     returns as a revert of the revert or as new commits, never the same tree.
+#
+# Environment: GH_TOKEN or GH_CONFIG_DIR (the check's identity: statuses,
+# main-green and looper/revert-* pushes, pull requests, issues; never main);
+# LOOPER_ORG; LOOPER_CHECK_DIR (default $LOOPER_CACHE/check: its clones, logs
+# and records), LOOPER_CHECK_REMOTE (default https://github.com/ORG/NAME.git),
+# LOOPER_CHECK_BUILD, LOOPER_CHECK_GROUPS, LOOPER_CHECK_POLL (seconds between
+# looks at an unmoved main, default 60), LOOPER_ROLLING_CONTEXT and
+# LOOPER_MERGER_CONTEXT (the merger's: default looper/rolling-check and
+# looper/gates); LOOPER_CHECK_LOGIN (the check's login, whose statuses alone
+# the gate reads, and needed (unset, any): tacplus-manager[bot] until
+# tacplus-check exists), LOOPER_CHECK_MAX_UNCHECKED, LOOPER_CHECK_MAX_AGE.
+set -euo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+HERE="$(dirname "$SELF")"
+usage() { sed -n '5,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in -h|--help|"") usage; exit 0 ;; esac
+# shellcheck source=looper-lib.sh
+source "${LOOPER_LIB:-$HERE/looper-lib.sh}"
+
+CTX="${LOOPER_ROLLING_CONTEXT:-looper/rolling-check}" # the check's verdict and state, on main's heads
+GATES_CTX="${LOOPER_MERGER_CONTEXT:-looper/gates}"   # a merge request's build, on a revert's branch
+DIR="${LOOPER_CHECK_DIR:-${LOOPER_CACHE:-/cache}/check}"
+POLL="${LOOPER_CHECK_POLL:-60}"
+read -ra BUILD <<<"${LOOPER_CHECK_BUILD:-$HERE/looper-vm build}"
+read -ra CHECK_GROUPS <<<"${LOOPER_CHECK_GROUPS:-full}"
+
+# --- the clone ------------------------------------------------------------------
+
+# main and main-green fetched into CLONE; H and G their commits (G empty when
+# origin has no main-green). Fails when origin cannot be read: an absent
+# main-green is told from an unreadable one.
+refresh() {
+  local g
+  if [[ ! -d "$CLONE/.git" ]]; then
+    rm -rf "$CLONE"; git clone -q --no-checkout "$REMOTE" "$CLONE" || return 1
+  fi
+  git -C "$CLONE" fetch -q origin '+refs/heads/main:refs/remotes/origin/main' || return 1
+  g="$(git -C "$CLONE" ls-remote origin refs/heads/main-green)" || return 1
+  if [[ -n "$g" ]]; then git -C "$CLONE" fetch -q origin '+refs/heads/main-green:refs/remotes/origin/main-green' || return 1
+  else git -C "$CLONE" update-ref -d refs/remotes/origin/main-green 2>/dev/null || true; fi
+  H="$(git -C "$CLONE" rev-parse refs/remotes/origin/main)"
+  G="$(git -C "$CLONE" rev-parse -q --verify refs/remotes/origin/main-green || true)"
+}
+g() { git -C "$CLONE" "$@"; }
+s7() { echo "${1:0:7}"; }
+
+# --- GitHub ---------------------------------------------------------------------
+
+post() { # sha state context description
+  gh api -X POST "repos/$LOOPER_ORG/$REPO/statuses/$1" -f state="$2" -f context="$3" -f description="${4:0:140}" >/dev/null ||
+    { log "could not post $3 $2 on $(s7 "$1")"; return 1; }
+}
+# The check's state: the status on main's head H, the merger's to read.
+set_state() { # state description
+  if post "$H" "$1" "$CTX" "$2"; then echo "$H" > "$DIR/$REPO.posted"; fi
+  echo "$1 $2" > "$DIR/$REPO.state"
+  log "the state: $1 $2"
+}
+
+# The one open issue the check filed with this title's start, if any.
+filed() { # title-start
+  forge_issue_list "$REPO" open 50 number,title,labels \
+    "[.[] | select(any(.labels[]; .name == \"$LABEL_MAIN_CHECK\")) | select(.title | startswith($(jq -n --arg t "$1" '$t'))) | .number] | first // empty" \
+    "$LABEL_MAIN_CHECK"
+}
+# Files the issue, or comments on the one open: prints its number.
+file_issue() { # title-start title body
+  local n
+  n="$(filed "$1")" || n=""
+  if [[ -n "$n" ]]; then
+    forge_issue_comment "$REPO" "$n" "The rolling check of main is red again (main $(s7 "$H")).
+
+$3" >/dev/null || log "could not comment on #$n"
+  else
+    ensure_labels "$REPO"
+    n="$(forge_issue_create "$REPO" "$2" "$3" "$LABEL_BUG" "$LABEL_APPROVED" "$LABEL_PRIORITY_HIGH" "$LABEL_MAIN_CHECK")" ||
+      { log "could not file \"$2\""; return 1; }
+  fi
+  echo "$n"
+}
+
+# The issue a merge of main came from: its pull request's branch
+# (looper/NAME-N), else a "(N)" or "(#N" in the subject of what it merged.
+culprit_issue() { # sha
+  local b n s
+  b="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$1/pulls" --jq '.[0].head.ref // empty' 2>/dev/null)" || b=""
+  if [[ "$b" == "looper/$REPO-"* && "${b##*-}" =~ ^[0-9]+$ ]]; then echo "${b##*-}"; return 0; fi
+  if g rev-parse -q --verify "$1^2" >/dev/null; then s="$(g log --format=%s "$1^1..$1^2")"
+  else s="$(g log -1 --format=%s "$1")"; fi
+  n="$(grep -oE '\(#?[0-9]+[):]' <<<"$s" | head -n 1 | tr -dc 0-9)" || n=""
+  [[ -n "$n" ]] && echo "$n"
+}
+
+# --- builds ---------------------------------------------------------------------
+
+BUILD_PIDS=() RED=() RED_LOG="" NB=0
+# The groups on sha, all at once: RED the red ones, RED_LOG the first one's
+# log. Fails (2) when one gave no verdict.
+run_groups() { # sha why group...
+  local sha="$1" why="$2" gr rc none=0 f; shift 2
+  local -A pid=() lg=()
+  RED=(); RED_LOG=""
+  mkdir -p "$DIR/logs/$REPO"
+  for gr in "$@"; do
+    NB=$((NB + 1)); f="$DIR/logs/$REPO/$(date -u +%Y%m%dT%H%M%SZ)-$NB-$(s7 "$sha")-$gr-$why.log"
+    "${BUILD[@]}" --repo "$REPO" --dir "$CLONE" --sha "$sha" --gates "$gr" --log "$f" < /dev/null > /dev/null 2>&1 &
+    pid[$gr]=$!; lg[$gr]="$f"; BUILD_PIDS+=("$!")
+  done
+  for gr in "$@"; do
+    rc=0; wait "${pid[$gr]}" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) RED+=("$gr"); [[ -n "$RED_LOG" ]] || RED_LOG="${lg[$gr]}" ;;
+      *) none=1; log "$gr on $(s7 "$sha") ($why): no verdict (exit $rc; ${lg[$gr]})" ;;
+    esac
+  done
+  BUILD_PIDS=()
+  log "$(s7 "$sha") ($why): ${*}: ${RED[*]:+red: ${RED[*]}}$( (( ${#RED[@]} )) || echo green)"
+  (( none == 0 )) || return 2
+}
+tail_of() { echo '```'; tail -n 40 "$1" 2>/dev/null | sed 's/```/` ` `/g'; echo '```'; } # log
+
+# --- the check ------------------------------------------------------------------
+
+# Whether a commit pins its build image, as looper-vm build needs.
+pins() { # sha
+  local f
+  for f in tacplus.lock build.lock; do g show "$1:$f" 2>/dev/null | grep -q '^build_image:' && return 0; done
+  return 1
+}
+
+green() { # sha note
+  g push -q origin "$1:refs/heads/main-green" || { log "could not move main-green to $(s7 "$1")"; return 2; }
+  g update-ref refs/remotes/origin/main-green "$1"; G="$1"
+  set_state success "open: green $(s7 "$1")$2"
+}
+
+pass_once() {
+  MOVED=0
+  refresh || { log "origin cannot be read ($REMOTE): nothing decided"; return 2; }
+  if [[ "$(cat "$DIR/$REPO.checked" 2>/dev/null)" == "$H" ]]; then
+    log "main unmoved at $(s7 "$H") since its last check: nothing to build"; return 0
+  fi
+  if ! pins "$H"; then
+    log "main $(s7 "$H") pins no build image (build.lock, tacplus.lock): nothing to check"
+    echo "$H" > "$DIR/$REPO.checked"; return 0
+  fi
+  MOVED=1
+  local st failed rc=0
+  st="$(cat "$DIR/$REPO.state" 2>/dev/null)" || st=""
+  # A closed state stays closed, on each new head, until a full check is green.
+  if [[ "$st" == "failure "* ]]; then set_state failure "${st#failure }"
+  else set_state pending "checking $(s7 "$H")"; fi
+  run_groups "$H" check "${CHECK_GROUPS[@]}" || return 2
+  if (( ${#RED[@]} == 0 )); then green "$H" "" || return 2; echo "$H" > "$DIR/$REPO.checked"; return 0; fi
+  failed=("${RED[@]}")
+  log "red: ${failed[*]} on main $(s7 "$H"): merging stops, and it runs again (a flake reverts nothing)"
+  run_groups "$H" again "${failed[@]}" || return 2
+  if (( ${#RED[@]} == 0 )); then
+    echo "$(date -u +%FT%TZ) $(s7 "$H") ${failed[*]}" >> "$DIR/$REPO.flakes"
+    green "$H" " (a flake in ${failed[*]}: red once, green run again)" || return 2
+    echo "$H" > "$DIR/$REPO.checked"; return 0
+  fi
+  failed=("${RED[@]}"); FAIL_LOG="$RED_LOG"
+  set_state failure "red: ${failed[*]}"
+  recover "${failed[@]}" || rc=$?
+  (( rc == 2 )) || echo "$H" > "$DIR/$REPO.checked"
+  (( rc == 2 )) && return 2
+  return 1
+}
+
+# Steps 3 to 6 of the procedure, for the groups red on H.
+recover() { # group...
+  local fl="$*" c lo hi mid culprit cl wt r m=() why
+  if [[ -z "$G" ]]; then
+    set_state failure "red: $fl, and no main-green to bisect from"
+    fix_main "there is no main-green yet: no green commit to bisect from" "$@"; return
+  fi
+  set_state failure "bisecting ${fl// /+} since $(s7 "$G")"
+  run_groups "$G" main-green "$@" || return 2
+  if (( ${#RED[@]} )); then outside "$@"; return; fi
+  mapfile -t c < <(g rev-list --first-parent --reverse "$G..$H")
+  lo=-1; hi=$(( ${#c[@]} - 1 )); cl="$FAIL_LOG"
+  while (( hi - lo > 1 )); do
+    mid=$(( (lo + hi) / 2 ))
+    run_groups "${c[mid]}" bisect "$@" || return 2
+    if (( ${#RED[@]} )); then hi=$mid; cl="$RED_LOG"; else lo=$mid; fi
+  done
+  culprit="${c[hi]}"; FAIL_LOG="$cl"
+  log "the culprit: $(s7 "$culprit") ($(g log -1 --format=%s "$culprit")), the first merge since main-green $(s7 "$G") on which $fl is red"
+  wt="$DIR/$REPO-revert"
+  rm -rf "$wt"; g worktree prune
+  g worktree add -q --detach "$wt" "$H" 2>/dev/null || { log "no worktree for the revert"; return 2; }
+  ! g rev-parse -q --verify "$culprit^2" >/dev/null || m=(-m 1)
+  if ! git -C "$wt" revert --no-commit "${m[@]}" "$culprit" >/dev/null 2>&1; then
+    git -C "$wt" revert --abort 2>/dev/null || true; g worktree remove -f "$wt" 2>/dev/null || true
+    why="the revert of $(s7 "$culprit"), the culprit, does not apply to main $(s7 "$H"): later merges changed what it changed"
+    fix_main "$why" "$@"; return
+  fi
+  git -C "$wt" -c user.name=looper-check -c user.email=looper-check@users.noreply.github.com commit -q -m "Revert \"$(g log -1 --format=%s "$culprit")\"
+
+This reverts commit $culprit.
+
+The rolling check of main (looper#249): $fl red on main $(s7 "$H") since this
+merge, green on main-green $(s7 "$G") and on main with it reverted." || { log "the revert could not be committed"; return 2; }
+  r="$(git -C "$wt" rev-parse HEAD)"; g worktree remove -f "$wt" 2>/dev/null || true
+  run_groups "$r" reverted "$@" || return 2
+  if (( ${#RED[@]} )); then
+    fix_main "no single culprit: $fl is still red with $(s7 "$culprit"), the first red merge, reverted (on $(s7 "$r"))" "$@"; return
+  fi
+  propose_revert "$culprit" "$r" "$fl"
+}
+
+propose_revert() { # culprit revert groups
+  local c="$1" r="$2" fl="$3" b pr url n
+  b="looper/revert-$(s7 "$c")"
+  pr="$(gh pr list --repo "$LOOPER_ORG/$REPO" --head "$b" --state open --json number --jq '.[0].number // empty')" || pr=""
+  if [[ -z "$pr" ]]; then
+    g push -q -f origin "$r:refs/heads/$b" || { log "could not push $b"; return 2; }
+    post "$r" success "$GATES_CTX" "$fl green on main $(s7 "$H") with $(s7 "$c") reverted" || true
+    post "$r" success "$CTX" "$fl green on main $(s7 "$H") with $(s7 "$c") reverted" || true
+    ensure_labels "$REPO"
+    url="$(gh pr create --repo "$LOOPER_ORG/$REPO" --base main --head "$b" --label "$LABEL_REVERT" \
+      --title "Revert $(s7 "$c"): $fl red on main since it" --body "The rolling check of main (looper#249) reverts $c ($(g log -1 --format=%s "$c")).
+
+- $fl is red on main $(s7 "$H"), red again when run again (not a flake), green on main-green $(s7 "$G").
+- Bisected over the merges since main-green, $(s7 "$c") is the first on which $fl is red.
+- $fl is green on this branch, main $(s7 "$H") with it reverted (the statuses $GATES_CTX and $CTX, the check's).
+
+Merging on main is closed but for this branch until it is merged and the next full check is green.
+
+The failure:
+$(tail_of "$FAIL_LOG")")" || { log "could not open the revert's pull request"; return 2; }
+    pr="${url##*/}"
+  fi
+  set_state failure "reverting $(s7 "$c"): allow $b"
+  n="$(culprit_issue "$c")" || n=""
+  [[ -n "$n" ]] || { log "$(s7 "$c") names no issue: none is made ready"; return 0; }
+  [[ "$(forge_issue_view "$REPO" "$n" state .state 2>/dev/null)" == OPEN ]] ||
+    gh issue reopen "$n" --repo "$LOOPER_ORG/$REPO" >/dev/null || log "could not reopen #$n"
+  forge_issue_edit "$REPO" "$n" --add-label "$LABEL_APPROVED" --remove-label "$LABEL_LANDING" --remove-label "$LABEL_STUCK" >/dev/null ||
+    log "could not make #$n ready"
+  forge_issue_comment "$REPO" "$n" "The rolling check of main (looper#249) found main red on the gates $fl since $(s7 "$c"), this issue's change: $fl is green on main-green $(s7 "$G") and before it, red from it on (main $(s7 "$H")), and green on main with it reverted. Its revert is #$pr (\`$b\`): merging on main is closed until it is merged and the next full check is green.
+
+This issue is ready again, with the failure. Its work returns as a **revert of the revert** (\`git revert\` of the revert's commit, once #$pr is on main, on a branch from main-green) **or as new commits**, never the same tree: the merger (\`looper-check gate\`) refuses a branch that still builds on $(s7 "$c") without reverting its revert.
+
+The failure (the end of the log of $fl on $(s7 "$c")):
+$(tail_of "$FAIL_LOG")" >/dev/null || log "could not comment on #$n"
+}
+
+fix_main() { # why group...
+  local why="$1" n; shift
+  n="$(file_issue "fix main:" "fix main: $* red on main $(s7 "$H")${G:+ since $(s7 "$G")}" "The rolling check of main (looper#249) finds the gates $* red on main $(s7 "$H"), red again when run again (not a flake)${G:+, and green on main-green $(s7 "$G")}. No revert: $why.
+
+Merging on main is closed but for this issue's branch (\`looper/$REPO-<this issue>\`) until the next full check of main is green: fix it forward.
+
+The merges since main-green$(s7 "${G:-}" | sed 's/^/ /'):
+$( [[ -n "$G" ]] && g log --first-parent --format='- %h %s' "$G..$H" || echo "- (none: there is no main-green)")
+
+The failure:
+$(tail_of "$FAIL_LOG")")" || return 2
+  set_state failure "fix-main #$n: allow looper/$REPO-$n"
+}
+
+outside() { # group...
+  local n
+  n="$(file_issue "main is red, no change caused it:" "main is red, no change caused it: $* red on main-green $(s7 "$G") too" "The rolling check of main (looper#249) finds the gates $* red on main $(s7 "$H") and red on main-green $(s7 "$G"), the last commit it found green: no merge since caused it (an image re-pin's findings, an outside dependency). Nothing is reverted and merging is not closed; main-green moves on to $(s7 "$H"), whose tree is no worse.
+
+The failure on main-green:
+$(tail_of "$RED_LOG")")" || n="?"
+  g push -q origin "$H:refs/heads/main-green" || { log "could not move main-green to $(s7 "$H")"; return 2; }
+  g update-ref refs/remotes/origin/main-green "$H"; G="$H"
+  set_state success "outside #$n: $* red on main-green too"
+}
+
+check_loop() {
+  trap '[[ ${#BUILD_PIDS[@]} -eq 0 ]] || kill -TERM "${BUILD_PIDS[@]}" 2>/dev/null; log "SIGTERM: stopped"; exit 0' TERM INT
+  log "the rolling check of $LOOPER_ORG/$REPO: groups ${CHECK_GROUPS[*]}, $( ((UNTIL_IDLE)) && echo "until main is unmoved" || echo "a look every ${POLL}s while main is unmoved")"
+  local z rc st
+  while :; do
+    MOVED=0; rc=0; pass_once || rc=$?
+    if (( UNTIL_IDLE && ! MOVED && rc == 0 )); then
+      # The verdict on H, posted again if GitHub refused it, so needed says no.
+      st="$(cat "$DIR/$REPO.state" 2>/dev/null)" || st=""
+      if [[ -n "$st" && "$(cat "$DIR/$REPO.posted" 2>/dev/null)" != "$H" ]] && pins "$H"; then
+        set_state "${st%% *}" "${st#* }"
+      fi
+      log "main $(s7 "$H") checked: nothing to check, the check ends"; exit 0
+    fi
+    # Back to back while main moves; a pass with no verdict waits a poll.
+    (( MOVED && rc != 2 )) && continue
+    sleep "$POLL" & z=$!; wait "$z" 2>/dev/null || true
+  done
+}
+
+# --- the gate -------------------------------------------------------------------
+
+open_() { echo "open: $*"; exit 0; }
+closed() { echo "closed: $*"; exit 1; }
+
+# Why sha may not merge: it builds on a merge main reverted (the merge or its
+# merged side an ancestor) with no revert of that revert since; else nothing.
+reverted_in() { # sha
+  local c x t
+  for c in $(g rev-list -n 500 --grep='^This reverts commit [0-9a-f]\{40\}' refs/remotes/origin/main); do
+    x="$(g log -1 --format=%B "$c" | grep -oE '^This reverts commit [0-9a-f]{40}' | head -n 1 | awk '{ print $4 }')"
+    for t in "$x" $(g rev-parse -q --verify "$x^2" 2>/dev/null); do
+      g merge-base --is-ancestor "$t" "$1" 2>/dev/null || continue
+      g log --format=%B "$c..$1" | grep -q "^This reverts commit $c" && continue 2
+      echo "$(s7 "$1") builds on $(s7 "$x"), which main reverted ($(s7 "$c")): its work returns as a revert of the revert or as new commits"
+      return 0
+    done
+  done
+}
+
+# One gate's age, in minutes: LOOPER_CHECK_MAX_AGE, else full's minutes in
+# main's gates.yaml, else 70 for tacplus and 30 for the others.
+max_age() {
+  local m
+  if [[ -n "${LOOPER_CHECK_MAX_AGE:-}" ]]; then echo "$LOOPER_CHECK_MAX_AGE"; return; fi
+  m="$(g show refs/remotes/origin/main:gates.yaml 2>/dev/null |
+         awk '/^[^ \t#]/ { s = $1 } s == "full:" && /^[ \t]+minutes:/ { print $2; exit }')" || m=""
+  if [[ "$m" =~ ^[0-9]+$ ]]; then echo "$m"; elif [[ "$REPO" == tacplus ]]; then echo 70; else echo 30; fi
+}
+
+# The check's state, as the merger's gate reads it: the newest status CTX by
+# LOOPER_CHECK_LOGIN on main's first-parent line from H down to G; "STATE
+# DESCRIPTION", or nothing. Fails when GitHub cannot be read.
+read_state() { # sha...
+  local c st
+  for c in "$@"; do
+    st="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$c/statuses?per_page=100" | jq -r --arg ctx "$CTX" --arg l "$LOOPER_CHECK_LOGIN" '
+      first(.[] | select(.context == $ctx and (.creator.login // "") == $l)) | "\(.state) \(.description // "")"')" || return 1
+    [[ -z "$st" ]] || { echo "$st"; return 0; }
+  done
+}
+
+gate() {
+  local why walk=() st desc allow unchecked max_u max_a age
+  refresh || closed "origin cannot be read"
+  if ! g cat-file -e "$SHA_Q^{commit}" 2>/dev/null; then
+    [[ -n "$BRANCH_Q" ]] && g fetch -q origin "+refs/heads/$BRANCH_Q:refs/remotes/origin/$BRANCH_Q" 2>/dev/null || true
+    g cat-file -e "$SHA_Q^{commit}" 2>/dev/null || closed "$SHA_Q is not in $CLONE"
+  fi
+  # The bound (D2): main-green on main's first-parent line, the merges after it.
+  [[ -n "$G" ]] || closed "$REPO has no main-green: the rolling check is down or has never run"
+  if [[ "$H" != "$G" ]]; then
+    mapfile -t walk < <(g rev-list --first-parent -n 500 "$G..$H")
+    (( ${#walk[@]} )) && [[ "$(g rev-parse -q --verify "${walk[-1]}^" || true)" == "$G" ]] ||
+      closed "main-green $(s7 "$G") is not on main's first-parent line: the rolling check is down"
+  fi
+  unchecked=${#walk[@]}
+  st="$(read_state "${walk[@]}" "$G")" || closed "the statuses of main cannot be read"
+  [[ -n "$st" ]] || closed "no $CTX status by $LOOPER_CHECK_LOGIN on main since main-green $(s7 "$G"): the rolling check is down"
+  desc="${st#* }"; st="${st%% *}"
+  case "$st" in
+    success|pending) ;;
+    *)
+      allow="$(sed -n 's/.*allow \([^ ]*\).*/\1/p' <<<"$desc")"
+      # The recovery's own branch merges while red, past the bound: it is what reopens merging.
+      if [[ -n "$allow" && "$BRANCH_Q" == "$allow" ]]; then
+        why="$(reverted_in "$SHA_Q")"; [[ -z "$why" ]] || closed "$why"
+        open_ "the recovery's own branch, while the check is red ($desc)"
+      fi
+      closed "the rolling check is red on $(s7 "$H") ($desc): merging reopens with its next green check" ;;
+  esac
+  max_u="${LOOPER_CHECK_MAX_UNCHECKED:-4}"; max_a="$(max_age)"
+  (( unchecked < max_u )) || closed "$unchecked merges on main are unchecked (at most $max_u)"
+  if (( unchecked )); then
+    age=$(( ($(date +%s) - $(g log -1 --format=%ct "${walk[-1]}")) / 60 ))
+    (( age < max_a )) || closed "main's oldest unchecked merge, $(s7 "${walk[-1]}"), is ${age}m old (one gate's age, ${max_a}m)"
+  fi
+  why="$(reverted_in "$SHA_Q")"; [[ -z "$why" ]] || closed "$why"
+  open_ "$unchecked merge(s) unchecked (at most $max_u), the check's state: $desc"
+}
+
+# --- needed -----------------------------------------------------------------------
+
+needed() {
+  local st
+  refresh || { echo "origin cannot be read ($REMOTE)"; exit 2; }
+  pins "$H" || { echo "not needed: main $(s7 "$H") pins no build image"; exit 1; }
+  st="$(gh api "repos/$LOOPER_ORG/$REPO/commits/$H/statuses?per_page=100" | jq -r --arg ctx "$CTX" --arg l "${LOOPER_CHECK_LOGIN:-}" '
+    first(.[] | select(.context == $ctx and ($l == "" or (.creator.login // "") == $l))) | .state // empty')" ||
+    { echo "the statuses of main $(s7 "$H") cannot be read"; exit 2; }
+  case "$st" in
+    ""|pending) echo "needed: main $(s7 "$H") has ${st:-no} verdict of the check"; exit 0 ;;
+    *) echo "not needed: main $(s7 "$H") is checked ($st)"; exit 1 ;;
+  esac
+}
+
+# --- main -----------------------------------------------------------------------
+
+SUB=loop
+case "$1" in once|gate|needed) SUB="$1"; shift ;; esac
+REPO="" BRANCH_Q="" SHA_Q="" CLONE="" UNTIL_IDLE=0
+while (( $# )); do
+  case "$1" in
+    --until-idle) [[ "$SUB" == loop ]] || die "--until-idle is the check's, not $SUB's"; UNTIL_IDLE=1; shift ;;
+    --repo) REPO="${2:-}"; shift 2 || die "--repo needs a name" ;;
+    --branch) BRANCH_Q="${2:-}"; shift 2 || die "--branch needs a branch" ;;
+    --sha) SHA_Q="${2:-}"; shift 2 || die "--sha needs a commit" ;;
+    --dir) CLONE="${2:-}"; shift 2 || die "--dir needs a clone" ;;
+    *) die "unknown argument $1 (looper-check --help)" ;;
+  esac
+done
+[[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--repo NAME is required"
+[[ "$LOOPER_FORGE" == github ]] || die "the rolling check reads GitHub's statuses and pull requests: LOOPER_FORGE github, not $LOOPER_FORGE"
+[[ -z "$SHA_Q" || "$SHA_Q" =~ ^[0-9a-f]{40}$ ]] || die "--sha '$SHA_Q' is not a commit's sha"
+[[ "$SUB" != gate || -n "$SHA_Q" ]] || die "gate needs --sha, the merge request's head"
+[[ "$SUB" != gate || -n "${LOOPER_CHECK_LOGIN:-}" ]] || die "gate needs LOOPER_CHECK_LOGIN, the check's login, whose state alone it reads"
+for v in LOOPER_CHECK_MAX_UNCHECKED LOOPER_CHECK_MAX_AGE; do [[ "${!v:-1}" =~ ^[0-9]+$ ]] || die "$v '${!v}' is not a whole number"; done
+[[ "$POLL" =~ ^[0-9]+$ ]] || die "LOOPER_CHECK_POLL '$POLL' is not a number"
+need git; need jq; need gh
+REMOTE="${LOOPER_CHECK_REMOTE:-https://github.com/$LOOPER_ORG/$REPO.git}"
+[[ "$REMOTE" != https://* ]] || forge_setup_git
+[[ "$SUB" == gate && -n "$CLONE" ]] || mkdir -p "$DIR"
+CLONE="${CLONE:-$DIR/$REPO}"
+H="" G="" MOVED=0 FAIL_LOG=""
+case "$SUB" in
+  once) pass_once ;;
+  gate) gate ;;
+  needed) needed ;;
+  loop) check_loop ;;
+esac

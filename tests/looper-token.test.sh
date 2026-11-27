@@ -267,11 +267,28 @@ NAME=vm
 vm() { : > "$TMP/api.log"
   env -i PATH="$TMP/bin:$PATH" HOME="$TMP" TMP="$TMP" APP_STUB="$TMP" TMPDIR="$TMP" STUB_RING="$RING" LOOPER_VM=/usr/local/bin/looper-vm \
     LOOPER_KMS_KEYRING="$RING" LOOPER_REPORT_APP_ID=301 LOOPER_REPORT_INSTALLATION_ID=31 LOOPER_MANAGER_APP_ID=401 \
-    LOOPER_MANAGER_INSTALLATION_ID=41 "$@"; }
+    LOOPER_MANAGER_INSTALLATION_ID=41 LOOPER_CHECK_APP_ID=501 LOOPER_CHECK_INSTALLATION_ID=51 "$@"; }
 t="$(vm STUB_GCE_SA=looper-vm-alpha "$ROOT/looper-token" mint report 2>"$TMP/err")" || fail "the VM's account: no token"
 [[ -n "$t" ]] && grep -qx 'signed tacplus-looper vm:looper-vm-alpha' "$TMP/api.log" || fail "the VM's account: $(cat "$TMP/api.log")"
 ! vm STUB_GCE_SA=looper-vm-alpha "$ROOT/looper-token" mint manager >/dev/null 2>"$TMP/err" || fail "the VM minted the manager's token"
 ! vm STUB_GCE_SA=looper-vm-beta "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "another VM's account signed"
+# The rolling check's machine (looper#249, cloud#111) mints the check app's
+# token, with its statuses; a looper VM's account cannot.
+t="$(vm STUB_GCE_SA=check-tacplus "$ROOT/looper-token" mint check 2>"$TMP/err")" || fail "the check's machine: no token: $(cat "$TMP/err")"
+grep -q '^token tacplus-check ghs_check_.* {"contents":"write","statuses":"write","issues":"write","pull_requests":"write","metadata":"read"}$' "$TMP/api.log" ||
+  fail "the check's token: $(cat "$TMP/api.log")"
+! vm STUB_GCE_SA=looper-vm-alpha "$ROOT/looper-token" mint check >/dev/null 2>"$TMP/err" || fail "a looper VM minted the check's token"
+! vm STUB_GCE_SA=check-tacplus "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "the check's machine minted a report's token"
+# With no app of its own configured (cloud#111: until Jody makes tacplus-check),
+# the check signs as the manager's app, the check machines its key's signers
+# too: a setting, not a change.
+: > "$TMP/api.log"
+t="$(vm STUB_GCE_SA=check-tacplus LOOPER_CHECK_APP_ID= LOOPER_CHECK_INSTALLATION_ID= "$ROOT/looper-token" mint check 2>"$TMP/err")" ||
+  fail "the check's machine, as the manager's app: no token: $(cat "$TMP/err")"
+grep -q '^token tacplus-manager ghs_manager_.* {"contents":"write","statuses":"write","issues":"write","pull_requests":"write","metadata":"read"}$' "$TMP/api.log" ||
+  fail "the check's token as the manager's app: $(cat "$TMP/api.log")"
+! vm STUB_GCE_SA=looper-vm-alpha LOOPER_CHECK_APP_ID= LOOPER_CHECK_INSTALLATION_ID= "$ROOT/looper-token" mint check >/dev/null 2>"$TMP/err" ||
+  fail "a looper VM minted the check's token as the manager's app"
 # Not on a VM, no id_token is still refused, as before.
 ! vm STUB_GCE_SA=looper-vm-alpha LOOPER_VM= "$ROOT/looper-token" mint report >/dev/null 2>"$TMP/err" || fail "minted with no id_token and no VM"
 pass

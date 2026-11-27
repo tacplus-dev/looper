@@ -11,6 +11,45 @@ the looper then marks it `promoted` or `declined` here with the date.
   runner sections describe jody1-328023's interim runners (#43, closed when those VMs are gone). Retiring
   `runner-image` with #43, and cutting those sections to a line of history, would leave the repository naming the
   project nowhere.
+- **Branch releases published to tacplus-ci's release registry** (2026-11-26, #265; tacplus-dev/cloud#115, design B
+  approved there): a branch release publishes to `us-docker.pkg.dev/jody1-328023/tacplus`, which grants
+  fleet-seatrials#82's `seatrials-deploy@tacplus-dev` nothing and is being emptied (cloud#15). `publish_jobs` would write
+  a branch release's publish with the release provider's literal `aud`, `BUILD_REGISTRY` from `BUILD_RELEASE_REGISTRY`,
+  and `GCP_RELEASE_WIF_PROVIDER`/`GCP_RELEASE_PUBLISH_SA` under those names (a project variable beats a job's yaml
+  variable of the same name); `registry_login` picks the pair by kind, and the plan refuses a branch release that has
+  none. The three values sit in `ci/build.gitlab-ci.yml` from cloud's `releases` output. Tag releases stay unchanged
+  (every `tacplus.lock` pins that path). The record's `image` moves once, with no format change. Waits on Jody: file or
+  project variables, refuse or fall back, the order with #261's re-pin, and whether tags move later.
+- **The rolling check goes live** (2026-11-26, #249): `looper-vm check` is in the image; cloud#111's machines run it
+  once `reserved_vms` pins an image digest that has it, signing as `tacplus-manager` (the machines' accounts that key's
+  signers too, cloud#111; the app given Commit statuses and Pull requests read and write) until Jody makes
+  `tacplus-check` (its permissions: README, Only the manager writes main, step 1; its ids `LOOPER_CHECK_APP_ID` and
+  `LOOPER_CHECK_INSTALLATION_ID`, a setting). The machine runs only while there is something to check: the
+  orchestrator, the merger's always-on machine, starts it on a `looper-check needed` (cloud's side), and it sizes
+  itself to 0 when `looper-vm check` exits 0. The order matters: the check first, green once on each repository (so `main-green`
+  exists), then the merger (#251), whose gate (`looper-check gate`) reads the state of `LOOPER_CHECK_LOGIN`
+  (`tacplus-manager[bot]` until `tacplus-check[bot]`); the merge train's manager retired the same day. Before `main-green` exists a red main files a
+  fix main issue the merger cannot merge (it holds everything with no `main-green`): the first fix lands by the
+  manager, as today.
+- **The check's machines right-sized from a measured run** (2026-11-26, #249): cloud#111 asked for the CPU, memory and
+  disk peaks of a full gate run. The check's logs hold each build's time but not its peaks; `looper-vm build` noting the
+  container's peak (docker stats, or its cgroup's `memory.peak`) in the log would give them.
+- **The check's groups, per repository** (2026-11-26, #249): `LOOPER_CHECK_GROUPS` (default `full`) is the machine's
+  setting. Once tacplus's gates are sharded into sets (tacplus#976, #977), naming them there lets the check run them
+  side by side and bisect and verify a revert on the failed group alone (D3), not the whole of `full`. A `check:` list in
+  `gates.yaml` would put it in the repository instead.
+- **Tune the bound from the data** (2026-11-26, #249): the check's gate closes at 4 unchecked merges or one gate's age
+  (`LOOPER_CHECK_MAX_UNCHECKED`, `LOOPER_CHECK_MAX_AGE`). The check's log, its flakes record (`NAME.flakes`) and the
+  merger's held answers (its `gate.log`, the pass's lines) belong in the nightly recap, to set both from measurement.
+- **A train's land is bisected commit by commit** (2026-11-26, #249): the check bisects main's first-parent commits.
+  Under the merger (#251) one merge request is one merge commit; a land of the merge train is its commits
+  fast-forwarded, so the culprit and its revert are one commit of a land, not the land. The merger keeping one merge
+  commit per merge request is what makes "revert only an isolated merge" whole.
+- **An outside red masks a real one** (2026-11-26, #249): while a group is red on `main-green` too (no change caused
+  it), a merge that breaks the same group is not told apart and `main-green` moves on. Re-checking the issue's group
+  on each new head once the outside cause is fixed, or a baseline of the red tests (not only the group), would find it.
+- **The check's logs pruned** (2026-11-26, #249): each build's log stays in `LOOPER_CHECK_DIR/logs`; nothing removes
+  them.
 - **The VM tags and the split manager with no job left** (2026-11-26, #73): `looper-dispatch plan` still puts a
   repository without build jobs on the VM runners' tags (`arm64, autoscale`) and splits its manager into a verdict and
   a merge job (#90). Since #73 an unpinned repository's report and land stop at once, so only a pinned one without the

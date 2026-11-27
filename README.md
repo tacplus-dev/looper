@@ -2034,6 +2034,72 @@ tests/looper-token.test.sh                   # merger: the merger's key and app 
 tests/looper-ruleset.test.sh                 # apply-merger: the merger's App a bypass actor once it is not the manager's
 ```
 
+## The rolling check of main
+
+**`looper-check`: a build of main's head, the full gates, whenever main moved since the last one, back to back**
+(looper#249; `tacplus-dev/roadmap:decisions/agentic-dev-flow-2026-11-25.md`, step 6 of the flow and the panel's items
+3, 7, 8, 9 and 10). It runs on a reserved machine of its own (tacplus-dev/cloud#111's `check-tacplus` and
+`check-tacplus-dev`: not spot, not a looper's VM, not the GitLab build project), as `looper-vm check --repo tacplus` or
+`looper-vm check --org tacplus-dev --except tacplus`: a `looper-check --repo NAME --until-idle` per repository, started
+again 60 s after one ends while another still checks, each build a local one (`looper-vm build`: the commit's pinned build image through the machine's
+container socket; a head that pins none is not checked), the groups (`LOOPER_CHECK_GROUPS`, gate sets of `gates.yaml`,
+default `full`) at once. It writes no main: it moves the ref `main-green`, posts commit statuses, proposes reverts as
+pull requests and files issues, as the check's app (`looper-token`'s role `check`: `tacplus-check` once
+`LOOPER_CHECK_APP_ID` is set, until then `tacplus-manager`, the machines' accounts its key's signers too, a setting and
+not a change: tacplus-dev/cloud#111). It goes live with the merger (looper#251), which is then the only way onto main.
+
+**The machine runs only while there is something to check** (tacplus-dev/cloud#111; Jody, 2026-11-25: builders run
+only while used). A repository's check ends once its main is unmoved (`--until-idle`), and once every one ended idle,
+`looper-vm check` exits 0 and the machine sizes itself to 0, its cache disk kept. **What starts it is the orchestrator**,
+the merger's always-on machine (cloud#111): it asks `looper-check needed --repo NAME` of each repository (exit 0 when
+main's head has no `looper/rolling-check` verdict yet, or only `pending`: a check under way or cut off; GitHub's API
+and a git fetch, no build) and starts the check's machine when one says so. A verdict GitHub refused is posted again
+before an idle check ends, so `needed` does not stay true for a head already checked.
+
+- **Green** moves `main-green` (the branch `refs/heads/main-green`) to the commit, which gets the status
+  `looper/rolling-check` success. **Loopers build on `main-green`**: on a looper VM a report's new branch starts there
+  (`repo-looper`'s `prepare_report`); a resume and a land still rebase onto main. Main's release build reads it too
+  (looper#252).
+- **Red: a fixed procedure.** (1) Merging stops: main's head gets `looper/rolling-check` failure. (2) The red groups run
+  again: green is a flake, which reverts nothing (recorded in `NAME.flakes`). (3) They run on `main-green` again: red
+  there too, no shipped change caused it (an image re-pin's findings): nothing reverted, nothing frozen, one issue
+  (`bug`, `approved`, `priority:high`, `looper:main-check`), and `main-green` moves on, its tree no worse. (4) Else the
+  merges since `main-green` (main's first-parent commits) are bisected on the red groups. (5) The culprit is reverted
+  on main's head; once the red groups are green on the reverted tree (D3) the revert is pushed to
+  `looper/revert-<sha7>`, given the statuses `looper/gates` and `looper/rolling-check` success (statuses no report can
+  mint), and proposed as a pull request labelled `looper:revert`; the culprit's issue (its pull request's branch
+  `looper/NAME-N`, else a `(N)` in its subject) is reopened, `approved`, and given the failure: **its work returns as a
+  revert of the revert or as new commits, never the same tree**. (6) Otherwise (the revert conflicts, the groups still
+  red with it reverted, no `main-green` yet): **one "fix main" issue** for one looper (a later red a comment on it).
+  **Merging reopens when the next full check is green**: until then each new head of main gets the failure again
+  before it is built. A build with no verdict decides nothing; the next pass builds again.
+- **The check's state**: `main-green`, and `looper/rolling-check` (`LOOPER_ROLLING_CONTEXT`) on main's heads, the
+  newest on main's first-parent line the state: success open, pending checking (open), failure closed; its description
+  what it is (`open: green <sha7>`, `checking <sha7>`, `bisecting ...`, `reverting <sha7>: allow looper/revert-<sha7>`,
+  `fix-main #N: allow looper/NAME-N`, `outside #N: ...`). While it is red only the `allow` branch, the recovery's own,
+  may merge.
+- **The gate** (looper#251's bound, D2, and the panel's 10): `looper-check gate --repo NAME --branch BRANCH --sha HEAD
+  --dir CLONE`, which the merger asks before each clean merge (`LOOPER_MERGER_GATE`), on its own machine with its own
+  token: exit 0 open, 1 closed, its one line why. Closed with no `main-green`, `main-green` off main's first-parent
+  line, or no state of the check by `LOOPER_CHECK_LOGIN` (the check's login, which a report cannot be:
+  `tacplus-manager[bot]` until `tacplus-check` exists) on that line down to `main-green`: the check is down, so the
+  merger is live only with it. Closed while the check is red, but for the branch its state allows, which merges past
+  the bound too: the recovery is what reopens merging. Closed at `LOOPER_CHECK_MAX_UNCHECKED` (4) merges on main after
+  `main-green`, or the oldest of them `LOOPER_CHECK_MAX_AGE` minutes old (one gate's age: full's `minutes` in main's
+  `gates.yaml`, else 70 for tacplus and 30 for the others). Closed for a head that builds on a merge main reverted
+  (the merge or its merged side an ancestor) with no revert of that revert: merging the same branch again would bring
+  back only its later commits.
+
+```sh
+looper-vm check --repo NAME | --org ORG [--except NAME,...]   # a check machine: a looper-check per repository, exit 0 once all are idle
+looper-check needed --repo NAME   # the orchestrator's: exit 0 main's head needs a check, 1 not (checked, or unpinned), 2 unreadable
+looper-check --repo NAME [--until-idle]   # the check, back to back, until SIGTERM (or main unmoved)
+looper-check once --repo NAME  # one pass: exit 0 green, unmoved or unpinned, 1 red (handled), 2 no verdict or GitHub unreadable
+looper-check gate --repo NAME --sha SHA [--branch BRANCH] [--dir CLONE]   # the merger's, before each clean merge: exit 0 open, 1 closed (down, red but for its branch, the bound, a reverted change)
+tests/looper-check.test.sh     # green (and main unmoved builds nothing); unpinned (not needed); a flake; one culprit (a merge commit: bisected, reverted, proposed, its issue ready again; the next head red before it is built; the revert merged, green, open; its branch refused until it reverts the revert); no single culprit and a revert that conflicts (one fix main issue, red but for its branch); a red no change caused; no verdict; the gate's bound (no main-green, off main's first-parent line, no state by the check's login, 3 unchecked open and 4 closed, one gate's age, checking open, red closed but for its allowed branch); idle (needed before a verdict and not after, --until-idle ending once main is unmoved, a refused verdict posted again)
+tests/looper-vm.test.sh        # check-machine: a looper-check per repository of the org less --except's, as the check's app, one that ends started again while another checks, SIGTERM; check-idle: every check idle, exit 0
+```
+
 ## Running it
 
 ```sh
@@ -2317,6 +2383,13 @@ steps 2 and 3 below are what it applies, for reference, all but the keys' import
    two private apps with no webhook:
    - `tacplus-manager`: Repository permissions Contents read and write, Issues read and write, Workflows read and write (to push a change under `.github/workflows/`, looper#106; once it holds it, set the project variable `LOOPER_MANAGER_WORKFLOWS=write`, looper#112), Metadata read.
    - `tacplus-looper`: Contents read and write, Issues read and write, Pull requests read and write, Workflows read and write, Metadata read.
+   - `tacplus-check` (looper#249, tacplus-dev/cloud#111: the rolling check of main, signed for only by the check
+     machines' accounts, `check-tacplus@` and `check-tacplus-dev@`): Contents read and write (`main-green` and a revert's
+     `looper/revert-*` branch), Commit statuses read and write, Issues read and write, Pull requests read and write,
+     Metadata read; no bypass of main's ruleset. Its ids are `LOOPER_CHECK_APP_ID` and `LOOPER_CHECK_INSTALLATION_ID`.
+     Optional (tacplus-dev/cloud#111): with no `LOOPER_CHECK_APP_ID` the check signs as `tacplus-manager`, its
+     machines' accounts that key's signers too, asking the same permissions, so `tacplus-manager` then needs Commit
+     statuses and Pull requests read and write as well.
 
    Install each on **all repositories** of tacplus-dev. Note each app's id (the app's page) and its installation's id
    (the number at the end of the installation's settings URL). Generate a private key for each and download it.

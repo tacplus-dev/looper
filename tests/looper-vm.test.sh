@@ -12,7 +12,8 @@
 # line); a stub docker plays the container socket, running looper-build in
 # the "container" with the environment it was given. repo-looper's own side
 # (its list's orphans, a report's checkpoint on SIGTERM, its resume with no
-# disk, the shared git store) is tests/repo-looper.test.sh's.
+# disk, the shared git store) is tests/repo-looper.test.sh's. A rolling check
+# machine (looper#249) runs a stub looper-check per repository.
 # Run: tests/looper-vm.test.sh
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"
@@ -27,7 +28,7 @@ mkdir -p "$TMP/bin"
 # and records the call; $FIX/no-token refuses it.
 cat > "$TMP/bin/looper-token" <<'EOF'
 #!/usr/bin/env bash
-[[ ("$1 $2" == "start report" || "$1 $2" == "start merger") && ! -e "$FIX/no-token" ]] || { echo "stub looper-token: refused $*" >&2; exit 1; }
+[[ "$1" == start && "$2" =~ ^(report|check|merger)$ && ! -e "$FIX/no-token" ]] || { echo "stub looper-token: refused $*" >&2; exit 1; }
 # As the real one: with no id_token it signs only on a VM (LOOPER_VM).
 [[ -n "${LOOPER_VM:-}" ]] || { echo "stub looper-token: no id_token and no LOOPER_VM" >&2; exit 1; }
 mkdir -p "$3"; echo "github.com: {oauth_token: stub}" > "$3/hosts.yml"; echo "token $2 $3" >> "$FIX/calls"; echo 0
@@ -485,4 +486,54 @@ vm LOOPER_VM_BUILDS=x
 rc=0; wait "$VM" || rc=$?; VM=""
 (( rc == 2 )) || fail "LOOPER_VM_BUILDS=x: exited $rc"
 has "$(cat "$FIX/vm.out")" "LOOPER_VM_BUILDS 'x' is not a number of builds"
+pass
+
+# --- a rolling check machine (looper#249) ------------------------------------------
+# `looper-vm check --org`: a looper-check per repository of the org (gh repo
+# list), less --except's, each with this machine's cache and builds, as the
+# check's app, until it is idle (--until-idle); one that ends started again
+# while another still checks; SIGTERM stops them all at once. Once every check
+# ended idle the machine's ends, exit 0: it sizes itself to 0 (cloud#111).
+cat > "$TMP/bin/looper-check" <<'EOF'
+#!/usr/bin/env bash
+echo "check $* vm=${LOOPER_VM:+set} dir=$LOOPER_CHECK_DIR build=$LOOPER_CHECK_BUILD gh=${GH_CONFIG_DIR:-none}" >> "$FIX/calls"
+[[ "$3" == --until-idle ]] || { echo "stub looper-check: not --until-idle: $*" >&2; exit 3; }
+[[ ! -e "$FIX/check-idle" ]] || exit 0
+[[ ! -e "$FIX/check-exit-$2" ]] || { rm -f "$FIX/check-exit-$2"; exit 0; }
+sleep 1000 & wait
+EOF
+cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "repo list" ]] || exit 1
+echo "gh $*" >> "$FIX/calls"
+cat "$FIX/org"
+EOF
+chmod +x "$TMP/bin/looper-check" "$TMP/bin/gh"
+fixture check-machine
+printf 'tacplus\nlooper\ncloud\n' > "$FIX/org"; touch "$FIX/check-exit-cloud"
+ARGS=(check --org tacplus-dev --except tacplus)
+vm PATH="$TMP/bin:$PATH" LOOPER_VM_LOOPER_CHECK="$TMP/bin/looper-check" LOOPER_VM_CHECK_RESTART=1
+until_true "looper and cloud checked, cloud again after it ended" eval '(( $(grep -c "^check --repo cloud " "$FIX/calls") >= 2 )) && grep -q "^check --repo looper " "$FIX/calls"'
+grep -q '^check --repo tacplus ' "$FIX/calls" && fail "tacplus, on its own machine, was checked"
+has "$(cat "$FIX/calls")" "gh repo list tacplus-dev --no-archived"
+has "$(cat "$FIX/calls")" "token check $FIX/cache/vm/gh"
+has "$(cat "$FIX/calls")" "check --repo looper --until-idle vm=set dir=$FIX/cache/check build=$ROOT/looper-vm build gh=$FIX/cache/vm/gh"
+has "$(cat "$FIX/vm.out")" "cloud: its check ended (exit 0): started again in 1s"
+grep -q "nothing to check" "$FIX/vm.out" && fail "the machine ended while looper's check ran"
+(( $(grep -c '^check --repo looper ' "$FIX/calls") == 1 )) || fail "looper's check started twice"
+t0=$(date +%s); kill -TERM "$VM"; rc=0; wait "$VM" || rc=$?; VM=""
+(( rc == 0 && $(date +%s) - t0 < 25 )) || fail "SIGTERM: exit $rc after $(( $(date +%s) - t0 ))s"
+sleep 0.5; ! pgrep -f "$TMP/bin/looper-check" >/dev/null || fail "a check outlived the machine's SIGTERM"
+pass
+
+# Every repository's check idle: the machine's check ends, exit 0.
+fixture check-idle
+printf 'looper\ncloud\n' > "$FIX/org"; touch "$FIX/check-idle"
+ARGS=(check --org tacplus-dev)
+vm PATH="$TMP/bin:$PATH" LOOPER_VM_LOOPER_CHECK="$TMP/bin/looper-check" LOOPER_VM_CHECK_RESTART=1
+rc=0; timeout 60 tail --pid="$VM" -f /dev/null || fail "the idle machine did not end"
+wait "$VM" || rc=$?; VM=""
+(( rc == 0 )) || fail "the idle machine exited $rc: $(cat "$FIX/vm.out")"
+has "$(cat "$FIX/vm.out")" "nothing to check in tacplus-dev"
+(( $(grep -c '^check --repo looper ' "$FIX/calls") == 1 )) || fail "an idle check started again"
 pass

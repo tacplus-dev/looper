@@ -6192,6 +6192,24 @@ run "${VMS[@]}" LOOPER_GIT_STORE=/dev/null/alpha.git
 has "$(cat "$FIX/clones")" "$FIX/work/alpha/issues/4 "; lacks "$(cat "$FIX/clones")" "reference"
 pass
 
+# Loopers build on main-green (looper#249): a VM's report starts its branch at
+# the last commit the rolling check of main found green, and its prompt says
+# so; outside a VM, at main.
+scenario vm-main-green
+g="$(origin rev-parse main)"; origin update-ref refs/heads/main-green "$g"; on_main later.txt later
+echo 'git rev-parse HEAD > "$FIX/base"' > "$FIX/claude.sh"
+run "${VMS[@]}"
+[[ "$(cat "$FIX/base")" == "$g" ]] || fail "on a VM the branch started at $(cat "$FIX/base"), not main-green ${g:0:7}"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "on its own branch, looper/alpha-4, at origin/main-green (the last commit the rolling check"
+pass
+scenario vm-main-green-outside
+origin update-ref refs/heads/main-green "$(origin rev-parse main)"; on_main later.txt later
+echo 'git rev-parse HEAD > "$FIX/base"' > "$FIX/claude.sh"
+run
+[[ "$(cat "$FIX/base")" == "$(origin rev-parse main)" ]] || fail "outside a VM the branch started at $(cat "$FIX/base"), not main"
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "on its own branch, looper/alpha-4, at origin/main:"
+pass
+
 # A --build on a VM is a local build (looper-vm build, here a stub), never a
 # build job: its verdict and the path of its full log; the prompt says so.
 scenario vm-build

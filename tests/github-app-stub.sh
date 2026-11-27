@@ -17,12 +17,12 @@ RING=projects/tacplus-ci/locations/us-central1/keyRings/looper
 
 app_stub() { # dir
   mkdir -p "$1/keys" "$1/bin"
-  for k in tacplus-looper tacplus-manager; do
+  for k in tacplus-looper tacplus-manager tacplus-check; do
     openssl genrsa -out "$1/keys/$k.pem" 2048 2>/dev/null
     openssl rsa -in "$1/keys/$k.pem" -pubout -out "$1/keys/$k.pub" 2>/dev/null
   done
   # Each key's binding: the environments of the looper project's jobs that may sign with it.
-  printf 'tacplus-looper looper-report looper-scan kicker looper-plan vm:looper-vm-alpha\ntacplus-manager looper-manager looper-scan\n' > "$1/iam"
+  printf 'tacplus-looper looper-report looper-scan kicker looper-plan vm:looper-vm-alpha\ntacplus-manager looper-manager looper-scan vm:check-tacplus\ntacplus-check vm:check-tacplus\n' > "$1/iam"
   cat > "$1/bin/gcloud" <<'EOF'
 #!/usr/bin/env bash
 echo "gcloud $*" >> "$APP_STUB/gcloud.log"
@@ -98,7 +98,7 @@ b64d() { local s; s="$(tr '_-' '/+' <<<"$1")"; while ((${#s} % 4)); do s+="="; d
 case "$method $url" in
   "POST https://api.github.com/app/installations/"*/access_tokens)
     inst="${url#*/installations/}"; inst="${inst%%/*}"
-    case "$inst" in 31) app=tacplus-looper id=301 ;; 41) app=tacplus-manager id=401 ;; *) exit 22 ;; esac
+    case "$inst" in 31) app=tacplus-looper id=301 ;; 41) app=tacplus-manager id=401 ;; 51) app=tacplus-check id=501 ;; *) exit 22 ;; esac
     IFS=. read -r h p s <<<"$auth"; b64d "$s" > "$APP_STUB/sig"
     printf '%s' "$h.$p" | openssl dgst -sha256 -verify "$APP_STUB/keys/$app.pub" -signature "$APP_STUB/sig" >/dev/null 2>&1 ||
       { echo "jwt-bad $app" >> "$APP_STUB/api.log"; exit 22; }

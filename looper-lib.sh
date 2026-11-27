@@ -47,6 +47,11 @@ LABEL_MODEL_HIGH="model:high"
 # The looper's hold (looper#157): the one issue of the hub repository that
 # records the account's usage limit, read by the kicker (hold_until, below).
 LABEL_HOLD="looper:hold"
+# The rolling check of main (looper#249; looper-check): an issue it files
+# (main red: "fix main", or a red no change caused), and the pull request of
+# a revert it proposes, which the merger takes while merging is closed.
+LABEL_MAIN_CHECK="looper:main-check"
+LABEL_REVERT="looper:revert"
 
 # Every issue is a bug or a feature (tacplus-dev/roadmap
 # decisions/issue-flow-2026-10-27.md, looper#14). A bug is fixed and ships as a
@@ -76,6 +81,8 @@ LOOPER_LABELS=(
   "$LABEL_MODEL_HIGH|5319e7|Its report runs on the high model, LOOPER_MODEL_HIGH (set by someone with write access)"
   "$LABEL_STUCK|d93f0b|A run ended without finishing, for no known reason; a person looks"
   "$LABEL_HOLD|ededed|The looper's hold: the account's usage limit is reached, and nothing starts until the reset its body names"
+  "$LABEL_MAIN_CHECK|b60205|Filed by the rolling check of main: main is red (looper-check)"
+  "$LABEL_REVERT|b60205|A revert the rolling check of main proposes: the merger takes it while main is red"
   "$LABEL_DECISION|5319e7|The looper needs a decision it may not make"
   "$LABEL_BUG|d73a4a|The code does not do what it already promises: fixed, and released as a patch"
   "$LABEL_FEATURE|a2eeef|New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor"

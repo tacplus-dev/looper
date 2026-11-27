@@ -21,6 +21,15 @@
 #                             tacplus.lock), a child container through the VM's container socket,
 #                             once one of the VM's LOOPER_VM_BUILDS slots is free (the wait said);
 #                             the full log in FILE; exit 0 on a pass, 1 on a failure
+#   looper-vm check --repo NAME | --org ORG [--except NAME,...]
+#                             a rolling check machine's (looper#249; tacplus-dev/cloud#111's
+#                             looper-role check): `looper-check --repo NAME --until-idle` for
+#                             each repository (--org: the org's unarchived ones, less
+#                             --except's), each a child started again LOOPER_VM_CHECK_RESTART
+#                             seconds (default 60) after it ends while another still checks,
+#                             its builds this machine's local builds; as the check's app
+#                             (looper-token start check); once every check ended idle, exit 0
+#                             (the machine sizes itself to 0); SIGTERM as the parent's
 #   looper-vm merger --org ORG [--except NAME,...] | --repo NAME...
 #                             the merger's machine (looper#251, tacplus-dev/cloud#111): no
 #                             model, no container socket, no project code. Every
@@ -104,7 +113,8 @@
 # LOOPER_VM_IDLE_MINUTES, LOOPER_VM_STOP_GRACE, LOOPER_VM_LIST_TIMEOUT (seconds,
 # default 300), LOOPER_VM_COOLDOWN (seconds, default 300), LOOPER_VM_DOCKER, LOOPER_VM_BUILDS,
 # LOOPER_VM_REPO_LOOPER (default the repo-looper beside this script),
-# LOOPER_VM_LOOPER_BUILD (likewise, looper-build), LOOPER_VM_MERGER (likewise,
+# LOOPER_VM_LOOPER_BUILD (likewise, looper-build), LOOPER_VM_LOOPER_CHECK (likewise,
+# looper-check), LOOPER_VM_CHECK_RESTART, LOOPER_VM_MERGER (likewise,
 # looper-merger). The merger's machine is given no environment but the cache's,
 # so its settings default here, each the deployment's to change: LOOPER_MERGER_KEY
 # and LOOPER_MERGER_APP_ID (the app it merges as: the manager's, tacplus-manager,
@@ -119,6 +129,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 HERE="$(dirname "$SELF")"
 REPO_LOOPER="${LOOPER_VM_REPO_LOOPER:-$HERE/repo-looper}"
 LOOPER_BUILD="${LOOPER_VM_LOOPER_BUILD:-$HERE/looper-build}"
+LOOPER_CHECK="${LOOPER_VM_LOOPER_CHECK:-$HERE/looper-check}"
 MERGER="${LOOPER_VM_MERGER:-$HERE/looper-merger}"
 TOKEN_CMD="${LOOPER_TOKEN:-$HERE/looper-token}"
 CACHE="${LOOPER_CACHE:-/cache}"
@@ -365,7 +376,7 @@ vm_identity() { # role (default report)
   # LOOPER_VM tells looper-token it is on a VM (sign as the VM's account, no
   # id_token); the parent is a VM's too, not only its children.
   LOOPER_VM="$SELF" "$TOKEN_CMD" start "$role" "$d" $$ >/dev/null 2>>"$STATE/vm.log" ||
-    die "no $role token for the $([[ "$role" == report ]] && echo lister || echo merger) (looper-token start $role): $(tail -n 3 "$STATE/vm.log" | tr '\n' ' ' | cut -c1-300)"
+    die "no $role token for the $(case "$role" in report) echo lister ;; *) echo "$role" ;; esac) (looper-token start $role): $(tail -n 3 "$STATE/vm.log" | tr '\n' ' ' | cut -c1-300)"
   export GH_CONFIG_DIR="$d" GH_NO_UPDATE_NOTIFIER=1
 }
 
@@ -399,6 +410,79 @@ parent() {
   local z
   while :; do
     pass
+    sleep "$POLL" & z=$!
+    wait "$z" 2>/dev/null || true
+  done
+}
+
+# --- a rolling check machine (looper#249) -----------------------------------------
+#
+# tacplus-dev/cloud#111's reserved machines: one for tacplus, one for the rest
+# of the org, never spot, each running only while there is something to check
+# (Jody, 2026-11-25: builders run only while used). Each repository's check is
+# a child, `looper-check --repo NAME --until-idle`, back to back (its builds
+# `looper-vm build`, this machine's slots), ending once its main is unmoved
+# (exit 0, idle); one that ends is started again after LOOPER_VM_CHECK_RESTART
+# seconds while another still checks, and once every check ended idle the
+# machine's check ends, exit 0, and the machine sizes itself to 0. What starts
+# it again is the orchestrator, the merger's always-on machine, on a
+# `looper-check needed` of one of its repositories. With --org the
+# repositories are listed again each LOOPER_VM_CHECK_RESTART seconds too, a
+# failed list keeping the last. Its GitHub identity is the check's app
+# (looper-token's role check: tacplus-check, else tacplus-manager; statuses,
+# main-green, a revert's branch and pull request, the issues it files), never
+# a report's: what the merger trusts.
+
+# The repositories checked, one a line.
+check_repos() {
+  if [[ -z "$ORG" ]]; then printf '%s\n' "${REPOS[@]}"; return 0; fi
+  local names skip=(-e '') x
+  names="$(timeout -k 5 60 gh repo list "$ORG" --no-archived --source --limit 1000 --json name --jq '.[].name' < /dev/null)" || return 1
+  for x in ${EXCEPT//,/ }; do skip+=(-e "$x"); done
+  sort -u <<<"$names" | grep -vxF "${skip[@]}" || true
+}
+
+check_parent() {
+  targets
+  local restart="${LOOPER_VM_CHECK_RESTART:-60}" r rc now listed=0 repos=() z idle
+  local -A IDLE_R=()   # REPO -> its last check ended idle
+  [[ "$restart" =~ ^[0-9]+$ ]] || die "LOOPER_VM_CHECK_RESTART '$restart' is not a number of seconds"
+  [[ "$STOP_GRACE" =~ ^[0-9]+$ ]] && (( STOP_GRACE >= 5 )) || die "LOOPER_VM_STOP_GRACE '$STOP_GRACE' is not 5 seconds or more"
+  SLOTS="$(build_slots)" || exit 2
+  trap stop TERM INT
+  cache_ready
+  STATE="$CACHE/vm"; mkdir -p "$STATE"
+  export LOOPER_KMS_KEYRING="${LOOPER_KMS_KEYRING:-projects/tacplus-ci/locations/us-central1/keyRings/looper}"
+  vm_identity check
+  log "the rolling check of $WHAT: cache $CACHE, $SLOTS local build(s) at once"
+  while :; do
+    now=$(date +%s)
+    for r in "${!CHILD[@]}"; do
+      kill -0 "${CHILD[$r]}" 2>/dev/null && continue
+      rc=0; wait "${CHILD[$r]}" 2>/dev/null || rc=$?
+      log "$r: its check ended (exit $rc): started again in ${restart}s while another checks"
+      ENDED[$r]=$now; unset "CHILD[$r]"
+      if (( rc == 0 )); then IDLE_R[$r]=1; else unset "IDLE_R[$r]"; fi
+    done
+    if (( now - listed >= restart )); then
+      if mapfile -t z < <(check_repos) && wait $! && (( ${#z[@]} )); then repos=("${z[@]}")
+      else log "the repositories of $WHAT could not be listed: the last list kept (${repos[*]:-none})"; fi
+      listed=$now
+    fi
+    if (( ${#CHILD[@]} == 0 && ${#repos[@]} )); then
+      idle=1; for r in "${repos[@]}"; do [[ -n "${IDLE_R[$r]:-}" ]] || idle=0; done
+      (( idle == 0 )) || { log "nothing to check in $WHAT: every check ended idle, the machine's check ends"; exit 0; }
+    fi
+    for r in "${repos[@]}"; do
+      [[ "$r" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -z "${CHILD[$r]:-}" ]] || continue
+      (( now - ${ENDED[$r]:-0} >= restart )) || continue
+      LOOPER_VM="$SELF" LOOPER_CACHE="$CACHE" LOOPER_CHECK_DIR="$CACHE/check" LOOPER_CHECK_BUILD="$SELF build" \
+        "$LOOPER_CHECK" --repo "$r" --until-idle >> "$STATE/check-$r.log" 2>&1 < /dev/null &
+      CHILD[$r]=$!
+      log "$r: its check started (pid $!, log $STATE/check-$r.log)"
+    done
+    record
+    builds_said
     sleep "$POLL" & z=$!
     wait "$z" 2>/dev/null || true
   done
@@ -640,6 +724,17 @@ self_test() {
 REPO="" REPOS=() ORG="" EXCEPT="" WHAT=""
 case "${1:-}" in
   build) shift; build "$@" ;;
+  check)
+    shift
+    while (( $# )); do
+      case "$1" in
+        --repo) REPOS+=("${2:-}"); shift 2 || die "--repo needs a name" ;;
+        --org) ORG="${2:-}"; shift 2 || die "--org needs a name" ;;
+        --except) EXCEPT="${2:-}"; shift 2 || die "--except needs NAME,..." ;;
+        *) die "unknown argument $1 (looper-vm --help)" ;;
+      esac
+    done
+    check_parent ;;
   merger)
     shift
     while (( $# )); do
