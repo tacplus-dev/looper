@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#265).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#249).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -315,7 +315,19 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   process (tacplus-dev/cloud#111: no socket, no model): a pass per repository with a merge request, as looper-token's
   `merger` role (its key and app settings, the manager's until tacplus-merger exists), and `looper-ruleset` adds the
   merger's own App as a bypass actor once it has one. Tested against stubs; live once cloud#111 pins an image with
-  it and `looper-check` (PROPOSALS.md)
+  it and `looper-check` (PROPOSALS.md);
+  the rolling check of main (`looper-check`, #249, in the image, tested with a stub builder and gh; `looper-vm check`
+  the reserved machines' mode, a check per repository until all are idle, then exit 0 so the machine sizes to 0,
+  `looper-check needed` the orchestrator's question for starting it, as the check's app, `looper-token`'s role
+  `check`: `tacplus-check` once configured, else `tacplus-manager`):
+  main's head on the full gates whenever main moved, back to back, green moving `main-green` (a VM's report starts
+  its branch there), red the fixed procedure (run again for a flake; red on main-green too reverts and freezes
+  nothing; else bisect the merges since main-green, propose the culprit's revert once the failed groups are green on
+  the reverted tree, its issue ready again with the failure; else one "fix main" issue), its state
+  `looper/rolling-check`, red on each new head until a green, naming the recovery's branch; `looper-check gate`, the
+  merger's question before each clean merge, closed while the check is down (no `main-green`, off main's
+  first-parent line, no state by `LOOPER_CHECK_LOGIN`), red but for the recovery's branch, at 4 merges unchecked or
+  the oldest one gate's age old, and for a reverted change until it reverts the revert
 - **Released / deployed:** `main` runs as the GitLab pipeline gitlab.com/tacplus-dev/looper, its kicker and plan as
   pods of the in-cluster `kick` runner (59685138, `arm64, kick`, tacplus-dev/cluster#39, #222: never behind the
   reports and managers they start), the pinned repositories' reports and managers and the hub's probes as pods of
@@ -330,12 +342,16 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
 - **Known gaps:** the merge request (#250) has no live merger yet (#251's goes live with #249's rolling check): nothing
   merges one, and a red build status on it stays until a person sends it back (the merger sends back conflicts alone); it takes effect on a VM with the image built after its land
   (tacplus-dev/cloud's looper_vms); its status build is the build project's, which the design retires later
-  (PROPOSALS.md); branch releases (#252) publish nothing until #249 makes `main-green`, tacplus-dev/cloud#112 adds
+  (PROPOSALS.md); branch releases (#252) publish nothing until the rolling check (#249) runs and makes `main-green`, tacplus-dev/cloud#112 adds
   their schedules, tacplus-dev/cloud#115's `apply:ci` the release registry and its provider, and the hub copies
   `ci/build.gitlab-ci.yml` there, pinning an image with #265; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands, and
   reads them and is triggered once tacplus-dev/cloud#117 sets the build project's job token allowlist, Reporter and
   `BUILD_SEATRIALS_TRIGGER_TOKEN` (until then `release-report` logs "seatrials not started"); a red
-  release is filed at the next nightly scan, not at once (PROPOSALS.md); the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
+  release is filed at the next nightly scan, not at once (PROPOSALS.md); the rolling check (#249) runs nowhere yet: its reserved machines are tacplus-dev/cloud#111's, at 0
+  until an image with `looper-vm check` is pinned (it signs as `tacplus-manager`, which then needs Commit
+  statuses and Pull requests, until `tacplus-check` exists), its orchestrator (the merger's machine starting it on `looper-check
+  needed`) is cloud's, and it goes live with the merger
+  (#251), which asks its gate before each merge; until then the merge train builds every batch; the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
   `is_error` result) and the `modelUsage` names are the CLI's as of 2026-11-13, unexercised against a spent quota; a
   high model refused mid-run (its quota spent during the run) is not retried on the default: that run ends, and the
   next run probes and falls back; the verdict job's gates (#90) still run a report's commits as its job's user,
