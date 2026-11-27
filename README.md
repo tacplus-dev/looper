@@ -550,7 +550,7 @@ lander are gone. One job per issue needs none of them.
     it out (PROPOSALS.md: the revision baked into the image would tell).
 
 ```sh
-tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): a build-jobs repository's reports and manager on `arm64, control` with their kind's requests, a repository moving on its pin with its VM override unread, an unpinned one's jobs and scan on the VM tags, a pinned one's scan on `control` with a report's requests (#73), the pipeline file's probes on `.control`, its kicker and plan on `.kick` (`arm64, kick`), whose tags never hold or are held by a planned job's (#222); plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
+tests/looper-dispatch.test.sh   # plan-a-report-per-ready-issue, plan-manager-for-landing, kick-*: a report per ready issue, no cap (#107), the manager on main's group and ahead of every report, the pass's capacity line; plan-control, ci-control (#84): with the trigger, every repository's reports, manager, split batch and scan on `arm64, control` with their kind's requests, pinned or not, its override unread (#73, #274); plan-no-pool: no `autoscale` tag in the plan of any repository of the org, with tacplus-dev's variables (#274); the pipeline file's probes on `.control`, its kicker and plan on `.kick` (`arm64, kick`), whose tags never hold or are held by a planned job's (#222); plan-image: every job in the looper image by digest, main's attested build (#115), main's head or the newest built, none fails the plan, LOOPER_JOB_IMAGE by digest alone, and ci/'s files name it by digest; hold: a kick before the reset starts nothing (one line) and plans nothing, the first after it starts the issue again (#157)
 tests/repo-looper.test.sh       # reports-in-parallel, report-yields-to-manager-*, report-beside-manager-*, manager-order, manager-sends-back, manager-regenerates-lock, manager-drops-state-md, manager-state-md-sent-back, manager-red, land-after-report-ended, blocked-land-pending, no-land-*-unlabels, manager-stale-landing, manager-says-why, manager-job-short, manager-new-image, manager-image-pinned, manager-image-not-in-image, manager-image-unread, verdict-new-image (#153), manager-report-pending, manager-report-running; the merge train (#86): train-five-green (a batch of 5 green lands, 1 build, main's every value green-built), train-red-round (#205: one bad change of 5, each land built on its own, the 5 at once: 1 sent back with its own failure, 4 land in one build more, no bisection), train-red-round-none (each green on its own, red together: bisected after the round), train-bisects (`LOOPER_RED_ROUND=0`: one bad change of 5: 4 land, 1 sent back with the failure, at most 1 + 2·log2(5) builds), train-bisect-lands-green (#208: each green prefix lands before the next candidate is built, on the main it made), train-history-request-after-batch, train-green-after-history-on-main, train-green-after-state-md-on-main, train-green-after-code-on-main, train-bisect-on-latest-main (#215: a closed issue's HISTORY.md line queued among the lands is added after the batch, one build; a green candidate main moved under by a HISTORY.md line is rebased onto it and merged, one build; by a STATE.md commit conflicting with a land's, that land's STATE.md commit dropped and the rest merged, one build (#230); by code, built again on the new main; a bisection's candidate is built on the main of its build), train-one-red (just sent back), train-conflict-drops-one (only that branch), train-unbuilt-workflows, train-unbuilt and verdict-unbuilt (#194: a candidate whose build branch origin refuses is not bisected; a land changing .github/workflows/ sent back needs-decision, the rest landed in one build; any other refusal leaves the lands queued, each issue told once)
 ```
 
@@ -1412,7 +1412,7 @@ the pipeline carries `tags: [arm64, build]`, but a release's publish that needs 
 and the light jobs (`pending`, `plan`, `report-pass`, `report-fail`: looper-build alone, in the looper image)
 `[arm64, build-light]`, the in-cluster light runner on the normal pool (tacplus-dev/cloud#100, looper#224), so they
 never wait behind the build runner's slots;
-the loopers' runner (`arm64, autoscale`) takes neither. Each job gets a fresh VM, deleted after it:
+the interim VM runners (`arm64, autoscale`), which no looper job asks for since looper#274, take neither. Each job gets a fresh VM, deleted after it:
 
 ```toml
 [[runners]]
@@ -2112,7 +2112,7 @@ looper-dispatch run --for 3420   # the kicker job: a pass every LOOPER_INTERVAL 
 looper-dispatch status           # the looper jobs in GitLab, and what is ready (GH_TOKEN, GITLAB_TOKEN)
 looper-dispatch ready            # each repository's next ready issue, priority:high repositories first (GH_TOKEN): the plan's order
 looper-dispatch plan             # the child pipeline looper-plan writes: a job per free repository with a ready issue, or on a schedule a scan per repository
-tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; no cap: a ready issue beside any number of reports starts the pipeline, ten ready issues in one repository plan ten reports, a stale caps file caps nothing (#107); a report per ready issue and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the default, #91); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop; the looper's hold, a kick and a plan before the reset starting nothing and the first after it the issue (#157) (stub gh and curl)
+tests/looper-dispatch.test.sh    # an issue whose report job is created, pending, waiting or running gets no other; no cap: a ready issue beside any number of reports starts the pipeline, ten ready issues in one repository plan ten reports, a stale caps file caps nothing (#107); a report per ready issue and the repository's manager, on main's resource group (#70); a stale looper:in-progress is cleared; GitLab or GitHub unreadable releases and starts nothing; ready and blocked issues; priority across repositories; the plan's runner tags per repository (`LOOPER_JOB_TAGS_<repo>` for its reports, `LOOPER_MANAGER_TAGS_<repo>` and `LOOPER_SCAN_TAGS_<repo>` for its manager and scan, each else `LOOPER_JOB_TAGS`, else the control runner's, #91, read only without the build trigger); with tacplus-dev's variables, the apps and the trigger, no job of any repository of the org on a VM pool's `autoscale` tag, every one on the control runner (#274); the plan is the hub's former inline one (tests/tacplus-dev-plan.inline.sh) when scheduled, but for its tags and requests, and its jobs, each with its issue's resource group, plus the managers, when kicked, with ci/tacplus-dev.gitlab-ci.yml's variables; a pass's GitHub calls do not grow with the issues; the kicker's loop; the looper's hold, a kick and a plan before the reset starting nothing and the first after it the issue (#157) (stub gh and curl)
 ```
 
 **The pipeline file** (looper#56): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is
@@ -2139,8 +2139,7 @@ tests/looper-ci-lint.test.sh      # a script line YAML reads as a mapping (#83's
 ```
 
 Its `looper-plan` is `looper-dispatch plan > looper-jobs.yml`, nothing inline, so a change to the plan here reaches
-the pipeline with the next image. The plan's settings are `looper-plan`'s `variables` in the file: `LOOPER_ORG`, the
-per-repository tags (`LOOPER_JOB_TAGS_tacplus`, [Infrastructure](#infrastructure)) and the git identity
+the pipeline with the next image. The plan's settings are `looper-plan`'s `variables` in the file: `LOOPER_ORG` and the git identity
 (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`), which the plan gives every child job; the credentials stay project CI variables
 (below). On a schedule the plan is the nightly scan, a job per repository of the org; otherwise a job per repository
 with a ready issue and no looper job active, priority:high first.
@@ -2497,9 +2496,13 @@ and what a 4th node costs, for Jody to decide.
 `runner_external_dependency_failure` and `api_failure` (an image a fresh node did not pull in time, looper#173), its
 child pipeline's jobs all but on their own timeout (the gates' 11h is their own, looper#148; `looper-build`).
 
-**What still runs on the interim VM runners** (below): no looper job needs Docker since looper#73 (every repository
-pinned, `looper-docker` gone); `looper-dispatch plan` still puts a repository without build jobs there (an unpinned
-one's report and land stop at once, saying to pin it first); in tacplus-dev/build, only a release's `publish-<repo>` while
+**What still runs on the interim VM runners** (below): no looper job. None needs Docker since looper#73 (`looper-docker`
+gone), and since looper#274 `looper-dispatch plan` puts every job of every repository on the control runner once the
+project has the build trigger and the apps: a pinned repository's gates are build jobs, an unpinned one's (roadmap's)
+report, land and verdict stop at once, saying to pin it first, and a scan's model has no container runtime, so its
+reports, managers, split batches' verdicts and merges and scans need nothing a control pod lacks; no per-repository
+tag override is read then (`tests/looper-dispatch.test.sh`: plan-no-pool, no `autoscale` tag in the plan of any
+repository of the org). In tacplus-dev/build, only a release's `publish-<repo>` while
 `BUILD_BUILDER_IMAGE` is empty (on `BUILD_DOCKER_TAGS`, `arm64, build-docker`, the VM build pool's own tag: [Build pipeline](#build-pipeline), looper#73, looper#172). The VM runners' tags (`arm64, autoscale`, `arm64, autoscale-16`) are those
 jobs' alone; no job of `ci/tacplus-dev.gitlab-ci.yml` asks for them (`tests/looper-dispatch.test.sh`: ci-control), and
 `LOOPER_CONTROL_TAGS` names the control runner's (default `arm64, control`). The hub unpauses `control` once this is on
@@ -2531,20 +2534,14 @@ manager waited for the VM and the 2-hour scan held it while reports queued:
 | every repository but tacplus, and tacplus's manager and scan | 57939705 *tacplus-dev arm64 autoscaler* | `arm64, autoscale` | `runner-arm64-tacplus`, `runner-arm64-t2a8-v*` (t2a-standard-8, 31 GB) | up to 5 workers |
 | tacplus's reports | 58307468 (group runner, protected refs only) | `arm64, autoscale-16` | `runner-arm64-tacplus-big`, `runner-arm64-t2a16-v7` (t2a-standard-16, 64 GB, `looper-runner`, 400 GB pd-standard) | up to 2 VMs; 5 children a job (64 GB / 12; the CPUs allow 8) |
 
-`looper-dispatch plan` gives a job that still needs Docker (above) the tags of `LOOPER_JOB_TAGS_<repo>` (the
-repository's name, `-` as `_`) for a report, `LOOPER_MANAGER_TAGS_<repo>` for its manager and `LOOPER_SCAN_TAGS_<repo>`
-for its scan, each else `LOOPER_JOB_TAGS`, else `arm64, autoscale`. The pipeline file of gitlab.com/tacplus-dev/looper
-([`ci/tacplus-dev.gitlab-ci.yml`](ci/tacplus-dev.gitlab-ci.yml), copied there by the hub) sets, among `looper-plan`'s `variables`:
-
-```yaml
-  LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"
-```
-
-The plan's log names each job's tags and resource group (`planned looper-tacplus-<n> (<timeout>, tags arm64, autoscale-16,
-resource_group looper-tacplus-<n>)`), and the
-job's page names the runner. tacplus's manager runs the full gates in its job, Kani's 12 GB children two at a time on a
-t2a-standard-8's 31 GB; should they not fit, `LOOPER_MANAGER_TAGS_tacplus: "arm64, autoscale-16"` puts it back on the
-larger pool and leaves only the scan off it.
+No looper job is planned on either pool any more (looper#274): tacplus's reports run on its looper VM (looper#241) or,
+pinned, on the control runner, and `ci/tacplus-dev.gitlab-ci.yml` no longer sets `LOOPER_JOB_TAGS_tacplus`. Only a
+project without the build trigger (an instance of its own, whose gates run in its manager's or verdict's job) reads the
+per-repository tags: `LOOPER_JOB_TAGS_<repo>` (the repository's name, `-` as `_`) for a report and a split batch's
+jobs, `LOOPER_MANAGER_TAGS_<repo>` for its manager and `LOOPER_SCAN_TAGS_<repo>` for its scan, each else
+`LOOPER_JOB_TAGS`, else the control runner's (`LOOPER_CONTROL_TAGS`), never a VM pool's by default. The plan's log names
+each job's tags and resource group (`planned looper-tacplus-<n> (<timeout>, tags arm64, control,
+resource_group looper-tacplus-<n>)`), and the job's page names the runner.
 
 - The workers run as their own Google account, `looper-runner`, which may only pull the tacplus build images
   (once the hub applies [Credentials](#credentials); until then, `build-box`).

@@ -531,38 +531,40 @@ build_jobs_repo() { # repo
 # decisions/only-vms-are-k8s-nodes-2026-11-04.md): every CI job is a pod of the
 # in-cluster GitLab runners, with requests and limits; builds on the spot pool
 # (tacplus-dev/build's jobs, `arm64, build`), control work on the normal pool.
-# A report, manager or scan of a repository whose gates are build jobs (above) runs
-# on the control runner, LOOPER_CONTROL_TAGS (default `arm64, control`,
-# tacplus-dev/cluster#13), with the requests of its kind (requests below); a
-# repository moves the day its pin lands, with no change here, and its
-# per-repository tag override is not read then. Any other job (a repository
-# without build jobs: an unpinned one, whose report and land stop at once and
-# say to pin it first, looper#73, or a project without the trigger) stays on
-# the VM runners' tags: LOOPER_JOB_TAGS_<repo> (`-` as `_`) for a repository's
-# reports (looper#55: tacplus's on the 16-CPU pool), LOOPER_MANAGER_TAGS_<repo>
-# for its manager and LOOPER_SCAN_TAGS_<repo> for its scan (looper#91), else
-# LOOPER_JOB_TAGS, else `arm64, autoscale`. Prints "<tags>" and, on the control
-# runner, the job's kind on a second line.
+# Once the project has the build trigger (trigger, below), every job of every
+# repository runs on the control runner, LOOPER_CONTROL_TAGS (default `arm64,
+# control`, tacplus-dev/cluster#13), with the requests of its kind (requests
+# below: a split batch's verdict and merge a manager's), and no
+# per-repository tag override is read: none of them needs Docker (looper#73).
+# A pinned repository's gates are build jobs (looper#71); an unpinned one's
+# report, land and verdict stop at once and say to pin it first (pin_first),
+# and a scan's model has no container runtime. No job is planned on the VM
+# runners' pools (looper#274: tacplus-dev/cloud#113 retires them). Without the
+# trigger (an instance of its own, whose gates run in its manager's or
+# verdict's job), a job takes LOOPER_JOB_TAGS_<repo> (`-` as `_`) for a
+# repository's reports and its split batch's jobs (looper#55),
+# LOOPER_MANAGER_TAGS_<repo> for its manager and LOOPER_SCAN_TAGS_<repo> for
+# its scan (looper#91), else LOOPER_JOB_TAGS, else the control runner's.
+# Prints "<tags>" and, on the control runner, the job's kind on a second line.
 CONTROL_TAGS="${LOOPER_CONTROL_TAGS:-arm64, control}"
-VM_TAGS="${LOOPER_JOB_TAGS:-arm64, autoscale}"
+trigger() { apps && [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]]; }
 where_it_runs() { # repo repo-looper-args...
-  local repo="$1" v kind=""; shift
+  local repo="$1" v kind; shift
   case " $* " in
     *" --manage "*) v=LOOPER_MANAGER_TAGS; kind=manager ;;
     *" --scan "*) v=LOOPER_SCAN_TAGS; kind=scan ;;
-    *" --verdict "*|*" --merge "*) v=LOOPER_JOB_TAGS ;;   # a split batch's jobs (looper#90): never a build-jobs repository's
+    *" --verdict "*|*" --merge "*) v=LOOPER_JOB_TAGS; kind=manager ;;   # a split batch's jobs (looper#90)
     *) v=LOOPER_JOB_TAGS; kind=report ;;
   esac
-  if [[ -n "$kind" ]] && build_jobs_repo "$repo"; then printf '%s\n%s\n' "$CONTROL_TAGS" "$kind"; return 0; fi
-  v="${v}_${repo//[^A-Za-z0-9_]/_}"; echo "${!v:-$VM_TAGS}"
+  v="${v}_${repo//[^A-Za-z0-9_]/_}"
+  if ! trigger && [[ -n "${!v:-${LOOPER_JOB_TAGS:-}}" ]]; then echo "${!v:-$LOOPER_JOB_TAGS}"; return 0; fi
+  printf '%s\n%s\n' "$CONTROL_TAGS" "$kind"
 }
-# The tags of a job that runs no looper (looper-none, looper-held): the
-# instance's LOOPER_JOB_TAGS, else the control runner's once the project has
-# the trigger (something of its runs there), else the VM default.
+# The tags of a job that runs no looper (looper-none, looper-held): the control
+# runner's once the project has the trigger, else the instance's
+# LOOPER_JOB_TAGS, else the control runner's.
 plain_tags() {
-  if [[ -n "${LOOPER_JOB_TAGS:-}" ]]; then echo "$LOOPER_JOB_TAGS"
-  elif apps && [[ -n "${BUILD_TRIGGER_TOKEN:-}" ]]; then echo "$CONTROL_TAGS"
-  else echo "$VM_TAGS"; fi
+  if ! trigger && [[ -n "${LOOPER_JOB_TAGS:-}" ]]; then echo "$LOOPER_JOB_TAGS"; else echo "$CONTROL_TAGS"; fi
 }
 
 # A control pod's requests and limits (looper#84): CPU and memory, as GitLab's

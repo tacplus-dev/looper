@@ -4,10 +4,10 @@
 # The tacplus-dev looper pipeline (gitlab.com/tacplus-dev/looper). The looper code and image live on GitHub
 # (github.com/tacplus-dev/looper, ghcr.io/tacplus-dev/looper); this project only runs them, on the
 # runners registered to the tacplus-dev group: the in-cluster control runner (`arm64, control`,
-# tacplus-dev/cluster#13: a pod on the normal pool per job, looper#84) for the hub's probes and for the
-# reports and managers of every repository whose gates are build jobs, the kick runner (`arm64, kick`,
-# tacplus-dev/cluster#39, looper#222) for the kicker and the plan, the VM runners
-# (`arm64, autoscale`, `arm64, autoscale-16`) for the jobs that still need Docker. `looper-plan` lists the ready issues across
+# tacplus-dev/cluster#13: a pod on the normal pool per job, looper#84) for the hub's probes and for every
+# looper job the plan starts (none of them runs Docker: looper#73, looper#274), and the kick runner
+# (`arm64, kick`, tacplus-dev/cluster#39, looper#222) for the kicker and the plan; no looper job runs on
+# the VM runners' pools (tacplus-dev/cloud#113 retires them). `looper-plan` lists the ready issues across
 # tacplus-dev and writes a child pipeline with a report job per ready issue, every one (no
 # per-repository cap, looper#107), and each such repository's manager (`looper-dispatch plan`, the code
 # github.com/tacplus-dev/looper tests: looper#56, looper#70); `looper-run` triggers it.
@@ -92,9 +92,8 @@ stages:
 # (GitLab's KUBERNETES_* variables, within that runner's ceilings: they run
 # bash, gh and git, and wait on the forge; 50m CPU from what they use,
 # looper#165, the recap's "Requests against use"). None of them runs Docker. The plan's
-# reports and managers get their tags and requests from looper-dispatch plan:
-# the control runner for a repository whose gates are build jobs, the VM
-# runners' tags for a job that still needs Docker. A control job's retry is on
+# reports, managers and scans get their tags and requests from looper-dispatch
+# plan: the control runner, every one (looper#274). A control job's retry is on
 # its runner lost, never its own timeout.
 .control:
   tags: [arm64, control]
@@ -129,11 +128,6 @@ looper-plan:
   variables:
     GIT_STRATEGY: none
     LOOPER_ORG: tacplus-dev
-    # Per-repository runner tags (looper#55) for the jobs that still need Docker (looper#84): tacplus's
-    # reports on the 16-CPU VM pool (runner 58307468) until its pin (tacplus#340) moves them to the control
-    # runner; its manager and scan stay on LOOPER_JOB_TAGS's (looper#91: LOOPER_MANAGER_TAGS_tacplus would
-    # move the manager back).
-    LOOPER_JOB_TAGS_tacplus: "arm64, autoscale-16"
     GIT_AUTHOR_NAME: jodydadescott
     GIT_AUTHOR_EMAIL: jody@thescottsweb.com
     GIT_COMMITTER_NAME: jodydadescott
