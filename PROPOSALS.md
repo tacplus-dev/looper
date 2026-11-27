@@ -300,12 +300,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   `security-exceptions.yaml`, with the base image's packages attributed to tacplus-dev/tacplus as #167 does for its
   binaries, would make these build findings, not the nightly model's.
 - **The nightly on a runner entry of its own, at its quietest hour** (2026-11-18, #185): the fan-out now runs
-  `BUILD_NIGHTLY_SLOTS` (1) repositories at a time and every nightly job on `BUILD_NIGHTLY_TAGS`, still the build
-  runner's `arm64, build`. The cluster half: the runner entry `arm64, build-nightly` on the spot pool at a
-  PriorityClass between the report builds' and the lands' (tacplus-dev/cluster#46, landed 2026-11-26, the hub's option
-  A), its ceilings build's (3500m, 12Gi: no repository's nightly needs the build runner's tags kept); its registration
-  and token tacplus-dev/cloud#116; then `BUILD_NIGHTLY_TAGS: "arm64, build-nightly"` in `ci/build.gitlab-ci.yml` and
-  the hub's copy (#220, blocked on cloud#116), never before (no runner would take them). The
+  `BUILD_NIGHTLY_SLOTS` (1) repositories at a time and every nightly job on `BUILD_NIGHTLY_TAGS`. The cluster half:
+  the runner entry `arm64, build-nightly` on the spot pool at a PriorityClass between the report builds' and the
+  lands' (tacplus-dev/cluster#46, landed 2026-11-26, the hub's option A), its ceilings build's (3500m, 12Gi: no
+  repository's nightly needs the build runner's tags kept); its registration and token tacplus-dev/cloud#116 (landed
+  2026-11-27); `BUILD_NIGHTLY_TAGS: "arm64, build-nightly"` in `ci/build.gitlab-ci.yml` (#220), live with the hub's
+  copy once cluster runs the entry, never before (no runner would take them). The
   cloud half: the one nightly schedule (tacplus-dev/cloud#67) at the hour the recap's build hours name the
   quietest, a week of nights in. One at a time makes the nightly long (tacplus's gates alone take over 3h): if it
   outlasts the day, 2 slots, or the nightly entry, is the next step.

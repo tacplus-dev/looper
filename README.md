@@ -1535,10 +1535,10 @@ red when one is. A listing or a pin it cannot read, or no pinned repository, fai
 tacplus#340's land build got no runner in 15 min): a land's build waits on a run and blocks a queue, a nightly waits
 on nobody. The fan-out runs `BUILD_NIGHTLY_SLOTS` repositories at a time (1 in `ci/build.gitlab-ci.yml`): the nth
 repository's plan and trigger hold the resource group `nightly-slot-<n mod slots>`, the trigger until its child
-pipeline is done, so the next waits; and every job of a nightly runs on `BUILD_NIGHTLY_TAGS` (the build runner's
-`arm64, build` until the cluster's entry of its own, `arm64, build-nightly`, is registered: tacplus-dev/cluster#46 on
-the spot pool at a PriorityClass that preempts the report builds and that a land's build preempts, with build's ceilings,
-and its registration tacplus-dev/cloud#116, looper#220; a build's jobs never). Its hour is the quietest of the lands' builds: the nightly recap's
+pipeline is done, so the next waits; and every job of a nightly runs on `BUILD_NIGHTLY_TAGS` (`arm64, build-nightly` in `ci/build.gitlab-ci.yml`, the
+cluster's entry of its own: tacplus-dev/cluster#46 on the spot pool at a PriorityClass that preempts the report builds
+and that a land's build preempts, with build's ceilings, and its registration tacplus-dev/cloud#116, looper#220; unset,
+the build runner's; a build's jobs never). Its hour is the quietest of the lands' builds: the nightly recap's
 build hours ([Nightly recap](#nightly-recap)).
 The schedule: `{"nightly": true}`, on `main`. A release's `sbom-<repo>` makes the SBOM of the image `publish-<repo>` pushed.
 

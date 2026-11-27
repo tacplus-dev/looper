@@ -1156,6 +1156,8 @@ grep -qxF '  BUILD_REPORT: "$[[ inputs.report ]]"' "$c" || fail "the plan does n
 # Below the spot pool's 2 nodes, the report builds' jobs on the build runner's tags until the cluster's report entry (looper#209).
 [[ "$(sed -n 's/^  BUILD_POOL_NODES: "\(.*\)"$/\1/p' "$c")" == 2 ]] || fail "BUILD_POOL_NODES is not 2"
 [[ "$(sed -n 's/^  BUILD_REPORT_TAGS: "\(.*\)"$/\1/p' "$c")" == "arm64, build" ]] || fail "BUILD_REPORT_TAGS is not the build runner's"
+# The nightly's jobs on the cluster's nightly entry, registered by tacplus-dev/cloud#116 (looper#220).
+[[ "$(sed -n 's/^  BUILD_NIGHTLY_TAGS: "\(.*\)"$/\1/p' "$c")" == "arm64, build-nightly" ]] || fail "BUILD_NIGHTLY_TAGS is not the nightly entry's"
 pass
 
 # The light jobs, looper-build alone in the looper image, on the light runner (looper#224, tacplus-dev/cloud#100):

@@ -253,12 +253,12 @@ variables:
   # slot (2026-11-18 03:00Z its children held all of them, and tacplus#340's
   # land got no runner in 15 min). Its fan-out runs this many repositories at
   # a time (each a resource group, nightly-slot-<n>), its jobs on these tags:
-  # the build runner's until the cluster's nightly entry (arm64,
-  # build-nightly, tacplus-dev/cluster#46: the spot pool at a PriorityClass
-  # between the report builds' and the lands', build's ceilings, 3500m 12Gi,
-  # so every repository's gates and CodeQL fit it) is registered and its token
-  # written (tacplus-dev/cloud#116), never before: no runner would take them
-  # (looper#220).
+  # the cluster's nightly entry (arm64, build-nightly, tacplus-dev/cluster#46:
+  # the spot pool at a PriorityClass between the report builds' and the
+  # lands', build's ceilings, 3500m 12Gi, so every repository's gates and
+  # CodeQL fit it and none keeps the build runner's), registered and its token
+  # written by tacplus-dev/cloud#116 (looper#220). The hub copies this file
+  # once cluster runs that entry, never before: no runner would take them.
   BUILD_NIGHTLY_SLOTS: "1"
   # The report builds' gates at a time (looper#195): each report's holds a
   # resource group report-slot-<n>, so the rest of the build pool (the
@@ -279,7 +279,7 @@ variables:
   # wait.
   BUILD_POOL_NODES: "2"
   BUILD_REPORT_TAGS: "arm64, build"
-  BUILD_NIGHTLY_TAGS: "arm64, build"
+  BUILD_NIGHTLY_TAGS: "arm64, build-nightly"
   # The child pipeline's security job sets the build's verdict (looper#237):
   # "true" drops the pending job and an ordinary build's report-pass and
   # report-fail, plan setting pending and its own failure. It needs
