@@ -1,6 +1,6 @@
 # State: looper
 
-Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#253).
+Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by looper (#265).
 
 - **Version / line:** unreleased (no tags); the image `ghcr.io/tacplus-dev/looper` (`main`, `main-<sha7>`; the plan
   runs it by digest, the attested build of main, #115) is built FROM the tacplus
@@ -283,7 +283,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   both forges against a gh stub, a GitLab API stub and a stub git server, a SeaBeam issue worked end to end; release
   builds by branch (#252): the build pipeline's `release` input, `main` building `main-green`'s commit (never main's
   head), `release/X.Y` its head, `branches` or no repo a fan-out of each branch with something new, publishing
-  `<repo>:<branch>-<commit12>` by digest; `release-report` moves `release-<repo>/<branch>/record` forward only (an
+  `<repo>:<branch>-<commit12>` by digest to the release registry `us-docker.pkg.dev/tacplus-ci/releases` as
+  `release-publish@tacplus-ci` (#265; a tag's release to the build project's `BUILD_REGISTRY`, no default, refused
+  without one: tacplus-dev/tacplus#223's to set); `release-report` moves `release-<repo>/<branch>/record` forward only (an
   older build never takes a newer one's place), sets `tacplus-dev/release/<branch>`, and records a red one, which the
   nightly scan files as an approved bug; `ci/build.gitlab-ci.yml` pins main-7c1dc4d's image (#261), whose
   `looper-build` has them (main-1fca965's, pinned before, ignored `release`); the green record names the tacplus it
@@ -327,8 +329,8 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   merges one, and a red build status on it stays until a person sends it back (the merger sends back conflicts alone); it takes effect on a VM with the image built after its land
   (tacplus-dev/cloud's looper_vms); its status build is the build project's, which the design retires later
   (PROPOSALS.md); branch releases (#252) publish nothing until #249 makes `main-green`, tacplus-dev/cloud#112 adds
-  their schedules and publish's identity on the build project's protected main, and the hub copies
-  `ci/build.gitlab-ci.yml` there; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands, and
+  their schedules, tacplus-dev/cloud#115's `apply:ci` the release registry and its provider, and the hub copies
+  `ci/build.gitlab-ci.yml` there, pinning an image with #265; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands, and
   reads them and is triggered once tacplus-dev/cloud#117 sets the build project's job token allowlist, Reporter and
   `BUILD_SEATRIALS_TRIGGER_TOKEN` (until then `release-report` logs "seatrials not started"); a red
   release is filed at the next nightly scan, not at once (PROPOSALS.md); the model per run (#136) is tested against a stub `claude`: the probe's reading of a refusal (an
