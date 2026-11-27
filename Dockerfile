@@ -26,7 +26,7 @@
 # (looper#234, #258: a release builds no floating tag), a literal the nightly
 # relock reads and moves to the line's newest build. The line is written here
 # alone: the image's (LOOPER_TACPLUS_LINE) is its base's own TACPLUS_LINE.
-ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:2.6@sha256:72fcd0448dc768bc3fc709c14b17acbc3470e94cf5b03b7d65520cae07e6f121
+ARG BUILD_IMAGE=ghcr.io/tacplus-dev/tacplus/build:20261126-57a6521@sha256:cd01058d9001c4257df43581fca0976fd939f1350b6a71da882d40319b21c5de
 ARG CLAUDE_CODE_VERSION=2.1.308
 
 FROM ${BUILD_IMAGE}
