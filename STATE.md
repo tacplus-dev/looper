@@ -53,7 +53,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   run directory, so it cannot signal or read another run's processes or files (#68); `repo-looper` works each repository's
   `approved` issues (checkpoints and resume, per-issue time limit, idle and done watchdog, done only once the run reported on its closed issue and a stopped one reported by the looper, #54, Blocked-by outcomes, one or more,
   also from a run that pushed nothing because the issue waits on another, #22, a blocker closed by now dropped and one
-  naming only closed ones resumed, #46; a run that ends with its land
+  naming only closed ones resumed, #46; a `Blocked-by:` pull request, on GitHub, closed once merged, one closed unmerged
+  making its issue `needs-decision` with a comment from the kicker, and an open one in an outcome bringing the issues
+  it closes, #276; a run that ends with its land
   queued, or early with progress, a fix landed or a new step checkpointed, stays approved and resumes; only one
   that went idle with nothing landed or queued, or made no progress, is `looper:stuck`, #34; one the account's usage
   limit refused (`You've hit your weekly limit · resets 3am (UTC)`, empty usage) on its model and any it may fall back to
@@ -230,7 +232,7 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   pass, the hours ready issues waited at it, how often all reports were busy (and running) and the merge backlog, with advice to
   raise or lower it after two nights running, a raise only for waits while all its reports ran, else the pool's item
   `capacity/<pool>` (#92); a scan holds a queued report only in its resource group (#92); the capacity: queue p90, issues waiting for a VM and one more VM's cost
-  a day, for Jody's manual scale-up, #72; the runs and tokens per model and the refused models, #136; every repository whose nightly published no report, and why, an item `nightly/no_report` always over, #220; the release lines and backports, #275: every open backport ready to merge (green, CLEAN, its main issue closed) with its age, oldest first, the lines with unreleased merges and the supported lines' CI, and `looper-recap act` labels a backport ready over 2 days `backport:ready`, files one `bug` per red supported line and dispatches each supported line's `ci.yml` nightly, which needs the looper's app to hold Actions: write) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
+  a day, for Jody's manual scale-up, #72; the runs and tokens per model and the refused models, #136; every repository whose nightly published no report, and why, an item `nightly/no_report` always over, #220; the release lines and backports, #275: every open backport ready to merge (green, CLEAN, its main issue closed) with its age, oldest first, the lines with unreleased merges and the supported lines' CI, and `looper-recap act` labels a backport ready over 2 days `backport:ready`, files one `bug` per red supported line and dispatches each supported line's `ci.yml` nightly, which needs the looper's app to hold Actions: write; every open issue whose blockers are all closed, with its age and what else holds it, an item when nothing does, #276) and classifies its items against the 7 nights (recurring: advice, ranked by the hours of waiting it
   would remove; transient and once: one line); the model writes the advice as Performance, Operability or Cost
   suggestions with cause, change, gain and numbers (`looper-suggest check` refuses advice without numbers), and the
   looper commits `suggestions/recap/<night>.md` and `.json` with them, for Jody's daily report. Trace propagation
