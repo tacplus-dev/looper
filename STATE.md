@@ -341,7 +341,10 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   runner image and readiness gate (#43); the `image` workflow builds and pushes `:main` after each land (a land does
   not wait for it), and a failed run on main opens or comments on a `bug` issue here (`image-failed`, #58) with the
   failed step's log tail, read by the jobs API since the report job runs inside the run it reports (#154)
-- **Known gaps:** the merge request (#250) has no live merger yet (#251's goes live with #249's rolling check): nothing
+- **Known gaps:** gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml` is still the hub's hand copy of
+  `ci/tacplus-dev.gitlab-ci.yml`: since #277 a land changing it says so in its verdict and is labelled
+  `looper:hub-copy`, but is not live until the copy, and the live file's hub-only `looper-vm-diagnose` is not in
+  main's yet (PROPOSALS.md, "The looper project's CI file written by a job"); the merge request (#250) has no live merger yet (#251's goes live with #249's rolling check): nothing
   merges one, and a red build status on it stays until a person sends it back (the merger sends back conflicts alone); it takes effect on a VM with the image built after its land
   (tacplus-dev/cloud's looper_vms); its status build is the build project's, which the design retires later
   (PROPOSALS.md); branch releases (#252) publish nothing until the rolling check (#249) runs and makes `main-green`, tacplus-dev/cloud#112 adds
