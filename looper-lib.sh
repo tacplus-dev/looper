@@ -52,6 +52,14 @@ LABEL_HOLD="looper:hold"
 # a revert it proposes, which the merger takes while merging is closed.
 LABEL_MAIN_CHECK="looper:main-check"
 LABEL_REVERT="looper:revert"
+# A land that changed a file the hub copies by hand (looper#277; HUB_COPIES):
+# merged, but not live until the hub copies it. The manager sets it with its
+# verdict; the hub removes it once it has copied the file.
+LABEL_HUB_COPY="looper:hub-copy"
+# The files of a repository that reach where they run only by the hub's copy,
+# "<repo>|<path>|<where>" a line: gitlab.com/tacplus-dev/looper's
+# .gitlab-ci.yml is ci/tacplus-dev.gitlab-ci.yml (README, The pipeline file).
+HUB_COPIES="${LOOPER_HUB_COPIES:-looper|ci/tacplus-dev.gitlab-ci.yml|the .gitlab-ci.yml of gitlab.com/tacplus-dev/looper}"
 
 # Every issue is a bug or a feature (tacplus-dev/roadmap
 # decisions/issue-flow-2026-10-27.md, looper#14). A bug is fixed and ships as a
@@ -83,6 +91,7 @@ LOOPER_LABELS=(
   "$LABEL_HOLD|ededed|The looper's hold: the account's usage limit is reached, and nothing starts until the reset its body names"
   "$LABEL_MAIN_CHECK|b60205|Filed by the rolling check of main: main is red (looper-check)"
   "$LABEL_REVERT|b60205|A revert the rolling check of main proposes: the merger takes it while main is red"
+  "$LABEL_HUB_COPY|d93f0b|Merged, but a file it changed is not live until the hub copies it (looper#277); the hub removes it once copied"
   "$LABEL_DECISION|5319e7|The looper needs a decision it may not make"
   "$LABEL_BUG|d73a4a|The code does not do what it already promises: fixed, and released as a patch"
   "$LABEL_FEATURE|a2eeef|New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor"

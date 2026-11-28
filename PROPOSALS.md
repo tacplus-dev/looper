@@ -1173,6 +1173,19 @@ the looper then marks it `promoted` or `declined` here with the date.
   input or such a drift: no run holds a token that reads the build project's files. A nightly (the recap's job, say,
   with a `read_repository` reader) comparing the two and filing a bug on a difference would catch it before a land
   does; since #127 the trigger's refusal carries GitLab's body, which names the input.
+- **The looper project's CI file written by a job** (2026-11-28, #277): gitlab.com/tacplus-dev/looper's `.gitlab-ci.yml`
+  is still the hub's hand copy of `ci/tacplus-dev.gitlab-ci.yml` (README, The pipeline file); since #277 a land that
+  changes it says so in its verdict and is labelled `looper:hub-copy`, but stays not live until the copy (#274's
+  change ran three hours after its merge). #277's better fix: a job, the kicker's hourly pipeline say, that compares
+  looper main's file (GitHub, no credential) with the project's, lints main's with GitLab's `ci/lint` (`valid: true`,
+  `looper-ci-lint`'s request) and only then commits it as the project's `.gitlab-ci.yml`, as tacplus-dev/cloud's
+  gitlab stack writes build's (`gitlab_repository_file`, linted by its `ci/build-ci.sh`). What it needs and #277 could
+  not settle: a credential that may write the project's protected main, which none of its jobs holds (`GITLAB_TOKEN`
+  is a Reporter's `read_api`; gitlab.com Free has no project access tokens), made by cloud's gitlab stack under the
+  secrets-by-pipeline rule and scoped to that job's environment alone; and the trust it adds, any green land on
+  GitHub main rewriting the pipeline that holds the project's credentials without the hub's look. Or the project's CI/CD
+  configuration path set to the raw file on main (roadmap suggestion 2026-11-19). The hub-only jobs in the live file
+  (`looper-vm-diagnose`) belong in `ci/tacplus-dev.gitlab-ci.yml` first, or the first write drops them.
 
 - **A nightly's red gates set a commit status on main** (2026-11-16, #164): the child pipeline's `gates-failed` job
   (looper#148) is written for every kind of build, a nightly's too, so a nightly whose gates fail sets

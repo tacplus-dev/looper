@@ -2159,6 +2159,14 @@ curl -sfH "PRIVATE-TOKEN: <the hub's token>" -X PUT https://gitlab.com/api/v4/pr
   -d commit_message="ci/tacplus-dev.gitlab-ci.yml at <commit> (looper#56)" --data-urlencode content@ci/tacplus-dev.gitlab-ci.yml
 ```
 
+So a land that changes it is merged but not live until that copy (looper#277: #274's change ran three hours later,
+its issue closed as done meanwhile). The manager says so in its verdict on such a land (`It changes
+ci/tacplus-dev.gitlab-ci.yml, which is not live until the hub copies it ...`) and labels the issue
+`looper:hub-copy`, the hub's queue of copies to make: the report's closing comment repeats it and leaves the label,
+and the hub removes it once it has copied the file. The files so handed off are `HUB_COPIES` in `looper-lib.sh`
+(`<repo>|<path>|<where>` a line; `LOOPER_HUB_COPIES` replaces it). A job that lints and writes the copy itself, so no
+hand is needed, is PROPOSALS.md's "The looper project's CI file written by a job".
+
 Lint it first, as every CI file here is linted before it lands (looper#94: one GitLab could not read failed every
 pipeline of its project, the kicker's included): `looper-ci-lint` parses each `ci/*.gitlab-ci.yml` (a `spec:`
 header and the configuration, `!reference` read as a list) and checks it against GitLab's own JSON schema

@@ -2806,6 +2806,18 @@ reports_active() {
   return 1
 }
 
+# The files of HUB_COPIES a land changed (looper#277): its verdict's line on
+# each, which is not live until the hub copies it. Empty when it changed none.
+hub_copies() { # before after
+  local repo path where changed out=""
+  changed="$(git -C "$CHECKOUT" diff --name-only "$1" "$2" 2>/dev/null)" || return 0
+  while IFS='|' read -r repo path where; do
+    [[ "$repo" == "$REPO" && -n "$path" ]] && grep -qxF -- "$path" <<<"$changed" || continue
+    out+=" It changes \`$path\`, which is not live until the hub copies it to $where (looper#277): this issue is \`$LABEL_HUB_COPY\` until the hub has."
+  done <<<"$HUB_COPIES"
+  printf '%s' "$out"
+}
+
 # The verdict on a land, a comment on its issue (looper#70) with the land's
 # id: merged (green), sent back (a conflict it does not resolve), or not
 # merged (red, or why not).
@@ -2837,6 +2849,7 @@ verdict_comment() { # issue id rc record-dir sha
     [[ -z "$batch" || "$batch" == 1 ]] || batch=" It landed in a batch of $batch lands, with one build of their candidate (the merge train, looper#86)."
     [[ "$batch" != 1 ]] || batch=""
     what="The manager merged [\`$b\`]($url) on main: ${before:0:7}..${after:0:7}, on the gates ${set:-full}${why:+ ($why)}$build: green.$batch"
+    what+="$(hub_copies "$before" "$after")"
     [[ -z "$regen" ]] || what+=" It resolved the rebase's conflicts by regenerating them, never by hand: $(sed 's/.*/`&`/' <<<"$regen" | paste -sd, - | sed 's/,/, /g')."
     # A STATE.md commit dropped (looper#131): its diff, to land again.
     if [[ -n "$dropped" ]]; then
@@ -2871,6 +2884,9 @@ $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$rec/out" | redact)")"
 $(printf '~~~~~~\n%s\n~~~~~~' "$(tail -n 30 "$rec/out" | redact)")"
   fi
   [[ "$rc" == 0 && -s "$rec/landed" ]] || what+="${VERDICT_JOB:+ Its gates: job $VERDICT_JOB.}${CI_JOB_URL:+ Manager: job $CI_JOB_URL.}"
+  # Labelled for the hub, whose copy makes it live (looper#277).
+  [[ "$what" != *"until the hub copies it"* ]] || forge_issue_edit "$REPO" "$n" --add-label "$LABEL_HUB_COPY" >/dev/null ||
+    log "#$n: could not label it $LABEL_HUB_COPY"
   forge_issue_comment "$REPO" "$n" "$what
 
 $(land_marker "$id" "$rc" "${before:+$before..$after}" "$set")" >/dev/null
@@ -5090,7 +5106,8 @@ EOF
    after it. When you start a run whose land the manager has merged (its verdict is on the issue: \`The
    manager merged\`), comment on the issue with what changed (commit hashes), the gates you ran and their
    last lines, the gate set and batch the land ran in (the verdict names them), and anything you could not
-   verify; then, as your last step (any patch tagged and any backport
+   verify (a file the verdict says is not live until the hub copies it: say so, and leave its
+   \`$LABEL_HUB_COPY\` for the hub, looper#277); then, as your last step (any patch tagged and any backport
    pull requests open by then), close it: \`$(forge_cmd close "$REPO" "$n")\`. Closing it ends your run. A
    land the manager sent back (a conflict, or red: its verdict says) you fix and land again.
 EOF

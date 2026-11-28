@@ -404,7 +404,7 @@ for FORGE in github gitlab; do
   issue alpha 1 OPEN "Body." approved
   lib 'forge_issue_edit alpha 1 --add-label looper:in-progress --add-label bug' || fail "edit add"
   if [[ "$FORGE" == github ]]; then
-    want="alpha bug,alpha feature,alpha looper:hold,alpha looper:in-progress,alpha looper:landing,alpha looper:main-check,alpha looper:merge-request,alpha looper:revert,alpha looper:stuck,alpha looper:workflows,alpha model:high,alpha needs-decision,alpha priority:high,alpha priority:low"
+    want="alpha bug,alpha feature,alpha looper:hold,alpha looper:hub-copy,alpha looper:in-progress,alpha looper:landing,alpha looper:main-check,alpha looper:merge-request,alpha looper:revert,alpha looper:stuck,alpha looper:workflows,alpha model:high,alpha needs-decision,alpha priority:high,alpha priority:low"
     [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "$want" ]] || fail "labels created: $(cat "$FIX/labels-created")"
   fi
   [[ "$(store alpha 1 '[.labels[].name] | sort | join(",")')" == "approved,bug,looper:in-progress" ]] || fail "labels: $(store alpha 1 '[.labels[].name] | join(",")')"
@@ -425,7 +425,7 @@ Blocked-by: #2"' || fail "edit body"
   # repository in a process; one already there is left as it is.
   : > "$FIX/labels-created"; printf 'approved\nbug\nlooper:stuck\n' > "$FIX/labels/beta"
   lib 'ensure_labels beta; ensure_labels beta'
-  want="beta feature,beta looper:hold,beta looper:in-progress,beta looper:landing,beta looper:main-check,beta looper:merge-request,beta looper:revert,beta looper:workflows,beta model:high,beta needs-decision,beta priority:high,beta priority:low"
+  want="beta feature,beta looper:hold,beta looper:hub-copy,beta looper:in-progress,beta looper:landing,beta looper:main-check,beta looper:merge-request,beta looper:revert,beta looper:workflows,beta model:high,beta needs-decision,beta priority:high,beta priority:low"
   [[ "$(sort "$FIX/labels-created" | paste -sd,)" == "$want" ]] || fail "labels created: $(cat "$FIX/labels-created")"
   : > "$FIX/labels-created"; lib 'ensure_labels beta'
   [[ ! -s "$FIX/labels-created" ]] || fail "labels created again: $(cat "$FIX/labels-created")"

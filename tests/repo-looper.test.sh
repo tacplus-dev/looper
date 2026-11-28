@@ -781,6 +781,8 @@ pass
 scenario ended-landed
 push_fix
 run
+# Rule 8's closing comment names a hand-off the verdict states (looper#277).
+has "$(cat "$FIX"/project/looper-runs/*-issue-4/prompt.md)" "\`looper:hub-copy\` for the hub, looper#277"
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(cat "$FIX/comments")" "the next run resumes"
 lacks "$(cat "$FIX/comments")" "looper:stuck"
@@ -2875,6 +2877,23 @@ touch "$FIX/gh-priority-fails"
 manage
 [[ "$(origin log --format=%s main | head -n 2 | tac | paste -sd'|')" == "fix 4|fix 5" ]] || fail "main: $(origin log --oneline main)"
 has "$OUT" "could not read the priority labels"
+pass
+
+# A land that changes a file the hub copies by hand (looper#277: the looper
+# project's .gitlab-ci.yml) is not live on its merge: its verdict says so and
+# labels its issue looper:hub-copy, for the hub to see; a land beside it in the
+# same batch that does not change it gets neither.
+scenario manager-hub-copy
+issue alpha 5 OPEN approved,bug "Fix that."
+queue 4 2026-11-03T10:00:00Z ci/project.gitlab-ci.yml "stages: [plan]"
+queue 5 2026-11-03T11:00:00Z five.txt 5
+manage LOOPER_HUB_COPIES="alpha|ci/project.gitlab-ci.yml|the .gitlab-ci.yml of gitlab.com/tacplus-dev/alpha"
+[[ "$(landed ci/project.gitlab-ci.yml)" == "stages: [plan]" && "$(landed five.txt)" == 5 ]] || fail "main: $(origin log --oneline main)"
+c4="$(grep '^alpha#4 ' "$FIX/comments")"; has "$c4" "The manager merged"
+has "$c4" "It changes \`ci/project.gitlab-ci.yml\`, which is not live until the hub copies it to the .gitlab-ci.yml of gitlab.com/tacplus-dev/alpha (looper#277): this issue is \`looper:hub-copy\` until the hub has"
+[[ "$(labels alpha 4)" == approved,bug,looper:hub-copy ]] || fail "labels $(labels alpha 4)"
+lacks "$(grep '^alpha#5 ' "$FIX/comments")" "hub copies"
+[[ "$(labels alpha 5)" == approved,bug ]] || fail "labels $(labels alpha 5)"
 pass
 
 # A repository that lacks looper:landing (looper#80: none had it): the report
