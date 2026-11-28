@@ -1394,3 +1394,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   issue `needs-decision`. GitHub often names its replacement (a cross-reference from a newer pull request with the same
   closing issue); the kicker could propose it in its comment, or the run's outcome could name the issue rather than the
   pull request in the first place, as the prompt's rule 9 asks.
+- **The real buildx dry run on a local build** (2026-11-28, #279): `tests/looper-build.test.sh`'s "publish --dry-run,
+  real buildx" runs wherever `docker info` answers, which on a looper VM's local build (#238, #267's own dockerd) it
+  does, so the build set is red there on every change: since #279 it reaches that dockerd (its DOCKER_HOST), but the
+  arm64 VM's builder "cannot build linux/amd64" (no emulation). The merge builds skip it (no docker in the gates). Its
+  guard could ask the builder for both platforms first (`docker buildx inspect --bootstrap`) and skip without them, or
+  the VM's dockerd could register binfmt (tonistiigi/binfmt) so the test runs as it does on a runner.
+- **Lint the CI files' rules for a bare variable** (2026-11-28, #279): a `rules: if:` that reads `$V` as "V is not
+  empty" inside `&&` or `||` is wrong under GitLab's Ruby semantics ("" is true there) and refused every manager's
+  build at b40b42b. looper-ci-lint could flag a bare `$V` operand of `&&`/`||` in every ci/*.gitlab-ci.yml (the hub's
+  `ci/tacplus-dev.gitlab-ci.yml` among them), not only the build project's, which tests/looper-build.test.sh holds.
