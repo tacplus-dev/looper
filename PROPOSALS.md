@@ -1373,3 +1373,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   its checks' completion and its main issue's close; a pull request that went red and green again counts from its last
   check, but one that was DIRTY and rebased counts from its checks too, not from when it became CLEAN, which GitHub
   records in no event the recap reads.
+- **A GitLab merge request as a blocker** (2026-11-28, #276): on GitHub a `Blocked-by:` may name a pull request (one
+  number space with the issues); on GitLab a merge request is `!N` and `/-/merge_requests/N`, which parse_blockers reads
+  as unreadable, so it holds its issue for ever. Reading them (the merge requests API's `state`: merged, closed) would
+  give GitLab the same rule.
+- **An unmerged blocker's replacement** (2026-11-28, #276): a pull request closed without merging makes its blocked
+  issue `needs-decision`. GitHub often names its replacement (a cross-reference from a newer pull request with the same
+  closing issue); the kicker could propose it in its comment, or the run's outcome could name the issue rather than the
+  pull request in the first place, as the prompt's rule 9 asks.
