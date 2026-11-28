@@ -205,3 +205,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-27 looper issue The merger: a small fixed program per project that merges clean MRs unbuilt and sends conflicts back (#251)
 - 2026-11-27 looper issue Pinned images behind their lines: relock (build.lock: ghcr.io/tacplus-dev/looper:main → ghcr.io/tacplus-dev/looper:main, and 1 more) (#272)
 - 2026-11-27 looper issue security-exceptions.yaml still accepts GO-2026-6278 and GO-2026-6974 in the image's gh, which carries both fixes since 541f9ee (#271)
+- 2026-11-28 looper issue Green backport PRs sit unmerged and unannounced for weeks; a release line can be red unseen (30 open on tacplus, release/2.6 red since 11-16) (#275)
