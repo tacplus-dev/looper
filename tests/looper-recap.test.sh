@@ -58,6 +58,9 @@ case "$1 $2" in
   "repo list") [[ "$3" == tacplus-dev ]] && cat "$FX/gh/repos.json" ;;
   "api -X") case "$4" in
               repos/tacplus-dev/looper/actions/workflows/image.yml/runs) [[ "$*" == *"-f branch=main"* ]] && cat "$FX/gh/image-runs.json" ;;
+              repos/tacplus-dev/*/actions/workflows/ci.yml/runs) r="${4#repos/tacplus-dev/}"; r="${r%%/*}"; b="${6#branch=}"
+                 [[ "$5 $7 $8" == "-f -f per_page=30" ]] || exit 1
+                 f="$FX/gh/lineruns-$r-${b//\//_}.json"; [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$f" ;;
               repos/tacplus-dev/*/commits) r="${4#repos/tacplus-dev/}"; r="${r%/commits}"
                  [[ "$*" == *"-f sha=main -f since=2026-11-01T03:00:00Z -f until=2026-11-02T03:00:00Z"* ]] || exit 1
                  cat "$FX/gh/main-$r.json" ;;
@@ -69,6 +72,19 @@ case "$1 $2" in
   "api repos/tacplus-dev/"*/commits/*/status) r="${2#repos/tacplus-dev/}"; sha="${r#*/commits/}"; sha="${sha%/status}"; r="${r%%/*}"
                                              [[ -f "$FX/gh/status-$r-$sha.json" ]] || exit 1; cat "$FX/gh/status-$r-$sha.json" ;;
   "api repos/tacplus-dev/looper/compare/aaaaaaaaaaaa1111111111111111111111111111...cccccccccccc3333333333333333333333333333") cat "$FX/gh/compare.json" ;;
+  # The release lines and backports (looper#275): a repository's refs ([] without a fixture), a tag's commit,
+  # a line against its newest tag, an issue, a pull request, the open pull requests.
+  "api repos/tacplus-dev/"*/git/matching-refs/*) r="${2#repos/tacplus-dev/}"; what="${r#*/git/matching-refs/}"; r="${r%%/*}"
+                                               f="$FX/gh/refs-$r-${what//\//_}.json"; if [[ -f "$f" ]]; then cat "$f"; else echo '[]'; fi ;;
+  "api repos/tacplus-dev/"*/commits/v*|"api repos/tacplus-dev/"*/compare/v*|"api repos/tacplus-dev/"*/issues/*|"api repos/tacplus-dev/"*/pulls/*)
+    r="${2#repos/tacplus-dev/}"; rest="${r#*/}"; r="${r%%/*}"; kind="${rest%%/*}"; kind="${kind%s}"; rest="${rest#*/}"
+    f="$FX/gh/$kind-$r-${rest//\//_}.json"; [[ -f "$f" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$f" ;;
+  "pr list") [[ "$3 $5 $6 $7 $8 $9" == "--repo --state open --limit 300 --json" ]] || exit 1
+             f="$FX/gh/prs-${4#tacplus-dev/}.json"; if [[ -f "$f" ]]; then cat "$f"; else echo '[]'; fi ;;
+  # act's writes: each logged; one whose arguments match $GH_FAIL fails.
+  "label create"|"pr edit"|"issue create"|"issue close"|"workflow run")
+    [[ -z "${GH_FAIL:-}" || "$*" != *"$GH_FAIL"* ]] || { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; } ;;
+  "issue list") f="$FX/gh/red-issues-${4#tacplus-dev/}.json"; if [[ -f "$f" ]]; then cat "$f"; else echo '[]'; fi ;;
   *) echo "stub gh: unexpected $*" >&2; exit 3 ;;
 esac
 EOF
@@ -94,9 +110,9 @@ esac
 EOF
 chmod +x "$TMP/bin/"*
 export PATH="$TMP/bin:$PATH" TMP FX
-ENVS=(GITLAB_TOKEN=glpat-recap LOOPER_BUILD_API=https://gitlab.test/api/v4 LOOPER_ORG=tacplus-dev
+ENVS=(GITLAB_TOKEN=glpat-recap LOOPER_BUILD_API=https://gitlab.test/api/v4 LOOPER_ORG=tacplus-dev LOOPER_RECAP_MERGE_PAUSE=0
       LOOPER_RECAP_BUILD_TOKEN_SECRET=projects/p1/secrets/recap-build-token/versions/3)
-recap() { env -u LOOPER_RECAP_PROJECTS -u LOOPER_RECAP_BUILD_PROJECT -u LOOPER_SUGGEST_PROJECTS -u LOOPER_RECAP_ACTIONS_REPOS -u LOOPER_MODEL_HIGH -u LOOPER_RECAP_HIGH_SHARE "${ENVS[@]}" "$ROOT/looper-recap" "$@"; }
+recap() { env -u LOOPER_RECAP_PROJECTS -u LOOPER_RECAP_BUILD_PROJECT -u LOOPER_SUGGEST_PROJECTS -u LOOPER_RECAP_ACTIONS_REPOS -u LOOPER_MODEL_HIGH -u LOOPER_RECAP_HIGH_SHARE -u LOOPER_RECAP_LINE_WORKFLOW -u LOOPER_RECAP_BACKPORT_LABEL "${ENVS[@]}" "$ROOT/looper-recap" "$@"; }
 UNTIL=2026-11-02T03:00:00Z
 
 NAME=collect-byte-identical
@@ -117,7 +133,7 @@ J="$TMP/recap.json"
 q() { jq -r "$1" "$J"; }
 [[ "$(q .window.from) $(q .window.until) $(q .night)" == "2026-11-01T03:00:00Z 2026-11-02T03:00:00Z 2026-11-02" ]] || fail "window: $(q .window)"
 # LOOPER_SUGGEST_PROJECTS' default plus tacplus-dev/cluster, which cannot be read: named, not guessed.
-[[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
+[[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-backports=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
   fail "sources: $(q .sources)"
 [[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "25 8 6 1 1" ]] ||
   fail "looper's jobs: $(q '.projects["tacplus-dev/looper"]')"
@@ -362,7 +378,8 @@ has "$R" "- \`scan/tacplus\`: tacplus: its nightly scan held the repository 125 
 lacks "$R" "not/a/key"; lacks "$R" nonsense
 has "$(sed -n '/^## Transient/,/^## Once/p' <<<"$R")" "- \`failures/tacplus-dev/looper/timeout\`: gitlab.com/tacplus-dev/looper: 1 job failed with timeout, 1 recovered on retry (once in 7 nights, recovered on retry)."
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`failures/tacplus-dev/build/gate_failure\`:"
-(( $(wc -l < "$TMP/r.md") <= 60 )) || fail "not one screen: $(wc -l < "$TMP/r.md") lines"
+# One screen, with the release lines' three (looper#275).
+(( $(wc -l < "$TMP/r.md") <= 63 )) || fail "not one screen: $(wc -l < "$TMP/r.md") lines"
 pass
 
 # A variant of the fixtures (looper#92): a copy of tests/recap/ that SED edits (sed -i's script on
@@ -614,6 +631,79 @@ has "$(cat "$TMP/vr.md")" "Image: ghcr.io/tacplus-dev/looper:main is at main's h
 image_variant ""
 [[ "$(v '"\(.image.current) \(.image.head_digest) \(.sources.image)"')" == "false null ok" ]] || fail "image: $(v .image)"
 has "$(v '.items[] | select(.key == "image/tacplus-dev/looper") | "\(.over) \(.summary)"')" "true ghcr.io/tacplus-dev/looper:main is not the build of main's head: its digest sha256:d1d1d1d1d1d1 against main-ccccccc not built;"
+pass
+
+# The release lines and backports (looper#275: thirty green backports sat two weeks unmerged and
+# release/2.6 red unseen, its CI run only when dispatched). Every open pull request against a
+# release/X.Y line, oldest first: ready when CLEAN (an UNKNOWN merge state read again), its checks
+# green and its main issue (its branch's, else its description's "Backport of #n") closed, else why
+# not; a pull request against main is none. Each line's newest patch tag (v2.6.10 past v2.6.9), its
+# unreleased commits, and a supported line's (its .0 under twelve months old) latest completed CI run
+# before the window's end: release/2.6's red since its last green, release/2.5's .0 too old to run.
+NAME=backports-and-lines
+J="$TMP/recap.json"
+q() { jq -r "$1" "$J"; }
+[[ "$(q '[.backports.tacplus.pulls[] | "\(.number) \(.ready) \(.age_days) \(.ready_days) \(.labelled)"] | join(", ")')" == \
+   "371 false 18.1 null true, 367 true 12.7 12 false, 372 false 4.1 null false, 370 true 1.6 1.6 false" ]] || fail "pulls: $(q -c .backports.tacplus.pulls)"
+[[ "$(q '[.backports.tacplus.pulls[] | "\(.number) #\(.issue) \(.why | join("; "))"] | join(", ")')" == \
+   "371 #361 its merge state UNSTABLE; its checks not green, 367 #352 , 372 #362 its main issue #362 open, 370 #360 " ]] || fail "why: $(q -c .backports.tacplus.pulls)"
+has "$(cat "$TMP/calls")" "gh api repos/tacplus-dev/tacplus/pulls/370"
+lacks "$(q '.backports.tacplus.pulls[].number')" 373
+[[ "$(q 'keys_unsorted | map(select(. == "backports")) | length') $(q '.backports | keys | join(" ")')" == "1 tacplus" ]] || fail "repos: $(q '.backports | keys')"
+[[ "$(q '[.backports.tacplus.lines[] | "\(.line) \(.tag) \(.supported) \(.unreleased) \(.unreleased_days) \(.ci.state)"] | join(", ")')" == \
+   "release/2.5 v2.5.3 false 0 null null, release/2.6 v2.6.10 true 2 5 red" ]] || fail "lines: $(q -c .backports.tacplus.lines)"
+[[ "$(q '.backports.tacplus.lines[1].ci | "\(.run) \(.at) \(.last_green) \(.days)"')" == \
+   "https://github.com/tacplus-dev/tacplus/actions/runs/30 2026-11-01T06:00:00Z 2026-10-25T06:00:00Z 0.9" ]] || fail "ci: $(q -c .backports.tacplus.lines[1].ci)"
+has "$(q '.items[] | select(.key == "backports/tacplus") | "\(.count) \(.over) \(.summary)"')" \
+  "2 true tacplus: 2 backport pull requests ready to merge (green, CLEAN, the main issue closed), the oldest #367 (release/2.6) 12.7 days old"
+has "$(q '.items[] | select(.key == "unreleased/tacplus/release/2.6") | "\(.over) \(.summary)"')" "true tacplus release/2.6: 2 commits past v2.6.10, the oldest 5 days"
+has "$(q '.items[] | select(.key == "line-red/tacplus/release/2.6") | .summary')" "its latest ci.yml run failed (2026-11-01T06:00:00Z); last green 2026-10-25T06:00:00Z"
+lacks "$(q '.items[].key')" "release/2.5"
+recap report "$J" "$TMP/classes.json" > "$TMP/br.md" || fail "report"
+has "$(cat "$TMP/br.md")" 'Backports ready to merge (looper#275: green, CLEAN, their main issue closed; oldest first; `backport:ready` over 2 days ready): [tacplus#367](https://github.com/tacplus-dev/tacplus/pull/367) release/2.6 12.7 days (ready 12); [tacplus#370](https://github.com/tacplus-dev/tacplus/pull/370) release/2.5 1.6 days.'
+has "$(cat "$TMP/br.md")" "Release lines with unreleased merges: tacplus release/2.6 2 commits past v2.6.10 (the oldest 5 days)."
+has "$(cat "$TMP/br.md")" "Supported lines' CI (dispatched nightly): tacplus release/2.6 [red](https://github.com/tacplus-dev/tacplus/actions/runs/30) 2026-11-01 (last green 2026-10-25)."
+# A supported line with no run lately is stale: its dispatch did not run it.
+rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"
+jq '.workflow_runs |= map(select(.id == 20))' "$FX/gh/lineruns-tacplus-release_2.6.json" > "$TMP/fx/gh/lineruns-tacplus-release_2.6.json"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+has "$(v '.items[] | select(.key == "line-stale/tacplus/release/2.6") | .summary')" "tacplus release/2.6: no ci.yml run in 7.9 days: the nightly dispatch did not run it"
+lacks "$(v '.items[].key')" "line-red/"
+# A line unreadable leaves the repository out, named; the rest read.
+rm "$TMP/fx/gh/compare-tacplus-v2.6.10...release_2.6.json"
+FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
+[[ "$(v '"\(.backports) \(.sources["github-backports"])"')" == "{} partial: tacplus (gh exit 1: gh: Not Found (HTTP 404))" ]] || fail "unreadable: $(v -c '.backports, .sources')"
+pass
+
+# act (looper#275): backport:ready on #367 (ready 12 days), not on #370 (ready 1.6), off #371 (red);
+# the label made first; one issue for the red release/2.6, none for release/2.5 (not supported);
+# release/2.6's CI dispatched, release/2.5's not. An open issue for a red line gets no second one;
+# a line green again closes it. A refused write is named and the rest still done.
+NAME=act
+: > "$TMP/calls"
+recap act "$J" > "$TMP/act.out" 2> "$TMP/act.err" || fail "act: $(cat "$TMP/act.err")"
+w="$(grep -E '^gh (label|pr edit|issue|workflow)' "$TMP/calls")"
+[[ "$(cut -c1-60 <<<"$w")" == "$(printf '%s\n' "gh label create backport:ready --repo tacplus-dev/tacplus --co" "gh pr edit 367 --repo tacplus-dev/tacplus --add-label backport:" \
+    "gh pr edit 371 --repo tacplus-dev/tacplus --remove-label backpor" "gh issue list --repo tacplus-dev/tacplus --state open --limit 1" \
+    "gh issue create --repo tacplus-dev/tacplus --title release/2.6: " "gh workflow run ci.yml --repo tacplus-dev/tacplus --ref release/" | cut -c1-60)" ]] || fail "writes: $w"
+has "$w" "gh workflow run ci.yml --repo tacplus-dev/tacplus --ref release/2.6"; lacks "$w" "release/2.5"
+has "$w" "--title release/2.6: its CI is red --label bug --body The latest \`ci.yml\` run on \`release/2.6\` failed: https://github.com/tacplus-dev/tacplus/actions/runs/30 (2026-11-01T06:00:00Z). Its last green run: 2026-10-25T06:00:00Z."
+has "$(cat "$TMP/calls")" "files one issue per red line (tacplus-dev/looper#275)"
+has "$(cat "$TMP/act.out")" "tacplus-dev/tacplus#367: backport:ready (ready 12 days)"
+has "$(cat "$TMP/act.out")" "tacplus-dev/tacplus#371: backport:ready off (its merge state UNSTABLE; its checks not green)"
+has "$(cat "$TMP/act.out")" "tacplus-dev/tacplus: release/2.6: its CI is red: an issue filed"
+rm -rf "$TMP/fx"; cp -r "$FX" "$TMP/fx"
+echo '[{"number": 77, "title": "release/2.6: its CI is red"}, {"number": 78, "title": "release/2.6: its CI is red, or not"}]' > "$TMP/fx/gh/red-issues-tacplus.json"
+: > "$TMP/calls"; FX="$TMP/fx" recap act "$J" > /dev/null 2>&1 || fail "act with an open issue"
+lacks "$(cat "$TMP/calls")" "gh issue create"; lacks "$(cat "$TMP/calls")" "gh issue close"
+jq '.backports.tacplus.lines[1].ci |= (.state = "green" | .run = "https://github.com/tacplus-dev/tacplus/actions/runs/41")' "$J" > "$TMP/green.json"
+: > "$TMP/calls"; FX="$TMP/fx" recap act "$TMP/green.json" > "$TMP/act.out" 2>/dev/null || fail "act green"
+has "$(cat "$TMP/calls")" "gh issue close 77 --repo tacplus-dev/tacplus --comment \`release/2.6\` is green again: https://github.com/tacplus-dev/tacplus/actions/runs/41"
+lacks "$(cat "$TMP/calls")" "issue close 78"; has "$(cat "$TMP/act.out")" "tacplus-dev/tacplus#77: release/2.6 green again: closed"
+: > "$TMP/calls"; rc=0; GH_FAIL="pr edit 367" recap act "$J" > "$TMP/act.out" 2> "$TMP/act.err" || rc=$?
+[[ "$rc" == 1 ]] || fail "act with a refused write: exit $rc"
+has "$(cat "$TMP/act.err")" "looper-recap: act: tacplus-dev/tacplus#367: backport:ready (ready 12 days): gh exit 1: HTTP 403: Resource not accessible by integration"
+has "$(cat "$TMP/calls")" "gh workflow run ci.yml"
 pass
 
 NAME=collect-without-credentials

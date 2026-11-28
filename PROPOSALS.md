@@ -10,7 +10,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   was root's, so the checkpoint's `update_ref` of `refs/looper/looper/looper-274` failed (harmless so far). On
   looper-vm-tacplus-dev-3sr1 and the VM of the run after, both were right. `looper-vm` could set the run user's
   identity and chown the clone's refs when it creates the user (#68), and a run could fail at its start, naming
-  what is missing, rather than at its first checkpoint.
+  what is missing, rather than at its first checkpoint. On looper-vm-tacplus-dev-8pc0 (#275, 2026-11-27) both again,
+  and worse: loose-object directories of the clone (`.git/objects/10`, `5d`, `65`, `74`) were made by root during
+  the run (23:15 and 23:30, after it started at 23:09: something root runs in the clone, the looper's own checkpoint
+  or fetch by its timestamps), so `git add` failed with "insufficient permission"; the run renamed them aside and
+  copied their objects into directories of its own. Whatever root runs in a run's clone should run as the run's user.
 - **An exception that accepts nothing told** (2026-11-27, #271): `security-exceptions.yaml` still accepted
   GO-2026-6278 and GO-2026-6974 in the image's gh two days after 541f9ee built gh with both fixes, and only a
   nightly scan's hand check noticed. The policy reads exceptions in two places, a tree run and the image build's
@@ -1352,3 +1356,20 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The relock on a GitLab forge** (2026-11-21, #212): it runs only where `LOOPER_FORGE=github` (the pins the build
   pipeline reads); a SeaBeam instance's repositories, once pinned, need the same step and the tacplus releases read
   from where that instance mirrors them.
+- **The release lines of the repositories the build pipeline builds** (2026-11-27, #275): the nightly dispatches
+  `ci.yml` (`LOOPER_RECAP_LINE_WORKFLOW`) on every supported line, which only tacplus, deploymentproxy and llmproxy
+  have; gateway, operator and stratum have release lines and no `ci.yml`, their builds in tacplus-dev/build, whose
+  nightly fan-out builds main only. Their supported lines read `line-stale` (no run) until the fan-out builds each
+  supported line too (an input `ref: release/X.Y` beside `repo`) and the recap reads that pipeline's status for it.
+- **The looper's app and `workflow run`** (2026-11-27, #275): `looper-recap act` dispatches with the scan's token, the
+  looper's app, which needs Actions: write on each repository with release lines; without it the dispatch is refused,
+  logged (`scan: recap act:`), and the line goes `line-stale` the next night. A scheduled workflow on each repository's
+  main dispatching its own lines with `GITHUB_TOKEN` (`actions: write`) would need no app permission, at the cost of a
+  workflow per repository.
+- **A red line's issue approved** (2026-11-27, #275): the issue `release/X.Y: its CI is red` is filed `bug` only, for the
+  hub to approve; an approved one would have the looper mend the line by itself (a fix on main and its backports, or a
+  pull request against the line), which is the issue-flow decision's to allow for an issue no member wrote.
+- **How long a backport has been ready, from its events** (2026-11-27, #275): ready since is the latest of its creation,
+  its checks' completion and its main issue's close; a pull request that went red and green again counts from its last
+  check, but one that was DIRTY and rebased counts from its checks too, not from when it became CLEAN, which GitHub
+  records in no event the recap reads.

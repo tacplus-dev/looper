@@ -33,6 +33,96 @@
    }
   ]
  },
+ "backports": {
+  "tacplus": {
+   "lines": [
+    {
+     "ci": null,
+     "line": "release/2.5",
+     "released": "2025-10-01T00:00:00Z",
+     "supported": false,
+     "tag": "v2.5.3",
+     "unreleased": 0,
+     "unreleased_days": null
+    },
+    {
+     "ci": {
+      "at": "2026-11-01T06:00:00Z",
+      "days": 0.9,
+      "last_green": "2026-10-25T06:00:00Z",
+      "run": "https://github.com/tacplus-dev/tacplus/actions/runs/30",
+      "state": "red",
+      "workflow": "ci.yml"
+     },
+     "line": "release/2.6",
+     "released": "2026-09-01T00:00:00Z",
+     "supported": true,
+     "tag": "v2.6.10",
+     "unreleased": 2,
+     "unreleased_days": 5
+    }
+   ],
+   "pulls": [
+    {
+     "age_days": 18.1,
+     "created": "2026-10-15T00:00:00Z",
+     "issue": 361,
+     "labelled": true,
+     "line": "release/2.6",
+     "number": 371,
+     "ready": false,
+     "ready_days": null,
+     "title": "[release/2.6] A red one (#361)",
+     "url": "https://github.com/tacplus-dev/tacplus/pull/371",
+     "why": [
+      "its merge state UNSTABLE",
+      "its checks not green"
+     ]
+    },
+    {
+     "age_days": 12.7,
+     "created": "2026-10-20T10:00:00Z",
+     "issue": 352,
+     "labelled": false,
+     "line": "release/2.6",
+     "number": 367,
+     "ready": true,
+     "ready_days": 12,
+     "title": "Rust: the record store (#352, release/2.6 \u2192 v2.6.11)",
+     "url": "https://github.com/tacplus-dev/tacplus/pull/367",
+     "why": []
+    },
+    {
+     "age_days": 4.1,
+     "created": "2026-10-29T00:00:00Z",
+     "issue": 362,
+     "labelled": false,
+     "line": "release/2.6",
+     "number": 372,
+     "ready": false,
+     "ready_days": null,
+     "title": "A fix on release/2.6",
+     "url": "https://github.com/tacplus-dev/tacplus/pull/372",
+     "why": [
+      "its main issue #362 open"
+     ]
+    },
+    {
+     "age_days": 1.6,
+     "created": "2026-10-31T12:00:00Z",
+     "issue": 360,
+     "labelled": false,
+     "line": "release/2.5",
+     "number": 370,
+     "ready": true,
+     "ready_days": 1.6,
+     "title": "[release/2.5] A fresh one (#360)",
+     "url": "https://github.com/tacplus-dev/tacplus/pull/370",
+     "why": []
+    }
+   ]
+  }
+ },
  "builds": {
   "again": [],
   "builds": 1,
@@ -378,6 +468,17 @@
    "summary": "GitHub Actions tacplus/nightly: 1 of 2 runs failed, a later run on the same ref succeeded"
   },
   {
+   "count": 2,
+   "evidence": [
+    "https://github.com/tacplus-dev/tacplus/pull/367",
+    "https://github.com/tacplus-dev/tacplus/pull/370"
+   ],
+   "key": "backports/tacplus",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus: 2 backport pull requests ready to merge (green, CLEAN, the main issue closed), the oldest #367 (release/2.6) 12.7 days old"
+  },
+  {
    "count": 1,
    "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1800"
@@ -508,6 +609,16 @@
    "summary": "tacplus: 1 land on the gates full, up to 150 min (p50 150; threshold 60 min)"
   },
   {
+   "count": 1,
+   "evidence": [
+    "https://github.com/tacplus-dev/tacplus/actions/runs/30"
+   ],
+   "key": "line-red/tacplus/release/2.6",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus release/2.6: its latest ci.yml run failed (2026-11-01T06:00:00Z); last green 2026-10-25T06:00:00Z"
+  },
+  {
    "count": 2,
    "evidence": [
     "https://gitlab.com/tacplus-dev/looper/-/jobs/1703"
@@ -608,6 +719,16 @@
    "over": true,
    "recovered": false,
    "summary": "tacplus: its nightly scan held the repository 125 min (threshold 60 min)"
+  },
+  {
+   "count": 2,
+   "evidence": [
+    "https://github.com/tacplus-dev/tacplus/compare/v2.6.10...release/2.6"
+   ],
+   "key": "unreleased/tacplus/release/2.6",
+   "over": true,
+   "recovered": false,
+   "summary": "tacplus release/2.6: 2 commits past v2.6.10, the oldest 5 days: its next patch is not cut"
   },
   {
    "count": 2,
@@ -1251,6 +1372,7 @@
  },
  "sources": {
   "github-actions": "ok",
+  "github-backports": "ok",
   "github-main": "ok",
   "gitlab:tacplus-dev/build": "ok",
   "gitlab:tacplus-dev/cluster": "unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22",
@@ -1259,6 +1381,7 @@
  },
  "thresholds": {
   "backlog": 3,
+  "backport_days": 2.0,
   "build_ratio": 1.1,
   "control_queue_s": 600,
   "count": 3,
@@ -1267,6 +1390,7 @@
   "hold_hours": 1.0,
   "image_hours": 2.0,
   "land_minutes": 60,
+  "line_days": 2.0,
   "merge_minutes": 120,
   "prepare_p90_s": 300,
   "queue_p90_s": 900,

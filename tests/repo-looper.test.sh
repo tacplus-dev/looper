@@ -2368,6 +2368,10 @@ has "$pp" "latest security report of kernel: $run_dir/context/security-kernel/su
 lacks "$pp" "security report of other"
 has "$pp" "the nightly recap of $d, the last 24 hours' performance data: $run_dir/context/recap.json"
 has "$pp" "(1 recurring, 0 transient, 0 once)"
+# The recap's actions on GitHub ran after collect (looper#275): with no repository readable, none; and no advice for them.
+[[ -f "$run_dir/context/recap-act.log" && ! -s "$run_dir/context/recap-act.log" ]] || fail "recap act: $(cat "$run_dir/context/recap-act.log" 2>&1)"
+[[ "$(jq -r '.sources["github-backports"]' "$run_dir/context/recap.json")" == "unavailable: "* ]] || fail "backports: $(jq -c .sources "$run_dir/context/recap.json")"
+has "$pp" "The release lines' items (\`backports/\`, \`unreleased/\`, \`line-red/\`, \`line-stale/\`,"
 has "$pp" "--recap \"$d <the item's key>\" --cause"; has "$pp" "ranked by \`wait_hours\`, the hours of waiting it would remove"
 # The managers, concurrency and capacity (looper#72, looper#107): a backlog's advice after two nights running, never a
 # cap on a repository's reports; a scale-up is Jody's call.

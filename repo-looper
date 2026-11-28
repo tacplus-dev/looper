@@ -6238,6 +6238,10 @@ recap_context() { # run-dir
   if ! "$RECAP" collect --out "$ctx/recap.json" 2> "$ctx/recap.err"; then
     rm -f "$ctx/recap.json"; log "scan: the recap could not be gathered: $(tail -n 1 "$ctx/recap.err")" >&2; return 0
   fi
+  # What its backports and release lines call for (looper#275): backport:ready, an issue per red line, each
+  # supported line's CI dispatched for the next night. A refused write is logged; the scan goes on.
+  "$RECAP" act "$ctx/recap.json" > "$ctx/recap-act.log" 2>&1 || log "scan: the recap's actions on GitHub: not all done" >&2
+  local l; while IFS= read -r l; do log "scan: recap act: $l" >&2; done < "$ctx/recap-act.log"
   if ! "$RECAP" classify "$ctx/recap.json" --history "$CHECKOUT/suggestions/recap" > "$ctx/recap-classes.json" 2>> "$ctx/recap.err"; then
     rm -f "$ctx/recap.json" "$ctx/recap-classes.json"; log "scan: the recap could not be classified: $(tail -n 1 "$ctx/recap.err")" >&2; return 0
   fi
@@ -6276,7 +6280,9 @@ for Jody to decide, its \`--cost\` one more VM a day from \`capacity.one_more_vm
 VM; never an autoscaling change. A manager's red main or revert names the merges. Advice counts toward
 the night's $SUGGEST_MAX, ranked with the rest, Security first, then the hours of waiting removed. When an open
 issue already covers a cause, file nothing for it: write the line \`<the item's key> <owner/repo#n> <why it covers
-it>\` to $1/covered instead. The looper writes the recap file itself (suggestions/recap/$night.md, for Jody's daily
+it>\` to $1/covered instead. The release lines' items (\`backports/\`, \`unreleased/\`, \`line-red/\`, \`line-stale/\`,
+tacplus-dev/looper#275) get no advice: they are the hub's to merge, cut and mend, the looper labels and files them
+itself. The looper writes the recap file itself (suggestions/recap/$night.md, for Jody's daily
 report): do not write it.
 PR
 }

@@ -1,0 +1,20 @@
+[
+ {"number": 373, "title": "A change on main", "url": "https://github.com/tacplus-dev/tacplus/pull/373", "baseRefName": "main", "headRefName": "looper/tacplus-363",
+  "createdAt": "2026-10-01T00:00:00Z", "mergeStateStatus": "CLEAN", "labels": [], "body": "",
+  "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-10-01T01:00:00Z"}]},
+ {"number": 372, "title": "A fix on release/2.6", "url": "https://github.com/tacplus-dev/tacplus/pull/372", "baseRefName": "release/2.6", "headRefName": "fix-thing",
+  "createdAt": "2026-10-29T00:00:00Z", "mergeStateStatus": "CLEAN", "labels": [], "body": "Backport of #362 to release/2.6.",
+  "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-10-29T01:00:00Z"}]},
+ {"number": 371, "title": "[release/2.6] A red one (#361)", "url": "https://github.com/tacplus-dev/tacplus/pull/371", "baseRefName": "release/2.6", "headRefName": "backport/361-release-2.6",
+  "createdAt": "2026-10-15T00:00:00Z", "mergeStateStatus": "UNSTABLE", "labels": [{"name": "backport:ready"}], "body": "Backport of #361 to `release/2.6`.",
+  "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE", "completedAt": "2026-10-15T01:00:00Z"},
+                        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-10-15T01:00:00Z"}]},
+ {"number": 370, "title": "[release/2.5] A fresh one (#360)", "url": "https://github.com/tacplus-dev/tacplus/pull/370", "baseRefName": "release/2.5", "headRefName": "backport/360-release-2.5",
+  "createdAt": "2026-10-31T12:00:00Z", "mergeStateStatus": "UNKNOWN", "labels": [], "body": "",
+  "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-10-31T13:00:00Z"},
+                        {"__typename": "StatusContext", "state": "SUCCESS", "createdAt": "2026-10-31T12:30:00Z"}]},
+ {"number": 367, "title": "Rust: the record store (#352, release/2.6 → v2.6.11)", "url": "https://github.com/tacplus-dev/tacplus/pull/367", "baseRefName": "release/2.6",
+  "headRefName": "looper/tacplus-352-backport-2.6", "createdAt": "2026-10-20T10:00:00Z", "mergeStateStatus": "CLEAN", "labels": [], "body": "Backport of the #352 fix to release/2.6.",
+  "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-10-20T11:00:00Z"},
+                        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-10-20T10:01:00Z"}]}
+]

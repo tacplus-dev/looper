@@ -1149,6 +1149,25 @@ login; a secret it cannot read is named in `sources` and the project is not read
   ...`), and an item, `control-queue/<job>`, when the longest is `LOOPER_RECAP_CONTROL_QUEUE` (600 seconds) or more:
   a control job waited for a runner behind reports, or the newest-kick rule did not hold.
 
+**Release lines and backports** (`backports`, looper#275: on 2026-11-27 thirty green backports of tacplus had sat
+unmerged for two weeks, nobody told, and release/2.6 was red since 11-16 unseen, a release branch's CI running only
+when dispatched), for the hub to merge, cut and mend, as they stand when read. Every repository of the org with
+`release/X.Y` branches: each line's newest patch tag, its unreleased merges (the commits past that tag, the oldest's
+age), whether it is supported (its `.0` under twelve months old, tacplus `docs/VERSIONING.md`) and a supported line's
+CI, the latest completed run of `LOOPER_RECAP_LINE_WORKFLOW` (`ci.yml`) on it, red or green and its last green; and
+every open pull request against a line, oldest first: **ready** when GitHub says CLEAN (a merge state it had not worked
+out yet is asked again), every check of its head green and its main issue (its branch's `backport/<n>-...` or
+`looper/<repo>-<n>-backport-...`, else its description's `Backport of #n`) closed, with its age and how long it has
+been ready, else why not. Their items, `backports/<repo>`, `unreleased/<repo>/<line>` (over
+`LOOPER_RECAP_BACKPORT_DAYS`, 2), `line-red/<repo>/<line>` and `line-stale/<repo>/<line>` (no run in
+`LOOPER_RECAP_LINE_DAYS`, 2: the dispatch did not run it), are the hub's, not advice. Then **`looper-recap act`**, run
+by the scan after collect, does what they call for: the label `backport:ready` (the hub's search:
+`is:pr is:open label:"backport:ready" org:tacplus-dev`) on every backport ready over 2 days and off every other; one
+issue per supported line whose CI is red, `release/X.Y: its CI is red`, labelled `bug`, closed once a run is green;
+and the line's `ci.yml` dispatched on every supported line, the nightly CI run the next night reads (the looper's app
+needs Actions: write for it; a refused write is logged in the scan's log, `scan: recap act:`, and the line goes
+stale).
+
 **Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
 `suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3
 failures of a class, a queue or prepare p90 over 15 or 5 minutes, an issue held an hour, a land or scan over 60
@@ -1164,12 +1183,13 @@ the model names the issue instead.
 
 **The recap file**, `suggestions/recap/<YYYY-MM-DD>.md` (`looper-recap report`), committed with the night's
 suggestions and its `.json`: the one-screen summary (jobs, failures by class, slot use, the hours waited and why, the
-longest queues, lands and holds, the managers, the concurrency, the capacity, the image, the runs and tokens per model), the recurring items with links to their advice or the issue that covers
+longest queues, lands and holds, the managers, the concurrency, the capacity, the backports ready to merge with their
+age, oldest first, the lines with unreleased merges and the supported lines' CI, the image, the runs and tokens per model), the recurring items with links to their advice or the issue that covers
 them, and the transient list. The hub reads it into Jody's daily report. A night already recorded is left as it is.
 
 ```sh
-looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE]
-tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115); the gate builds by hour, summed over the nights, the quietest hours for the nightly and the busiest (#185); every repository whose nightly published no report named, and why: a runner lost three times, only a summary saying it left no findings, its nightly never run, a pipeline not read, still running (#220)
+looper-recap collect [--until TIME] [--out FILE] | classify NIGHT.json [--history DIR] | report NIGHT.json CLASSES.json [--suggestions DIR] [--covered FILE] | act NIGHT.json
+tests/looper-recap.test.sh   # against recorded API fixtures (tests/recap/): tacplus-dev/build's jobs counted, read with its own token from Secret Manager, and no Cloud Build call; a byte-identical recap.json whatever the clock, zone and locale; the seed cases of 2026-11-02 found (fresh-VM image pulls, an issue held by its limit with one tacplus child, a 2-hour scan, a 150-minute full-gate land); the hours waited by reason and issue; a stale image; a once-only recovered failure transient, a 3-night recurrence advice; the report's ranking and links; the managers (merges, queued to landed, a conflict regenerated and one sent back and redone, red gates, a red main and a revert from GitHub; the merge train's batches, builds per landed change and bisections from a train manager's log, #86), the concurrency from the kicker's passes, no cap (#107: reports at once in all and per repository, the hours ready issues waited with no report job, a kicker's line from before it read without its cap, a merge backlog advised two nights running only) and the capacity (waits for room: for a VM, and a control runner's pod Pending for a node with room, the pool full, one more VM's and one more node's cost, #84); the runs and tokens per model, a refused model transient (#136); the high model's share of the day's tokens, an item over LOOPER_RECAP_HIGH_SHARE, and the runs and tokens per model per day beside the nights before (#162); the image check compares :main's digest with main-<sha7>'s of main's head (#115); the gate builds by hour, summed over the nights, the quietest hours for the nightly and the busiest (#185); every repository whose nightly published no report named, and why: a runner lost three times, only a summary saying it left no findings, its nightly never run, a pipeline not read, still running (#220); the release lines and backports (#275: ready only CLEAN, green and its main issue closed, an UNKNOWN merge state asked again, oldest first, a pull request against main none; the newest patch tag, the unreleased merges, a line's .0 too old unsupported, a supported line red since its last green, stale with no run; act labelling a backport ready over 2 days and unlabelling a red one, filing one issue per red line and none twice, closing it once green, dispatching each supported line's CI, a refused write named and the rest done)
 ```
 
 ## Build pipeline

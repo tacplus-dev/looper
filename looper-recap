@@ -80,7 +80,16 @@
 #       LOOPER_RECAP_WORKFLOWS (default nightly|release|image) in every
 #       repository of LOOPER_ORG, each run with its ref (head_branch): a failed
 #       run is recovered only by a later success of its workflow on the same
-#       ref, and the item names the refs still red (looper#116). Cloud Build
+#       ref, and the item names the refs still red (looper#116). The release
+#       lines and backports of every such repository with release/X.Y branches
+#       (looper#275), as they stand when read: each line's newest patch tag, the
+#       commits past it (its unreleased merges), whether it is supported (its
+#       .0 under twelve months old) and a supported line's CI, the latest run of
+#       LOOPER_RECAP_LINE_WORKFLOW (ci.yml) on it; and every open pull request
+#       against a line, oldest first, ready to merge when it is CLEAN, its
+#       checks green and its main issue (its branch's, or its description's
+#       "Backport of #n") closed, with its age and how long it has been ready,
+#       else why not. Cloud Build
 #       is not read: nothing builds there (looper#85). A source it
 #       cannot read is named in `sources`, never guessed. Then its `items`: what
 #       went wrong or crossed a threshold, each with a key the nights share.
@@ -99,6 +108,15 @@
 #       night's advice suggestions in DIR (their `## Advice` names the night and
 #       the item) or the issue that covers them (FILE: `<key> <issue> <why>`
 #       lines), the transient and once-only items one line each.
+#   looper-recap act NIGHT.json
+#       what the night's backports and lines call for on GitHub (looper#275),
+#       run by the roadmap's scan after collect: the label
+#       LOOPER_RECAP_BACKPORT_LABEL (backport:ready) on every backport ready
+#       for over LOOPER_RECAP_BACKPORT_DAYS (2) days, and off every other; one
+#       issue (labelled bug) per supported line whose CI is red, "release/X.Y:
+#       its CI is red", closed once it is green; and the line's workflow
+#       dispatched on every supported line, which the next night reads. One
+#       line per action; exit 1 if any failed, the rest still done.
 #
 # Thresholds (environment): LOOPER_RECAP_COUNT (3: failures of a class, in a
 # night), LOOPER_RECAP_QUEUE_P90 (900 s), LOOPER_RECAP_PREPARE_P90 (300 s),
@@ -113,7 +131,9 @@
 # builds of the build project a commit, looper#134), LOOPER_RECAP_NIGHTLY_HOURS (3: the
 # quietest hours of the builds the nightly should start in, looper#185), LOOPER_RECAP_REQUEST_RATIO (5: a
 # kind's request against its pods' p90 use, looper#165), LOOPER_RECAP_REQUEST_MARGIN
-# (0.10: how far a kind's p90 may go over its request, tacplus-dev/cluster#53). One more VM: LOOPER_RECAP_VM_MACHINE
+# (0.10: how far a kind's p90 may go over its request, tacplus-dev/cluster#53), LOOPER_RECAP_BACKPORT_DAYS (2:
+# a backport ready, or a line's oldest unreleased merge, that long), LOOPER_RECAP_LINE_DAYS (2: a supported
+# line's latest CI run older than that is stale). One more VM: LOOPER_RECAP_VM_MACHINE
 # (t2a-standard-8) at LOOPER_RECAP_VM_USD_HOUR (0.308, its on-demand list
 # price; set it from the billing); one more node of the normal pool (looper#84):
 # LOOPER_RECAP_NODE_MACHINE (c4a-standard-2) at LOOPER_RECAP_NODE_USD_HOUR
@@ -122,7 +142,8 @@
 # Environment: GITLAB_TOKEN (read_api; sent on stdin, never on a command line),
 # LOOPER_BUILD_API (https://gitlab.com/api/v4), LOOPER_RECAP_PAGES (10 pages of
 # 100 jobs a project at most), LOOPER_ORG (tacplus-dev), GH_TOKEN for gh,
-# LOOPER_RECAP_ACTIONS_REPOS (default: every repository of LOOPER_ORG).
+# LOOPER_RECAP_ACTIONS_REPOS (default: every repository of LOOPER_ORG), LOOPER_RECAP_MERGE_PAUSE
+# (5 s: the pause before a pull request's merge state GitHub had not worked out is read again).
 # LOOPER_RECAP_BUILD_PROJECT (tacplus-dev/build) is read with GITLAB_TOKEN, its
 # bot a Reporter there (looper#85; tacplus-dev/cloud#12, option B), or with a
 # token of its own read from Secret Manager by version when
@@ -135,6 +156,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 DAY = dt.timedelta(days=1)
 ENV = os.environ
@@ -166,6 +188,8 @@ T = {
     "high_share_pct": num("LOOPER_RECAP_HIGH_SHARE", 25),
     "request_ratio": num("LOOPER_RECAP_REQUEST_RATIO", 5),
     "request_margin": num("LOOPER_RECAP_REQUEST_MARGIN", 0.10),
+    "backport_days": num("LOOPER_RECAP_BACKPORT_DAYS", 2),
+    "line_days": num("LOOPER_RECAP_LINE_DAYS", 2),
 }
 # The high model (looper#162): repo-looper's LOOPER_MODEL_HIGH, whose share of
 # a day's tokens over high_share_pct the recap names.
@@ -947,6 +971,7 @@ def collect(until):
     out["control"] = control_of(control, items)
     out["requests"] = requests_of(uses, items)
     out["actions"] = actions(start, until, sources, items)
+    out["backports"] = backports(until, sources, items)
     out["image"] = image_check(until, sources, items)
 
     out["failed_jobs"].sort(key=lambda x: (x["project"], x["id"]))
@@ -1397,13 +1422,28 @@ def requests_line(rq):
         for k, r in rq.items()) + "."
 
 
+REPOS = {}
+
+
+def org_repos(org):
+    """The repositories of the org the GitHub sources read (LOOPER_RECAP_ACTIONS_REPOS, else every one), read once."""
+    if org not in REPOS:
+        try:
+            REPOS[org] = ENV.get("LOOPER_RECAP_ACTIONS_REPOS", "").split() or sorted(
+                r["name"] for r in json.loads(run(["gh", "repo", "list", org, "--no-archived", "--limit", "200", "--json", "name"])))
+        except (Unreadable, ValueError, KeyError, TypeError) as e:
+            REPOS[org] = Unreadable(str(e))
+    if isinstance(REPOS[org], Unreadable):
+        raise REPOS[org]
+    return REPOS[org]
+
+
 def actions(start, until, sources, items):
     org = ENV.get("LOOPER_ORG", "tacplus-dev")
     pat = re.compile(ENV.get("LOOPER_RECAP_WORKFLOWS", "nightly|release|image"), re.I)
     try:
-        repos = ENV.get("LOOPER_RECAP_ACTIONS_REPOS", "").split() or sorted(
-            r["name"] for r in json.loads(run(["gh", "repo", "list", org, "--no-archived", "--limit", "200", "--json", "name"])))
-    except (Unreadable, ValueError, KeyError, TypeError) as e:
+        repos = org_repos(org)
+    except Unreadable as e:
         sources["github-actions"] = f"unavailable: {e}"
         return None
     runs, bad = [], []
@@ -1445,6 +1485,243 @@ def actions(start, until, sources, items):
                           "evidence": [x["url"] for x in fl][:5]})
         b["minutes"] = dist(b["minutes"])
     return {"by_workflow": by, "runs": runs}
+
+
+# --- release lines and backports (looper#275) ----------------------------------
+#
+# Jody, 2026-10-18: the hub merges backports, "merge them when green. dont wait
+# on me"; on 2026-11-27 thirty sat open, green, for two weeks, and release/2.6
+# was red since 11-16 unseen: its CI runs only when dispatched.
+
+LINE = re.compile(r"release/(\d+)\.(\d+)")
+# A backport's main issue: its branch (backport/<n>-release-X.Y, looper/<repo>-<n>-backport-X.Y), else its
+# description's "Backport of #n", else its title's "(#n)".
+HEAD_ISSUE = (re.compile(r"backport/(\d+)-"), re.compile(r"looper/[\w.-]+?-(\d+)-backport-"))
+BODY_ISSUE = re.compile(r"\bBackport of (?:the )?#(\d+)")
+TITLE_ISSUE = re.compile(r"\(#(\d+)\)\s*$")
+BACKPORT_LABEL = ENV.get("LOOPER_RECAP_BACKPORT_LABEL", "backport:ready")
+# The workflow every supported line runs nightly, dispatched by `act` (its file in .github/workflows/).
+LINE_WORKFLOW = ENV.get("LOOPER_RECAP_LINE_WORKFLOW", "ci.yml")
+RED = ("failure", "timed_out", "startup_failure")
+RED_TITLE = re.compile(r"(release/\d+\.\d+): its CI is red")
+# Their items: the hub's to act on (merge, cut the patch, mend the line), not the recap's advice.
+HUB_ITEMS = ("backports/", "unreleased/", "line-red/", "line-stale/")
+
+
+def days(a, b):
+    return whole(round((b - a).total_seconds() / 86400, 1))
+
+
+def main_issue(pr):
+    for p in HEAD_ISSUE:
+        m = p.match(pr.get("headRefName") or "")
+        if m:
+            return int(m.group(1))
+    m = BODY_ISSUE.search(pr.get("body") or "") or TITLE_ISSUE.search(pr.get("title") or "")
+    return int(m.group(1)) if m else None
+
+
+def checks_green(rollup):
+    """Every check of a pull request's head passed (a check run SUCCESS, NEUTRAL or SKIPPED, a status
+    SUCCESS), and when the last finished; a head with no check is not green."""
+    if not rollup:
+        return False, None
+    last = None
+    for c in rollup:
+        if c.get("__typename") == "StatusContext":
+            if c.get("state") != "SUCCESS":
+                return False, None
+        elif c.get("status") != "COMPLETED" or c.get("conclusion") not in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+            return False, None
+        t = when(c.get("completedAt") or c.get("createdAt"))
+        last = t if last is None or (t and t > last) else last
+    return True, last
+
+
+def line_of(org, repo, line, x, y, until):
+    """A release line: its newest patch tag, whether it is supported (its .0 under twelve months old,
+    tacplus docs/VERSIONING.md), its commits past that tag, and its CI: the latest run of LINE_WORKFLOW."""
+    tags = [t["ref"].removeprefix("refs/tags/") for t in gh_json(f"repos/{org}/{repo}/git/matching-refs/tags/v{x}.{y}.")]
+    patches = sorted(int(t.rsplit(".", 1)[1]) for t in tags if re.fullmatch(rf"v{x}\.{y}\.\d+", t))
+    ln = {"line": line, "tag": None, "released": None, "supported": False, "unreleased": 0, "unreleased_days": None, "ci": None}
+    if not patches:
+        return ln
+    ln["tag"] = f"v{x}.{y}.{patches[-1]}"
+    if patches[0] == 0:
+        d0 = when(((gh_json(f"repos/{org}/{repo}/commits/v{x}.{y}.0").get("commit") or {}).get("committer") or {}).get("date"))
+        ln["released"] = stamp(d0) if d0 else None
+        ln["supported"] = d0 is not None and until - d0 < 365 * DAY
+    cmp = gh_json(f"repos/{org}/{repo}/compare/{ln['tag']}...{line}")
+    ln["unreleased"] = int(cmp.get("ahead_by") or 0)
+    ds = [t for c in cmp.get("commits") or [] if (t := when(((c.get("commit") or {}).get("committer") or {}).get("date")))]
+    if ln["unreleased"] and ds:
+        ln["unreleased_days"] = days(min(ds), until)
+    if not ln["supported"]:
+        return ln
+    ci = ln["ci"] = {"workflow": LINE_WORKFLOW, "state": "none", "run": None, "at": None, "days": None, "last_green": None}
+    try:
+        got = gh_json("-X", "GET", f"repos/{org}/{repo}/actions/workflows/{LINE_WORKFLOW}/runs", "-f", f"branch={line}", "-f", "per_page=30")
+    except Unreadable as e:
+        ci["state"] = f"unreadable: {e}"
+        return ln
+    runs = sorted((r for r in got.get("workflow_runs") or [] if (when(r.get("created_at")) or until) <= until and r.get("status") == "completed"),
+                  key=lambda r: r.get("id") or 0)
+    if runs:
+        r = runs[-1]
+        ci.update(state="red" if r.get("conclusion") in RED else "green" if r.get("conclusion") == "success" else r.get("conclusion") or "?",
+                  run=r.get("html_url"), at=stamp(when(r["created_at"])), days=days(when(r["created_at"]), until))
+        ok = [r for r in runs if r.get("conclusion") == "success"]
+        ci["last_green"] = stamp(when(ok[-1]["created_at"])) if ok else None
+    return ln
+
+
+def pulls_of(org, repo, until):
+    """The repository's open pull requests against a release line, oldest first: each ready to merge
+    when CLEAN, its checks green and its main issue closed, else why not."""
+    prs = json.loads(run(["gh", "pr", "list", "--repo", f"{org}/{repo}", "--state", "open", "--limit", "300", "--json",
+                          "number,title,url,baseRefName,headRefName,createdAt,mergeStateStatus,statusCheckRollup,labels,body"]))
+    prs = [p for p in prs if LINE.fullmatch(p.get("baseRefName") or "")]
+    # GitHub works a merge state out when it is asked: an UNKNOWN one is asked again, after a pause.
+    unknown = [p for p in prs if p.get("mergeStateStatus") == "UNKNOWN"]
+    for p in unknown:
+        gh_json(f"repos/{org}/{repo}/pulls/{p['number']}")
+    if unknown:
+        time.sleep(num("LOOPER_RECAP_MERGE_PAUSE", 5))
+    for p in unknown:
+        p["mergeStateStatus"] = (gh_json(f"repos/{org}/{repo}/pulls/{p['number']}").get("mergeable_state") or "unknown").upper()
+    issues, out = {}, []
+    for p in sorted(prs, key=lambda p: (p.get("createdAt") or "", p["number"])):
+        n, created = main_issue(p), when(p.get("createdAt"))
+        if n is not None and n not in issues:
+            issues[n] = gh_json(f"repos/{org}/{repo}/issues/{n}")
+        iss = issues.get(n) or {}
+        green, last = checks_green(p.get("statusCheckRollup"))
+        why = []
+        if p.get("mergeStateStatus") != "CLEAN":
+            why.append(f"its merge state {p.get('mergeStateStatus') or '?'}")
+        if not green:
+            why.append("its checks not green")
+        if n is None:
+            why.append("no main issue named")
+        elif iss.get("state") != "closed":
+            why.append(f"its main issue #{n} open")
+        since = max(t for t in (created, last, when(iss.get("closed_at"))) if t) if not why else None
+        out.append({"number": p["number"], "line": p["baseRefName"], "issue": n, "title": p.get("title") or "", "url": p.get("url") or "",
+                    "created": stamp(created) if created else None, "age_days": days(created, until) if created else None,
+                    "ready": not why, "ready_days": days(since, until) if since else None, "why": why,
+                    "labelled": BACKPORT_LABEL in [x.get("name") for x in p.get("labels") or []]})
+    return out
+
+
+def backports(until, sources, items):
+    """Every repository with release lines (looper#275): its lines (unreleased merges, CI) and its open backports."""
+    org = ENV.get("LOOPER_ORG", "tacplus-dev")
+    try:
+        repos = org_repos(org)
+    except Unreadable as e:
+        sources["github-backports"] = f"unavailable: {e}"
+        return None
+    out, bad = {}, []
+    for repo in repos:
+        try:
+            heads = gh_json(f"repos/{org}/{repo}/git/matching-refs/heads/release/")
+            lines = sorted(((int(m.group(1)), int(m.group(2)), m.group(0)) for h in heads
+                            if (m := LINE.fullmatch((h.get("ref") or "").removeprefix("refs/heads/")))))
+            if not lines:
+                continue
+            b = {"lines": [line_of(org, repo, line, x, y, until) for x, y, line in lines], "pulls": pulls_of(org, repo, until)}
+        except (Unreadable, ValueError, KeyError, TypeError, AttributeError) as e:
+            bad.append(f"{repo} ({e})")
+            continue
+        out[repo] = b
+        ready = [p for p in b["pulls"] if p["ready"]]
+        if ready:
+            old = ready[0]
+            items.append({"key": f"backports/{repo}", "count": len(ready), "over": any(p["ready_days"] > T["backport_days"] for p in ready),
+                          "recovered": False,
+                          "summary": f"{repo}: {len(ready)} backport pull request{'s' * (len(ready) != 1)} ready to merge (green, CLEAN, "
+                                     f"the main issue closed), the oldest #{old['number']} ({old['line']}) {old['age_days']} days old",
+                          "evidence": [p["url"] for p in ready][:5]})
+        for ln in b["lines"]:
+            if ln["unreleased"]:
+                items.append({"key": f"unreleased/{repo}/{ln['line']}", "count": ln["unreleased"],
+                              "over": (ln["unreleased_days"] or 0) > T["backport_days"], "recovered": False,
+                              "summary": f"{repo} {ln['line']}: {ln['unreleased']} commit{'s' * (ln['unreleased'] != 1)} past {ln['tag']}"
+                                         + (f", the oldest {ln['unreleased_days']} days" if ln["unreleased_days"] is not None else "")
+                                         + ": its next patch is not cut",
+                              "evidence": [f"https://github.com/{org}/{repo}/compare/{ln['tag']}...{ln['line']}"]})
+            ci = ln["ci"]
+            if not ci:
+                continue
+            if ci["state"] == "red":
+                items.append({"key": f"line-red/{repo}/{ln['line']}", "count": 1, "over": True, "recovered": False,
+                              "summary": f"{repo} {ln['line']}: its latest {ci['workflow']} run failed ({ci['at']}); last green "
+                                         + (ci["last_green"] or "not in its last 30 runs"),
+                              "evidence": [ci["run"]]})
+            elif ci["days"] is None or ci["days"] > T["line_days"]:
+                items.append({"key": f"line-stale/{repo}/{ln['line']}", "count": 1, "over": True, "recovered": False,
+                              "summary": f"{repo} {ln['line']}: " + (f"no {ci['workflow']} run in {ci['days']} days" if ci["days"] is not None else
+                                         f"no {ci['workflow']} run read ({ci['state']})") + ": the nightly dispatch did not run it",
+                              "evidence": [f"https://github.com/{org}/{repo}/actions/workflows/{ci['workflow']}"]})
+    sources["github-backports"] = "ok" if not bad else "partial: " + "; ".join(sorted(bad))
+    return out
+
+
+def act(night):
+    """What the night's backports and lines call for on GitHub (looper#275): `backport:ready` on each
+    backport ready over LOOPER_RECAP_BACKPORT_DAYS (off any other), one issue per supported line whose
+    CI is red (closed once it is green), and each supported line's CI dispatched for the next night.
+    One line per action on stdout; a failed one on stderr, the rest still done. Exit 1 if any failed."""
+    org, failed = ENV.get("LOOPER_ORG", "tacplus-dev"), 0
+
+    def do(what, *cmd):
+        nonlocal failed
+        try:
+            run(["gh", *cmd])
+            print(what)
+        except Unreadable as e:
+            failed += 1
+            warn(f"act: {what}: {e}")
+
+    for repo, b in sorted((night.get("backports") or {}).items()):
+        rp = f"{org}/{repo}"
+        want = {p["number"] for p in b["pulls"] if p["ready"] and p["ready_days"] > T["backport_days"]}
+        add = [p for p in b["pulls"] if p["number"] in want and not p["labelled"]]
+        if add:
+            do(f"{rp}: label {BACKPORT_LABEL}", "label", "create", BACKPORT_LABEL, "--repo", rp, "--color", "0e8a16", "--force",
+               "--description", f"A backport green, CLEAN and its main issue closed, for over {whole(T['backport_days'])} days: merge it (looper#275)")
+        for p in add:
+            do(f"{rp}#{p['number']}: {BACKPORT_LABEL} (ready {p['ready_days']} days)", "pr", "edit", str(p["number"]), "--repo", rp, "--add-label", BACKPORT_LABEL)
+        for p in b["pulls"]:
+            if p["labelled"] and p["number"] not in want:
+                do(f"{rp}#{p['number']}: {BACKPORT_LABEL} off (" + ("; ".join(p["why"]) or f"ready {p['ready_days']} days") + ")",
+                   "pr", "edit", str(p["number"]), "--repo", rp, "--remove-label", BACKPORT_LABEL)
+        sup = [ln for ln in b["lines"] if ln["supported"] and ln["ci"]]
+        if not sup:
+            continue
+        try:
+            open_ = {m.group(1): i["number"] for i in json.loads(run(["gh", "issue", "list", "--repo", rp, "--state", "open", "--limit", "100",
+                                                                      "--search", 'in:title "its CI is red"', "--json", "number,title"]))
+                     if (m := RED_TITLE.fullmatch(i.get("title") or ""))}
+        except (Unreadable, ValueError, TypeError) as e:
+            failed += 1
+            warn(f"act: {rp}: its open red-line issues not read: {e}")
+            open_ = None
+        for ln in sup:
+            ci, line = ln["ci"], ln["line"]
+            if open_ is not None and ci["state"] == "red" and line not in open_:
+                do(f"{rp}: {line}: its CI is red: an issue filed", "issue", "create", "--repo", rp, "--title", f"{line}: its CI is red", "--label", "bug",
+                   "--body", f"The latest `{ci['workflow']}` run on `{line}` failed: {ci['run']} ({ci['at']}). Its last green run: "
+                             f"{ci['last_green'] or 'none in its last 30 runs'}.\n\n"
+                             f"A release line's CI runs only when dispatched: the looper's nightly dispatches `{ci['workflow']}` on every "
+                             f"supported line and files one issue per red line (tacplus-dev/looper#275). Until it is green, no patch of "
+                             f"`{line}` can be cut on green: fix it on main and backport it, or on the line by a backport pull request. "
+                             f"The nightly closes this issue once a run on the line is green.")
+            elif open_ is not None and ci["state"] == "green" and line in open_:
+                do(f"{rp}#{open_[line]}: {line} green again: closed", "issue", "close", str(open_[line]), "--repo", rp,
+                   "--comment", f"`{line}` is green again: {ci['run']} ({ci['at']}).")
+            do(f"{rp}: {line}: {ci['workflow']} dispatched", "workflow", "run", ci["workflow"], "--repo", rp, "--ref", line)
+    return 1 if failed else 0
 
 
 def image_check(until, sources, items):
@@ -1649,6 +1926,27 @@ def fmt(d, unit=60):
     return "-" if not d else f"{whole(round(d['p90'] / unit, 1))}"
 
 
+def backports_lines(night):
+    """The report's backports and release lines (looper#275): for the hub to merge, cut and mend."""
+    bp = night.get("backports")
+    if bp is None:
+        return []
+    ready = sorted(((r, p) for r, b in bp.items() for p in b["pulls"] if p["ready"]), key=lambda x: (x[1]["created"] or "", x[0], x[1]["number"]))
+    L = [f"Backports ready to merge (looper#275: green, CLEAN, their main issue closed; oldest first; `{BACKPORT_LABEL}` over "
+         f"{whole(T['backport_days'])} days ready): " + ("; ".join(
+             f"[{r}#{p['number']}]({p['url']}) {p['line']} {p['age_days']} days" + (f" (ready {p['ready_days']})" if p["ready_days"] != p["age_days"] else "")
+             for r, p in ready) or "none") + "."]
+    un = [(r, ln) for r, b in sorted(bp.items()) for ln in b["lines"] if ln["unreleased"]]
+    L.append("Release lines with unreleased merges: " + ("; ".join(
+        f"{r} {ln['line']} {ln['unreleased']} commit{'s' * (ln['unreleased'] != 1)} past {ln['tag']}"
+        + (f" (the oldest {ln['unreleased_days']} days)" if ln["unreleased_days"] is not None else "") for r, ln in un) or "none") + ".")
+    ci = [(r, ln) for r, b in sorted(bp.items()) for ln in b["lines"] if ln["ci"]]
+    L.append("Supported lines' CI (dispatched nightly): " + ("; ".join(
+        f"{r} {ln['line']} " + (f"[{ln['ci']['state']}]({ln['ci']['run']}) {ln['ci']['at'][:10]}" if ln["ci"]["run"] else ln["ci"]["state"])
+        + (f" (last green {(ln['ci']['last_green'] or 'none read')[:10]})" if ln["ci"]["state"] == "red" else "") for r, ln in ci) or "none") + ".")
+    return L
+
+
 def report(night, classes, sdir, cov):
     n = night["night"]
     adv = advice(sdir, n)
@@ -1771,22 +2069,25 @@ def report(night, classes, sdir, cov):
             return f"{x['models'].get(x['high_model'], {'runs': 0})['runs']} of {sum(d['runs'] for d in x['models'].values())} runs"
         L[-1] += (f" Models by day (looper#162; {days[0]['high_model']}'s share of the tokens, over {whole(T['high_share_pct'])}% named): "
                  + "; ".join(f"{x['night']} {x['high_model']} {x['high_pct']}%" + (", over" if x["over"] else "") + f" ({runs(x)})" for x in days) + ".")
+    L += backports_lines(night)
     gone = [f"{k} ({v})" for k, v in sorted(night["sources"].items()) if v != "ok"]
     if gone:
         L.append("Not read: " + "; ".join(gone) + ".")
     L += ["", "## Recurring: advice", "", "Ranked by the hours of waiting each would remove.", ""]
-    for x in classes["recurring"]:
+    # The release lines' items are the hub's to act on, named in their own lines above: no advice (looper#275).
+    rec = [x for x in classes["recurring"] if not x["key"].startswith(HUB_ITEMS)]
+    for x in rec:
         why = (f"{x['running']} nights running" if x.get("needs") else f"{x['nights']} of 7 nights") + (", over its threshold tonight" if x["over"] else "") + \
             (f", {x['wait_hours']} h of waiting" if x.get("wait_hours") else "")
         links = [f"[{nm}](../{f})" for nm, f in adv.get(x["key"], [])] + [f"covered by {c}" for c in cv.get(x["key"], [])]
         L.append(f"- `{x['key']}`: {x['summary']} ({why}). " + ("Advice: " + "; ".join(links) if links else "No advice tonight."))
-    if not classes["recurring"]:
+    if not rec:
         L.append("Nothing recurring.")
     L += ["", "## Transient: noted", ""]
-    L += [f"- `{x['key']}`: {x['summary']} (once in 7 nights, recovered on retry)." for x in classes["transient"]] or ["None."]
+    L += [f"- `{x['key']}`: {x['summary']} (once in 7 nights, recovered on retry)." for x in classes["transient"] if not x["key"].startswith(HUB_ITEMS)] or ["None."]
     L += ["", "## Once, not recovered: noted", ""]
     L += [f"- `{x['key']}`: {x['summary']} (" + (f"{x['running']} night{'s' * (x['running'] != 1)} running; advice after {x['needs']}" if x.get("needs")
-          else "once in 7 nights; recurring if it comes back") + ")." for x in classes["once"]] or ["None."]
+          else "once in 7 nights; recurring if it comes back") + ")." for x in classes["once"] if not x["key"].startswith(HUB_ITEMS)] or ["None."]
     return "\n".join(L) + "\n"
 
 
@@ -1845,6 +2146,11 @@ def main(argv):
             die("classify NIGHT.json [--history DIR]")
         sys.stdout.write(json.dumps(classify(load(rest[0]), o.get("--history")), indent=1, sort_keys=True) + "\n")
         return 0
+    if cmd == "act":
+        o, rest = opts(args, set())
+        if len(rest) != 1:
+            die("act NIGHT.json")
+        return act(load(rest[0]))
     if cmd == "report":
         o, rest = opts(args, {"--suggestions", "--covered"})
         if len(rest) != 2:
