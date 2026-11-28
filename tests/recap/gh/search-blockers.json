@@ -1,0 +1,18 @@
+[
+ {"repository": {"name": "registry", "nameWithOwner": "tacplus-dev/registry"}, "number": 9, "title": "Record store", "url": "https://github.com/tacplus-dev/registry/issues/9",
+  "createdAt": "2026-10-30T12:00:00Z", "labels": [{"name": "approved"}, {"name": "feature"}], "body": "Do it.\n\nBlocked-by: tacplus-dev/tacplus#501"},
+ {"repository": {"name": "stratum", "nameWithOwner": "tacplus-dev/stratum"}, "number": 36, "title": "Next link", "url": "https://github.com/tacplus-dev/stratum/issues/36",
+  "createdAt": "2026-10-20T00:00:00Z", "labels": [{"name": "approved"}, {"name": "priority:high"}], "body": "Blocked-by: https://github.com/tacplus-dev/tacplus/pull/502\nBlocked-by: #3"},
+ {"repository": {"name": "cloud", "nameWithOwner": "tacplus-dev/cloud"}, "number": 110, "title": "Quota", "url": "https://github.com/tacplus-dev/cloud/issues/110",
+  "createdAt": "2026-10-25T09:38:53Z", "labels": [{"name": "approved"}, {"name": "bug"}], "body": "Blocked-by: #102\nBacked-off: until 2026-12-04T00:00:00Z (since 2026-11-01T00:10:25Z, main 9a50d7eab073421fd5c87ba5cf98a78047153c05)"},
+ {"repository": {"name": "llmproxy", "nameWithOwner": "tacplus-dev/llmproxy"}, "number": 14, "title": "OpenAI", "url": "https://github.com/tacplus-dev/llmproxy/issues/14",
+  "createdAt": "2026-10-01T22:16:53Z", "labels": [{"name": "feature"}], "body": "Blocked-by: tacplus-dev/tacplus#503"},
+ {"repository": {"name": "kernel", "nameWithOwner": "tacplus-dev/kernel"}, "number": 32, "title": "Still blocked", "url": "https://github.com/tacplus-dev/kernel/issues/32",
+  "createdAt": "2026-10-10T00:00:00Z", "labels": [{"name": "approved"}], "body": "Blocked-by: tacplus-dev/tacplus#501\nBlocked-by: tacplus-dev/tacplus#504"},
+ {"repository": {"name": "website", "nameWithOwner": "tacplus-dev/website"}, "number": 6, "title": "Another org", "url": "https://github.com/tacplus-dev/website/issues/6",
+  "createdAt": "2026-10-10T00:00:00Z", "labels": [{"name": "approved"}], "body": "Blocked-by: other-org/x#1"},
+ {"repository": {"name": "oauth", "nameWithOwner": "tacplus-dev/oauth"}, "number": 9, "title": "Abandoned", "url": "https://github.com/tacplus-dev/oauth/issues/9",
+  "createdAt": "2026-10-28T00:00:00Z", "labels": [{"name": "approved"}, {"name": "needs-decision"}], "body": "Blocked-by: tacplus-dev/tacplus#505"},
+ {"repository": {"name": "messaging", "nameWithOwner": "tacplus-dev/messaging"}, "number": 7, "title": "Not blocked", "url": "https://github.com/tacplus-dev/messaging/issues/7",
+  "createdAt": "2026-10-28T00:00:00Z", "labels": [{"name": "approved"}], "body": "Says Blocked-by: #1 in a sentence."}
+]

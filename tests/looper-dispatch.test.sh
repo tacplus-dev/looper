@@ -15,10 +15,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/hermetic.sh"   # the test's own environme
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# Issues: $FIX/issues/<repo>-<n>.json ({number,state,labels:[{name}],body,createdAt}).
+# Issues: $FIX/issues/<repo>-<n>.json ({number,state,labels:[{name}],body,createdAt});
+# a pull request's (looper#276) has `pull: true`, its state OPEN, CLOSED or
+# MERGED, its url and `closes`, the issues it closes ([[repo, n]...]).
 # Each call is appended to $FIX/gh. `api graphql` answers the aliased
-# `repository(...) { issue(number: N) { state } }` queries from the issue files,
-# null (and exit 1, as gh does) for a missing one; $FIX/rate-limited refuses it.
+# `repository(...) { issueOrPullRequest(number: N) { ... } }` queries from the
+# issue files, null (and exit 1, as gh does) for a missing one;
+# $FIX/rate-limited refuses it.
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -52,10 +55,10 @@ if [[ "$cmd" == "api graphql" ]]; then
   q="${2#query=}"; data='{}'; rc=0
   while read -r a r n; do
     f="$FIX/issues/$r-$n.json"
-    if [[ -f "$f" ]]; then data="$(jq --arg a "$a" --slurpfile i "$f" '.[$a] = {issue: {state: $i[0].state}}' <<<"$data")"
-    else data="$(jq --arg a "$a" '.[$a] = {issue: null}' <<<"$data")"; rc=1; fi
-  done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issue\(number: [0-9]+\)' <<<"$q" \
-             | sed -E 's/^([a-z0-9_]+): repository\(owner: "[^"]+", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3/')
+    if [[ -f "$f" ]]; then data="$(jq --arg a "$a" --slurpfile i "$f" '.[$a] = {issueOrPullRequest: ($i[0] | {__typename: (if .pull then "PullRequest" else "Issue" end), state, closingIssuesReferences: {nodes: [.closes[]? | {number: .[1], repository: {name: .[0], owner: {login: "tacplus-dev"}}}]}})}' <<<"$data")"
+    else data="$(jq --arg a "$a" '.[$a] = {issueOrPullRequest: null}' <<<"$data")"; rc=1; fi
+  done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issueOrPullRequest\(number: [0-9]+\)' <<<"$q" \
+             | sed -E 's/^([a-z0-9_]+): repository\(owner: "[^"]+", name: "([^"]+)"\) \{ issueOrPullRequest\(number: ([0-9]+)\)/\1 \2 \3/')
   jq -c '{data: .}' <<<"$data"; exit "$rc"
 fi
 # The looper image's attested builds (looper#115): main's commits, newest
@@ -106,7 +109,7 @@ if [[ "$cmd" == "attestation verify" ]]; then
   jq -n --arg d "$d" '[{verificationResult: {statement: {subject: [{name: "ghcr.io/tacplus-dev/looper", digest: {sha256: $d}}]}}}]'
   exit 0
 fi
-repo=""; n=""; q="."; label=""; rm=""; body=""; vis=""
+repo=""; n=""; q="."; label=""; rm=""; add=""; body=""; vis=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2##*/}"; shift 2 ;;
@@ -114,6 +117,7 @@ while [[ $# -gt 0 ]]; do
     --jq) q="$2"; shift 2 ;;
     --label) label="$2"; shift 2 ;;
     --remove-label) rm="$2"; shift 2 ;;
+    --add-label) add="$2"; shift 2 ;;
     --body) body="$2"; shift 2 ;;
     --owner|--state|--limit|--json) shift 2 ;;
     *) n="$1"; shift ;;
@@ -144,7 +148,7 @@ case "$cmd" in
     jq -s --arg l "${label:-approved}" 'map(select(.state == "OPEN" and any(.labels[]; .name == $l)))' "${files[@]+"${files[@]}"}" < /dev/null | jq -r "$q" ;;
   "issue view") jq -r "$q" "$f" ;;
   "repo list") jq -R '{name: .}' "$FIX/repos" | jq -s . | jq -r "$q" ;;   # $FIX/repos: the org's, one a line
-  "issue edit") t="$(jq --arg l "$rm" '.labels |= map(select(.name != $l))' "$f")"; printf '%s\n' "$t" > "$f" ;;
+  "issue edit") t="$(jq --arg l "$rm" --arg a "$add" '.labels |= map(select(.name != $l)) + (if $a == "" then [] else [{name: $a}] end)' "$f")"; printf '%s\n' "$t" > "$f" ;;
   "issue comment") printf '%s#%s %s\n' "$repo" "$n" "$body" >> "$FIX/comments" ;;
   *) echo "stub gh: unexpected $cmd" >&2; exit 3 ;;
 esac
@@ -500,7 +504,7 @@ grep -q "a newer kick (job 104) is queued" <<<"$OUT" && ! started || fail "the o
 pass
 
 # Blocked-by: ready only when every issue it names is closed; a missing one
-# (or a pull request, which is no issue) holds it as an open one does.
+# holds it as an open one does.
 scenario blocked-open
 issue alpha 4 OPEN $'Fix it.\nBlocked-by: #5' approved
 issue alpha 5 OPEN "The other half."
@@ -520,6 +524,55 @@ scenario blocked-missing
 issue alpha 4 OPEN $'Fix it.\nBlocked-by: #9' approved
 dispatch run
 ! started || fail "started a pipeline for an issue blocked by a missing one"
+pass
+
+# A pull request in a Blocked-by line (looper#276: registry#9 waited 4 hours,
+# stratum#36 six days, on a merged one) is done once GitHub says it is closed,
+# merged: by number or by its URL. The pass starts the issue and the plan
+# plans its report. An open one holds it as an open issue does.
+pr() { # repo n state [closes: repo n]...
+  local r="$1" n="$2" st="$3"; shift 3
+  jq -n --arg r "$r" --argjson n "$n" --arg st "$st" '$ARGS.positional as $c |
+    {repo: $r, number: $n, state: $st, pull: true, url: "https://github.com/tacplus-dev/\($r)/pull/\($n)", labels: [], body: "A change.",
+     createdAt: "2026-10-20T00:00:00Z", closes: [range(0; $c | length; 2) as $i | [$c[$i], ($c[$i + 1] | tonumber)]]}' --args "$@" > "$FIX/issues/$r-$n.json"
+}
+scenario blocked-merged-pr
+issue alpha 4 OPEN $'Fix it.\nBlocked-by: tacplus-dev/beta#7\nBlocked-by: https://github.com/tacplus-dev/alpha/pull/6' approved
+pr beta 7 MERGED
+pr alpha 6 MERGED
+dispatch run
+started || fail "no pipeline started for an issue whose blockers are merged pull requests: $OUT"
+grep -q 'started the tacplus-dev/looper pipeline (alpha#4 is ready)' <<<"$OUT" || fail "log: $OUT"
+plan_jobs
+grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "alpha#4 (its blockers merged pull requests) not planned: $PLAN"
+[[ ! -s "$FIX/comments" ]] || fail "commented: $(cat "$FIX/comments")"
+pass
+
+scenario blocked-open-pr
+issue alpha 4 OPEN $'Fix it.\nBlocked-by: tacplus-dev/beta#7' approved
+pr beta 7 OPEN
+dispatch run
+! started || fail "started a pipeline for an issue blocked by an open pull request"
+pass
+
+# One closed without merging is done too, but what the issue waited on never
+# landed: the pass says so on the issue, once, and holds it for a member
+# (needs-decision) instead of starting it; the plan plans no report for it.
+scenario blocked-unmerged-pr
+issue alpha 4 OPEN $'Fix it.\nBlocked-by: tacplus-dev/beta#7\nBlocked-by: #5' approved
+issue alpha 5 CLOSED "Done."
+pr beta 7 CLOSED
+plan_jobs
+! grep -qx 'looper-alpha-4:' <<<"$PLAN" || fail "planned a report for an issue whose blocker was closed unmerged: $PLAN"
+dispatch run
+! started || fail "started a pipeline for an issue whose blocker was closed unmerged: $OUT"
+[[ "$(wc -l < "$FIX/comments")" == 1 ]] || fail "comments: $(cat "$FIX/comments" 2>/dev/null)"
+grep -q '^alpha#4 .*tacplus-dev/beta#7.* closed without being merged' "$FIX/comments" || fail "comment: $(cat "$FIX/comments")"
+[[ "$(labels alpha 4)" == approved,needs-decision ]] || fail "labels: $(labels alpha 4)"
+grep -q 'alpha#4: its Blocked-by tacplus-dev/beta#7 was closed without being merged' <<<"$OUT" || fail "log: $OUT"
+dispatch run
+[[ "$(wc -l < "$FIX/comments")" == 1 ]] || fail "commented again: $(cat "$FIX/comments")"
+! started || fail "started a pipeline: $OUT"
 pass
 
 # Waiting-on (looper#171): an issue whose last run ended waiting on another
@@ -900,7 +953,7 @@ echo 1 > "$FIX/http-api-graphql"
 ! OUT="$(lib "gh api graphql -f query='mutation { pinIssue(input: {issueId: \"x\"}) { issue { number } } }'")" || fail "the mutation succeeded: $OUT"
 [[ "$(grep -cx 'api graphql' "$FIX/gh")" -eq 1 ]] || fail "a mutation tried again: $(cat "$FIX/gh")"
 echo 1 > "$FIX/http-api-graphql"
-OUT="$(lib "gh api graphql -f query='{ a0: repository(owner: \"tacplus-dev\", name: \"alpha\") { issue(number: 4) { state } } }'")" || fail "the query failed: $OUT"
+OUT="$(lib "gh api graphql -f query='{ a0: repository(owner: \"tacplus-dev\", name: \"alpha\") { issueOrPullRequest(number: 4) { __typename ... on Issue { state } } } }'")" || fail "the query failed: $OUT"
 [[ "$(grep -cx 'api graphql' "$FIX/gh")" -eq 3 ]] || fail "the query not tried again: $(cat "$FIX/gh")"
 grep -q '"OPEN"' <<<"$OUT" || fail "query: $OUT"
 ! grep -q 'Server Error' <<<"$OUT" || fail "the failed try's output kept: $OUT"

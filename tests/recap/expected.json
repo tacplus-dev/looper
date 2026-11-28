@@ -123,6 +123,85 @@
    ]
   }
  },
+ "blockers_closed": [
+  {
+   "age_days": 31.2,
+   "blockers": [
+    "tacplus#503"
+   ],
+   "closed": "2026-10-23T08:02:16Z",
+   "created": "2026-10-01T22:16:53Z",
+   "held": [
+    "not approved"
+   ],
+   "number": 14,
+   "repo": "llmproxy",
+   "title": "OpenAI",
+   "url": "https://github.com/tacplus-dev/llmproxy/issues/14",
+   "waiting_hours": 234.96
+  },
+  {
+   "age_days": 13.1,
+   "blockers": [
+    "tacplus#502 (pull request, merged)",
+    "stratum#3"
+   ],
+   "closed": "2026-10-27T10:00:00Z",
+   "created": "2026-10-20T00:00:00Z",
+   "held": [],
+   "number": 36,
+   "repo": "stratum",
+   "title": "Next link",
+   "url": "https://github.com/tacplus-dev/stratum/issues/36",
+   "waiting_hours": 137
+  },
+  {
+   "age_days": 7.7,
+   "blockers": [
+    "cloud#102"
+   ],
+   "closed": "2026-10-27T00:02:31Z",
+   "created": "2026-10-25T09:38:53Z",
+   "held": [
+    "Backed-off"
+   ],
+   "number": 110,
+   "repo": "cloud",
+   "title": "Quota",
+   "url": "https://github.com/tacplus-dev/cloud/issues/110",
+   "waiting_hours": 146.96
+  },
+  {
+   "age_days": 5.1,
+   "blockers": [
+    "tacplus#505 (pull request, closed unmerged)"
+   ],
+   "closed": "2026-10-30T00:00:00Z",
+   "created": "2026-10-28T00:00:00Z",
+   "held": [
+    "needs-decision"
+   ],
+   "number": 9,
+   "repo": "oauth",
+   "title": "Abandoned",
+   "url": "https://github.com/tacplus-dev/oauth/issues/9",
+   "waiting_hours": 75
+  },
+  {
+   "age_days": 2.6,
+   "blockers": [
+    "tacplus#501 (pull request, merged)"
+   ],
+   "closed": "2026-11-01T21:31:29Z",
+   "created": "2026-10-30T12:00:00Z",
+   "held": [],
+   "number": 9,
+   "repo": "registry",
+   "title": "Record store",
+   "url": "https://github.com/tacplus-dev/registry/issues/9",
+   "waiting_hours": 5.48
+  }
+ ],
  "builds": {
   "again": [],
   "builds": 1,
@@ -477,6 +556,26 @@
    "over": true,
    "recovered": false,
    "summary": "tacplus: 2 backport pull requests ready to merge (green, CLEAN, the main issue closed), the oldest #367 (release/2.6) 12.7 days old"
+  },
+  {
+   "count": 1,
+   "evidence": [
+    "https://github.com/tacplus-dev/registry/issues/9"
+   ],
+   "key": "blockers-closed/registry",
+   "over": true,
+   "recovered": false,
+   "summary": "registry: 1 approved issue not started with every Blocked-by closed, #9 for 5.48 h (its blockers tacplus#501 (pull request, merged))"
+  },
+  {
+   "count": 1,
+   "evidence": [
+    "https://github.com/tacplus-dev/stratum/issues/36"
+   ],
+   "key": "blockers-closed/stratum",
+   "over": true,
+   "recovered": false,
+   "summary": "stratum: 1 approved issue not started with every Blocked-by closed, #36 for 137 h (its blockers tacplus#502 (pull request, merged), stratum#3)"
   },
   {
    "count": 1,
@@ -1373,6 +1472,7 @@
  "sources": {
   "github-actions": "ok",
   "github-backports": "ok",
+  "github-blockers": "ok",
   "github-main": "ok",
   "gitlab:tacplus-dev/build": "ok",
   "gitlab:tacplus-dev/cluster": "unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22",
@@ -1382,6 +1482,7 @@
  "thresholds": {
   "backlog": 3,
   "backport_days": 2.0,
+  "blockers_hours": 1.0,
   "build_ratio": 1.1,
   "control_queue_s": 600,
   "count": 3,

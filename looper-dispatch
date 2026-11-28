@@ -330,8 +330,27 @@ vm_start() { # repo
   vm_api POST "$g" "/resize?size=1" >/dev/null
 }
 
+# An issue that would be ready but for a Blocked-by pull request closed
+# without merging (looper#276): what it waited on never landed, so it is not
+# started; the pass says so on it and makes it needs-decision, which holds it
+# (and so says it once) until a member takes the line out or names what
+# replaces it. The lines are ready_all_by_repo's file's.
+unmerged_blockers() { # file
+  local repo n refs r k list
+  while read -r repo n refs; do
+    [[ -n "$repo" ]] || continue
+    list=""
+    while read -r r k; do
+      if [[ "$r" == "$repo" ]]; then list+="${list:+, }#$k"; else list+="${list:+, }$LOOPER_ORG/$r#$k"; fi
+    done < <(xargs -n 2 <<<"$refs")
+    forge_issue_edit "$repo" "$n" --add-label "$LABEL_DECISION" >/dev/null || { log "$repo#$n: its Blocked-by $list was closed without being merged; it could not be made $LABEL_DECISION"; continue; }
+    forge_issue_comment "$repo" "$n" "This issue's \`Blocked-by:\` $list was closed without being merged (looper#276): what it waited on did not land, so the looper does not start it. It is \`$LABEL_DECISION\` until a member decides: take the line out if the issue can go on without it, or name what replaces it (\`Blocked-by:\` an issue or a pull request), then remove \`$LABEL_DECISION\`." >/dev/null || true
+    log "$repo#$n: its Blocked-by $list was closed without being merged: not started, said so on it ($LABEL_DECISION)"
+  done < "$1"
+}
+
 pass() {
-  local statuses jobs ready repo n landing hold
+  local statuses jobs ready repo n landing hold unmerged
   RULESET_SEEN=()
   statuses="$(active_job_statuses)"; jobs="$(cut -d' ' -f1 <<<"$statuses")"
   release_orphans "$jobs"
@@ -339,7 +358,9 @@ pass() {
   # A plan under way will take every ready issue; wait for it.
   grep -qx 'looper-plan' <<<"$jobs" && { log "looper-plan under way; nothing to start"; return 0; }
   if hold="$(held)"; then log "$hold"; return 0; fi
-  ready="$(ready_all_by_repo)"
+  unmerged="$(mktemp)"
+  ready="$(ready_all_by_repo "$unmerged")" || { rm -f "$unmerged"; return 1; }
+  unmerged_blockers "$unmerged"; rm -f "$unmerged"
   landing="$(forge_search_issues "$LABEL_LANDING" 200 repository '.[] | .repository.name')" || landing="?"
   capacity_line "$jobs" "$ready" "$landing" "$statuses"
   while read -r repo n; do

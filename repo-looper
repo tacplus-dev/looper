@@ -4529,19 +4529,30 @@ resume() { # issue then
 # or any it names does not exist or is the issue itself: 2 when every one it
 # names is closed (nothing waits: the issue resumes), else 1. An open one in
 # another repository whose Parent line names the issue is approved with it
-# (parent_approve).
+# (parent_approve). A pull request is closed once merged or closed unmerged
+# (looper#276); an open one brings the open issues it closes (forge_pr_issues),
+# when the outcome does not name them, as lines of their own after it: the
+# issue waits on those too, so a pull request merged without closing them, or
+# abandoned for another, holds it no longer than its issue does.
 outcome_blocked() { # issue run-dir
-  local n="$1" refs r b ref state body add="" lines=() closed=() halves=()
+  local n="$1" refs r b ref state body add="" lines=() closed=() halves=() pi
   rm -f "$2/blockers-closed"
   [[ -f "$2/outcome" ]] || return 1
   refs="$(parse_blockers "$REPO" < "$2/outcome" | awk '!seen[$0]++')"
   [[ -n "$refs" ]] || return 1
+  # Each open pull request's issues, after it.
+  refs="$(while read -r r b; do
+            echo "$r $b"
+            [[ "$(issue_state "$r" "$b" 2>/dev/null)" == OPEN ]] || continue
+            pi="$(forge_pr_issues "$r" "$b")" || { log "$r#$b: the issues it closes could not be read"; continue; }
+            grep -vxF "$REPO $n" <<<"$pi" || true
+          done <<<"$refs" | awk 'NF && !seen[$0]++')"
   body="$(forge_issue_view "$REPO" "$n" body .body)" || return 1
   while read -r r b; do
     [[ "$r $b" != "$REPO $n" ]] || return 1
     state="$(issue_state "$r" "$b")" || return 1
     if [[ "$r" == "$REPO" ]]; then ref="#$b"; else ref="$LOOPER_ORG/$r#$b"; fi
-    if [[ "$state" == CLOSED ]]; then closed+=("$ref"); continue; fi
+    if [[ "$state" == CLOSED || "$state" == UNMERGED ]]; then closed+=("$ref"); continue; fi
     [[ "$state" == OPEN ]] || return 1
     lines+=("Blocked-by: $ref")
     [[ "$r" == "$REPO" ]] || halves+=("$r $b")

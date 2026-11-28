@@ -84,10 +84,10 @@ case "$cmd" in
     echo "$2" >> "$FIX/graphql"; [[ ! -e "$FIX/graphql-fail" ]] || { echo "stub gh: HTTP 502" >&2; exit 1; }
     q="${2#query=}"; data='{}'; rc=0
     while read -r a o r n; do
-      if [[ "$o" == tacplus-dev && -f "$FIX/issues/$r-$n.json" ]]; then data="$(jq --arg a "$a" --slurpfile i "$FIX/issues/$r-$n.json" '.[$a] = {issue: {state: $i[0].state}}' <<<"$data")"
-      else data="$(jq --arg a "$a" '.[$a] = null' <<<"$data")"; rc=1; fi
-    done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issue\(number: [0-9]+\)' <<<"$q" \
-               | sed -E 's/^([a-z0-9_]+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3 \4/')
+      if [[ "$o" == tacplus-dev && -f "$FIX/issues/$r-$n.json" ]]; then data="$(jq --arg a "$a" --slurpfile i "$FIX/issues/$r-$n.json" '.[$a] = {issueOrPullRequest: ($i[0] | {__typename: (if .pull then "PullRequest" else "Issue" end), state, closingIssuesReferences: {nodes: [.closes[]? | {number: .[1], repository: {name: .[0], owner: {login: "tacplus-dev"}}}]}})}' <<<"$data")"
+      else data="$(jq --arg a "$a" '.[$a] = {issueOrPullRequest: null}' <<<"$data")"; rc=1; fi
+    done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issueOrPullRequest\(number: [0-9]+\)' <<<"$q" \
+               | sed -E 's/^([a-z0-9_]+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issueOrPullRequest\(number: ([0-9]+)\)/\1 \2 \3 \4/')
     jq -c '{data: .}' <<<"$data"; exit "$rc" ;;
   # $FIX/gh-hang: GitHub does not answer (looper#112).
   api\ repos/*/commits/*/statuses*) [[ ! -e "$FIX/gh-hang" ]] || sleep 60
@@ -582,6 +582,24 @@ issue alpha 3 OPEN "" "First."
 run
 [[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
 has "$(body alpha 4)" "Blocked-by: #3"
+pass
+
+# A pull request in the outcome (looper#276): an open one brings the open
+# issues it closes, but this one, as lines of their own; a merged one is
+# closed, dropped as a closed issue is.
+scenario blocked-by-pull-request
+push_fix; printf '%s\n' 'printf "Blocked-by: tacplus-dev/beta#7\nBlocked-by: https://github.com/tacplus-dev/beta/pull/9\n" > "$OUTCOME"' >> "$FIX/claude.sh"
+issue beta 7 OPEN "" "A change."
+issue beta 8 OPEN "" "What it fixes."
+issue beta 9 MERGED "" "Merged."
+for k in 7 9; do t="$(jq --argjson k "$k" '. + {pull: true, url: "https://github.com/tacplus-dev/beta/pull/\($k)", closes: [["beta", 8], ["alpha", 4]]}' "$FIX/issues/beta-$k.json")"; printf '%s\n' "$t" > "$FIX/issues/beta-$k.json"; done
+run
+[[ "$(labels alpha 4)" == approved,bug ]] || fail "labels $(labels alpha 4)"
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#7"
+has "$(body alpha 4)" "Blocked-by: tacplus-dev/beta#8"
+lacks "$(body alpha 4)" "Blocked-by: #4"
+lacks "$(body alpha 4)" "beta#9"
+has "$(others)" "tacplus-dev/beta#9"
 pass
 
 scenario keeps-other-blockers

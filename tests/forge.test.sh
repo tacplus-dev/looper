@@ -52,10 +52,10 @@ case "$cmd" in
     q="${2#query=}"; data='{}'; rc=0
     while read -r a o r n; do
       f="$(file "$r" "$n")"
-      if [[ "$o" == "$ORG" && -f "$f" ]]; then data="$(jq --arg a "$a" --slurpfile i "$f" '.[$a] = {issue: {state: $i[0].state}}' <<<"$data")"
-      else data="$(jq --arg a "$a" '.[$a] = null' <<<"$data")"; rc=1; fi
-    done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issue\(number: [0-9]+\)' <<<"$q" \
-               | sed -E 's/^([a-z0-9_]+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issue\(number: ([0-9]+)\)/\1 \2 \3 \4/')
+      if [[ "$o" == "$ORG" && -f "$f" ]]; then data="$(jq --arg a "$a" --slurpfile i "$f" '.[$a] = {issueOrPullRequest: ($i[0] | {__typename: (if .pull then "PullRequest" else "Issue" end), state, closingIssuesReferences: {nodes: [.closes[]? | {number: .[1], repository: {name: .[0], owner: {login: "tacplus-dev"}}}]}})}' <<<"$data")"
+      else data="$(jq --arg a "$a" '.[$a] = {issueOrPullRequest: null}' <<<"$data")"; rc=1; fi
+    done < <(grep -oE '[a-z][a-z0-9_]*: repository\(owner: "[^"]+", name: "[^"]+"\) \{ issueOrPullRequest\(number: [0-9]+\)' <<<"$q" \
+               | sed -E 's/^([a-z0-9_]+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issueOrPullRequest\(number: ([0-9]+)\)/\1 \2 \3 \4/')
     jq -c '{data: .}' <<<"$data"; exit "$rc" ;;
 esac
 repo=""; n=""; q="."; add=(); rm=(); body=""; has_body=""; labels=(); state=open; limit=30; owner=""; title=""
@@ -351,8 +351,10 @@ for FORGE in github gitlab; do
   got="$(printf 'Blocked-by: %s/%s/beta/%s/5\nBlocked-by: <%s/%s/alpha/%s/3>.\nBlocked-by: %s/other-org/beta/%s/6\nBlocked-by: %s/%s/beta/%s/7\n' \
            "$WEB" "$ORG" "$I" "$WEB" "$ORG" "$I" "$WEB" "$I" "$OTHER" "$ORG" "$I" | lib 'parse_blockers alpha' | paste -sd,)"
   [[ "$got" == "beta 5,alpha 3,other-org/beta 6,${OTHER#https://}/$ORG/beta 7" ]] || fail "parse_blockers on URLs: $got"
+  # A GitHub pull request's URL is its number's (looper#276); GitLab has no /pull/.
   got="$(printf 'Blocked-by: the other half\nBlocked-by: %s/%s/beta/pull/5\nBlocked-by:\n' "$WEB" "$ORG" | lib 'parse_blockers alpha' | paste -sd,)"
-  [[ "$got" == "?/unreadable 0,?/unreadable 0,?/unreadable 0" ]] || fail "parse_blockers on unreadable lines: $got"
+  if [[ "$FORGE" == github ]]; then want="?/unreadable 0,beta 5,?/unreadable 0"; else want="?/unreadable 0,?/unreadable 0,?/unreadable 0"; fi
+  [[ "$got" == "$want" ]] || fail "parse_blockers on unreadable lines: $got"
   issue alpha 20 OPEN "Open still."
   issue alpha 21 CLOSED "Done."
   issue alpha 22 OPEN "Blocked-by: $WEB/$ORG/alpha/$I/20" approved
@@ -365,6 +367,35 @@ for FORGE in github gitlab; do
   ! lib 'ready alpha 25' || fail "alpha#25 (its Blocked-by unreadable) ready"
   got="$(lib ready_all_by_repo | paste -sd,)"; [[ "$got" == "alpha 23" ]] || fail "ready_all_by_repo with URLs: $got"
   pass
+
+  # A pull request in a Blocked-by line (looper#276), on GitHub: merged, it is
+  # closed (registry#9 and stratum#36 waited on merged ones for hours to days);
+  # open, it holds; closed without merging, it holds as UNMERGED, which
+  # ready_all_by_repo lists in its file. Its merge after a back-off's since
+  # ends the back-off as an issue's closing does.
+  if [[ "$FORGE" == github ]]; then
+    scenario blocked-by-pr "$FORGE"
+    pull() { issue "$@"; t="$(jq --arg u "https://github.com/$ORG/$1/pull/$2" '. + {pull: true, url: $u, closedAt: "2026-11-27T21:31:29Z"}' "$FIX/issues/$1-$2.json")"; printf '%s\n' "$t" > "$FIX/issues/$1-$2.json"; }
+    pull beta 30 MERGED "A change."
+    pull beta 31 OPEN "A change."
+    pull beta 32 CLOSED "A change."
+    issue alpha 33 OPEN "Blocked-by: $ORG/beta#30" approved
+    issue alpha 34 OPEN "Blocked-by: https://github.com/$ORG/beta/pull/30" approved
+    issue alpha 35 OPEN "Blocked-by: $ORG/beta#31" approved
+    issue alpha 36 OPEN $'Blocked-by: tacplus-dev/beta#32\nBlocked-by: tacplus-dev/beta#30' approved
+    issue alpha 37 OPEN $'Blocked-by: tacplus-dev/beta#32\nBlocked-by: tacplus-dev/beta#31' approved
+    got="$(printf 'beta 30\nbeta 31\nbeta 32\n' | lib forge_issue_states | paste -sd,)"
+    [[ "$got" == "beta 30 CLOSED,beta 31 OPEN,beta 32 UNMERGED" ]] || fail "forge_issue_states: $got"
+    for k in 30 31 32; do got+=" $(lib "issue_state beta $k")"; done
+    [[ "$got" == *" CLOSED OPEN UNMERGED" ]] || fail "issue_state: $got"
+    for k in 33 34; do lib "ready alpha $k" || fail "alpha#$k (its blocker a merged pull request) not ready"; done
+    for k in 35 36 37; do ! lib "ready alpha $k" || fail "alpha#$k ready"; done
+    got="$(lib "ready_all_by_repo $FIX/unmerged" | paste -sd,)"; [[ "$got" == "alpha 33,alpha 34" ]] || fail "ready_all_by_repo: $got"
+    [[ "$(cat "$FIX/unmerged")" == "alpha 36 beta 32" ]] || fail "unmerged: $(cat "$FIX/unmerged")"
+    got="$(lib "backoff_over alpha 33 \"\$(printf 'Blocked-by: tacplus-dev/beta#30\nBacked-off: until 2099-01-01T00:00:00Z (since 2026-11-27T00:00:00Z, main %s)' \"\$(printf 'c%.0s' {1..40})\")\"" 2>/dev/null)" || true
+    [[ "$got" == "$ORG/beta#30 closed" ]] || fail "backoff_over on a merge: $got"
+    pass
+  fi
 
   # Labels, comments and body edits, and the looper's labels (looper#80): the
   # repository starts with `approved` alone, so the first edit names labels it

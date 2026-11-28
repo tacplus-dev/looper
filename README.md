@@ -288,7 +288,13 @@ looper creates both labels in a repository that lacks them.
 Order across repositories: a line `Blocked-by: tacplus-dev/<repo>#N` (or `Blocked-by: #N` in the same
 repository, or the issue's URL, `https://github.com/tacplus-dev/<repo>/issues/N`, on GitLab `.../-/issues/N`) in
 an issue's body holds it until that issue is closed. A `Blocked-by:` line the looper cannot read holds its issue
-too (looper#87).
+too (looper#87). On GitHub it may name a pull request, by number or by its URL (`.../pull/N`): merged, it is closed
+(looper#276: registry#9 and stratum#36 waited hours to days behind merged ones, GitHub's issue query answering null
+for a pull request). One closed without merging is closed too, but what the issue waited on never landed: the kicker
+does not start it; it says so on the issue and labels it `needs-decision`, which holds it until a member takes the
+line out or names what replaces it. A run whose outcome names an open pull request names the open issues it closes
+too, as lines of their own. The [nightly recap](#nightly-recap) lists every open issue whose blockers are all closed,
+with its age and what else holds it.
 
 Waiting on another run (looper#171): a report whose work waits on another run's result (a GitLab pipeline or job, a
 GitHub Actions run: an image build, a fleet plan) does not wait in its model. On 2026-11-16 two runs that did ("Now I
@@ -1167,6 +1173,14 @@ issue per supported line whose CI is red, `release/X.Y: its CI is red`, labelled
 and the line's `ci.yml` dispatched on every supported line, the nightly CI run the next night reads (the looper's app
 needs Actions: write for it; a refused write is logged in the scan's log, `scan: recap act:`, and the line goes
 stale).
+
+**Issues waiting on nothing** (`blockers_closed`, looper#276: on 2026-11-28 the hub found seventeen open issues whose
+every `Blocked-by:` was closed, ten behind a merged pull request the kicker did not read as closed): every open issue
+of the org with `Blocked-by:` lines all naming issues or pull requests of the org that GitHub's issues API says are
+closed (merged or not), oldest first, with its age, how long since its last blocker closed, its blockers, and what
+else holds it (not approved, `looper:in-progress`, `looper:stuck`, `needs-decision`, `looper:landing`,
+`looper:merge-request`, a `Backed-off:` or `Waiting-on:` line). One held by nothing else for over
+`LOOPER_RECAP_BLOCKERS_HOURS` (1) is an item, `blockers-closed/<repo>`, the hub's: the kicker should have started it.
 
 **Classification, with no model** (`looper-recap classify`), against the 6 nights before (one file a night,
 `suggestions/recap/<YYYY-MM-DD>.json`): **recurring** (seen on 2 or more of 7 nights, or over a threshold tonight: 3

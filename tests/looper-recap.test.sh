@@ -85,6 +85,9 @@ case "$1 $2" in
   "label create"|"pr edit"|"issue create"|"issue close"|"workflow run")
     [[ -z "${GH_FAIL:-}" || "$*" != *"$GH_FAIL"* ]] || { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; } ;;
   "issue list") f="$FX/gh/red-issues-${4#tacplus-dev/}.json"; if [[ -f "$f" ]]; then cat "$f"; else echo '[]'; fi ;;
+  # The open issues with a Blocked-by line (looper#276): $FX/gh/search-blockers.json.
+  "search issues") [[ "$*" == "search issues Blocked-by in:body --owner tacplus-dev --state open --limit 1000 --json repository,number,title,url,body,createdAt,labels" ]] || exit 1
+                   cat "$FX/gh/search-blockers.json" ;;
   *) echo "stub gh: unexpected $*" >&2; exit 3 ;;
 esac
 EOF
@@ -133,7 +136,7 @@ J="$TMP/recap.json"
 q() { jq -r "$1" "$J"; }
 [[ "$(q .window.from) $(q .window.until) $(q .night)" == "2026-11-01T03:00:00Z 2026-11-02T03:00:00Z 2026-11-02" ]] || fail "window: $(q .window)"
 # LOOPER_SUGGEST_PROJECTS' default plus tacplus-dev/cluster, which cannot be read: named, not guessed.
-[[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-backports=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
+[[ "$(q '.sources | to_entries | map("\(.key)=\(.value)") | join(" ")')" == "github-actions=ok github-backports=ok github-blockers=ok github-main=ok gitlab:tacplus-dev/build=ok gitlab:tacplus-dev/cluster=unavailable: GET projects/tacplus-dev%2Fcluster/jobs: curl exit 22 gitlab:tacplus-dev/looper=ok image=ok" ]] ||
   fail "sources: $(q .sources)"
 [[ "$(q '.projects["tacplus-dev/looper"] | "\(.jobs) \(.status.failed) \(.failures.image_pull) \(.failures.runner_system_failure) \(.failures.timeout)"')" == "25 8 6 1 1" ]] ||
   fail "looper's jobs: $(q '.projects["tacplus-dev/looper"]')"
@@ -378,8 +381,8 @@ has "$R" "- \`scan/tacplus\`: tacplus: its nightly scan held the repository 125 
 lacks "$R" "not/a/key"; lacks "$R" nonsense
 has "$(sed -n '/^## Transient/,/^## Once/p' <<<"$R")" "- \`failures/tacplus-dev/looper/timeout\`: gitlab.com/tacplus-dev/looper: 1 job failed with timeout, 1 recovered on retry (once in 7 nights, recovered on retry)."
 has "$(sed -n '/^## Once/,$p' <<<"$R")" "- \`failures/tacplus-dev/build/gate_failure\`:"
-# One screen, with the release lines' three (looper#275).
-(( $(wc -l < "$TMP/r.md") <= 63 )) || fail "not one screen: $(wc -l < "$TMP/r.md") lines"
+# One screen, with the release lines' three (looper#275) and the issues waiting on nothing (looper#276).
+(( $(wc -l < "$TMP/r.md") <= 64 )) || fail "not one screen: $(wc -l < "$TMP/r.md") lines"
 pass
 
 # A variant of the fixtures (looper#92): a copy of tests/recap/ that SED edits (sed -i's script on
@@ -673,6 +676,31 @@ lacks "$(v '.items[].key')" "line-red/"
 rm "$TMP/fx/gh/compare-tacplus-v2.6.10...release_2.6.json"
 FX="$TMP/fx" recap collect --until "$UNTIL" > "$TMP/v.json" 2>/dev/null || fail "collect"
 [[ "$(v '"\(.backports) \(.sources["github-backports"])"')" == "{} partial: tacplus (gh exit 1: gh: Not Found (HTTP 404))" ]] || fail "unreadable: $(v -c '.backports, .sources')"
+pass
+
+# The open issues whose every Blocked-by is closed (looper#276: on 2026-11-28
+# seventeen, ten behind a merged pull request the kicker never read as closed),
+# oldest first, with their age, how long since their last blocker closed, and
+# what else holds them: an issue or a pull request, merged or not, as GitHub's
+# issues API says; one blocker open, another org's or a sentence's is none.
+# Each approved one held by nothing else for over an hour is an item.
+NAME=blockers-closed
+J="$TMP/recap.json"
+q() { jq -r "$1" "$J"; }
+[[ "$(q '[.blockers_closed[] | "\(.repo)#\(.number) \(.age_days) \(.waiting_hours) \(.held | join("+"))"] | join(", ")')" == \
+   "llmproxy#14 31.2 234.96 not approved, stratum#36 13.1 137 , cloud#110 7.7 146.96 Backed-off, oauth#9 5.1 75 needs-decision, registry#9 2.6 5.48 " ]] || fail "blockers_closed: $(jq -c .blockers_closed "$J")"
+[[ "$(q '.blockers_closed[] | select(.number == 36) | .blockers | join(", ")')" == "tacplus#502 (pull request, merged), stratum#3" ]] || fail "blockers: $(jq -c .blockers_closed "$J")"
+[[ "$(q '.blockers_closed[] | select(.repo == "oauth") | .blockers[0]')" == "tacplus#505 (pull request, closed unmerged)" ]] || fail "unmerged: $(jq -c .blockers_closed "$J")"
+[[ "$(q '.sources["github-blockers"]')" == ok ]] || fail "source: $(q .sources)"
+has "$(q '.items[] | select(.key == "blockers-closed/registry") | "\(.count) \(.over) \(.summary)"')" \
+  "1 true registry: 1 approved issue not started with every Blocked-by closed, #9 for 5.48 h (its blockers tacplus#501 (pull request, merged))"
+has "$(q '.items[].key')" "blockers-closed/stratum"
+lacks "$(q '.items[].key')" "blockers-closed/cloud"
+lacks "$(q '.items[].key')" "blockers-closed/llmproxy"
+recap report "$J" "$TMP/classes.json" > "$TMP/bc.md" || fail "report"
+has "$(cat "$TMP/bc.md")" "Open issues with every Blocked-by closed (looper#276; oldest first): [llmproxy#14](https://github.com/tacplus-dev/llmproxy/issues/14) 31.2 days old, its blockers closed 234.96 h (tacplus#503), held: not approved; "
+has "$(cat "$TMP/bc.md")" "[registry#9](https://github.com/tacplus-dev/registry/issues/9) 2.6 days old, its blockers closed 5.48 h (tacplus#501 (pull request, merged)), not held: the kicker should have started it."
+lacks "$(sed -n '/^## Recurring/,$p' "$TMP/bc.md")" "blockers-closed/"
 pass
 
 # act (looper#275): backport:ready on #367 (ready 12 days), not on #370 (ready 1.6), off #371 (red);

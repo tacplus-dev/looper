@@ -89,7 +89,9 @@
 #       against a line, oldest first, ready to merge when it is CLEAN, its
 #       checks green and its main issue (its branch's, or its description's
 #       "Backport of #n") closed, with its age and how long it has been ready,
-#       else why not. Cloud Build
+#       else why not. Every open issue of the org whose Blocked-by lines all
+#       name closed issues or pull requests (looper#276), with its age, how
+#       long since its last blocker closed and what else holds it. Cloud Build
 #       is not read: nothing builds there (looper#85). A source it
 #       cannot read is named in `sources`, never guessed. Then its `items`: what
 #       went wrong or crossed a threshold, each with a key the nights share.
@@ -190,6 +192,7 @@ T = {
     "request_margin": num("LOOPER_RECAP_REQUEST_MARGIN", 0.10),
     "backport_days": num("LOOPER_RECAP_BACKPORT_DAYS", 2),
     "line_days": num("LOOPER_RECAP_LINE_DAYS", 2),
+    "blockers_hours": num("LOOPER_RECAP_BLOCKERS_HOURS", 1),
 }
 # The high model (looper#162): repo-looper's LOOPER_MODEL_HIGH, whose share of
 # a day's tokens over high_share_pct the recap names.
@@ -972,6 +975,7 @@ def collect(until):
     out["requests"] = requests_of(uses, items)
     out["actions"] = actions(start, until, sources, items)
     out["backports"] = backports(until, sources, items)
+    out["blockers_closed"] = blockers_closed(until, sources, items)
     out["image"] = image_check(until, sources, items)
 
     out["failed_jobs"].sort(key=lambda x: (x["project"], x["id"]))
@@ -1505,7 +1509,7 @@ LINE_WORKFLOW = ENV.get("LOOPER_RECAP_LINE_WORKFLOW", "ci.yml")
 RED = ("failure", "timed_out", "startup_failure")
 RED_TITLE = re.compile(r"(release/\d+\.\d+): its CI is red")
 # Their items: the hub's to act on (merge, cut the patch, mend the line), not the recap's advice.
-HUB_ITEMS = ("backports/", "unreleased/", "line-red/", "line-stale/")
+HUB_ITEMS = ("backports/", "unreleased/", "line-red/", "line-stale/", "blockers-closed/")
 
 
 def days(a, b):
@@ -1665,6 +1669,104 @@ def backports(until, sources, items):
                               "evidence": [f"https://github.com/{org}/{repo}/actions/workflows/{ci['workflow']}"]})
     sources["github-backports"] = "ok" if not bad else "partial: " + "; ".join(sorted(bad))
     return out
+
+
+# --- issues waiting on nothing (looper#276) ------------------------------------
+#
+# On 2026-11-28 the hub found 17 open issues whose every Blocked-by was closed,
+# ten behind a merged pull request the kicker did not read as closed (registry#9
+# not started for 4 hours, stratum#36 for six days).
+
+BLOCKED_BY = re.compile(r"^[ \t]*blocked-by:[ \t]*(.*)$", re.I | re.M)
+BLOCKER_REF = re.compile(r"(?:([\w.-]+)/([\w.-]+))?#(\d+)")
+BLOCKER_URL = re.compile(r"<?https?://github\.com/([\w.-]+)/([\w.-]+)/(?:issues|pull)/(\d+)")
+# What holds an issue but its blockers: the looper's labels and lines (repo-looper's ready).
+HOLD_LABELS = ("looper:in-progress", "looper:stuck", "needs-decision", "looper:landing", "looper:merge-request")
+HOLD_LINES = re.compile(r"^[ \t]*(backed-off|waiting-on):", re.I | re.M)
+
+
+def blocker_refs(body, repo, org):
+    """An issue's Blocked-by targets, as (repo, n); None for one that is no issue or pull request of
+    the org (another org's, a line unreadable), which no closing ends."""
+    out = []
+    for m in BLOCKED_BY.finditer(body or ""):
+        r = BLOCKER_REF.match(m.group(1).strip()) or BLOCKER_URL.match(m.group(1).strip())
+        if not r:
+            out.append(None)
+            continue
+        o, rp, n = r.groups()
+        if o is None:
+            o, rp = org, repo
+        out.append((rp, int(n)) if o == org else None)
+    return out
+
+
+def blockers_closed(until, sources, items):
+    """Every open issue of the org whose Blocked-by targets are all closed (an issue, or a pull request
+    merged or not, as GitHub's issues API says), oldest first: its age, how long since its last blocker
+    closed, and what else holds it (not approved, a looper label, a back-off or a wait), if anything.
+    One not held so for over LOOPER_RECAP_BLOCKERS_HOURS (1) is an item: the kicker should have started it."""
+    org = ENV.get("LOOPER_ORG", "tacplus-dev")
+    try:
+        found = json.loads(run(["gh", "search", "issues", "Blocked-by", "in:body", "--owner", org, "--state", "open", "--limit", "1000",
+                                "--json", "repository,number,title,url,body,createdAt,labels"]))
+    except (Unreadable, ValueError) as e:
+        sources["github-blockers"] = f"unavailable: {e}"
+        return None
+    states, bad, out = {}, [], []
+    for i in found:
+        repo = (i.get("repository") or {}).get("name") or ""
+        refs = blocker_refs(i.get("body"), repo, org)
+        if not refs or None in refs:
+            continue
+        for ref in dict.fromkeys(refs):
+            if ref not in states:
+                try:
+                    g = gh_json(f"repos/{org}/{ref[0]}/issues/{ref[1]}")
+                    pr = g.get("pull_request")
+                    states[ref] = {"ref": f"{ref[0]}#{ref[1]}", "state": g.get("state"), "closed": g.get("closed_at"),
+                                   "pull": pr is not None, "merged": bool(pr and pr.get("merged_at"))}
+                except Unreadable as e:
+                    states[ref] = None
+                    if "Not Found" not in str(e):
+                        bad.append(f"{ref[0]}#{ref[1]} ({e})")
+        bs = [states[r] for r in dict.fromkeys(refs)]
+        if any(b is None or b["state"] != "closed" for b in bs):
+            continue
+        created, last = when(i.get("createdAt")), max((when(b["closed"]) for b in bs if b["closed"]), default=None)
+        labels = [x.get("name") for x in i.get("labels") or []]
+        held = ([] if "approved" in labels else ["not approved"]) + [x for x in HOLD_LABELS if x in labels] \
+            + sorted({m.group(1).capitalize() for m in HOLD_LINES.finditer(i.get("body") or "")})
+        out.append({"repo": repo, "number": i["number"], "title": i.get("title") or "", "url": i.get("url") or "",
+                    "created": stamp(created) if created else None, "age_days": days(created, until) if created else None,
+                    "closed": stamp(last) if last else None, "waiting_hours": hours(max(0, secs(last, until))) if last else None,
+                    "blockers": [b["ref"] + (" (pull request, " + ("merged" if b["merged"] else "closed unmerged") + ")" if b["pull"] else "") for b in bs],
+                    "held": held})
+    out.sort(key=lambda x: (x["created"] or "", x["repo"], x["number"]))
+    sources["github-blockers"] = "ok" if not bad else "partial: " + "; ".join(sorted(bad))
+    by_repo = {}
+    for x in out:
+        if not x["held"] and (x["waiting_hours"] or 0) > T["blockers_hours"]:
+            by_repo.setdefault(x["repo"], []).append(x)
+    for repo, xs in sorted(by_repo.items()):
+        old = max(xs, key=lambda x: x["waiting_hours"])
+        items.append({"key": f"blockers-closed/{repo}", "count": len(xs), "over": True, "recovered": False,
+                      "summary": f"{repo}: {len(xs)} approved issue{'s' * (len(xs) != 1)} not started with every Blocked-by closed, "
+                                 f"#{old['number']} for {old['waiting_hours']} h (its blockers {', '.join(old['blockers'])})",
+                      "evidence": [x["url"] for x in xs][:5]})
+    return out
+
+
+def blockers_lines(night):
+    """The report's issues whose blockers are all closed (looper#276): for the hub to start or unblock."""
+    bc = night.get("blockers_closed")
+    if bc is None:
+        return []
+    return ["Open issues with every Blocked-by closed (looper#276; oldest first): " + ("; ".join(
+        f"[{x['repo']}#{x['number']}]({x['url']}) {x['age_days']} days old, its blockers closed "
+        + (f"{x['waiting_hours']} h" if x["waiting_hours"] is not None else "?") + f" ({', '.join(x['blockers'])})"
+        + (f", held: {', '.join(x['held'])}" if x["held"] else ", not held: the kicker should have started it")
+        for x in bc) or "none") + "."]
 
 
 def act(night):
@@ -2070,6 +2172,7 @@ def report(night, classes, sdir, cov):
         L[-1] += (f" Models by day (looper#162; {days[0]['high_model']}'s share of the tokens, over {whole(T['high_share_pct'])}% named): "
                  + "; ".join(f"{x['night']} {x['high_model']} {x['high_pct']}%" + (", over" if x["over"] else "") + f" ({runs(x)})" for x in days) + ".")
     L += backports_lines(night)
+    L += blockers_lines(night)
     gone = [f"{k} ({v})" for k, v in sorted(night["sources"].items()) if v != "ok"]
     if gone:
         L.append("Not read: " + "; ".join(gone) + ".")

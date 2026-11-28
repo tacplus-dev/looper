@@ -550,8 +550,12 @@ forge_label_adder() { # repo n label
 }
 
 # The states of issues given as "<repo> <n>" lines (each once), as
-# "<repo> <n> <OPEN|CLOSED|MISSING>" lines in the same order: MISSING for a
-# reference the forge does not resolve to an issue of LOOPER_ORG. Fails when
+# "<repo> <n> <OPEN|CLOSED|UNMERGED|MISSING>" lines in the same order: MISSING
+# for a reference the forge does not resolve to an issue of LOOPER_ORG. On
+# GitHub a reference may name a pull request (looper#276: registry#9 and
+# stratum#36 waited hours to days on merged ones, which GitHub's `issue` query
+# answers with null): one merged is CLOSED, one closed without merging
+# UNMERGED (pull_state). Fails when
 # the forge cannot be read. GitHub: one aliased GraphQL query.
 forge_issue_states() { # (stdin)
   local refs r n q="" i=0 out code t
@@ -561,16 +565,16 @@ forge_issue_states() { # (stdin)
       # A path with a slash is no repository of the org (another org's): never asked.
       while read -r r n; do
         [[ "$r" != */* ]] || continue
-        q="$q b$i: repository(owner: \"$LOOPER_ORG\", name: \"$r\") { issue(number: $n) { state } }"; i=$((i + 1))
+        q="$q b$i: repository(owner: \"$LOOPER_ORG\", name: \"$r\") { issueOrPullRequest(number: $n) { __typename ... on Issue { state } ... on PullRequest { state } } }"; i=$((i + 1))
       done <<<"$refs"
       out='{"data": {}}'
-      # A blocker that is no issue answers null and gh exits 1; no data at all is GitHub refusing.
+      # A blocker that is neither answers null and gh exits 1; no data at all is GitHub refusing.
       [[ -z "$q" ]] || out="$(gh api graphql -f query="{$q }" 2>/dev/null)" || true
       jq -e '.data | type == "object"' <<<"$out" >/dev/null 2>&1 || return 1
       i=0
       while read -r r n; do
         if [[ "$r" == */* ]]; then echo "$r $n MISSING"
-        else echo "$r $n $(jq -r --arg b "b$i" '.data[$b].issue.state // "MISSING"' <<<"$out")"; i=$((i + 1)); fi
+        else echo "$r $n $(jq -r --arg b "b$i" ".data[\$b].issueOrPullRequest | if . == null then \"MISSING\" else $PULL_STATE end" <<<"$out")"; i=$((i + 1)); fi
       done <<<"$refs" ;;
     gitlab)
       [[ -n "${LOOPER_FORGE_TOKEN:-}" ]] || return 1
@@ -586,6 +590,26 @@ forge_issue_states() { # (stdin)
       done <<<"$refs"
       rm -f "$t" ;;
   esac
+}
+
+# An issue's or a pull request's state as the looper reads a blocker's
+# (looper#276), a jq filter of {__typename or url, state}: an issue's OPEN or
+# CLOSED; a pull request's OPEN, CLOSED when merged (gh's MERGED), UNMERGED
+# when closed without merging.
+PULL_STATE='if .state == "MERGED" then "CLOSED"
+  elif .state == "CLOSED" and (.__typename == "PullRequest" or (.url // "" | test("/pull/[0-9]+$"))) then "UNMERGED"
+  else .state end'
+
+# The open issues a pull request closes (GitHub's closingIssuesReferences:
+# its "Fixes #N", or linked by hand), as "<repo> <n>" lines, those of
+# LOOPER_ORG; nothing for an issue, or on GitLab. Fails when GitHub cannot be read.
+forge_pr_issues() { # repo n
+  [[ "$LOOPER_FORGE" == github && "$1" != */* ]] || return 0
+  local out
+  out="$(gh api graphql -f query="{ p0: repository(owner: \"$LOOPER_ORG\", name: \"$1\") { issueOrPullRequest(number: $2) { __typename ... on PullRequest { state closingIssuesReferences(first: 20) { nodes { number state repository { name owner { login } } } } } } } }" 2>/dev/null)" || true
+  jq -e '.data.p0 | type == "object"' <<<"$out" >/dev/null 2>&1 || return 1
+  jq -r --arg o "$LOOPER_ORG" '.data.p0.issueOrPullRequest | select(.__typename == "PullRequest") | .closingIssuesReferences.nodes[]?
+    | select(.repository.owner.login == $o and (.state // "OPEN") == "OPEN") | "\(.repository.name) \(.number)"' <<<"$out"
 }
 
 # A file of a repository's default branch, raw.
@@ -674,8 +698,9 @@ blockers() { # repo issue
 # repo, `<org>/<path>#N` in path. A reference outside LOOPER_ORG keeps its
 # whole path, which names no repository of the org, so it never resolves and
 # holds its issue: an instance reads no other org (looper#29). An issue's URL
-# (`https://github.com/<org>/<repo>/issues/N`, on GitLab
-# `<LOOPER_FORGE_URL>/<path>/-/issues/N`, in <> or not) reads as
+# (`https://github.com/<org>/<repo>/issues/N`, or a pull request's
+# `.../pull/N` (looper#276), on GitLab `<LOOPER_FORGE_URL>/<path>/-/issues/N`,
+# in <> or not) reads as
 # `<org>/<repo>#N`; one on another host keeps its host, so it never resolves
 # either (looper#87). A line it cannot read at all is `?/unreadable 0`, no
 # issue of any org, so it holds its issue too: never taken for no blocker.
@@ -687,8 +712,9 @@ parse_blockers() { # repo
     | while IFS= read -r ref; do
         if [[ "$ref" =~ ^(([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)?)#([0-9]+) ]]; then
           slug="${BASH_REMATCH[1]}"; num="${BASH_REMATCH[4]}"
-        elif [[ "$ref" =~ ^\<?https?://([A-Za-z0-9_.:-]+(/[A-Za-z0-9_.-]+)+)(/-)?/issues/([0-9]+) ]]; then
-          slug="${BASH_REMATCH[1]%/-}"; num="${BASH_REMATCH[4]}"   # the longest path takes GitLab's /-
+        elif [[ "$ref" =~ ^\<?https?://([A-Za-z0-9_.:-]+(/[A-Za-z0-9_.-]+)+)(/-)?/(issues|pull)/([0-9]+) ]] \
+             && [[ "${BASH_REMATCH[4]}" == issues || "$LOOPER_FORGE" == github ]]; then
+          slug="${BASH_REMATCH[1]%/-}"; num="${BASH_REMATCH[5]}"   # the longest path takes GitLab's /-
           if [[ "${slug,,}" == "${host,,}/"* ]]; then slug="${slug#*/}"; fi
         else echo "?/unreadable 0"; continue; fi
         if [[ -z "$slug" ]]; then echo "$1 $num"
@@ -698,10 +724,11 @@ parse_blockers() { # repo
   return 0
 }
 
-# An issue's state (OPEN, CLOSED), or a failure when it cannot be read.
+# An issue's state (OPEN, CLOSED), a pull request's (OPEN, CLOSED when
+# merged, UNMERGED: PULL_STATE), or a failure when it cannot be read.
 issue_state() { # repo n
   [[ "$1" == */* && "$LOOPER_FORGE" == github ]] && return 1   # no GitHub repository: not one of the org's
-  forge_issue_view "$1" "$2" state .state
+  forge_issue_view "$1" "$2" state,url "$PULL_STATE"
 }
 
 # Ready: approved, not held, every issue it is blocked by closed, every run
@@ -954,8 +981,8 @@ backoff_over() { # repo n body
     [[ -n "$r" ]] || continue
     [[ "$r" == */* && "$LOOPER_FORGE" == github ]] && continue   # no repository of the org's
     st="$(forge_issue_view "$r" "$k" state,closedAt '"\(.state) \(.closedAt // "")"' 2>/dev/null)" || continue
-    [[ "$st" == CLOSED\ ?* ]] || continue
-    at="$(date -u -d "${st#CLOSED }" +%s 2>/dev/null)" || continue
+    [[ "$st" =~ ^(CLOSED|MERGED)\ (.+)$ ]] || continue   # a pull request's merge too (looper#276)
+    at="$(date -u -d "${BASH_REMATCH[2]}" +%s 2>/dev/null)" || continue
     if (( at > s )); then
       if [[ "$r" == "$1" ]]; then echo "#$k closed"; else echo "$LOOPER_ORG/$r#$k closed"; fi
       return 0
@@ -981,15 +1008,19 @@ next_ready() { # repo
 # the forge does not resolve to an issue holds its issue. Fails when the forge
 # cannot be read. The lines are in ISSUE_ORDER of those issues: a repository
 # whose next issue is priority:high comes first (looper#31), so it is planned
-# first. ready_by_repo is each repository's first.
+# first. ready_by_repo is each repository's first. With a file, the issues
+# that would be ready but for a blocker that is a pull request closed without
+# merging (looper#276; every other blocker closed) go to it, as "<repo>
+# <number> <blocker repo> <blocker number>..." lines: the kicker says so on
+# each (unmerged_blockers in looper-dispatch).
 ready_by_repo() { ready_all_by_repo | awk '!seen[$1]++'; }
 # A private repository's issues are no report's (looper#83): a ruleset on its
 # main needs GitHub Team, so nothing there keeps a report's push off main
 # (the hub's call, 2026-11-04, until Jody decides otherwise:
 # LOOPER_PRIVATE_REPORTS=1 lists them again). On GitHub, the search's own
 # filter, no request more.
-ready_all_by_repo() {
-  local all issues r n b64 refs states vis=public
+ready_all_by_repo() { # [unmerged-file]
+  local all issues r n b64 refs states held vis=public
   [[ "${LOOPER_PRIVATE_REPORTS:-}" != 1 ]] || vis=""
   all="$(forge_search_issues "$LABEL_APPROVED" 1000 repository,number,labels,createdAt,body "" "$vis")" || return 1
   # Not held, in ISSUE_ORDER: "<repo> <number> <body, base64>".
@@ -1004,11 +1035,19 @@ ready_all_by_repo() {
   states="$(awk 'NF { print $3, $4 }' <<<"$refs" | sort -u | forge_issue_states)" || return 1
   # Ready: every blocker closed, every run it waits on finished (looper#171),
   # and not backed off (looper#181). The first per repository is its next.
+  # Held only by pull requests closed unmerged: to the file, not ready.
   while read -r r n b64; do
     [[ -n "$r" ]] || continue
-    if awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
-         while read -r br bn; do grep -qxF "$br $bn CLOSED" <<<"$states" || exit 1; done
-       } && base64 -d <<<"$b64" | waits_over && backoff_over "$r" "$n" "$(base64 -d <<<"$b64")" >/dev/null; then echo "$r $n"; fi
+    held="$(awk -v r="$r" -v n="$n" '$1 == r && $2 == n { print $3, $4 }' <<<"$refs" | {
+              while read -r br bn; do
+                if grep -qxF "$br $bn UNMERGED" <<<"$states"; then echo "$br $bn"
+                elif ! grep -qxF "$br $bn CLOSED" <<<"$states"; then echo "-"; fi
+              done
+            } | paste -sd' ')"
+    [[ " $held " != *" - "* ]] || continue
+    base64 -d <<<"$b64" | waits_over && backoff_over "$r" "$n" "$(base64 -d <<<"$b64")" >/dev/null || continue
+    if [[ -z "$held" ]]; then echo "$r $n"
+    elif [[ -n "${1:-}" ]]; then echo "$r $n $held" >> "$1"; fi
   done <<<"$issues"
 }
 
