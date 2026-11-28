@@ -177,32 +177,36 @@ spec:
       default: ""
       regex: '^(main|release/[0-9]+\.[0-9]+|branches)?$'
 ---
+# Every variable a rule reads is compared, never read bare (looper#279): GitLab
+# evaluates && and || as Ruby does, "" true to them, so `$BUILD_RELEASE && (...)`
+# with release empty is the (...) and refused every manager's build, and
+# `($BUILD_SHA || $BUILD_TAG)` with sha empty is "", never the tag.
 workflow:
   name: $BUILD_PIPELINE_NAME
   rules:
-    - if: $BUILD_SMOKE == "true" && ($BUILD_REPO || $BUILD_SHA || $BUILD_TAG)
+    - if: $BUILD_SMOKE == "true" && ($BUILD_REPO != "" || $BUILD_SHA != "" || $BUILD_TAG != "")
       when: never
-    - if: $BUILD_RUNNER_IMAGE == "true" && ($BUILD_REPO || $BUILD_SHA || $BUILD_TAG || $BUILD_SMOKE == "true")
+    - if: $BUILD_RUNNER_IMAGE == "true" && ($BUILD_REPO != "" || $BUILD_SHA != "" || $BUILD_TAG != "" || $BUILD_SMOKE == "true")
       when: never
-    - if: $BUILD_NIGHTLY == "true" && ($BUILD_TAG || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
+    - if: $BUILD_NIGHTLY == "true" && ($BUILD_TAG != "" || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
       when: never
-    - if: $BUILD_VERIFY == "true" && ($BUILD_TAG || $BUILD_NIGHTLY == "true" || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
+    - if: $BUILD_VERIFY == "true" && ($BUILD_TAG != "" || $BUILD_NIGHTLY == "true" || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true")
       when: never
-    - if: $BUILD_RELEASE && ($BUILD_SHA || $BUILD_TAG || $BUILD_GATES || $BUILD_BASE || $BUILD_WAIT || $BUILD_REPORT == "true" || $BUILD_NIGHTLY == "true" || $BUILD_VERIFY == "true" || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true" || $CI_COMMIT_REF_NAME != "main")
+    - if: $BUILD_RELEASE != "" && ($BUILD_SHA != "" || $BUILD_TAG != "" || $BUILD_GATES != "" || $BUILD_BASE != "" || $BUILD_WAIT != "" || $BUILD_REPORT == "true" || $BUILD_NIGHTLY == "true" || $BUILD_VERIFY == "true" || $BUILD_SMOKE == "true" || $BUILD_RUNNER_IMAGE == "true" || $CI_COMMIT_REF_NAME != "main")
       when: never
-    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_RELEASE
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_RELEASE != ""
       variables:
         BUILD_PIPELINE_NAME: "release $[[ inputs.repo ]] $[[ inputs.release ]]"
-    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_VERIFY == "true"
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO != "" && $BUILD_VERIFY == "true"
       variables:
         BUILD_PIPELINE_NAME: "verify $[[ inputs.repo ]] $[[ inputs.sha ]]"
-    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_NIGHTLY == "true"
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO != "" && $BUILD_NIGHTLY == "true"
       variables:
         BUILD_PIPELINE_NAME: "nightly $[[ inputs.repo ]] $[[ inputs.sha ]]"
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO == "" && $BUILD_SHA == "" && $BUILD_NIGHTLY == "true"
       variables:
         BUILD_PIPELINE_NAME: "nightly"
-    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO && $BUILD_SHA
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/ && $BUILD_REPO != "" && $BUILD_SHA != ""
       variables:
         BUILD_PIPELINE_NAME: "build $[[ inputs.repo ]] $[[ inputs.sha ]] $[[ inputs.tag ]] $[[ inputs.gates ]]"
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_NAME == "main" && $BUILD_SMOKE == "true"
@@ -358,7 +362,7 @@ gates:
 report-pass:
   stage: report
   rules:
-    - if: $BUILD_TAG && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
+    - if: $BUILD_TAG != "" && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
       when: on_success
     - if: $BUILD_CHILD_VERDICT != "true" && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true" && $BUILD_RELEASE == ""
       when: on_success
@@ -369,7 +373,7 @@ report-pass:
 report-fail:
   stage: report
   rules:
-    - if: $BUILD_TAG && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
+    - if: $BUILD_TAG != "" && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true"
       when: on_failure
     - if: $BUILD_CHILD_VERDICT != "true" && $BUILD_SMOKE != "true" && $BUILD_RUNNER_IMAGE != "true" && $BUILD_NIGHTLY != "true" && $BUILD_VERIFY != "true" && $BUILD_RELEASE == ""
       when: on_failure

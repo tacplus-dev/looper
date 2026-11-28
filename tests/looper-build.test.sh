@@ -1176,29 +1176,132 @@ pass
 # ordinary build (no release, nightly or verify run) is at most 4: plan and the gates trigger here, gates and
 # security-<repo> in the child; a release's report-pass and report-fail are its alone. Unset, the parent is as it
 # was (the old image's child sets no success), and the new child works under it.
-# Whether a rules: if: holds for a build of these inputs: its clauses joined by &&, each $V, $V == "x" or $V != "x".
+# The rules: if: of a CI file as GitLab evaluates them (looper#279; its lib/gitlab/ci/pipeline/expression): && and
+# || are Ruby's, so "" is true to them, and `$V && x` with $V empty is x; only the whole expression's value is
+# checked for presence (nil, false and "" do not hold). Every variable starts as the CI file has it, each input's
+# default in its $[[ inputs.x ]]; the VAR=value given override them. Reads "label<TAB>if" lines and prints the
+# label of each that holds, or "error: ..." for an expression it cannot read. A CI file whose rule reads $V for "$V
+# is not empty" refused every manager's build (looper#279): this, not a reading of $V as -n, is what a test holds.
+GL_RULES="$(cat <<'EOF'
+import re, sys
+text = open(sys.argv[1]).read()
+inputs, cur = {}, None
+for line in text.split("\n---\n")[0].splitlines():
+    m = re.match(r"^    ([a-z_]+):$", line)
+    if m: cur = m.group(1); inputs[cur] = ""; continue
+    m = re.match(r"^      default: (.*)$", line)
+    if m and cur: inputs[cur] = m.group(1).strip().strip('"')
+v, top = {}, None
+for line in text.split("\n---\n", 1)[1].splitlines():
+    m = re.match(r"^([A-Za-z.][^:]*):", line)
+    if m: top = m.group(1); continue
+    m = re.match(r'^  ([A-Z_][A-Z0-9_]*): "(.*)"$', line)
+    if top == "variables" and m:
+        v[m.group(1)] = re.sub(r"\$\[\[ inputs\.([a-z_]+) \]\]", lambda x: inputs[x.group(1)], m.group(2))
+for a in sys.argv[2:]:
+    k, _, val = a.partition("="); v[k] = val
+TOK = re.compile(r'\s*(?:(\$\w+)|"([^"]*)"|\'([^\']*)\'|/((?:\\.|[^/])*)/|(==|!=|=~|!~|&&|\|\||\(|\)))')
+def lex(s):
+    out, i = [], 0
+    while i < len(s.rstrip()):
+        m = TOK.match(s, i)
+        if not m: raise ValueError(f"cannot read at {s[i:]!r}")
+        if m.group(1): out.append(("var", m.group(1)[1:]))
+        elif m.group(2) is not None or m.group(3) is not None: out.append(("str", m.group(2) if m.group(2) is not None else m.group(3)))
+        elif m.group(4) is not None: out.append(("re", m.group(4)))
+        else: out.append(("op", m.group(5)))
+        i = m.end()
+    return out
+def truthy(x): return x is not None and x is not False  # Ruby's
+def parse(t):
+    def expr(p):  # || binds looser than &&
+        l, p = conj(p)
+        while p < len(t) and t[p] == ("op", "||"):
+            r, p = conj(p + 1); l = ("||", l, r)
+        return l, p
+    def conj(p):
+        l, p = cmp(p)
+        while p < len(t) and t[p] == ("op", "&&"):
+            r, p = cmp(p + 1); l = ("&&", l, r)
+        return l, p
+    def cmp(p):
+        l, p = atom(p)
+        if p < len(t) and t[p][0] == "op" and t[p][1] in ("==", "!=", "=~", "!~"):
+            r, q = atom(p + 1); return (t[p][1], l, r), q
+        return l, p
+    def atom(p):
+        if t[p] == ("op", "("):
+            e, p = expr(p + 1)
+            if t[p] != ("op", ")"): raise ValueError("no )")
+            return e, p + 1
+        if t[p][0] in ("var", "str", "re"): return t[p], p + 1
+        raise ValueError(f"unexpected {t[p]}")
+    e, p = expr(0)
+    if p != len(t): raise ValueError("trailing tokens")
+    return e
+def ev(e):
+    k = e[0]
+    if k == "var": return v.get(e[1])
+    if k in ("str", "re"): return e[1]
+    if k == "&&": l = ev(e[1]); return ev(e[2]) if truthy(l) else l
+    if k == "||": l = ev(e[1]); return l if truthy(l) else ev(e[2])
+    l, r = ev(e[1]), ev(e[2])
+    if k == "==": return l == r
+    if k == "!=": return l != r
+    hit = re.search(r, "" if l is None else l) is not None
+    return hit if k == "=~" else not hit
+for line in sys.stdin:
+    label, _, cond = line.rstrip("\n").partition("\t")
+    try: x = ev(parse(lex(cond)))
+    except (ValueError, IndexError) as err: print(f"error: {cond}: {err}"); continue
+    if truthy(x) and x != "": print(label)
+EOF
+)"
+gl_rules() { # file inputs(VAR=value...)
+  python3 -I -c "$GL_RULES" "$@"
+}
+# Whether a rules: if: holds for a build of these inputs, as GitLab reads it (gl_rules).
 rule_holds() { # if inputs(VAR=value...)
-  local -A v=(); local a cl
-  for a in "${@:2}"; do v[${a%%=*}]="${a#*=}"; done
-  while read -r cl; do
-    if [[ "$cl" =~ ^\$([A-Z_]+)$ ]]; then [[ -n "${v[${BASH_REMATCH[1]}]-}" ]] || return 1
-    elif [[ "$cl" =~ ^\$([A-Z_]+)\ (==|!=)\ \"([^\"]*)\"$ ]]; then
-      if [[ "${v[${BASH_REMATCH[1]}]-}" == "${BASH_REMATCH[3]}" ]]; then [[ "${BASH_REMATCH[2]}" == "==" ]] || return 1
-      else [[ "${BASH_REMATCH[2]}" == "!=" ]] || return 1; fi
-    else fail "a rule this test cannot read: '$cl' in '$1'"; fi
-  done < <(sed 's/ && /\n/g' <<<"$1")
+  local r
+  r="$(printf 'holds\t%s\n' "$1" | gl_rules "$c" "${@:2}")"
+  [[ "$r" != error:* ]] || fail "a rule this test cannot read: $r"
+  [[ "$r" == holds ]]
 }
 # The CI file's jobs a build of these inputs creates: a job (no hidden one) with no rules, or one of whose rules
 # (its own, or .build-run's it extends) holds.
 parent_jobs() { # inputs(VAR=value...)
-  local j body ifs i
+  local j body ifs r
   for j in $(sed -n '/^---$/,$p' "$c" | sed -n 's/^\([a-z][A-Za-z0-9_-]*\):$/\1/p' | grep -vxE 'workflow|variables|default'); do
     body="$(sed -n "/^$j:\$/,/^[^ ]/p" "$c")"
     ! grep -qxF '  extends: .build-run' <<<"$body" || body+=$'\n'"$(sed -n '/^\.build-run:$/,/^[^ ]/p' "$c")"
     ifs="$(sed -n 's/^    - if: //p' <<<"$body")"
     if [[ -z "$ifs" ]]; then echo "$j"; continue; fi
-    while read -r i; do if rule_holds "$i" "$@"; then echo "$j"; break; fi; done <<<"$ifs"
+    r="$(sed "s/^/$j\t/" <<<"$ifs" | gl_rules "$c" "$@")"
+    [[ "$r" != *error:* ]] || fail "a rule of $j this test cannot read: $r"
+    [[ -z "$r" ]] || echo "$j"
   done
+}
+# The pipeline GitLab creates for a call (looper#279): its workflow's rules in order, the first that holds decides;
+# when: never, or none holding, is no pipeline ("refused", GitLab's 400 "The pipeline did not run"); else the
+# pipeline's name, the rule's BUILD_PIPELINE_NAME with the call's inputs.
+workflow_of() { # inputs(VAR=value...)
+  local w cond lines=() r i body name
+  w="$(sed -n '/^workflow:$/,/^[^ w]/p' "$c")"
+  while IFS= read -r cond; do lines+=("$cond"); done < <(sed -n 's/^    - if: //p' <<<"$w")
+  r="$(for i in "${!lines[@]}"; do printf '%s\t%s\n' "$i" "${lines[$i]}"; done | gl_rules "$c" "$@")"
+  [[ "$r" != *error:* ]] || fail "a workflow rule this test cannot read: $r"
+  [[ -n "$r" ]] || { echo refused; return; }
+  i="$(head -1 <<<"$r")"
+  # The rule's own lines: up to the next "- if:".
+  body="$(awk -v n="$i" '/^    - if: /{k++} k==n+1' <<<"$w")"
+  if grep -qxF '      when: never' <<<"$body"; then echo refused; return; fi
+  name="$(sed -n 's/^        BUILD_PIPELINE_NAME: "\(.*\)"$/\1/p' <<<"$body")"
+  local -A in=(); local a
+  for a in "$@"; do in[${a%%=*}]="${a#*=}"; done
+  while [[ "$name" =~ \$\[\[\ inputs\.([a-z_]+)\ \]\] ]]; do
+    a="BUILD_${BASH_REMATCH[1]^^}"; name="${name/"${BASH_REMATCH[0]}"/${in[$a]-}}"
+  done
+  echo "${name:-unnamed}"
 }
 NAME="an ordinary build is at most 4 jobs, parent and child, with BUILD_CHILD_VERDICT; a release's verdict waits for its publish (looper#237)"
 c="$ROOT/ci/build.gitlab-ci.yml"
@@ -1224,6 +1327,52 @@ for r in false true; do
   [[ "$child" == "gates security-demo" ]] || fail "an ordinary build's child jobs (report $r): '$child'"
   read -ra all <<<"$parent $child"
   (( ${#all[@]} <= 4 )) || fail "an ordinary build is ${#all[@]} jobs: ${all[*]}"
+done
+pass
+
+# Each caller's real call against the workflow's rules, as GitLab reads them (looper#279: b40b42b's copy refused
+# every manager's build, its release rule's `$BUILD_RELEASE && (...)` holding with release empty). The calls are
+# repo-looper's start_build (a manager's land: gates and wait, a base; a report's, a pre-land gate's and a red
+# round's add report), looper-dispatch's mr_status (the hub's gate of a merge request, with its base), the
+# schedules (a nightly of one repository and the fan-out, a verify, the branches' release), the API's (a build main
+# now, a tag's release on the project's tag) and the web's (the smoke, the runner image).
+NAME="ci/build.gitlab-ci.yml: each caller's call starts its pipeline, and every call the workflow refuses is refused (looper#279)"
+c="$ROOT/ci/build.gitlab-ci.yml"
+s="${SHA[pass]}"; b="${SHA[release]}"
+TRIG=(CI_PIPELINE_SOURCE=trigger CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_SHA="$s")
+calls=(
+  "build demo $s  full|${TRIG[*]} BUILD_GATES=full BUILD_WAIT=5400"
+  "build demo $s  docs+build|${TRIG[*]} BUILD_GATES=docs+build BUILD_BASE=$b BUILD_WAIT=5400"
+  "build demo $s  full|${TRIG[*]} BUILD_GATES=full BUILD_BASE=$b BUILD_WAIT=5400 BUILD_REPORT=true"
+  "build demo $s  docs|${TRIG[*]} BUILD_GATES=docs BUILD_BASE=$b"
+  "build demo $s v1.2.3 |CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=demo/v1.2.3 BUILD_REPO=demo BUILD_SHA=$s BUILD_TAG=v1.2.3"
+  "nightly demo |CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_NIGHTLY=true"
+  "nightly|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_NIGHTLY=true"
+  "verify demo |CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_VERIFY=true"
+  "release demo main|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=main"
+  "release demo release/1.2|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=release/1.2"
+  "release  branches|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_RELEASE=branches"
+  "release  main|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_RELEASE=main"
+  "macos smoke|CI_PIPELINE_SOURCE=web CI_COMMIT_REF_NAME=main BUILD_SMOKE=true"
+  "runner image|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_RUNNER_IMAGE=true"
+  "refused|CI_PIPELINE_SOURCE=push CI_COMMIT_REF_NAME=main"
+  "refused|${TRIG[*]} BUILD_RELEASE=main"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=main BUILD_TAG=v1.2.3"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=main BUILD_GATES=full"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=main BUILD_WAIT=60"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=main BUILD_REPORT=true"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_RELEASE=main BUILD_NIGHTLY=true"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=other BUILD_REPO=demo BUILD_RELEASE=main"
+  "refused|CI_PIPELINE_SOURCE=web CI_COMMIT_REF_NAME=main BUILD_SMOKE=true BUILD_TAG=v1.2.3"
+  "refused|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_RUNNER_IMAGE=true BUILD_SHA=$s"
+  "refused|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_NIGHTLY=true BUILD_TAG=v1.2.3"
+  "refused|CI_PIPELINE_SOURCE=schedule CI_COMMIT_REF_NAME=main BUILD_REPO=demo BUILD_VERIFY=true BUILD_TAG=v1.2.3"
+  "refused|CI_PIPELINE_SOURCE=api CI_COMMIT_REF_NAME=main BUILD_SHA=$s"
+)
+for call in "${calls[@]}"; do
+  read -ra in <<<"${call#*|}"
+  got="$(workflow_of "${in[@]}")"
+  [[ "$got" == "${call%%|*}" ]] || fail "the call ${call#*|}: '$got', not '${call%%|*}'"
 done
 pass
 
@@ -2125,7 +2274,7 @@ NAME="pipeline: a nightly with no repository (a schedule, or the API) is the fan
 w="$(sed -n '/^workflow:$/,/^[^ w]/p' "$ROOT/ci/build.gitlab-ci.yml")"
 grep -qF '    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO == "" && $BUILD_SHA == "" && $BUILD_NIGHTLY == "true"' <<<"$w" ||
   fail "no fan-out rule: $w"
-grep -qF '    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO && $BUILD_NIGHTLY == "true"' <<<"$w" ||
+grep -qF '    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|trigger|schedule)$/ && $BUILD_REPO != "" && $BUILD_NIGHTLY == "true"' <<<"$w" ||
   fail "the nightly of one repository is gone: $w"
 pass
 
