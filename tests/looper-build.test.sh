@@ -3629,13 +3629,15 @@ real_docker="$(command -v docker || true)"
 if [[ -n "$real_docker" ]] && docker buildx version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   mkdir -p "$TMP/bin-real"; ln -s "$TMP/bin/curl" "$TMP/bin-real/curl"
   command -v syft >/dev/null || ln -s "$TMP/bin/syft" "$TMP/bin-real/syft"   # the SBOM, real where syft is
+  # The docker this test found, its DOCKER_HOST too (a local build's own dockerd, looper#267): build's env -i drops it.
+  dh=(${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"})
   digests=()
   for _ in 1 2; do
-    build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 \
-      BUILD_PLATFORMS=linux/arm64,linux/amd64 -- publish --dry-run 2>"$TMP/err" || fail "the real dry run failed"
+    build PATH="$TMP/bin-real:$PATH" "${dh[@]}" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 CI_COMMIT_TAG=demo/v1.2.3 \
+      BUILD_PLATFORMS=linux/arm64,linux/amd64 -- publish --dry-run 2>"$TMP/err" || fail "the real dry run failed: $(tail -5 "$TMP/err")"
     digests+=("$(cat "$OUT/image")")
     PUB="$OUT"   # the publish job's artifacts, as the sbom job gets them: build gives the sbom job an OUT of its own
-    build PATH="$TMP/bin-real:$PATH" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 BUILD_OUT="$PUB" BUILD_SBOM_UPLOAD=0 \
+    build PATH="$TMP/bin-real:$PATH" "${dh[@]}" BUILD_SHA="${SHA[release]}" BUILD_TAG=v1.2.3 BUILD_OUT="$PUB" BUILD_SBOM_UPLOAD=0 \
       -- sbom 2>"$TMP/err" || fail "the real SBOM failed: $(cat "$TMP/err")"
     [[ -s "$PUB/sbom.cdx.json" && -s "$PUB/sbom.spdx.json" ]] || fail "no SBOM of the image: $(ls "$PUB")"
   done
