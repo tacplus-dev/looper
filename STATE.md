@@ -349,7 +349,9 @@ Overwritten to stay current (loopers and agents). Last updated: 2026-11-27 by lo
   (tacplus-dev/cloud's looper_vms); its status build is the build project's, which the design retires later
   (PROPOSALS.md); branch releases (#252) publish nothing until the rolling check (#249) runs and makes `main-green`, tacplus-dev/cloud#112 adds
   their schedules, tacplus-dev/cloud#115's `apply:ci` the release registry and its provider, and the hub copies
-  `ci/build.gitlab-ci.yml` there, pinning an image with #265; dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands, and
+  `ci/build.gitlab-ci.yml` there, pinning an image with #265 (its copy at b40b42b refused every build, a rule reading
+  `$BUILD_RELEASE` bare: the hub put back 3cafa5d's, and copies again from #279's fix, which compares every variable a
+  rule reads); dev deploys from their records once tacplus-dev/fleet-seatrials#82 lands, and
   reads them and is triggered once tacplus-dev/cloud#117 sets the build project's job token allowlist, Reporter and
   `BUILD_SEATRIALS_TRIGGER_TOKEN` (until then `release-report` logs "seatrials not started"); a red
   release is filed at the next nightly scan, not at once (PROPOSALS.md); the rolling check (#249) runs nowhere yet: its reserved machines are tacplus-dev/cloud#111's, at 0
